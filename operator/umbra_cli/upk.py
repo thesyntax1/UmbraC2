@@ -62,6 +62,20 @@ class UpkError(ValueError):
     """Raised for malformed or non-canonical upk data."""
 
 
+def _utf8(text: str, what: str) -> bytes:
+    """Encode a str, turning a lone surrogate into a upk error.
+
+    Python allows unpaired surrogates in str; they cannot be represented in
+    UTF-8 at all, so the bytes an implementation would have to write do not
+    exist. Report it the same way every other limit violation is reported
+    rather than leaking a UnicodeEncodeError that callers do not catch.
+    """
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise UpkError(f"{what} is not valid utf-8") from exc
+
+
 def _put_uvarint(out: bytearray, n: int) -> None:
     if n < 0 or n >= 1 << 64:
         raise UpkError("uvarint out of range")
@@ -113,7 +127,7 @@ class _Writer:
             self.buf.append(T_F64)
             self.buf += struct.pack(">d", v)
         elif isinstance(v, str):
-            raw = v.encode("utf-8")
+            raw = _utf8(v, "string")
             if len(raw) > MAX_STRING:
                 raise UpkError("string too long")
             self.buf.append(T_STR)
@@ -143,7 +157,7 @@ class _Writer:
             for k, val in v.items():
                 if not isinstance(k, str):
                     raise UpkError("map keys must be strings")
-                items.append((k.encode("utf-8"), val))
+                items.append((_utf8(k, "map key"), val))
             items.sort(key=lambda kv: kv[0])
             for i in range(1, len(items)):
                 if items[i - 1][0] == items[i][0]:

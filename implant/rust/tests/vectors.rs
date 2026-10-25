@@ -71,7 +71,13 @@ fn upk_rejects_invalid_encodings() {
         "upk_trailing",
         "upk_unknown_tag",
         "upk_nonminimal",
+        "upk_nonminimal_nested",
+        "upk_nonminimal_key_len",
         "upk_unsorted_map",
+        "upk_duplicate_key",
+        "upk_invalid_utf8",
+        "upk_surrogate_utf8",
+        "upk_overlong_utf8",
         "upk_depth_exceeded",
     ] {
         let raw = unhex(v["rejects"][key].as_str().unwrap());

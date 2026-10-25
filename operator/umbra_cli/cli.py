@@ -161,6 +161,8 @@ def print_event(ev: Dict[str, Any], stream: Any = None) -> None:
         detail = f"host={data.get('host')} os={data.get('os')}"
     elif kind == "task.queued":
         detail = f"task={ev.get('task_id')} kind={data.get('kind')}"
+    elif kind == "beacon.error":
+        detail = f"code={data.get('code')} {short(str(data.get('msg') or ''), 60)!r}"
     elif kind == "agent.policy":
         detail = f"sleep={data.get('sleep')} jitter={data.get('jitter')}"
     print(f"[{at}] {kind:<14} {agent:<20} {detail}".rstrip(), file=stream or sys.stdout)

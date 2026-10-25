@@ -87,6 +87,12 @@ sealed class Upk {
                 }
                 is Str -> {
                     val raw = value.value.toByteArray(Charsets.UTF_8)
+                    // A Kotlin String may hold an unpaired surrogate, which
+                    // UTF-8 cannot represent: toByteArray would silently write
+                    // U+FFFD and produce bytes no other implementation makes.
+                    if (String(raw, Charsets.UTF_8) != value.value) {
+                        throw UpkException("string is not representable as utf-8")
+                    }
                     if (raw.size > MAX_STRING) throw UpkException("string too long")
                     out.write(T_STR)
                     writeUvarint(raw.size.toULong(), out)

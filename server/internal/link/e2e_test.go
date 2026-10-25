@@ -183,6 +183,56 @@ func (c *client) recv(t *testing.T) (byte, map[string]any) {
 	return msgType, msg
 }
 
+// An agent can report a frame-level failure with ERROR (0x1F) without ending
+// the session; operators must see it as a hub event.
+func TestAgentErrorIsSurfacedToOperators(t *testing.T) {
+	_, h, agentAddr, _ := newTestServer(t)
+
+	op := h.Subscribe("watcher")
+	defer h.Unsubscribe(op.ID)
+
+	ag := dial(t, agentAddr, agentPSK, crypt.RoleAgent, "agent-err-1")
+
+	long := make([]byte, 2000)
+	for i := range long {
+		long[i] = 'x'
+	}
+	ag.send(t, wire.MsgError, upk.Map{"code": int64(7), "msg": string(long)})
+
+	// The session must survive: the very next check-in is still answered.
+	ag.send(t, wire.MsgCheckin, upk.Map{"ts": uint64(time.Now().Unix())})
+	msgType, _ := ag.recv(t)
+	if msgType != wire.MsgTaskBatch {
+		t.Fatalf("expected TASK_BATCH after ERROR, got %s", wire.TypeName(msgType))
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev, ok := <-op.Events:
+			if !ok {
+				t.Fatal("event stream closed")
+			}
+			if ev.Kind != "beacon.error" {
+				continue
+			}
+			if ev.AgentID != "agent-err-1" {
+				t.Fatalf("wrong agent on event: %q", ev.AgentID)
+			}
+			if got, _ := ev.Data["code"].(int64); got != 7 {
+				t.Fatalf("code not preserved: %v", ev.Data["code"])
+			}
+			text, _ := ev.Data["msg"].(string)
+			if len(text) != 512 {
+				t.Fatalf("expected the message to be clipped to 512 bytes, got %d", len(text))
+			}
+			return
+		case <-deadline:
+			t.Fatal("no beacon.error event reached the operator")
+		}
+	}
+}
+
 func TestAgentBeaconAndTaskFlow(t *testing.T) {
 	_, h, agentAddr, _ := newTestServer(t)
 

@@ -61,7 +61,10 @@ def _from_json(v):
 
 
 @pytest.mark.parametrize("name", ["upk_trailing", "upk_unknown_tag", "upk_nonminimal",
-                                 "upk_unsorted_map", "upk_depth_exceeded"])
+                                 "upk_nonminimal_nested", "upk_nonminimal_key_len",
+                                 "upk_unsorted_map", "upk_duplicate_key",
+                                 "upk_invalid_utf8", "upk_surrogate_utf8", "upk_overlong_utf8",
+                                 "upk_depth_exceeded"])
 def test_upk_rejects_non_canonical(name):
     with pytest.raises(upk.UpkError):
         upk.decode_exact(bytes.fromhex(VECTORS["rejects"][name]))
@@ -882,3 +885,61 @@ def test_consistency_check_detects_a_doc_message_table_drift():
     code, out = _run_checker("check_consistency.py", renumber_ping)
     assert code == 1
     assert "PING" in out and "docs say" in out
+
+
+def test_symbol_check_catches_a_broken_manifest():
+    """An XML comment inside a start tag is valid-looking but unparseable."""
+    def break_manifest(rel, text):
+        if rel.endswith("AndroidManifest.xml"):
+            return text.replace(
+                '        android:supportsRtl="true"',
+                '        android:supportsRtl="true"\n        <!-- note -->',
+            )
+        return text
+
+    code, out = _run_checker("check_symbols.py", break_manifest)
+    assert code == 1
+    assert "invalid XML" in out
+
+
+def test_beacon_error_events_are_rendered_for_operators():
+    """The server now surfaces agent ERROR frames; the CLI must print them."""
+    import io
+
+    from umbra_cli import cli
+
+    buf = io.StringIO()
+    cli.print_event(
+        {
+            "kind": "beacon.error",
+            "agent_id": "agent-1",
+            "at": cli.fmt_ts("2026-01-01T00:00:00Z"),
+            "data": {"code": 7, "msg": "x" * 200},
+        },
+        stream=buf,
+    )
+    line = buf.getvalue().strip()
+    assert "beacon.error" in line
+    assert "code=7" in line
+    # Clip to 60 characters so one noisy frame cannot flood the watch stream.
+    assert len(line) < 160
+
+
+def test_upk_encoder_refuses_non_utf8_strings():
+    """Python str may hold lone surrogates; there is no UTF-8 form of them."""
+    with pytest.raises(upk.UpkError):
+        upk.encode("\ud800")
+    with pytest.raises(upk.UpkError):
+        upk.encode({"k\udc00": 1})
+    # Multi-byte input still round-trips.
+    assert upk.decode_exact(upk.encode("çok")) == "çok"
+
+
+def test_upk_rejects_duplicate_map_keys_explicitly():
+    dup = bytes.fromhex(VECTORS["rejects"]["upk_duplicate_key"])
+    with pytest.raises(upk.UpkError, match="ascending"):
+        upk.decode_exact(dup)
+    # A dict cannot hold the same key twice, so the encoder's own duplicate
+    # check is defensive; the vector is the case that actually occurs on the
+    # wire (two entries claiming the same key must both be read, then refused).
+    assert upk.encode({"a": 1}) == bytes.fromhex("09010601610301")

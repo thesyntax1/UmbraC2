@@ -141,11 +141,17 @@ func TestVectorDecodeRoundTrip(t *testing.T) {
 func TestRejects(t *testing.T) {
 	rejects := loadVectors(t).Rejects
 	cases := map[string]string{
-		"upk_trailing":       "trailing bytes",
-		"upk_unknown_tag":    "unknown tag",
-		"upk_nonminimal":     "non-minimal",
-		"upk_unsorted_map":   "ascending",
-		"upk_depth_exceeded": "nesting too deep",
+		"upk_trailing":           "trailing bytes",
+		"upk_unknown_tag":        "unknown tag",
+		"upk_nonminimal":         "non-minimal",
+		"upk_unsorted_map":       "ascending",
+		"upk_depth_exceeded":     "nesting too deep",
+		"upk_nonminimal_nested":  "non-minimal",
+		"upk_nonminimal_key_len": "non-minimal",
+		"upk_duplicate_key":      "ascending",
+		"upk_invalid_utf8":       "utf-8",
+		"upk_surrogate_utf8":     "utf-8",
+		"upk_overlong_utf8":      "utf-8",
 	}
 	for name, want := range cases {
 		raw, err := hex.DecodeString(rejects[name])
@@ -155,6 +161,25 @@ func TestRejects(t *testing.T) {
 		if _, err := upk.DecodeExact(raw); err == nil {
 			t.Errorf("%s: expected rejection (%s), got none", name, want)
 		}
+	}
+}
+
+// upk strings are UTF-8 by contract. Go strings are raw bytes, so both
+// directions must validate explicitly; otherwise a Go beacon could emit bytes
+// that the reference decoder refuses (or accept them and disagree on keys).
+func TestUTF8IsEnforced(t *testing.T) {
+	if _, err := upk.Encode("bad \xff byte"); err == nil {
+		t.Error("encoder accepted an invalid utf-8 string")
+	}
+	if _, err := upk.Encode(map[string]any{"k\xff": int64(1)}); err == nil {
+		t.Error("encoder accepted an invalid utf-8 map key")
+	}
+	// 0x06 = str tag, then a minimal uvarint length, then the bytes.
+	if _, err := upk.DecodeExact([]byte{0x06, 1, 0xff}); err == nil {
+		t.Error("decoder accepted an invalid utf-8 string")
+	}
+	if got, err := upk.DecodeExact([]byte{0x06, 2, 0xc3, 0xa7}); err != nil || got != "ç" {
+		t.Errorf("valid 2-byte utf-8 rejected: %v %v", got, err)
 	}
 }
 

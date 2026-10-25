@@ -1,6 +1,8 @@
 package io.umbra.beacon
 
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /** Executes tasks handed out by the team server. */
@@ -18,23 +20,62 @@ object TaskRunner {
 
     fun shell(command: String, timeoutSec: Long): Outcome {
         if (command.isBlank()) return Outcome(1, ByteArray(0), "empty command")
+        val limit = timeoutSec.coerceAtLeast(1)
         return try {
+            // stderr is merged into stdout so one thread drains both.
             val proc = ProcessBuilder("sh", "-c", command)
                 .redirectErrorStream(true)
                 .start()
-            val finished = proc.waitFor(timeoutSec.coerceAtLeast(1), TimeUnit.SECONDS)
+            // The child never reads stdin; closing it makes `cat`-style
+            // commands see EOF instead of hanging until the timeout.
+            runCatching { proc.outputStream.close() }
+
+            // Drain concurrently. Reading only after waitFor would deadlock on
+            // any command that writes more than the pipe buffer (~64 KiB):
+            // the child blocks in write() and never exits. The buffer is
+            // capped, but reading continues so the child can always finish.
+            val sink = ByteArrayOutputStream()
+            val reader = Thread {
+                val chunk = ByteArray(8192)
+                try {
+                    proc.inputStream.use { input ->
+                        while (true) {
+                            val n = input.read(chunk)
+                            if (n < 0) break
+                            synchronized(sink) {
+                                val room = MAX_OUTPUT + 4096 - sink.size()
+                                if (room > 0) sink.write(chunk, 0, minOf(n, room))
+                            }
+                        }
+                    }
+                } catch (_: IOException) {
+                    // Stream closed by destroyForcibly() or a broken pipe.
+                }
+            }
+            reader.isDaemon = true
+            reader.start()
+
+            val finished = proc.waitFor(limit, TimeUnit.SECONDS)
             if (!finished) {
                 proc.destroyForcibly()
-                return Outcome(124, ByteArray(0), "timeout after ${timeoutSec}s")
+                reader.join(1000)
+                return Outcome(124, drained(sink), "timeout after ${limit}s")
             }
-            val output = proc.inputStream.use { it.readBytes() }
-            val trimmed = if (output.size > MAX_OUTPUT) {
-                output.copyOfRange(0, MAX_OUTPUT) + "\n[umbra: output truncated]\n".toByteArray()
-            } else output
-            Outcome(proc.exitValue().toLong(), trimmed, "")
+            reader.join(2000)
+            if (reader.isAlive) {
+                return Outcome(proc.exitValue().toLong(), drained(sink), "output reader stalled")
+            }
+            Outcome(proc.exitValue().toLong(), drained(sink), "")
         } catch (t: Throwable) {
             Outcome(127, ByteArray(0), "exec failed: ${t.message}")
         }
+    }
+
+    /** Snapshot the drained output, truncating with a marker past MAX_OUTPUT. */
+    private fun drained(sink: ByteArrayOutputStream): ByteArray {
+        val all = synchronized(sink) { sink.toByteArray() }
+        if (all.size <= MAX_OUTPUT) return all
+        return all.copyOfRange(0, MAX_OUTPUT) + "\n[umbra: output truncated]\n".toByteArray()
     }
 
     fun run(kind: String, args: Upk): Outcome {

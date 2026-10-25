@@ -7,6 +7,8 @@
 
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::sysinfo;
@@ -52,6 +54,31 @@ fn shell_command(cmd: &str) -> Command {
     }
 }
 
+/// Read a pipe to EOF but keep at most `MAX_OUTPUT` (+ a small slack) bytes.
+///
+/// Reading to EOF is not optional: a child that writes more than the pipe
+/// buffer (~64 KiB) blocks inside `write()` and would never exit, so "wait for
+/// exit, then read" deadlocks on exactly the commands operators care about
+/// (`ps aux`, `ls -R`, `dmesg`).
+fn drain<R: Read>(mut pipe: R) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = (MAX_OUTPUT + 4096).saturating_sub(kept.len());
+                if room > 0 {
+                    kept.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    kept
+}
+
 fn truncate(mut v: Vec<u8>) -> Vec<u8> {
     if v.len() > MAX_OUTPUT {
         v.truncate(MAX_OUTPUT);
@@ -61,6 +88,11 @@ fn truncate(mut v: Vec<u8>) -> Vec<u8> {
 }
 
 /// Run a shell command with a hard timeout, capturing stdout+stderr.
+///
+/// Both pipes are drained by their own thread while the child runs; the main
+/// thread only waits. Collecting the output afterwards is bounded, because a
+/// background grandchild can keep a pipe open long after the child we spawned
+/// has exited.
 pub fn shell(cmd: &str, timeout_secs: u64) -> Outcome {
     if cmd.trim().is_empty() {
         return Outcome::err(1, "empty command");
@@ -75,35 +107,70 @@ pub fn shell(cmd: &str, timeout_secs: u64) -> Outcome {
         Err(e) => return Outcome::err(127, format!("spawn failed: {e}")),
     };
 
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
-    loop {
+    let (tx, rx) = mpsc::channel::<(usize, Vec<u8>)>();
+    if let Some(out) = child.stdout.take() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send((0, drain(out)));
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send((1, drain(err)));
+        });
+    }
+    drop(tx);
+
+    let limit = timeout_secs.max(1);
+    let deadline = Instant::now() + Duration::from_secs(limit);
+    let timed_out = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => break false,
             Ok(None) => {
                 if Instant::now() > deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Outcome::err(124, format!("command timed out after {timeout_secs}s"));
+                    break true;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                thread::sleep(Duration::from_millis(20));
             }
-            Err(e) => return Outcome::err(1, format!("wait failed: {e}")),
+            Err(e) => {
+                let _ = child.kill();
+                return Outcome::err(1, format!("wait failed: {e}"));
+            }
+        }
+    };
+
+    let collect_for = if timed_out { 200 } else { 2000 };
+    let collect_until = Instant::now() + Duration::from_millis(collect_for);
+    let mut parts: [Option<Vec<u8>>; 2] = [None, None];
+    for _ in 0..2 {
+        let left = collect_until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok((which, buf)) => parts[which] = Some(buf),
+            Err(_) => break,
         }
     }
+    let mut out = parts[0].take().unwrap_or_default();
+    if let Some(err) = parts[1].take() {
+        out.extend_from_slice(&err);
+    }
 
-    let mut out = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_end(&mut out);
+    if timed_out {
+        // Partial output is still evidence: return what the command produced
+        // before it was killed instead of throwing it away.
+        return Outcome {
+            code: 124,
+            out: truncate(out),
+            err: format!("command timed out after {limit}s"),
+        };
     }
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_end(&mut out);
-    }
-    let code = child
-        .wait()
-        .ok()
-        .and_then(|s| s.code())
-        .map(|c| c as i64)
-        .unwrap_or(0);
+
+    let code = child.wait().ok().and_then(|s| s.code()).map(|c| c as i64).unwrap_or(0);
     Outcome { code, out: truncate(out), err: String::new() }
 }
 
@@ -193,6 +260,24 @@ mod tests {
         let outcome = shell("echo umbra", 10);
         assert_eq!(outcome.code, 0);
         assert!(String::from_utf8_lossy(&outcome.out).contains("umbra"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_does_not_deadlock_on_large_output() {
+        // 512 KiB is eight pipe buffers: with "wait, then read" this hangs
+        // until the timeout and comes back empty.
+        let outcome = shell("head -c 524288 /dev/zero", 10);
+        assert_eq!(outcome.code, 0);
+        assert!(!outcome.out.is_empty(), "no output captured");
+        assert!(outcome.err.is_empty());
+    }
+
+    #[test]
+    fn drain_keeps_a_bounded_prefix() {
+        let kept = drain(std::io::Cursor::new(vec![b'x'; MAX_OUTPUT + 10_000]));
+        assert_eq!(kept.len(), MAX_OUTPUT + 4096);
+        assert!(kept.iter().all(|b| *b == b'x'));
     }
 
     #[test]

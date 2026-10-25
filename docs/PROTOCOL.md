@@ -87,12 +87,24 @@ Canonicalisation rules (a decoder MUST reject violations):
 * non-negative integers MUST use `0x03`, negative integers MUST use `0x04`
   (encoders canonicalise; decoders may accept either and re-encode canonically);
 * no trailing bytes after the top-level value;
+* strings and map keys MUST be **valid UTF-8** (well-formed shortest form, no
+  surrogate code points): a decoder rejects bad bytes rather than
+  substituting U+FFFD, because a substitution would re-encode to different
+  bytes and silently break the key-order rule;
 * limits: nesting ≤ 16, containers ≤ 2²⁰ items, strings/binary ≤ 1 MiB, total ≤ 4 MiB.
 
 "Nesting ≤ 16" counts **containers**, not values: sixteen nested arrays/maps are
 accepted and the seventeenth is rejected, on both encode and decode. The boundary
 is pinned twice in `contracts/vectors.json` — `upk` case `depth-max` (accepted) and
 reject case `upk_depth_exceeded` (hand-built bytes, so a decoder must refuse them).
+
+The other negative cases are hand-built for the same reason — the reference
+encoder cannot produce them, so they exercise the decoder only:
+`upk_nonminimal_nested` (`0x80 0x00` inside an array), `upk_nonminimal_key_len`
+(inside a map key), `upk_duplicate_key`, `upk_unsorted_map`, `upk_trailing`,
+`upk_unknown_tag`, and `upk_invalid_utf8` / `upk_surrogate_utf8` /
+`upk_overlong_utf8` (a loner `0xFF`, a UTF-8-encoded surrogate `ED A0 80`, and an
+overlong `/` `C0 AF`).
 That convention has to be spelled out because an off-by-one here is invisible
 until a deeply nested message crosses between two implementations.
 
@@ -279,7 +291,7 @@ All bodies are upk maps. Types are stable wire constants.
 | `0x17` | KILL | server → agent | `{reason}` |
 | `0x18` | TASK_CANCEL | server → agent | `{id}` (reserved) |
 | `0x19` | BYE | agent → server | `{}` — end of the beacon cycle |
-| `0x1F` | ERROR | either | `{code, msg}` |
+| `0x1F` | ERROR | either | `{code, msg}` — informational; the session stays up and the server emits a `beacon.error` operator event (message clipped to 512 bytes) |
 | `0x20` | OP_REQUEST | operator → server | `{rid, cmd, args}` |
 | `0x21` | OP_RESPONSE | server → operator | `{rid, ok, data, err}` |
 | `0x22` | OP_EVENT | server → operator | `{kind, at, agent_id, task_id, data}` |
@@ -348,6 +360,7 @@ carry several.
 | unknown message type | logged and ignored (forward compatibility) |
 | bad upk (non-canonical, truncated, oversized) | connection dropped |
 | task result for an unknown task id | logged, session continues |
+| agent sends ERROR (0x1F) | surfaced as a `beacon.error` operator event, session continues |
 
 The server never answers a failed handshake, so it cannot be used as an oracle
 for PSK probing.

@@ -3,6 +3,29 @@ def envOr(String key, String fallback) {
     return (value == null || value.trim().isEmpty()) ? fallback : value.trim()
 }
 
+// Quote a value for buildConfigField. A stray quote or backslash in an env var
+// (paths and beacon ids are free-form) would otherwise break the generated
+// BuildConfig.java with a syntax error that points at the generated file.
+def envStr(String key, String fallback) {
+    def escaped = envOr(key, fallback)
+        .replace('\\', '\\\\')
+        .replace('"', '\\"')
+        .replace('\n', '\\n')
+    return "\"${escaped}\""
+}
+
+// Integer variant: fail with the variable name instead of a Groovy cast error
+// buried in the generated BuildConfig.
+def envInt(String key, int fallback) {
+    def raw = System.getenv(key)
+    if (raw == null || raw.trim().isEmpty()) return fallback
+    try {
+        return Integer.parseInt(raw.trim())
+    } catch (NumberFormatException ignored) {
+        throw new GradleException("${key} must be an integer, got '${raw}'")
+    }
+}
+
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
@@ -33,15 +56,15 @@ android {
         // Provide these as environment variables when building the APK:
         //   UMBRA_HOST UMBRA_PORT UMBRA_PSK UMBRA_AGENT_ID UMBRA_TRANSPORT
         //   UMBRA_HTTP_BASE UMBRA_HTTP_PATH UMBRA_SLEEP UMBRA_JITTER
-        buildConfigField "String", "UMBRA_HOST", "\"${envOr('UMBRA_HOST', '10.0.2.2')}\""
-        buildConfigField "int", "UMBRA_PORT", "${envOr('UMBRA_PORT', '4001')}"
-        buildConfigField "String", "UMBRA_PSK_HEX", "\"${envOr('UMBRA_PSK', '')}\""
-        buildConfigField "String", "UMBRA_AGENT_ID", "\"${envOr('UMBRA_AGENT_ID', '')}\""
-        buildConfigField "String", "UMBRA_TRANSPORT", "\"${envOr('UMBRA_TRANSPORT', 'tcp')}\""
-        buildConfigField "String", "UMBRA_HTTP_BASE", "\"${envOr('UMBRA_HTTP_BASE', 'http://10.0.2.2:4003')}\""
-        buildConfigField "String", "UMBRA_HTTP_PATH", "\"${envOr('UMBRA_HTTP_PATH', '/api/v1/beacon')}\""
-        buildConfigField "int", "UMBRA_SLEEP", "${envOr('UMBRA_SLEEP', '15')}"
-        buildConfigField "int", "UMBRA_JITTER", "${envOr('UMBRA_JITTER', '30')}"
+        buildConfigField "String", "UMBRA_HOST", envStr('UMBRA_HOST', '10.0.2.2')
+        buildConfigField "int", "UMBRA_PORT", envInt('UMBRA_PORT', 4001)
+        buildConfigField "String", "UMBRA_PSK_HEX", envStr('UMBRA_PSK', '')
+        buildConfigField "String", "UMBRA_AGENT_ID", envStr('UMBRA_AGENT_ID', '')
+        buildConfigField "String", "UMBRA_TRANSPORT", envStr('UMBRA_TRANSPORT', 'tcp')
+        buildConfigField "String", "UMBRA_HTTP_BASE", envStr('UMBRA_HTTP_BASE', 'http://10.0.2.2:4003')
+        buildConfigField "String", "UMBRA_HTTP_PATH", envStr('UMBRA_HTTP_PATH', '/api/v1/beacon')
+        buildConfigField "int", "UMBRA_SLEEP", envInt('UMBRA_SLEEP', 15)
+        buildConfigField "int", "UMBRA_JITTER", envInt('UMBRA_JITTER', 30)
     }
 
     buildTypes {

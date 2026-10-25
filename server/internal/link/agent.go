@@ -56,6 +56,8 @@ func (l *AgentLink) HandleFrame(raw []byte) ([][]byte, error) {
 	case wire.MsgBye:
 		l.closed = true
 		return nil, nil
+	case wire.MsgError:
+		return l.onError(msg)
 	case wire.MsgRekey:
 		seed, _ := msg["seed"].([]byte)
 		if len(seed) != 32 {
@@ -126,6 +128,26 @@ func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 		return nil, err
 	}
 	return append(out, frame), nil
+}
+
+// onError surfaces an agent-reported failure (frame-level problem, refused
+// task, broken transport) to operators instead of dropping it. It is
+// informational: the session stays up so the beacon can retry.
+func (l *AgentLink) onError(msg map[string]any) ([][]byte, error) {
+	code := int64(0)
+	if c, ok := asInt64(msg["code"]); ok {
+		code = c
+	}
+	text, _ := msg["msg"].(string)
+	if len(text) > 512 {
+		text = text[:512]
+	}
+	l.Hub.Emit(hub.Event{Kind: "beacon.error", AgentID: l.AgentID,
+		Data: map[string]any{"code": code, "msg": text}})
+	if l.Log != nil {
+		l.Log.Warn("agent reported an error", "agent", l.AgentID, "code", code, "msg", text)
+	}
+	return nil, nil
 }
 
 func (l *AgentLink) onResult(msg map[string]any) ([][]byte, error) {

@@ -181,9 +181,41 @@ def check_rust() -> list[str]:
     return sorted(set(problems))
 
 
+def check_resources() -> list[str]:
+    """XML must parse and the Gradle/JSON files must be structurally sound.
+
+    This exists because an XML comment placed *inside* a start tag -- easy to do
+    when annotating a manifest attribute -- produces a manifest that AGP rejects
+    only at build time. A plain parse catches it in a second.
+    """
+    import json
+    import xml.etree.ElementTree as ET
+
+    problems: list[str] = []
+    for path in walk("implant/android", ".xml") + walk("deploy", ".json") + walk(".", ".gradle"):
+        rel = os.path.relpath(path, ROOT)
+        if "/build/" in rel or rel.startswith("build/"):
+            continue
+        try:
+            text = read(rel)
+            if path.endswith(".xml"):
+                ET.fromstring(text)
+            elif path.endswith(".json"):
+                json.loads(text)
+            else:  # .gradle: balanced braces are the cheap structural check
+                if text.count("{") != text.count("}"):
+                    problems.append(f"{rel}: unbalanced braces in a Gradle file")
+        except ET.ParseError as exc:
+            problems.append(f"{rel}: invalid XML ({exc})")
+        except ValueError as exc:
+            problems.append(f"{rel}: invalid JSON ({exc})")
+    return problems
+
+
 def main() -> int:
     go_problems = check_go()
     rust_problems = check_rust()
+    resource_problems = check_resources()
 
     print(f"== go: qualified references ({len(go_problems)} unresolved) ==")
     for problem in go_problems:
@@ -191,12 +223,15 @@ def main() -> int:
     print(f"== rust: module paths ({len(rust_problems)} unresolved) ==")
     for problem in rust_problems:
         print("  !!", problem)
+    print(f"== resources: manifest/gradle/config ({len(resource_problems)} problems) ==")
+    for problem in resource_problems:
+        print("  !!", problem)
 
-    total = len(go_problems) + len(rust_problems)
+    total = len(go_problems) + len(rust_problems) + len(resource_problems)
     if total:
         print(f"\nFAILED: {total} unresolved symbol(s)")
         return 1
-    print("\nOK: every cross-package reference resolves")
+    print("\nOK: every cross-package reference resolves and every resource parses")
     return 0
 
 

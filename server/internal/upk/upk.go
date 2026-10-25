@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"unicode/utf8"
 )
 
 // Encoding limits. Keeping these tight is a cheap DoS mitigation: nothing can
@@ -123,6 +124,11 @@ func (w *writer) value(v any) error {
 		if len(x) > MaxString {
 			return ErrLimit
 		}
+		// Go strings are arbitrary bytes; upk strings must be valid UTF-8 so
+		// that every implementation agrees on one canonical encoding.
+		if !utf8.ValidString(x) {
+			return fmt.Errorf("%w: string is not valid utf-8", ErrType)
+		}
 		w.buf = append(w.buf, tStr)
 		w.uvarint(uint64(len(x)))
 		w.buf = append(w.buf, x...)
@@ -173,6 +179,9 @@ func (w *writer) mapping(m map[string]any) error {
 	for k := range m {
 		if len(k) > MaxString {
 			return ErrLimit
+		}
+		if !utf8.ValidString(k) {
+			return fmt.Errorf("%w: map key is not valid utf-8", ErrType)
 		}
 		keys = append(keys, k)
 	}
@@ -321,9 +330,12 @@ func (r *reader) value() (any, error) {
 		if err := r.need(int(n)); err != nil {
 			return nil, err
 		}
-		s := string(r.buf[r.pos : r.pos+int(n)])
+		raw := r.buf[r.pos : r.pos+int(n)]
 		r.pos += int(n)
-		return s, nil
+		if !utf8.Valid(raw) {
+			return nil, fmt.Errorf("%w: invalid utf-8 string", ErrType)
+		}
+		return string(raw), nil
 	case tBin:
 		n, err := r.uvarint()
 		if err != nil {
@@ -391,8 +403,12 @@ func (r *reader) value() (any, error) {
 			if err := r.need(int(klen)); err != nil {
 				return nil, err
 			}
-			key := string(r.buf[r.pos : r.pos+int(klen)])
+			kraw := r.buf[r.pos : r.pos+int(klen)]
 			r.pos += int(klen)
+			if !utf8.Valid(kraw) {
+				return nil, fmt.Errorf("%w: invalid utf-8 map key", ErrType)
+			}
+			key := string(kraw)
 			if i > 0 && key <= prev {
 				return nil, fmt.Errorf("%w: map keys not ascending", ErrNonCanonical)
 			}

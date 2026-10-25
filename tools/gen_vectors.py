@@ -241,6 +241,20 @@ def main() -> None:
         "upk_trailing": (upk.encode(1) + b"\x00").hex(),
         "upk_unknown_tag": "ff",
         "upk_nonminimal": "038000",
+        # The same rule one level down: a non-minimal length prefix inside an
+        # array, and a non-minimal key length inside a map. A decoder that only
+        # checks minimality at the top level accepts both.
+        "upk_nonminimal_nested": "0801038000",          # [ 0x80 0x00 ]
+        "upk_nonminimal_key_len": "0901068100610301",   # { "\x81\x00"+"a": 1 }
+        # Duplicate keys must be refused even though the bytes "re-encode" to
+        # something: {a:1, a:2} would silently drop one entry.
+        "upk_duplicate_key": "090206016103010601610302",
+        # UTF-8 is validated, not substituted: a loner 0xff, a UTF-8-encoded
+        # surrogate and an overlong "/" must all be refused rather than turned
+        # into U+FFFD (which would re-encode to different bytes).
+        "upk_invalid_utf8": "0601ff",
+        "upk_surrogate_utf8": "0603eda080",
+        "upk_overlong_utf8": "0602c0af",
         # Hand-built so a *decoder* must reject it: MAX_DEPTH+1 nested arrays
         # (0x08 0x01) around one uvarint (0x03 0x01). The encoder refuses to
         # produce this at all, which is why it is spelled out byte by byte.

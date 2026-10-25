@@ -36,10 +36,21 @@ class BeaconService : Service(), Beacon.Listener {
             }
         }
 
+        /**
+         * Ask the service to stop.
+         *
+         * `startService` throws IllegalStateException once the app is in the
+         * background on API 26+, so fall back to a plain stopService: that skips
+         * onStartCommand but still runs onDestroy, which stops the beacon.
+         */
         fun stop(context: Context) {
             val intent = Intent(context, BeaconService::class.java)
             intent.action = ACTION_STOP
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (_: IllegalStateException) {
+                context.stopService(Intent(context, BeaconService::class.java))
+            }
         }
     }
 

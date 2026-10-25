@@ -89,7 +89,13 @@
     "tampered_tag": "554301001001000000000011a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066c",
     "truncated": "554301001001000000000011a49d33fb00000000000000008a6ae1",
     "upk_depth_exceeded": "080108010801080108010801080108010801080108010801080108010801080108010301",
+    "upk_duplicate_key": "090206016103010601610302",
+    "upk_invalid_utf8": "0601ff",
     "upk_nonminimal": "038000",
+    "upk_nonminimal_key_len": "0901068100610301",
+    "upk_nonminimal_nested": "0801038000",
+    "upk_overlong_utf8": "0602c0af",
+    "upk_surrogate_utf8": "0603eda080",
     "upk_trailing": "030100",
     "upk_unknown_tag": "ff",
     "upk_unsorted_map": "090202016202010161020301"
