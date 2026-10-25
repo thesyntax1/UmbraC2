@@ -1,0 +1,235 @@
+{
+  "auth": {
+    "ack": "e37fc7c7bf11bbe434b077c75e635d3abcd673539f4c04fc2f9e46fc85fb9e87",
+    "client_nonce": "0102030405060708090a0b0c0d0e0f10",
+    "client_pub": "1cf579aba45a10ba1d1ef06d91fca2aa9ed0a1150515653155405d0b18cb9a67",
+    "hello": "b0bbb2dffb8fc6683a0e3169f73cb2cfa6409c55fae25a5b6607d4408560f709",
+    "ident": "agent-7f3a",
+    "role": 1,
+    "server_nonce": "1112131415161718191a1b1c1d1e1f20",
+    "server_pub": "0d43915fb4b40a2e9f111ae150197e643d39d000ec6977d28551a04caa189354",
+    "session_id": "aabbccddeeff00112233445566778899",
+    "suite": 1,
+    "timestamp": 1735689600
+  },
+  "bootstrap": {
+    "c2s_key": "205d39f3c5b14d0e725118d80173ed388d77cd01e681e59dea222f3a31dff527",
+    "c2s_prefix": "1cd02ec3",
+    "s2c_key": "0cd928edda8f3891e8ab555d031caf4a555dec99c5a0711f3aa66035b6a8fbe6",
+    "s2c_prefix": "7bbe26cd",
+    "suite": 1
+  },
+  "bootstrap_frame": {
+    "counter": 0,
+    "flags": 1,
+    "frame_hex": "5543010101010000000000b91cd02ec30000000000000000a3478e7e98b7fba7059ffb75c654bbfbe5f9ba77ee376cf2cc6090e220f0b9d6317709dedc7aaef54452164e3075c4c618ff15bd79fda8410ef48e4d63217334c9fe05d4d79644dbcdb7a8cf278d46cf5a3389cc1bacb2b869d95aa3f0141faf409d2229ce6366bde828ba3ee970f260ca25ec7db09f33af4eac4632cec421b3103270274a9f4aad5e1ed8b6b4be3e229deb235d06909c52bc4909b81e98ed968441feb4d72f984c72958fb8c02ac217994fa4f3fb407f1d41448bfce71fff2d15bb5b3da8b9eb9d77",
+    "key": "205d39f3c5b14d0e725118d80173ed388d77cd01e681e59dea222f3a31dff527",
+    "msg_type": 1,
+    "plaintext_hex": "010909060461757468072000000000000000000000000000000000000000000000000000000000000000000602636e07100102030405060708090a0b0c0d0e0f1006026964060a6167656e742d3766336106046d657461090206046172636806067838365f363406026f7306056c696e7578060370756207201cf579aba45a10ba1d1ef06d91fca2aa9ed0a1150515653155405d0b18cb9a670604726f6c6503010605737569746503010602747303808bd2bb060601760301",
+    "prefix": "1cd02ec3"
+  },
+  "frames": [
+    {
+      "counter": 0,
+      "frame_hex": "554301001001000000000011a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066d",
+      "key": "16e9fe0a2ae9b41d292d149f08ae255ebd59d39bb4ac054aeac68fc91fc5f76b",
+      "nonce": "a49d33fb0000000000000000",
+      "plaintext_hex": "090206016e03020602747303808bd2bb06",
+      "prefix": "a49d33fb",
+      "suite": 1,
+      "type": 16
+    },
+    {
+      "counter": 7,
+      "frame_hex": "5543010011010000000000565976624100000000000000075ec716c64102b651c7494a0ea064194b803b3271c64977d5b4ab0ebe809bcd3c043c1cc60a36eef62aea519ca394538852c5ffb20edd5a6d41547e28b283fcd823eb85e55be3cff69d28a3cf861ba351b3160d0e49b52dc46be994333ce34286a77dea578015",
+      "key": "627503421eed0f01f66fee73ef80a8ad82ad3468251653a12301570401f19c91",
+      "nonce": "597662410000000000000007",
+      "plaintext_hex": "090106057461736b730802090306046172677309010603636d6406026964060269640603742d3106046b696e6406057368656c6c09030604617267730900060269640603742d3206046b696e640607737973696e666f",
+      "prefix": "59766241",
+      "suite": 1,
+      "type": 17
+    },
+    {
+      "counter": 129,
+      "frame_hex": "554301001202000000000022a49d33fb000000000000008103414349a82298d69757f8f9fafd1d2d9452973894434c00cc217072745c86cdfbe3e1e179df706cd55bed0a1ddb2835c51d",
+      "key": "16e9fe0a2ae9b41d292d149f08ae255ebd59d39bb4ac054aeac68fc91fc5f76b",
+      "nonce": "a49d33fb0000000000000081",
+      "plaintext_hex": "09030604636f64650401060269640603742d3106036f757407080062696e617279ff",
+      "prefix": "a49d33fb",
+      "suite": 2,
+      "type": 18
+    }
+  ],
+  "meta": {
+    "frame": {
+      "header_len": 24,
+      "magic": "5543",
+      "max_body": 1048576,
+      "nonce_len": 12,
+      "prelude_len": 12,
+      "tag_len": 16,
+      "version": 1
+    },
+    "generated_by": "tools/gen_vectors.py",
+    "protocol": "umbra/v1",
+    "roles": {
+      "agent": 1,
+      "operator": 2
+    },
+    "suites": {
+      "aes-256-gcm": 1,
+      "chacha20-poly1305": 2
+    }
+  },
+  "psk": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "rejects": {
+    "bad_magic": "004301001001000000000011a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066d",
+    "replayed": "554301001001000000000011a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066d",
+    "tampered_length": "554301001001000000000012a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066d",
+    "tampered_tag": "554301001001000000000011a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066c",
+    "truncated": "554301001001000000000011a49d33fb00000000000000008a6ae1",
+    "upk_nonminimal": "038000",
+    "upk_trailing": "030100",
+    "upk_unknown_tag": "ff",
+    "upk_unsorted_map": "090202016202010161020301"
+  },
+  "rekey": {
+    "c2s_key": "01c5cff41bdde2ffaa992c98a8d1ba42cd9a1aaa11f681ff21053cf94829d30f",
+    "c2s_prefix": "2af58c3d",
+    "prk_in": "d1e70c198d958d7735497424df66bfcd74f1207b19c465e0d5c66091d1b88a1f",
+    "prk_out": "3dc20565021e3a6a3e2af8d94729d947862015b1fa8fcbc5bcb3c2ceb276b604",
+    "s2c_key": "1badc857e43df8211cbfe4c871b7f864d56c4b3a6a64dc8f609bee667a973a84",
+    "s2c_prefix": "30d734ca",
+    "seed": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+  },
+  "session": {
+    "c2s_key": "16e9fe0a2ae9b41d292d149f08ae255ebd59d39bb4ac054aeac68fc91fc5f76b",
+    "c2s_prefix": "a49d33fb",
+    "client_nonce": "0102030405060708090a0b0c0d0e0f10",
+    "client_priv": "7777777777777777777777777777777777777777777777777777777777777777",
+    "client_pub": "1cf579aba45a10ba1d1ef06d91fca2aa9ed0a1150515653155405d0b18cb9a67",
+    "prk": "d1e70c198d958d7735497424df66bfcd74f1207b19c465e0d5c66091d1b88a1f",
+    "s2c_key": "627503421eed0f01f66fee73ef80a8ad82ad3468251653a12301570401f19c91",
+    "s2c_prefix": "59766241",
+    "server_nonce": "1112131415161718191a1b1c1d1e1f20",
+    "server_priv": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+    "server_pub": "0d43915fb4b40a2e9f111ae150197e643d39d000ec6977d28551a04caa189354",
+    "shared": "30394f971a539311fbcd9bf6a2ba6de4a479227be0194724d1b2c3930e02e84c"
+  },
+  "upk": [
+    {
+      "hex": "00",
+      "json": null,
+      "name": "null"
+    },
+    {
+      "hex": "01",
+      "json": false,
+      "name": "false"
+    },
+    {
+      "hex": "02",
+      "json": true,
+      "name": "true"
+    },
+    {
+      "hex": "0300",
+      "json": 0,
+      "name": "uint-0"
+    },
+    {
+      "hex": "037f",
+      "json": 127,
+      "name": "uint-127"
+    },
+    {
+      "hex": "038001",
+      "json": 128,
+      "name": "uint-128"
+    },
+    {
+      "hex": "03ac02",
+      "json": 300,
+      "name": "uint-300"
+    },
+    {
+      "hex": "03ffffffffffffffffff01",
+      "json": 18446744073709551615,
+      "name": "uint-max"
+    },
+    {
+      "hex": "0401",
+      "json": -1,
+      "name": "int--1"
+    },
+    {
+      "hex": "048101",
+      "json": -65,
+      "name": "int--65"
+    },
+    {
+      "hex": "04ffffffffffffffffff01",
+      "json": -9223372036854775808,
+      "name": "int-min"
+    },
+    {
+      "hex": "0600",
+      "json": "",
+      "name": "str-empty"
+    },
+    {
+      "hex": "0605756d627261",
+      "json": "umbra",
+      "name": "str-ascii"
+    },
+    {
+      "hex": "0608c59f696672656c69",
+      "json": "\u015fifreli",
+      "name": "str-utf8"
+    },
+    {
+      "hex": "07040001feff",
+      "json": {
+        "$bin": "0001feff"
+      },
+      "name": "bin"
+    },
+    {
+      "hex": "080403010601610002",
+      "json": [
+        1,
+        "a",
+        null,
+        true
+      ],
+      "name": "array"
+    },
+    {
+      "hex": "090206016103020601620301",
+      "json": {
+        "a": 2,
+        "b": 1
+      },
+      "name": "map-order"
+    },
+    {
+      "hex": "090106016b0802090106017804030700",
+      "json": {
+        "k": [
+          {
+            "x": -2
+          },
+          {
+            "$bin": ""
+          }
+        ]
+      },
+      "name": "nested"
+    },
+    {
+      "hex": "053ff8000000000000",
+      "json": 1.5,
+      "name": "f64"
+    }
+  ]
+}

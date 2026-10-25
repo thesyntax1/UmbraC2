@@ -1,0 +1,23 @@
+{
+  "agent_listen": "0.0.0.0:4001",
+  "operator_listen": "127.0.0.1:4002",
+  "http_listen": "127.0.0.1:4003",
+  "http_path": "/api/v1/beacon",
+  "http_tls_cert": "",
+  "http_tls_key": "",
+  "psk_file": "/etc/umbra/agent.psk",
+  "agent_psk_env": "UMBRA_AGENT_PSK",
+  "operator_token_env": ["UMBRA_OPERATOR_TOKENS"],
+  "data_file": "/var/lib/umbra/state.json",
+  "log_level": "info",
+  "beacon": { "sleep": 60, "jitter": 35 },
+  "limits": {
+    "max_agents": 512,
+    "max_operators": 16,
+    "handshake_timeout_s": 10,
+    "idle_timeout_s": 90,
+    "max_frame_bytes_per_conn": 67108864
+  },
+  "max_clock_skew_s": 300,
+  "session_timeout_s": 300
+}

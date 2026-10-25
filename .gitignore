@@ -1,0 +1,28 @@
+# build output
+build/
+server/umbra-server
+implant/rust/target/
+implant/android/.gradle/
+implant/android/build/
+implant/android/app/build/
+implant/android/local.properties
+
+# runtime state and secrets -- never commit these
+data/
+secrets/
+*.psk
+server.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

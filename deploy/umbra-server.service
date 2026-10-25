@@ -1,0 +1,33 @@
+# /etc/systemd/system/umbra-server.service
+#
+# Secrets live in /etc/umbra/server.env (mode 0600, root only):
+#   UMBRA_OPERATOR_TOKENS=alice:<token>
+# and the agent PSK in /etc/umbra/agent.psk (mode 0600).
+[Unit]
+Description=UmbraC2 team server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+Group=umbra
+EnvironmentFile=/etc/umbra/server.env
+ExecStart=/usr/local/bin/umbra-server -config /etc/umbra/server.json
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/umbra
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

