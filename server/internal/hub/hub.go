@@ -107,6 +107,7 @@ func (h *Hub) RegisterAgent(meta *store.Agent, transport, addr string, suite byt
 		meta.Jitter = h.cfg.Server.Beacon.Jitter
 	}
 	rec := h.store.UpsertAgent(meta)
+	h.store.SaveAsync()
 	if !known {
 		h.Emit(Event{Kind: "agent.new", AgentID: rec.ID, Data: agentData(rec)})
 		h.log.Info("agent registered", "agent", rec.ID, "host", rec.Host, "os", rec.OS, "transport", transport)
@@ -123,6 +124,7 @@ func (h *Hub) UnregisterAgent(agentID string) {
 	delete(h.live, agentID)
 	h.mu.Unlock()
 	h.store.MarkOffline(agentID)
+	h.store.SaveAsync()
 	h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
 }
 
@@ -172,7 +174,7 @@ func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task
 		return nil, errors.New("task kind required")
 	}
 	t := h.store.AddTask(&store.Task{AgentID: agentID, Kind: kind, Args: args})
-	go func() { _ = h.store.Save() }()
+	h.store.SaveAsync()
 	h.Emit(Event{Kind: "task.queued", AgentID: agentID, TaskID: t.ID,
 		Data: map[string]any{"kind": t.Kind, "args": t.Args}})
 	h.log.Info("task queued", "agent", agentID, "task", t.ID, "kind", t.Kind)
@@ -198,7 +200,7 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	h.Emit(Event{Kind: "task.result", AgentID: agentID, TaskID: taskID, Data: map[string]any{
 		"code": t.Code, "state": t.State, "output": string(t.Output), "err": t.Err,
 	}})
-	go func() { _ = h.store.Save() }()
+	h.store.SaveAsync()
 }
 
 // CancelTask cancels a task.
@@ -220,7 +222,7 @@ func (h *Hub) SetPolicy(agentID string, sleep, jitter int) error {
 	}
 	h.Emit(Event{Kind: "agent.policy", AgentID: agentID,
 		Data: map[string]any{"sleep": sleep, "jitter": jitter}})
-	go func() { _ = h.store.Save() }()
+	h.store.SaveAsync()
 	return nil
 }
 

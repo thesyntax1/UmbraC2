@@ -88,8 +88,12 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
 
 ## 5. State and recovery
 
-* `data_file` holds agents and the task history (JSON, written atomically every
-  30 s and on shutdown).
+* `data_file` holds agents and the task history (JSON). It is written after
+  every state change, but bursts are coalesced into one write, and there is a
+  periodic snapshot every 30 s as a backstop, plus a final write on shutdown.
+  Each write goes to a fresh `*.tmp` in the same directory, is fsynced, and is
+  renamed over the target, so the file on disk is always a complete snapshot
+  (concurrent saves are serialised; a reader never sees a half-written file).
 * Anything that was `delivered` when the server stopped is re-queued on start, so
   a crash cannot lose a task — at the cost of possibly executing it twice. Task
   kinds are not idempotent by default, so check `task.list` after a restart.

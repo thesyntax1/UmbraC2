@@ -97,6 +97,24 @@ type Store struct {
 	agents map[string]*Agent
 	tasks  map[string]*Task
 	order  []string
+
+	// writeMu serialises file writes. Without it two goroutines shared one
+	// "<path>.tmp" file and could rename a half-rewritten document into place.
+	writeMu sync.Mutex
+	// asyncMu guards the coalescing state used by SaveAsync.
+	asyncMu sync.Mutex
+	saving  bool
+	again   bool
+	done    chan struct{}
+	onError func(error)
+}
+
+// SetSaveErrorHandler registers a callback for background save failures.
+// Foreground saves return their error to the caller instead.
+func (s *Store) SetSaveErrorHandler(fn func(error)) {
+	s.asyncMu.Lock()
+	s.onError = fn
+	s.asyncMu.Unlock()
 }
 
 // Open loads (or initialises) the store at path.
@@ -333,13 +351,20 @@ func (s *Store) Stats() map[string]any {
 	}
 }
 
-// Save writes an atomic JSON snapshot.
+// Save writes a consistent snapshot of the store to disk.
+//
+// Writes are serialised and each one goes to a fresh temporary file that is
+// fsynced and renamed over the target, so a reader (or a crash) never observes
+// a partially written JSON document.
 func (s *Store) Save() error {
 	if s.path == "" {
 		return nil
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	s.mu.RLock()
-	snap := snapshot{Agents: make([]*Agent, 0, len(s.agents)), Tasks: make([]*Task, 0, len(s.tasks))}
+	snap := snapshot{Agents: make([]*Agent, 0, len(s.agents)), Tasks: make([]*Task, 0, len(s.order))}
 	for _, a := range s.agents {
 		snap.Agents = append(snap.Agents, a.Clone())
 	}
@@ -354,14 +379,99 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	f, err := os.CreateTemp(dir, ".umbra-store-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	tmp := f.Name()
+	discard := func() {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+	}
+	if _, err := f.Write(raw); err != nil {
+		discard()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		discard()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// Best effort: make the rename itself durable. Directory fsync is not
+	// supported on every platform, so a failure here is not fatal.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// SaveAsync persists in the background and coalesces bursts: while a save is
+// running, later requests only set a flag, so a hundred task events cost two
+// marshals instead of a hundred.
+func (s *Store) SaveAsync() {
+	if s.path == "" {
+		return
+	}
+	s.asyncMu.Lock()
+	if s.saving {
+		s.again = true
+		s.asyncMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	s.saving = true
+	s.done = done
+	s.asyncMu.Unlock()
+
+	go func() {
+		defer close(done)
+		for {
+			err := s.Save()
+			s.asyncMu.Lock()
+			handler := s.onError
+			if !s.again {
+				s.saving = false
+				s.done = nil
+				s.asyncMu.Unlock()
+				if err != nil && handler != nil {
+					handler(err)
+				}
+				return
+			}
+			s.again = false
+			s.asyncMu.Unlock()
+			if err != nil && handler != nil {
+				handler(err)
+			}
+		}
+	}()
+}
+
+// Flush waits for the background writer and then writes a final snapshot, so
+// a caller that is about to exit cannot lose a queued save.
+func (s *Store) Flush() error {
+	for {
+		s.asyncMu.Lock()
+		waiter := s.done
+		s.asyncMu.Unlock()
+		if waiter == nil {
+			break
+		}
+		<-waiter
+	}
+	return s.Save()
 }
 
 func (s *Store) pruneLocked() {

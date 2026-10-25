@@ -83,6 +83,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Background saves must not fail silently: losing the queue is invisible
+	// to operators until they restart.
+	st.SetSaveErrorHandler(func(err error) {
+		logger.Warn("background state save failed", "err", err)
+	})
 	h := hub.New(cfg, st, logger)
 	srv := link.New(cfg, h, logger)
 
@@ -124,7 +129,7 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Warn("shutdown", "err", err)
 	}
-	if err := st.Save(); err != nil {
+	if err := st.Flush(); err != nil {
 		logger.Warn("final state save failed", "err", err)
 	}
 	logger.Info("stopped")

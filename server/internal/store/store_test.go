@@ -1,0 +1,182 @@
+package store_test
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/thesyntax1/UmbraC2/server/internal/store"
+)
+
+// Concurrent saves must never produce a torn or overwritten document. Before
+// the write mutex and per-save temp files, every writer shared one
+// "<path>.tmp" and could rename a half-rewritten file into place.
+func TestConcurrentSavesStayValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "agent-1", Host: "host", OS: "linux"})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			st.AddTask(&store.Task{AgentID: "agent-1", Kind: "ping"})
+			if i%2 == 0 {
+				if err := st.Save(); err != nil {
+					t.Errorf("save: %v", err)
+				}
+				return
+			}
+			st.SaveAsync()
+		}(i)
+	}
+	wg.Wait()
+	// Waits for the coalescing writer, then writes the newest snapshot.
+	if err := st.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var decoded struct {
+		Agents []map[string]any `json:"agents"`
+		Tasks  []map[string]any `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("saved state is not valid JSON: %v", err)
+	}
+	if len(decoded.Agents) != 1 || decoded.Agents[0]["id"] != "agent-1" {
+		t.Fatalf("agent lost: %+v", decoded.Agents)
+	}
+	if len(decoded.Tasks) != 32 {
+		t.Fatalf("expected 32 tasks, got %d", len(decoded.Tasks))
+	}
+
+	// The swap must not leave temp files behind, and the file must reload.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "state.json" {
+			t.Errorf("stray file after save: %s", e.Name())
+		}
+	}
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, ok := reopened.Agent("agent-1"); !ok {
+		t.Error("agent did not survive a reload")
+	}
+}
+
+func TestSaveWithoutPathIsANoOp(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := st.Save(); err != nil {
+		t.Errorf("Save with no path: %v", err)
+	}
+	if err := st.Flush(); err != nil {
+		t.Errorf("Flush with no path: %v", err)
+	}
+}
+
+func TestBackgroundSaveErrorReachesTheHandler(t *testing.T) {
+	dir := t.TempDir()
+	// A regular file where the directory should be: every write fails with
+	// ENOTDIR, deterministically.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	st, err := store.Open(filepath.Join(blocker, "state.json"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	reported := make(chan error, 1)
+	st.SetSaveErrorHandler(func(err error) {
+		select {
+		case reported <- err:
+		default:
+		}
+	})
+	st.SaveAsync()
+
+	select {
+	case err := <-reported:
+		if err == nil {
+			t.Error("handler received a nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("save failure never reached the handler")
+	}
+}
+
+// A task that was delivered but not completed must be re-queued on start: the
+// process may have died before the agent ran it.
+func TestDeliveredTasksAreRequeuedOnOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "a", Host: "h"})
+	task := st.AddTask(&store.Task{AgentID: "a", Kind: "shell", Args: map[string]any{"cmd": "id"}})
+	if got := st.Pending("a", 10); len(got) != 1 {
+		t.Fatalf("task not delivered: %+v", got)
+	}
+	if err := st.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	rec, ok := reopened.Task(task.ID)
+	if !ok {
+		t.Fatal("task lost across restart")
+	}
+	if rec.State != store.TaskQueued {
+		t.Fatalf("delivered task not re-queued: %q", rec.State)
+	}
+	if again := reopened.Pending("a", 10); len(again) != 1 || again[0].ID != task.ID {
+		t.Fatalf("re-queued task not pending: %+v", again)
+	}
+}
+
+func TestPendingMarksDelivered(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "a", Host: "h"})
+	task := st.AddTask(&store.Task{AgentID: "a", Kind: "ping"})
+	got := st.Pending("a", 10)
+	if len(got) != 1 || got[0].ID != task.ID {
+		t.Fatalf("pending returned %+v", got)
+	}
+	if again := st.Pending("a", 10); len(again) != 0 {
+		t.Errorf("task delivered twice: %+v", again)
+	}
+	if rec, ok := st.Task(task.ID); !ok || rec.State != store.TaskDelivered {
+		t.Errorf("state not advanced: %+v", rec)
+	}
+}
