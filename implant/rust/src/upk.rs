@@ -147,12 +147,12 @@ pub fn encode(v: &Value) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// `depth` is the number of containers already entered (0 at the top level), so
+/// the check lives in the container arms. Counting scalars was an off-by-one
+/// against the Python/Go reference and is pinned by vectors.json ("depth-max").
 fn write_value(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<()> {
     if out.len() > MAX_TOTAL {
         return err("value exceeds limit");
-    }
-    if depth > MAX_DEPTH {
-        return err("nesting too deep");
     }
     match v {
         Value::Null => out.push(T_NULL),
@@ -192,16 +192,24 @@ fn write_value(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<()> {
             out.extend_from_slice(b);
         }
         Value::Arr(items) => {
+            let level = depth + 1;
+            if level > MAX_DEPTH {
+                return err("nesting too deep");
+            }
             if items.len() as u64 > MAX_ITEMS {
                 return err("array too long");
             }
             out.push(T_ARR);
             write_uvarint(items.len() as u64, out);
             for item in items {
-                write_value(item, out, depth + 1)?;
+                write_value(item, out, level)?;
             }
         }
         Value::Map(m) => {
+            let level = depth + 1;
+            if level > MAX_DEPTH {
+                return err("nesting too deep");
+            }
             if m.len() as u64 > MAX_ITEMS {
                 return err("map too large");
             }
@@ -216,7 +224,7 @@ fn write_value(v: &Value, out: &mut Vec<u8>, depth: usize) -> Result<()> {
                 out.push(T_STR);
                 write_uvarint(k.len() as u64, out);
                 out.extend_from_slice(k.as_bytes());
-                write_value(val, out, depth + 1)?;
+                write_value(val, out, level)?;
             }
         }
     }
@@ -293,10 +301,8 @@ impl<'a> Reader<'a> {
         err("uvarint too long")
     }
 
+    /// `depth` is the number of containers already entered (see `write_value`).
     fn read_value(&mut self, depth: usize) -> Result<Value> {
-        if depth > MAX_DEPTH {
-            return err("nesting too deep");
-        }
         self.need(1)?;
         let tag = self.buf[self.pos];
         self.pos += 1;
@@ -340,17 +346,25 @@ impl<'a> Reader<'a> {
                 Ok(Value::Bin(out))
             }
             T_ARR => {
+                let level = depth + 1;
+                if level > MAX_DEPTH {
+                    return err("nesting too deep");
+                }
                 let n = self.uvarint()?;
                 if n > MAX_ITEMS {
                     return err("array too long");
                 }
                 let mut items = Vec::with_capacity(n.min(64) as usize);
                 for _ in 0..n {
-                    items.push(self.read_value(depth + 1)?);
+                    items.push(self.read_value(level)?);
                 }
                 Ok(Value::Arr(items))
             }
             T_MAP => {
+                let level = depth + 1;
+                if level > MAX_DEPTH {
+                    return err("nesting too deep");
+                }
                 let n = self.uvarint()?;
                 if n > MAX_ITEMS {
                     return err("map too large");
@@ -380,7 +394,7 @@ impl<'a> Reader<'a> {
                         }
                     }
                     prev = Some(key.clone());
-                    let val = self.read_value(depth + 1)?;
+                    let val = self.read_value(level)?;
                     m.insert(key, val);
                 }
                 Ok(Value::Map(m))

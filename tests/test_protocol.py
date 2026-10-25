@@ -9,8 +9,10 @@ Run:  python -m pytest tests -q
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
+import io
 import json
 import os
 import socket
@@ -59,7 +61,7 @@ def _from_json(v):
 
 
 @pytest.mark.parametrize("name", ["upk_trailing", "upk_unknown_tag", "upk_nonminimal",
-                                 "upk_unsorted_map"])
+                                 "upk_unsorted_map", "upk_depth_exceeded"])
 def test_upk_rejects_non_canonical(name):
     with pytest.raises(upk.UpkError):
         upk.decode_exact(bytes.fromhex(VECTORS["rejects"][name]))
@@ -76,11 +78,20 @@ def test_upk_map_keys_are_sorted_and_unique():
 def test_upk_limits():
     with pytest.raises(upk.UpkError):
         upk.encode(b"\x00" * (upk.MAX_STRING + 1))
-    deep = "x"
-    for _ in range(upk.MAX_DEPTH + 2):
-        deep = [deep]
+    # Exactly MAX_DEPTH nested containers is legal, one more is not. The vector
+    # file pins the same boundary so every implementation is held to it.
+    allowed = "x"
+    for _ in range(upk.MAX_DEPTH):
+        allowed = [allowed]
+    assert upk.decode_exact(upk.encode(allowed)) == allowed
+
+    too_deep = [allowed]
     with pytest.raises(upk.UpkError):
-        upk.encode(deep)
+        upk.encode(too_deep)
+    for _ in range(upk.MAX_DEPTH + 2):
+        too_deep = [too_deep]
+    with pytest.raises(upk.UpkError):
+        upk.encode(too_deep)
 
 
 # ---------------------------------------------------------------------------
@@ -732,3 +743,142 @@ def test_operator_cli_keeps_stdout_machine_readable():
         assert payload["protocol"] == "umbra/v1"
     finally:
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Meta-tests: the guards must actually guard.
+#
+# A checker that silently stops finding problems is worse than no checker, so
+# each one is exercised against a deliberately broken copy of the tree.
+# ---------------------------------------------------------------------------
+
+
+def _run_checker(name: str, patch):
+    """Run tools/<name> against an in-memory patched view of the sources."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name.replace("-", "_"), os.path.join(ROOT, "tools", name)
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    real_read = module.read
+
+    def patched(rel: str) -> str:
+        return patch(rel, real_read(rel))
+
+    module.read = patched
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = module.main()
+    return code, buffer.getvalue()
+
+
+def test_consistency_check_detects_a_constant_drift():
+    def drop_kotlin_ps(rel, text):
+        # Remove a documented task kind from one implementation only.
+        if rel.endswith("TaskRunner.kt"):
+            return text.replace('"ps" -> processList()', "")
+        return text
+
+    code, out = _run_checker("check_consistency.py", drop_kotlin_ps)
+    assert code == 1
+    assert "kotlin does not implement" in out
+
+
+def test_consistency_check_detects_a_missing_rpc():
+    def drop_go_rpc(rel, text):
+        if rel.endswith(os.path.join("link", "operator.go")):
+            return text.replace('case "agents.kill", "agents.exit":', 'case "agents.exit":')
+        return text
+
+    code, out = _run_checker("check_consistency.py", drop_go_rpc)
+    assert code == 1
+    assert "Go server is missing" in out
+
+
+def test_symbol_check_detects_a_renamed_reference():
+    def rename_wire_error(rel, text):
+        if rel.endswith(os.path.join("session", "session.go")):
+            return text.replace("wire.ErrTooLarge", "wire.ErrFrameTooLarge", 1)
+        return text
+
+    code, out = _run_checker("check_symbols.py", rename_wire_error)
+    assert code == 1
+    assert "ErrFrameTooLarge" in out
+
+
+def test_symbol_check_is_clean_on_the_real_tree():
+    code, out = _run_checker("check_symbols.py", lambda rel, text: text)
+    assert code == 0, out
+
+
+def test_operator_cli_json_mode_is_parseable():
+    """--json must emit pure JSON (bytes decoded) on stdout, for scripting."""
+    import subprocess
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-json-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-json")
+    agent.start()
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    base = [sys.executable, "-m", "umbra_cli", "--server", server.address,
+            "-o", "alice", "-k", token.decode(), "--json"]
+
+    def run(*argv: str) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(base + list(argv), capture_output=True, text=True,
+                              env=env, timeout=60)
+
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            out = json.loads(run("agents").stdout)
+            if out:
+                break
+            time.sleep(0.05)
+        assert out and out[0]["id"] == "agent-json"
+
+        submitted = json.loads(run("run", "agent-json", "--", "echo", "json").stdout)
+        task_id = submitted["task_id"]
+        assert task_id.startswith("t-")
+
+        result = run("result", task_id)
+        payload = json.loads(result.stdout)
+        assert payload["state"] in ("queued", "delivered", "done")
+
+        # Wait for completion, then check the output survives as text.
+        for _ in range(100):
+            payload = json.loads(run("result", task_id).stdout)
+            if payload["state"] == "done":
+                break
+            time.sleep(0.1)
+        assert payload["state"] == "done"
+        assert "json" in payload["out"]
+        assert run("result", task_id).returncode == 0
+
+        # A task that does not exist is a clean, non-zero JSON-ish failure.
+        missing = run("result", "t-doesnotexist")
+        assert missing.returncode == 1
+        assert "error" in missing.stderr
+    finally:
+        agent.stop()
+        server.stop()
+
+
+def test_consistency_check_detects_a_doc_message_table_drift():
+    """The PROTOCOL.md message table is part of the contract too."""
+    def renumber_ping(rel, text):
+        if rel.endswith("PROTOCOL.md"):
+            return text.replace("| `0x14` | PING |", "| `0x13` | PING |")
+        return text
+
+    code, out = _run_checker("check_consistency.py", renumber_ping)
+    assert code == 1
+    assert "PING" in out and "docs say" in out

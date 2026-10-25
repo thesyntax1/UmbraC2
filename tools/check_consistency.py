@@ -16,6 +16,13 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "operator"))
+
+try:  # the Python reference is the source of truth for the message registry
+    from umbra_cli import wire as wire_module
+except ImportError as exc:  # pragma: no cover - only if the tree is incomplete
+    print(f"check_consistency: cannot import the Python reference: {exc}", file=sys.stderr)
+    raise SystemExit(2)
 
 SOURCES = {
     "python": [
@@ -179,6 +186,17 @@ RPC_SPECS = {
 }
 
 
+def doc_message_table() -> dict[str, int]:
+    """Message ids from the PROTOCOL.md table: | `0x10` | CHECKIN | ..."""
+    text = read("docs/PROTOCOL.md")
+    section = text.split("All bodies are upk maps.", 1)[-1]
+    section = section.split("`tasks[]` entries", 1)[0]
+    table: dict[str, int] = {}
+    for match in re.finditer(r"^\| `(0x[0-9A-Fa-f]{2})` \| ([A-Z_]+) \|", section, re.M):
+        table[match.group(2)] = int(match.group(1), 16)
+    return table
+
+
 def doc_task_kinds() -> set[str]:
     """Task kinds listed in docs/PROTOCOL.md's kind table."""
     text = read("docs/PROTOCOL.md")
@@ -250,6 +268,32 @@ def main() -> int:
 
     print("\n== domain separation labels ==")
     failures += compare_table("LABEL", LABEL_SPECS, corpus, camel_to_snake, numeric=False)
+
+    print("\n== message table vs docs/PROTOCOL.md ==")
+    documented = doc_message_table()
+    # Message ids live on the MsgType registry (the frame-level constants such
+    # as PRELUDE_LEN are checked in the scalar table above).
+    registry = wire_module.MsgType
+    code_ids = {name: value for name, value in vars(registry).items()
+                if name.isupper() and isinstance(value, int)
+                and not name.startswith("FRAME_")}
+    doc_problems = 0
+    for name, value in sorted(documented.items(), key=lambda kv: kv[1]):
+        code_value = code_ids.get(name)
+        if code_value is None:
+            print(f"  !! {name}: documented as 0x{value:02X} but not defined in wire.py")
+            doc_problems += 1
+            continue
+        if code_value != value:
+            print(f"  !! {name}: docs say 0x{value:02X}, wire.py says 0x{code_value:02X}")
+            doc_problems += 1
+    undocumented = [name for name in code_ids if name not in documented]
+    for name in sorted(undocumented):
+        print(f"  !! {name} (0x{code_ids[name]:02X}) is implemented but missing from docs/PROTOCOL.md")
+        doc_problems += 1
+    if not doc_problems:
+        print(f"  MESSAGE_TABLE    {len(documented)} message types documented and matching")
+    failures += doc_problems
 
     print("\n== task kinds vs docs/PROTOCOL.md ==")
     documented = doc_task_kinds()

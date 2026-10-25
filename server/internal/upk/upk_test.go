@@ -141,10 +141,11 @@ func TestVectorDecodeRoundTrip(t *testing.T) {
 func TestRejects(t *testing.T) {
 	rejects := loadVectors(t).Rejects
 	cases := map[string]string{
-		"upk_trailing":     "trailing bytes",
-		"upk_unknown_tag":  "unknown tag",
-		"upk_nonminimal":   "non-minimal",
-		"upk_unsorted_map": "ascending",
+		"upk_trailing":       "trailing bytes",
+		"upk_unknown_tag":    "unknown tag",
+		"upk_nonminimal":     "non-minimal",
+		"upk_unsorted_map":   "ascending",
+		"upk_depth_exceeded": "nesting too deep",
 	}
 	for name, want := range cases {
 		raw, err := hex.DecodeString(rejects[name])
@@ -161,12 +162,22 @@ func TestLimits(t *testing.T) {
 	if _, err := upk.Encode(make([]byte, upk.MaxString+1)); !errors.Is(err, upk.ErrLimit) {
 		t.Errorf("oversized binary: want ErrLimit, got %v", err)
 	}
+	// Exactly MaxDepth nested containers is legal; one more is not. The vectors
+	// pin the same boundary ("depth-max" / upk_depth_exceeded), so the four
+	// implementations cannot drift even if this test is skipped.
 	deep := any("x")
-	for i := 0; i < upk.MaxDepth+2; i++ {
+	for i := 0; i < upk.MaxDepth; i++ {
 		deep = []any{deep}
 	}
-	if _, err := upk.Encode(deep); err == nil {
-		t.Error("expected nesting limit error")
+	encoded, err := upk.Encode(deep)
+	if err != nil {
+		t.Fatalf("MaxDepth nesting should be allowed: %v", err)
+	}
+	if _, err := upk.DecodeExact(encoded); err != nil {
+		t.Fatalf("MaxDepth nesting should decode: %v", err)
+	}
+	if _, err := upk.Encode([]any{deep}); err == nil {
+		t.Error("MaxDepth+1 nesting should be rejected")
 	}
 }
 

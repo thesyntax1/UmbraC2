@@ -62,8 +62,13 @@ sealed class Upk {
             return out.toByteArray()
         }
 
+        /**
+         * [depth] counts containers already entered (0 at the top level), so the
+         * limit is checked in the container branches. Counting every value was
+         * an off-by-one against the Python/Go reference; contracts/vectors.json
+         * pins both sides of the boundary ("depth-max" and upk_depth_exceeded).
+         */
         private fun write(value: Upk, out: ByteArrayOutputStream, depth: Int) {
-            if (depth > MAX_DEPTH) throw UpkException("nesting too deep")
             when (value) {
                 is Null -> out.write(T_NULL)
                 is Bool -> out.write(if (value.value) T_TRUE else T_FALSE)
@@ -94,12 +99,16 @@ sealed class Upk {
                     out.write(value.value)
                 }
                 is Arr -> {
+                    val level = depth + 1
+                    if (level > MAX_DEPTH) throw UpkException("nesting too deep")
                     if (value.items.size > MAX_ITEMS) throw UpkException("array too long")
                     out.write(T_ARR)
                     writeUvarint(value.items.size.toULong(), out)
-                    value.items.forEach { write(it, out, depth + 1) }
+                    value.items.forEach { write(it, out, level) }
                 }
                 is MapV -> {
+                    val level = depth + 1
+                    if (level > MAX_DEPTH) throw UpkException("nesting too deep")
                     if (value.entries.size > MAX_ITEMS) throw UpkException("map too large")
                     out.write(T_MAP)
                     writeUvarint(value.entries.size.toULong(), out)
@@ -110,7 +119,7 @@ sealed class Upk {
                         out.write(T_STR)
                         writeUvarint(raw.size.toULong(), out)
                         out.write(raw)
-                        write(v, out, depth + 1)
+                        write(v, out, level)
                     }
                 }
             }
@@ -166,15 +175,41 @@ sealed class Upk {
                 throw UpkException("uvarint too long")
             }
 
+            /** Read a length prefix and bounds check it before narrowing to Int. */
+            fun length(message: String): Int {
+                val n = uvarint()
+                if (n > MAX_STRING.toULong()) throw UpkException(message)
+                return n.toInt()
+            }
+
+            /**
+             * Decode UTF-8 strictly. `String(bytes, Charsets.UTF_8)` substitutes
+             * U+FFFD for malformed input, which would let a peer smuggle bytes
+             * that re-encode differently (and break map key ordering checks).
+             */
+            fun utf8(raw: ByteArray, message: String): String {
+                val text = String(raw, Charsets.UTF_8)
+                if (!text.toByteArray(Charsets.UTF_8).contentEquals(raw)) throw UpkException(message)
+                return text
+            }
+
+            /** [depth] counts containers already entered; same rule as the encoder. */
             fun readValue(depth: Int): Upk {
-                if (depth > MAX_DEPTH) throw UpkException("nesting too deep")
                 need(1)
                 val tag = buf[pos++].toInt() and 0xFF
                 return when (tag) {
                     T_NULL -> Null
                     T_FALSE -> Bool(false)
                     T_TRUE -> Bool(true)
-                    T_UINT -> Num(uvarint().toLong())
+                    T_UINT -> {
+                        val u = uvarint()
+                        // Num holds a Long; wrapping a >Long.MAX uint would make
+                        // re-encoding produce a different (T_INT) value, so it is
+                        // an error rather than silent corruption. The protocol
+                        // never needs one: counts, timestamps and codes are small.
+                        if (u > Long.MAX_VALUE.toULong()) throw UpkException("uint out of range")
+                        Num(u.toLong())
+                    }
                     T_INT -> {
                         val z = uvarint().toLong()
                         Num((z ushr 1) xor -(z and 1L))
@@ -187,29 +222,31 @@ sealed class Upk {
                         F64(Double.fromBits(bits))
                     }
                     T_STR -> {
-                        val n = uvarint().toInt()
-                        if (n > MAX_STRING) throw UpkException("string too long")
+                        val n = length("string too long")
                         need(n)
-                        val s = String(buf, pos, n, Charsets.UTF_8)
+                        val raw = buf.copyOfRange(pos, pos + n)
                         pos += n
-                        Str(s)
+                        Str(utf8(raw, "invalid utf-8 string"))
                     }
                     T_BIN -> {
-                        val n = uvarint().toInt()
-                        if (n > MAX_STRING) throw UpkException("binary too long")
+                        val n = length("binary too long")
                         need(n)
                         val out = buf.copyOfRange(pos, pos + n)
                         pos += n
                         Bin(out)
                     }
                     T_ARR -> {
+                        val level = depth + 1
+                        if (level > MAX_DEPTH) throw UpkException("nesting too deep")
                         val n = uvarint()
                         if (n > MAX_ITEMS.toULong()) throw UpkException("array too long")
                         val items = ArrayList<Upk>(minOf(n.toInt(), 64))
-                        repeat(n.toInt()) { items.add(readValue(depth + 1)) }
+                        repeat(n.toInt()) { items.add(readValue(level)) }
                         Arr(items)
                     }
                     T_MAP -> {
+                        val level = depth + 1
+                        if (level > MAX_DEPTH) throw UpkException("nesting too deep")
                         val n = uvarint()
                         if (n > MAX_ITEMS.toULong()) throw UpkException("map too large")
                         val map = TreeMap<String, Upk>()
@@ -219,14 +256,13 @@ sealed class Upk {
                             if ((buf[pos++].toInt() and 0xFF) != T_STR) {
                                 throw UpkException("map key must be a string")
                             }
-                            val klen = uvarint().toInt()
-                            if (klen > MAX_STRING) throw UpkException("map key too long")
+                            val klen = length("map key too long")
                             need(klen)
-                            val key = String(buf, pos, klen, Charsets.UTF_8)
+                            val key = utf8(buf.copyOfRange(pos, pos + klen), "invalid utf-8 map key")
                             pos += klen
                             prev?.let { p -> if (key <= p) throw UpkException("map keys not ascending") }
                             prev = key
-                            map[key] = readValue(depth + 1)
+                            map[key] = readValue(level)
                         }
                         MapV(map)
                     }

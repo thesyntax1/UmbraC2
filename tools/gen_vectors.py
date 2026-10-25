@@ -78,6 +78,10 @@ def main() -> None:
         ("map-order", {"b": 1, "a": 2}),
         ("nested", {"k": [{"x": -2}, b""]}),
         ("f64", 1.5),
+        # Exactly MAX_DEPTH nested containers is legal; one more is not. This
+        # pins the depth convention, which is easy to get off by one (Rust and
+        # Kotlin both allowed 17 levels before this vector existed).
+        ("depth-max", _nested(upk.MAX_DEPTH)),
     ]
     out["upk"] = [{"name": n, "json": _jsonable(v), "hex": upk.encode(v).hex()}
                   for n, v in upk_cases]
@@ -237,6 +241,10 @@ def main() -> None:
         "upk_trailing": (upk.encode(1) + b"\x00").hex(),
         "upk_unknown_tag": "ff",
         "upk_nonminimal": "038000",
+        # Hand-built so a *decoder* must reject it: MAX_DEPTH+1 nested arrays
+        # (0x08 0x01) around one uvarint (0x03 0x01). The encoder refuses to
+        # produce this at all, which is why it is spelled out byte by byte.
+        "upk_depth_exceeded": ("0801" * (upk.MAX_DEPTH + 1)) + "0301",
     }
 
     path = os.path.join(ROOT, "contracts", "vectors.json")
@@ -244,6 +252,14 @@ def main() -> None:
         json.dump(out, fh, indent=2, sort_keys=True)
         fh.write("\n")
     print(f"wrote {path} ({os.path.getsize(path)} bytes)")
+
+
+def _nested(levels: int):
+    """``levels`` nested single-element arrays around a leaf integer."""
+    value = 1
+    for _ in range(levels):
+        value = [value]
+    return value
 
 
 def _jsonable(v):

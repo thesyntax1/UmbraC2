@@ -145,3 +145,13 @@ CI (`.github/workflows/ci.yml`):
 * `tests/test_protocol.py` includes concurrency regressions for the two rules
   that are easy to break silently: a nonce is never reused, and frames leave in
   nonce order (see SEND-SERIAL in `docs/PROTOCOL.md`).
+
+## License
+
+MIT — see [LICENSE](LICENSE). The Rust crate is dual-licensed `MIT OR Apache-2.0`
+to match the ecosystem default (see `implant/rust/Cargo.toml`).
+
+This project exists for authorised security testing, red-team engagements and
+protocol research. Running it against systems you do not own or have written
+permission to test is illegal in most jurisdictions; you are responsible for how
+you use it. See [docs/SECURITY.md](docs/SECURITY.md) §1.

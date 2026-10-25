@@ -67,7 +67,13 @@ fn upk_encoding_matches_vectors() {
 #[test]
 fn upk_rejects_invalid_encodings() {
     let v = vectors();
-    for key in ["upk_trailing", "upk_unknown_tag", "upk_nonminimal", "upk_unsorted_map"] {
+    for key in [
+        "upk_trailing",
+        "upk_unknown_tag",
+        "upk_nonminimal",
+        "upk_unsorted_map",
+        "upk_depth_exceeded",
+    ] {
         let raw = unhex(v["rejects"][key].as_str().unwrap());
         assert!(upk::decode_exact(&raw).is_err(), "{key} should be rejected");
     }

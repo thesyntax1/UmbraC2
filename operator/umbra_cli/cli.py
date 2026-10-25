@@ -55,6 +55,17 @@ def short(text: Any, limit: int = 72) -> str:
     return s
 
 
+def json_default(value: Any) -> Any:
+    """Make bytes render as text (or hex if binary) in --json output."""
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return "hex:" + raw.hex()
+    return str(value)
+
+
 def decode_out(value: Any) -> str:
     if isinstance(value, (bytes, bytearray)):
         try:
@@ -318,6 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=15.0, help="socket/RPC timeout in seconds")
     p.add_argument("--watch", action="store_true", help="print events as they arrive")
     p.add_argument("--quiet", action="store_true", help="do not print the event banner")
+    p.add_argument("--json", action="store_true",
+                   help="machine-readable output for agents/tasks/info/stats/result")
     p.add_argument("--version", action="version", version=f"umbra {__version__} ({wire.SUITE_NAMES[1]}, umbra/v1)")
 
     sub = p.add_subparsers(dest="cmd")
@@ -402,21 +415,30 @@ def main(argv: Optional[List[str]] = None) -> int:
                     break
             return 0
 
+        def emit(payload: Any) -> None:
+            """One canonical JSON shape: bytes as text, keys sorted."""
+            print(json.dumps(payload, indent=2, sort_keys=True, default=json_default))
+
         if args.cmd == "agents":
-            print_agents(client.agents())
+            rows = client.agents()
+            emit(rows) if args.json else print_agents(rows)
         elif args.cmd == "stats":
-            print(json.dumps(client.stats(), indent=2, sort_keys=True, default=str))
+            emit(client.stats())
         elif args.cmd == "info":
-            print(json.dumps(client.agent_info(args.agent), indent=2, sort_keys=True, default=str))
+            emit(client.agent_info(args.agent))
         elif args.cmd == "run":
             command = " ".join(args.command).strip()
             if not command:
                 print("no command given", file=sys.stderr)
                 return 2
             task_id = client.submit(args.agent, "shell", {"cmd": command})
-            print(f"queued {task_id}")
+            if args.json and not args.wait:
+                emit({"task_id": task_id, "agent": args.agent, "kind": "shell"})
+            else:
+                print(f"queued {task_id}")
             if args.wait:
-                print_task_result(client.wait_for_result(task_id, timeout=args.timeout))
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                emit(result) if args.json else print_task_result(result)
         elif args.cmd == "task":
             try:
                 task_args = json.loads(args.args)
@@ -424,16 +446,30 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"invalid --args json: {exc}", file=sys.stderr)
                 return 2
             task_id = client.submit(args.agent, args.kind, task_args)
-            print(f"queued {task_id}")
+            if args.json and not args.wait:
+                emit({"task_id": task_id, "agent": args.agent, "kind": args.kind})
+            else:
+                print(f"queued {task_id}")
             if args.wait:
-                print_task_result(client.wait_for_result(task_id, timeout=args.timeout))
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                emit(result) if args.json else print_task_result(result)
         elif args.cmd == "tasks":
-            print_tasks(client.tasks(args.agent, args.limit))
+            rows = client.tasks(args.agent, args.limit)
+            emit(rows) if args.json else print_tasks(rows)
         elif args.cmd == "result":
-            print_task_result(client.task(args.task_id))
+            task = client.task(args.task_id)
+            if args.json:
+                emit(task)
+                # A failed task must fail the shell too, so scripts can branch
+                # on the exit status instead of parsing output.
+                return 0 if task.get("state") == "done" and not task.get("code") else 1
+            print_task_result(task)
         elif args.cmd == "sleep":
             client.set_sleep(args.agent, args.seconds, args.jitter)
-            print("beacon policy updated")
+            if args.json:
+                emit({"agent": args.agent, "sleep": args.seconds, "jitter": args.jitter})
+            else:
+                print("beacon policy updated")
         elif args.cmd == "kill":
             res = client.rpc("agents.kill", {"id": args.agent})
             print("kill task queued" if res.ok else f"error: {res.error}")

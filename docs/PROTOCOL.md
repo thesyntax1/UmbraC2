@@ -89,6 +89,13 @@ Canonicalisation rules (a decoder MUST reject violations):
 * no trailing bytes after the top-level value;
 * limits: nesting ≤ 16, containers ≤ 2²⁰ items, strings/binary ≤ 1 MiB, total ≤ 4 MiB.
 
+"Nesting ≤ 16" counts **containers**, not values: sixteen nested arrays/maps are
+accepted and the seventeenth is rejected, on both encode and decode. The boundary
+is pinned twice in `contracts/vectors.json` — `upk` case `depth-max` (accepted) and
+reject case `upk_depth_exceeded` (hand-built bytes, so a decoder must refuse them).
+That convention has to be spelled out because an off-by-one here is invisible
+until a deeply nested message crosses between two implementations.
+
 Example: `{"b": 1, "a": [1, -2]}` →
 `09 02 06 01 61 08 02 03 01 04 03 06 01 62 03 01`
 (map of 2 → key `a` → array of 2 → `1`, `-2`; key `b` → `1`).
