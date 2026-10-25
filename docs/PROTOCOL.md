@@ -368,6 +368,9 @@ agent marked offline — on a bad frame, on BYE, or when it has not polled withi
 | bad upk (non-canonical, truncated, oversized) | connection dropped |
 | task result for an unknown task id | logged, session continues |
 | agent sends ERROR (0x1F) | surfaced as a `beacon.error` operator event, session continues |
+| HTTP request with an empty body | `400`, session kept |
+| HTTP request with more than 16 frames | `413`, request dropped before any AEAD work |
+| HTTP request for an unknown or expired session id | `410 Gone`, beacon re-handshakes |
 
 The server never answers a failed handshake, so it cannot be used as an oracle
 for PSK probing.
