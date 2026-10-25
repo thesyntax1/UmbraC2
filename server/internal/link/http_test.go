@@ -1,11 +1,13 @@
 package link
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
+	"github.com/thesyntax1/UmbraC2/server/internal/wire"
 )
 
 func TestHTTPPathNormalisation(t *testing.T) {
@@ -64,5 +66,32 @@ func TestClientIPTrustsForwardedForOnlyFromLoopback(t *testing.T) {
 	garbage.Header.Set("X-Forwarded-For", "not-an-ip")
 	if got := clientIP(garbage); got != "127.0.0.1" {
 		t.Errorf("unparsable header: got %q, want 127.0.0.1", got)
+	}
+}
+
+// The body cap must be exact: a request may carry maxFramesPerRequest frames,
+// which is what the beacon can produce in one cycle, and not one byte more.
+func TestReadBeaconBodyEnforcesTheLimit(t *testing.T) {
+	limit := int64(wire.MaxFrame * maxFramesPerRequest)
+
+	atLimit := httptest.NewRequest(http.MethodPost, "/api/v1/beacon",
+		bytes.NewReader(make([]byte, int(limit))))
+	body, err := readBeaconBody(atLimit, limit)
+	if err != nil {
+		t.Fatalf("body at the limit rejected: %v", err)
+	}
+	if int64(len(body)) != limit {
+		t.Fatalf("read %d bytes, want %d", len(body), limit)
+	}
+
+	over := httptest.NewRequest(http.MethodPost, "/api/v1/beacon",
+		bytes.NewReader(make([]byte, int(limit)+1)))
+	if _, err := readBeaconBody(over, limit); err == nil {
+		t.Error("body over the limit accepted")
+	}
+
+	empty := httptest.NewRequest(http.MethodPost, "/api/v1/beacon", nil)
+	if _, err := readBeaconBody(empty, limit); err == nil {
+		t.Error("empty body accepted")
 	}
 }

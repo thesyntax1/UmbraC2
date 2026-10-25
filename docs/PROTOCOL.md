@@ -347,7 +347,14 @@ proxy providing access control and rate limiting (see
 `deploy/nginx-http-transport.conf`).
 
 A response body may contain several concatenated frames; a request body may also
-carry several.
+carry several (a beacon reports a whole batch of results and its next check-in in
+one POST). The server splits the body into frames with the same length-prefix
+walk the frames use on the wire, processes them **in order** under one per-session
+lock (so the SEND-SERIAL rule still holds over HTTP), and rejects the whole
+request if any frame fails. Limits: at most 16 frames per request, handshake
+bodies exactly one frame, empty bodies are a 400. A session is dropped — and the
+agent marked offline — on a bad frame, on BYE, or when it has not polled within
+`idle_timeout`.
 
 ## 9. Failure handling
 

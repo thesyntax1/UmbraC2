@@ -205,6 +205,30 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 	return append(prelude, rest...), nil
 }
 
+// SplitFrames cuts a buffer holding one or more concatenated frames into
+// individual frames. HTTP transports pack several frames into one request or
+// response body, and a stream transport ends up here after a partial read.
+// It refuses a trailing partial frame instead of silently dropping it.
+func SplitFrames(buf []byte) ([][]byte, error) {
+	var out [][]byte
+	for pos := 0; pos < len(buf); {
+		if pos+PreludeLen > len(buf) {
+			return nil, fmt.Errorf("wire: truncated prelude at byte %d", pos)
+		}
+		h, err := ParsePrelude(buf[pos : pos+PreludeLen])
+		if err != nil {
+			return nil, fmt.Errorf("wire: frame at byte %d: %w", pos, err)
+		}
+		total := FrameLen(int(h.Length))
+		if pos+total > len(buf) {
+			return nil, fmt.Errorf("wire: truncated frame at byte %d", pos)
+		}
+		out = append(out, buf[pos:pos+total])
+		pos += total
+	}
+	return out, nil
+}
+
 // MakeNonce builds a deterministic per-frame nonce.
 func MakeNonce(prefix []byte, counter uint64) ([NonceLen]byte, error) {
 	var n [NonceLen]byte

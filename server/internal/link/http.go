@@ -66,7 +66,8 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many failures", http.StatusTooManyRequests)
 		return
 	}
-	body, err := readBeaconBody(r)
+	// A handshake body is exactly one frame; nothing else is meaningful here.
+	body, err := readBeaconBody(r, int64(wire.MaxFrame))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -118,6 +119,10 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBeaconFrame handles an authenticated POST for an existing session.
+// maxFramesPerRequest bounds how many frames one HTTP body may carry. A
+// beacon normally sends one CHECKIN or a handful of RESULT frames per cycle.
+const maxFramesPerRequest = 16
+
 func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -128,9 +133,24 @@ func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad session", http.StatusBadRequest)
 		return
 	}
-	body, err := readBeaconBody(r)
+	// Several frames may share one body: a beacon reports the results of a
+	// whole batch and its BYE in a single POST.
+	body, err := readBeaconBody(r, int64(wire.MaxFrame*maxFramesPerRequest))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	frames, err := wire.SplitFrames(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(frames) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+	if len(frames) > maxFramesPerRequest {
+		http.Error(w, "too many frames", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -142,17 +162,31 @@ func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One lock per request keeps the frames in the order the agent produced
+	// them. Concurrent requests for the same session are serialised here, so
+	// the seal/apply-rekey/read ordering still holds for HTTP.
 	hs.mu.Lock()
 	hs.last = time.Now()
-	out, err := hs.link.HandleFrame(body)
-	closed := hs.link.Closed()
+	var out [][]byte
+	var handleErr error
+	closed := false
+	for _, f := range frames {
+		replies, err := hs.link.HandleFrame(f)
+		if err != nil {
+			handleErr = err
+			break
+		}
+		out = append(out, replies...)
+		if hs.link.Closed() {
+			closed = true
+			break
+		}
+	}
 	hs.mu.Unlock()
 
-	if err != nil {
-		s.Log.Warn("http beacon frame rejected", "agent", hs.agentID, "err", err)
-		s.httpMu.Lock()
-		delete(s.httpSessions, sid)
-		s.httpMu.Unlock()
+	if handleErr != nil {
+		s.Log.Warn("http beacon frame rejected", "agent", hs.agentID, "err", handleErr)
+		s.dropHTTPSession(sid)
 		http.Error(w, "bad frame", http.StatusBadRequest)
 		return
 	}
@@ -165,23 +199,34 @@ func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if closed {
-		s.Hub.UnregisterAgent(hs.agentID)
-		s.httpMu.Lock()
-		delete(s.httpSessions, sid)
-		s.httpMu.Unlock()
+		s.dropHTTPSession(sid)
 	}
 }
 
-func readBeaconBody(r *http.Request) ([]byte, error) {
-	limit := int64(wire.HeaderLen + wire.MaxBody + wire.TagLen + 1)
+// dropHTTPSession forgets a session and marks the agent offline, so a link
+// that failed or ended does not stay "live" forever.
+func (s *Server) dropHTTPSession(sid string) {
+	s.httpMu.Lock()
+	hs, ok := s.httpSessions[sid]
+	delete(s.httpSessions, sid)
+	s.httpMu.Unlock()
+	if ok {
+		s.Hub.UnregisterAgent(hs.agentID)
+	}
+}
+
+// readBeaconBody reads a request body of at most limit bytes. One byte past the
+// limit is read so an oversized body is detected rather than silently cut.
+func readBeaconBody(r *http.Request, limit int64) ([]byte, error) {
+	limit++
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	if len(body) < wire.HeaderLen {
-		return nil, fmt.Errorf("body too short")
+	if len(body) == 0 {
+		return nil, fmt.Errorf("empty body")
 	}
-	if int64(len(body)) == limit {
+	if int64(len(body)) >= limit {
 		return nil, fmt.Errorf("body too large")
 	}
 	return body, nil
@@ -193,7 +238,10 @@ func (s *Server) sweepHTTPSessions(timeout time.Duration) {
 	s.httpMu.Lock()
 	defer s.httpMu.Unlock()
 	for sid, hs := range s.httpSessions {
-		if now.Sub(hs.last) > timeout {
+		hs.mu.Lock()
+		idle := now.Sub(hs.last) > timeout
+		hs.mu.Unlock()
+		if idle {
 			delete(s.httpSessions, sid)
 			s.Hub.UnregisterAgent(hs.agentID)
 			s.Log.Info("http session expired", "agent", hs.agentID, "sid", sid)
