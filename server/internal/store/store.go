@@ -289,7 +289,6 @@ func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string
 	return t.Clone(), true
 }
 
-// Cancel marks a queued or delivered task as cancelled.
 // Cancel marks a queued or delivered task as cancelled and reports the state it
 // was in, so the caller can tell "it never shipped" from "the beacon may already
 // be running it".

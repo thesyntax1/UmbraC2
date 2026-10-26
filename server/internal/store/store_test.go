@@ -180,3 +180,49 @@ func TestPendingMarksDelivered(t *testing.T) {
 		t.Errorf("state not advanced: %+v", rec)
 	}
 }
+
+// Cancel must report what it replaced, refuse terminal states, and a late
+// result must not resurrect a cancelled task.
+func TestCancelStateMachine(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "a", Host: "h"})
+
+	queued := st.AddTask(&store.Task{AgentID: "a", Kind: "shell"})
+	previous, ok := st.Cancel(queued.ID)
+	if !ok || previous != store.TaskQueued {
+		t.Fatalf("cancel of a queued task: ok=%v previous=%q", ok, previous)
+	}
+	if again, ok := st.Cancel(queued.ID); ok {
+		t.Fatalf("second cancel succeeded (previous=%q)", again)
+	}
+
+	delivered := st.AddTask(&store.Task{AgentID: "a", Kind: "shell"})
+	if got := st.Pending("a", 10); len(got) != 1 || got[0].ID != delivered.ID {
+		t.Fatalf("pending: %+v", got)
+	}
+	previous, ok = st.Cancel(delivered.ID)
+	if !ok || previous != store.TaskDelivered {
+		t.Fatalf("cancel of a delivered task: ok=%v previous=%q", ok, previous)
+	}
+
+	// The command did run; the result is recorded but the state stays cancelled.
+	rec, ok := st.Complete(delivered.ID, 0, []byte("ran anyway\n"), "")
+	if !ok {
+		t.Fatal("Complete reported the task missing")
+	}
+	if rec.State != store.TaskCancelled {
+		t.Fatalf("late result changed state to %q", rec.State)
+	}
+	if string(rec.Output) != "ran anyway\n" {
+		t.Fatalf("output not stored for a cancelled task: %q", rec.Output)
+	}
+
+	done := st.AddTask(&store.Task{AgentID: "a", Kind: "ping"})
+	st.Complete(done.ID, 0, []byte("pong\n"), "")
+	if _, ok := st.Cancel(done.ID); ok {
+		t.Fatal("a finished task was cancelled")
+	}
+}
