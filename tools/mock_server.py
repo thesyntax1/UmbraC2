@@ -348,6 +348,38 @@ class MockServer:
             "by": "mock",
             "created": _now(),
         }
+        # The built-in templates of the real server, so a console that works
+        # against the test double works against the team server.
+        for name, kind, args, spec, description in (
+            ("hostname", "exec", {"cmd": "hostname"}, [], "the name of the host"),
+            ("system", "sysinfo", {}, [], "the system information of the host"),
+            ("processes", "ps", {}, [], "the running processes"),
+            ("network", "netinfo", {}, [], "the interfaces, the routes and the neighbours"),
+            ("screenshot", "screenshot", {}, [], "a picture of the desktop"),
+            ("listening", "exec",
+             {"cmd": "ss -tulpn 2>/dev/null || netstat -anb 2>/dev/null"}, [],
+             "the listening sockets"),
+            ("routes", "exec",
+             {"cmd": "ip route 2>/dev/null || route print 2>/dev/null"}, [],
+             "the routing table"),
+            ("services", "exec",
+             {"cmd": "systemctl list-units --type=service --state=running 2>/dev/null"},
+             [], "the running services"),
+            ("triage", "triage", {}, ["path"],
+             "the hash, the entropy and the file type of a file"),
+            ("find", "find", {}, ["name", "path", "content"],
+             "a search by name or by content"),
+        ):
+            self.aliases[name] = {
+                "name": name,
+                "kind": kind,
+                "extension": "",
+                "args": dict(args),
+                "args_spec": list(spec),
+                "description": description,
+                "by": "mock",
+                "created": _now(),
+            }
 
     # -- lifecycle -------------------------------------------------------
     def start(self) -> Tuple[str, int]:
@@ -974,6 +1006,7 @@ class MockServer:
         "schedule.list": "viewer",
         "task.submit": "operator",
         "task.cancel": "operator",
+        "task.retry": "operator",
         "task.bulk": "operator",
         "task.chain": "operator",
         "alerts.list": "viewer",
@@ -1458,6 +1491,21 @@ class MockServer:
                         queue.append(task_id)
             self.emit("task.cancelled", agent_id, task_id=task_id, data={"was": previous})
             return ok({"task_id": task_id, "state": "cancelled"})
+
+        if cmd == "task.retry":
+            task_id = str(args.get("task_id", ""))
+            with self._lock:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    return fail("unknown task")
+                if task["state"] in ("queued", "delivered"):
+                    return fail(f"task {task_id!r} has not finished yet")
+                agent_id = task["agent_id"]
+                kind = task["kind"]
+                task_args = dict(task.get("args") or {})
+            new_task = self._queue_task(agent_id, kind, task_args)
+            return ok({"task_id": new_task["id"], "agent_id": agent_id,
+                       "kind": kind, "retried": task_id})
 
         if cmd == "audit.tail":
             # The mock keeps the same append-only JSONL format in memory so the

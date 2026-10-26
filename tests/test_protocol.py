@@ -3054,3 +3054,106 @@ def test_a_task_that_is_never_answered_fails():
     finally:
         client.close()
         server.stop()
+
+
+def test_a_finished_task_can_be_run_again():
+    """A failed task is re-queued as a new task with the same arguments."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    token = b"operator-token-retry-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-retry", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        # A task that is still queued cannot be retried: it may still run.
+        task_id = client.submit("agent-retry", "sysinfo", {})
+        with server._lock:
+            server.tasks[task_id]["state"] = "queued"
+        with pytest.raises(OperatorError):
+            client.retry(task_id)
+
+        # A finished one is run again as a new task.
+        with server._lock:
+            server.tasks[task_id]["state"] = "failed"
+            server.tasks[task_id]["err"] = "the beacon died"
+            server.tasks[task_id]["args"] = {"path": "/etc"}
+        res = client.retry(task_id)
+        assert res["retried"] == task_id
+        assert res["task_id"] != task_id
+        assert res["kind"] == "sysinfo"
+        again = client.task(res["task_id"])
+        assert again["state"] in ("queued", "delivered", "done")
+        # The old record stays as the history of what went wrong.
+        assert client.task(task_id)["state"] == "failed"
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_server_ships_with_a_command_namespace():
+    """The built-in templates are registered and one of them runs."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-alias-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-alias", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        names = [a["name"] for a in client.alias_list()]
+        for expected in ("whoami", "system", "processes", "network", "triage", "find"):
+            assert expected in names
+        task_id = client.alias_run("system", "agent-alias")
+        assert task_id
+        assert client.task(task_id)["kind"] == "sysinfo"
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_writes_a_report_about_an_agent():
+    """The report is what an operator hands over at the end of an engagement."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+    from umbra_cli.cli import build_report  # noqa: WPS433
+
+    token = b"operator-token-report-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-report", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        client.submit("agent-report", "sysinfo", {})
+        time.sleep(0.6)
+        text = build_report(client, "agent-report", 20)
+        assert text.startswith("# agent-report")
+        assert "## The host" in text
+        assert "## The tasks" in text
+        assert "sysinfo" in text
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

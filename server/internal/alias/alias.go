@@ -74,6 +74,51 @@ func New() *Registry {
 	return &Registry{byName: make(map[string]Alias)}
 }
 
+// Defaults returns the built-in command templates.
+//
+// They are the one-liners an operator types a hundred times a day.  The
+// team can replace them, remove them or add their own; the registry is the
+// same one either way.
+func Defaults() []Alias {
+	return []Alias{
+		{Name: "whoami", Kind: "exec", Args: map[string]any{"cmd": "whoami"},
+			Description: "who the implant runs as"},
+		{Name: "hostname", Kind: "exec", Args: map[string]any{"cmd": "hostname"},
+			Description: "the name of the host"},
+		{Name: "system", Kind: "sysinfo", Args: map[string]any{},
+			Description: "the system information of the host"},
+		{Name: "processes", Kind: "ps", Args: map[string]any{},
+			Description: "the running processes"},
+		{Name: "network", Kind: "netinfo", Args: map[string]any{},
+			Description: "the interfaces, the routes and the neighbours"},
+		{Name: "screenshot", Kind: "screenshot", Args: map[string]any{},
+			Description: "a picture of the desktop"},
+		{Name: "listening", Kind: "exec",
+			Args:        map[string]any{"cmd": "ss -tulpn 2>/dev/null || netstat -anb 2>/dev/null"},
+			Description: "the listening sockets"},
+		{Name: "routes", Kind: "exec",
+			Args:        map[string]any{"cmd": "ip route 2>/dev/null || route print 2>/dev/null"},
+			Description: "the routing table"},
+		{Name: "services", Kind: "exec",
+			Args:        map[string]any{"cmd": "systemctl list-units --type=service --state=running 2>/dev/null || sc query type= service state= all 2>/dev/null"},
+			Description: "the running services"},
+		{Name: "triage", Kind: "triage", Args: map[string]any{}, ArgsSpec: []string{"path"},
+			Description: "the hash, the entropy and the file type of a file"},
+		{Name: "find", Kind: "find", Args: map[string]any{}, ArgsSpec: []string{"name", "path", "content"},
+			Description: "a search by name or by content"},
+	}
+}
+
+// NewWithDefaults creates a registry that already holds the built-ins.
+func NewWithDefaults() *Registry {
+	r := New()
+	for _, a := range Defaults() {
+		// The built-ins are well formed by construction.
+		_ = r.Register(a)
+	}
+	return r
+}
+
 // Register adds or replaces an alias.
 func (r *Registry) Register(a Alias) error {
 	name := a.Name

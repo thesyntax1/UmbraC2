@@ -581,6 +581,31 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"task_id": taskID, "state": store.TaskCancelled})
 
+	case "task.retry":
+		// A failed task is re-queued as a *new* task with the same kind and
+		// the same arguments: the old record stays as the history of what
+		// went wrong, and the new one is what the agent will run.
+		taskID, _ := args["task_id"].(string)
+		old, ok := s.Hub.Store().Task(taskID)
+		if !ok {
+			return fail("task %q is unknown", taskID)
+		}
+		if old.State == store.TaskQueued || old.State == store.TaskDelivered {
+			// A delivered task may still be running on the agent: running
+			// it a second time would do it twice.
+			return fail("task %q has not finished yet", taskID)
+		}
+		nt, err := s.Hub.SubmitTask(old.AgentID, old.Kind, old.Args)
+		if err != nil {
+			return fail("task.retry: %v", err)
+		}
+		return reply(upk.Map{
+			"task_id": nt.ID,
+			"agent_id": nt.AgentID,
+			"kind":     nt.Kind,
+			"retried":  old.ID,
+		})
+
 	case "task.list":
 		id, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)

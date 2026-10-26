@@ -210,6 +210,55 @@ When the first address is down, the beacon tries the next one, so a server
 that moves does not take the implant with it.  `UMBRA_PROXY` routes the
 connection through a SOCKS5 proxy, for a network that only lets a proxy out.
 
+### The command namespace
+
+The server ships with a small namespace of saved commands, so a team says
+`whoami` instead of remembering the exact task arguments:
+
+| alias | what it does |
+| --- | --- |
+| `whoami`, `hostname` | the identity of the implant and the name of the host |
+| `system`, `processes`, `network` | the system information, the processes, the network |
+| `listening`, `routes`, `services` | the sockets, the routing table, the services |
+| `screenshot` | a picture of the desktop |
+| `triage`, `find` | the file triage and the file search |
+
+```bash
+umbra alias list
+umbra alias run web-01 whoami
+umbra alias run web-01 triage --args '{"path":"/etc/passwd"}'
+```
+
+An alias may also point at an armory extension instead of a task kind, which
+is what makes the namespace extensible at runtime.  The team can add its own
+(`umbra alias add ...`) and replace the built-in ones.
+
+### Doing it again
+
+A task that failed for a reason that is gone now can be run again:
+
+```bash
+umbra tasks --state failed
+umbra retry t-1a2b3c4d
+```
+
+The old record stays as the history of what went wrong, and the new task is
+what the agent runs.  A task that is still queued or delivered cannot be
+retried: a delivered task may still be running, and running it twice is worse
+than not running it.
+
+### The handover
+
+At the end of an engagement somebody has to write down what was done and
+what was found.  The console writes it:
+
+```bash
+umbra report web-01 --out web-01.md
+```
+
+The report holds the host's record, the tasks that were run on it and the
+notes of the local notebook, as one Markdown document.
+
 ### Finding things on the target
 
 ```bash

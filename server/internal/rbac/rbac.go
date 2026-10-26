@@ -76,6 +76,7 @@ var requirements = map[string]string{
 	// ---- state-changing on a host -------------------------------------
 	"task.submit":  Operator,
 	"task.cancel":  Operator,
+	"task.retry":   Operator,
 	// A bulk task reaches every agent the filter selects, so it is an
 	// operator action like a single task: the difference is the reach, not
 	// the privilege.

@@ -125,8 +125,9 @@ func run() error {
 		logger.Warn("armory signature checking is disabled: no armory_key configured")
 	}
 
-	// The runtime command namespace: named task templates.
-	srv.SetAliases(alias.New())
+	// The runtime command namespace: named task templates.  The built-in
+	// ones are the one-liners everybody types; the team can replace them.
+	srv.SetAliases(alias.NewWithDefaults())
 
 	// The layer-3 tunnel between the console and the beacons.
 	if cfg.Server.VPNListen != "" {

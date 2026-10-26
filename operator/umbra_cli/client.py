@@ -357,6 +357,17 @@ class OperatorClient:
         if not res.ok:
             raise OperatorError(res.error)
 
+    def retry(self, task_id: str) -> Dict[str, Any]:
+        """Run a finished task again as a new task.
+
+        The old record stays as the history of what happened; the new task
+        is what the agent will run.
+        """
+        res = self.rpc("task.retry", {"task_id": task_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def audit(self, limit: int = 50) -> Dict[str, Any]:
         """Recent operator actions, newest first.
 

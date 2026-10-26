@@ -431,6 +431,7 @@ Operator RPC commands, with the minimum role each requires:
 | `task.chain` | operator | queue a multi-stage task: `stages` is a list of `{kind, args}` |
 | `alerts.list` | viewer | the alert rules the server watches the event stream with |
 | `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
+| `task.retry` | operator | run a finished task again as a new task |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -773,6 +774,7 @@ operator gets a control channel.  TLS 1.3 is the minimum.
 | task result for an unknown task id | logged, session continues |
 | agent sends ERROR (0x1F) | surfaced as a `beacon.error` operator event, session continues |
 | `task.cancel` for a finished/cancelled task | refused ("cannot be cancelled"), nothing is sent |
+| `task.retry` for a queued or delivered task | refused ("has not finished yet"): a delivered task may still be running, and running it twice is worse than not running it |
 | `task.cancel` for a delivered task | a `TASK_CANCEL` frame goes out before the next `TASK_BATCH`; a result that arrives later keeps the `cancelled` state and its output is still stored |
 | HTTP request with an empty body | `400`, session kept |
 | HTTP request with more than 16 frames | `413`, request dropped before any AEAD work |

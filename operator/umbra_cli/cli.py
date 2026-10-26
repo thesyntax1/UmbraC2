@@ -219,6 +219,67 @@ def print_alerts(rules: List[Dict[str, Any]]) -> None:
     print(table(["NAME", "EVENT", "TAG", "AGENT", "KIND", "COOLDOWN"], rows))
 
 
+def build_report(client: OperatorClient, agent_id: str, limit: int,
+                 state: Optional["db.StateStore"] = None) -> str:
+    """Write the report of one agent as a Markdown document.
+
+    The report is what an operator hands over at the end of an engagement:
+    what the host was, what was done on it and what was found.  It is built
+    from the server's own record, so it is the same for everybody.
+    """
+    info = client.agent_info(agent_id)
+    tasks = client.tasks(agent_id, limit)
+    lines: List[str] = []
+    lines.append(f"# {agent_id}")
+    lines.append("")
+    lines.append(f"_written {time.strftime('%Y-%m-%d %H:%M:%S %Z')}_")
+    lines.append("")
+
+    lines.append("## The host")
+    lines.append("")
+    for key in ("os", "arch", "user", "hostname", "transport", "transport_addr",
+                "sleep", "jitter", "tags", "first_seen", "last_seen", "state"):
+        value = info.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        lines.append(f"- **{key}**: {value}")
+    lines.append("")
+
+    lines.append("## The tasks")
+    lines.append("")
+    if not tasks:
+        lines.append("_no task was run on this agent_")
+    else:
+        lines.append("| when | kind | state | note |")
+        lines.append("| --- | --- | --- | --- |")
+        for task in tasks[:limit]:
+            when = task.get("completed") or task.get("created") or ""
+            when = str(when)[:19].replace("T", " ")
+            kind = task.get("kind", "")
+            state = task.get("state", "")
+            err = str(task.get("err", "") or "")
+            note = err[:80] if err else ""
+            lines.append(f"| {when} | {kind} | {state} | {note} |")
+    lines.append("")
+
+    if state is not None:
+        try:
+            notes = state.notes(agent_id, limit)
+        except Exception:  # noqa: BLE001 - the notebook is a convenience
+            notes = []
+        if notes:
+            lines.append("## The notes")
+            lines.append("")
+            for note in notes:
+                when = str(note.get("at", ""))[:19].replace("T", " ")
+                lines.append(f"- **{when}** {note.get('text', '')}")
+            lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def run_task_and_wait(client: OperatorClient, console: Console, agent_id: str,
                       kind: str, task_args: Dict[str, Any], wait: bool,
                       timeout: float, as_json: bool) -> None:
@@ -589,6 +650,12 @@ class Console:
                     print("usage: result <task-id>")
                     return True
                 print_task_result(self.client.task(rest[0]))
+            elif cmd == "retry":
+                if not rest:
+                    print("usage: retry <task-id>")
+                    return True
+                res = self.client.retry(rest[0])
+                print(f"queued {res.get('task_id')} (the task {rest[0]} is retried)")
             elif cmd == "watch":
                 self.watch = (rest[0].lower() not in ("off", "0", "false")) if rest else (not self.watch)
                 print(f"event watch: {'on' if self.watch else 'off'}")
@@ -854,6 +921,11 @@ def print_help() -> None:
   tasks [limit]             recent tasks for the current agent
   result <task-id>          print a task result
   cancel <task-id>          cancel a queued task
+  retry <task-id>           run a finished task again
+  persist [method]          install the implant so it survives a reboot
+  update <path>             replace the running implant
+  browse [path]             list the files under a path
+  report [agent]            write a report about an agent
   watch [on|off]            toggle automatic result printing
   sleep <secs> [jitter%]    change the beacon interval
   kill [agent-id]           tell an agent to exit
@@ -1248,6 +1320,8 @@ def build_parser() -> argparse.ArgumentParser:
     result.add_argument("task_id")
 
     cancel = sub.add_parser("cancel", help="cancel a queued task")
+    retry = sub.add_parser("retry", help="run a finished task again")
+    retry.add_argument("task_id")
     cancel.add_argument("task_id")
 
     watch = sub.add_parser("watch", help="stream events until interrupted")
@@ -1337,6 +1411,11 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--sha256", default="", help="the expected digest of the new binary")
     update.add_argument("--wait", action="store_true")
     update.add_argument("--timeout", type=float, default=120.0)
+
+    report = sub.add_parser("report", help="write a report about one agent")
+    report.add_argument("agent")
+    report.add_argument("--limit", type=int, default=50)
+    report.add_argument("--out", default="", help="write the report to this file")
 
     browse = sub.add_parser("browse", help="list the files under a path on an agent")
     browse.add_argument("agent")
@@ -1658,6 +1737,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 # on the exit status instead of parsing output.
                 return 0 if task.get("state") == "done" and not task.get("code") else 1
             print_task_result(task)
+        elif args.cmd == "retry":
+            res = client.retry(args.task_id)
+            if args.json:
+                print(json.dumps(res, indent=2, sort_keys=True))
+            else:
+                console.print(f"[green]queued[/] {res.get('task_id')} "
+                              f"(the task {args.task_id} is retried)")
         elif args.cmd == "cancel":
             client.cancel(args.task_id)
             if args.json:
@@ -1862,6 +1948,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},
                               args.wait, args.timeout, args.json)
+        elif args.cmd == "report":
+            text = build_report(client, args.agent, args.limit, console.store)
+            if args.out:
+                with open(args.out, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                if args.json:
+                    emit({"agent": args.agent, "file": args.out, "bytes": len(text)})
+                else:
+                    print(f"wrote {args.out} ({len(text)} bytes)")
+            else:
+                print(text, end="")
         elif args.cmd == "browse":
             run_task_and_wait(client, console, args.agent, "find",
                               {"path": args.path, "name": "", "content": "", "max": args.max},
