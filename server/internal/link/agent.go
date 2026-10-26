@@ -232,7 +232,9 @@ func (s *Server) serveAgentTCP(conn net.Conn) {
 		log.Warn("agent registration refused", "err", err)
 		return
 	}
-	defer s.Hub.UnregisterAgent(rec.ID)
+	// Scoped to this session: a reconnect may already have replaced the live
+	// entry, and this goroutine must not delete its successor's record.
+	defer s.Hub.UnregisterSession(rec.ID, fmt.Sprintf("%x", info.SessionID))
 
 	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "tcp", Log: s.Log}
 	budget := int64(s.Cfg.Server.Limits.MaxFrameBytesPerConn)

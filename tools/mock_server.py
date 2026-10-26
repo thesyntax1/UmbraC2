@@ -352,6 +352,21 @@ class MockServer:
                     }
                 )
 
+        if cmd == "operators.list":
+            with self._lock:
+                ops = [
+                    {
+                        "id": i + 1,
+                        "name": "mock",
+                        "peer": "127.0.0.1:0",
+                        "transport": "tcp/operator",
+                        "since": _now(),
+                        "backlog": self.subscribers[i].qsize() if hasattr(self.subscribers[i], "qsize") else 0,
+                    }
+                    for i in range(len(self.subscribers))
+                ]
+            return ok({"operators": ops, "count": len(ops)})
+
         if cmd == "agents.list":
             with self._lock:
                 return ok({"agents": [dict(a) for a in self.agents.values()]})

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -44,6 +45,18 @@ type Operator struct {
 	Transport string
 }
 
+// OperatorInfo is the public view of a connected operator console.
+type OperatorInfo struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Peer      string `json:"peer"`
+	Transport string `json:"transport"`
+	Since     string `json:"since"`
+	// Backlog is how many events are queued for this console but not yet sent.
+	// A persistently growing backlog means the console stopped reading.
+	Backlog int `json:"backlog"`
+}
+
 // Live describes a currently connected agent.
 type Live struct {
 	AgentID   string
@@ -65,6 +78,10 @@ type Hub struct {
 	subs    map[int64]*Operator
 	nextSub int64
 	started time.Time
+
+	// dropped counts events discarded because a console's queue was full. It is
+	// a health signal, not noise: if it grows, an operator is missing events.
+	dropped uint64
 }
 
 // New creates a hub.
@@ -122,7 +139,30 @@ func (h *Hub) RegisterAgent(meta *store.Agent, transport, addr string, suite byt
 	return rec, !known, nil
 }
 
-// UnregisterAgent marks an agent offline when its link drops.
+// UnregisterSession drops a link only if it is still the live one for the
+// agent but also for the *same* session.
+//
+// A beacon reconnects after every cycle (TCP) or network change, so two
+// sessions for one agent id coexist briefly. Without the session check the
+// older goroutine's deferred cleanup deletes the newer entry and the agent
+// shows as offline while it is happily beaconing.
+func (h *Hub) UnregisterSession(agentID, sessionID string) {
+	h.mu.Lock()
+	cur, ok := h.live[agentID]
+	if !ok || (sessionID != "" && cur.SessionID != sessionID) {
+		h.mu.Unlock()
+		return
+	}
+	delete(h.live, agentID)
+	h.mu.Unlock()
+	h.store.MarkOffline(agentID)
+	h.store.SaveAsync()
+	h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
+}
+
+// UnregisterAgent marks an agent offline when its link drops, without checking
+// which session dropped it. Used for expiry, where there is no live peer left to
+// race with.
 func (h *Hub) UnregisterAgent(agentID string) {
 	h.mu.Lock()
 	delete(h.live, agentID)
@@ -276,19 +316,40 @@ func (h *Hub) Emit(ev Event) {
 		select {
 		case op.Events <- ev:
 		default:
+			h.dropped++
 			h.log.Warn("operator event queue full, dropping event", "operator", op.Name, "kind", ev.Kind)
 		}
 	}
 }
 
+// Operators lists the connected consoles, sorted by name.
+func (h *Hub) Operators() []OperatorInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]OperatorInfo, 0, len(h.subs))
+	for _, op := range h.subs {
+		out = append(out, OperatorInfo{
+			ID:        op.ID,
+			Name:      op.Name,
+			Peer:      op.Peer,
+			Transport: op.Transport,
+			Since:     op.Since.Format(time.RFC3339),
+			Backlog:   len(op.Events),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // Stats returns a server-wide snapshot for the operator CLI.
 func (h *Hub) Stats() map[string]any {
 	h.mu.Lock()
-	live, subs := len(h.live), len(h.subs)
+	live, subs, dropped := len(h.live), len(h.subs), h.dropped
 	h.mu.Unlock()
 	out := h.store.Stats()
 	out["agents_live"] = live
 	out["operators"] = subs
+	out["events_dropped"] = dropped
 	out["uptime_s"] = int(time.Since(h.started).Seconds())
 	out["protocol"] = "umbra/v1"
 	out["suites"] = []string{"aes-256-gcm"}

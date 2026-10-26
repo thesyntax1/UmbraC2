@@ -180,6 +180,12 @@ class OperatorClient:
             raise OperatorError(res.error)
         return list(res.data.get("agents", []))
 
+    def operators(self) -> List[Dict[str, Any]]:
+        res = self.rpc("operators.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("operators", []))
+
     def agent_info(self, agent_id: str) -> Dict[str, Any]:
         res = self.rpc("agents.info", {"id": agent_id})
         if not res.ok:

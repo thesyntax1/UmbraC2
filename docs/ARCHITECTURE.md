@@ -93,7 +93,11 @@ re-queues anything left `delivered` after a restart).
 * `session` serialises its own send/recv directions; the stream serialises writes;
 * `store` and `hub` hold short-lived mutexes and never call each other while
   holding one;
-* `hub.Emit` never blocks a transport (bounded channel + drop + warn);
+* `hub.Emit` never blocks a transport (bounded channel + drop + warn, with a
+  running `events_dropped` counter exposed in `server.stats`);
+* unregistering is **session-scoped** — a beacon that reconnects with the same
+  id would otherwise have its predecessor's deferred cleanup delete the new live
+  entry; only expiry uses the force variant;
 * all sizes are bounded before allocation (frame ≤ 1 MiB, upk limits, HTTP body
   cap, header cap, operator/agent caps).
 

@@ -1078,3 +1078,54 @@ def test_audit_and_cancel_against_the_server():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_operators_list_is_documented_and_served():
+    """`umbra operators` needs both sides: the RPC and the table."""
+    from umbra_cli import cli, client
+
+    args = cli.build_parser().parse_args(["operators"])
+    assert args.cmd == "operators"
+
+    captured = {}
+
+    class Stub:
+        def rpc(self, cmd, args=None):
+            captured["cmd"] = cmd
+
+            class R:
+                ok = True
+                data = {"operators": [{"name": "alice"}], "count": 1}
+
+            return R()
+
+    rows = client.OperatorClient.operators(Stub())
+    assert captured["cmd"] == "operators.list"
+    assert rows == [{"name": "alice"}]
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli.print_operators([{"name": "alice", "peer": "10.0.0.5:1", "transport": "tcp/operator",
+                              "since": "2026-01-01T00:00:00Z", "backlog": 0}])
+    assert "alice" in buf.getvalue() and "BACKLOG" in buf.getvalue()
+
+
+def test_operators_list_against_the_mock_server():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-ops-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        ops = client.operators()
+        assert len(ops) >= 1
+        assert ops[0]["transport"] == "tcp/operator"
+        assert "backlog" in ops[0]
+    finally:
+        client.close()
+        server.stop()

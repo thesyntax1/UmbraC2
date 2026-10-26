@@ -232,6 +232,21 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	case "server.stats":
 		return reply(toUpkMap(s.Hub.Stats()))
 
+	case "operators.list":
+		ops := s.Hub.Operators()
+		out := make([]any, 0, len(ops))
+		for _, o := range ops {
+			out = append(out, upk.Map{
+				"id":        o.ID,
+				"name":      o.Name,
+				"peer":      o.Peer,
+				"transport": o.Transport,
+				"since":     o.Since,
+				"backlog":   int64(o.Backlog),
+			})
+		}
+		return reply(upk.Map{"operators": out, "count": int64(len(out))})
+
 	case "agents.list":
 		agents := s.Hub.Agents()
 		out := make([]any, 0, len(agents))

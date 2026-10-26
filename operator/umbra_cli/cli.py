@@ -113,6 +113,23 @@ def print_agents(agents: List[Dict[str, Any]]) -> None:
     print(table(["ID", "HOST", "OS", "USER", "STATE", "TRANSPORT", "BEACON", "LAST SEEN"], rows))
 
 
+def print_operators(operators: List[Dict[str, Any]]) -> None:
+    if not operators:
+        print("no operator consoles connected")
+        return
+    rows = [
+        [
+            o.get("name", "?"),
+            o.get("peer", "?"),
+            o.get("transport", "?"),
+            str(o.get("since", "?")),
+            str(o.get("backlog", 0)),
+        ]
+        for o in operators
+    ]
+    print(table(["OPERATOR", "PEER", "TRANSPORT", "CONNECTED", "BACKLOG"], rows))
+
+
 def print_tasks(tasks: List[Dict[str, Any]]) -> None:
     if not tasks:
         print("no tasks yet")
@@ -314,6 +331,8 @@ class Console:
             elif cmd in ("audit", "log"):
                 limit = int(rest[0]) if rest else 30
                 print_audit(self.client.audit(limit))
+            elif cmd in ("operators", "ops"):
+                print_operators(self.client.operators())
             elif cmd == "stats":
                 print(json.dumps(self.client.stats(), indent=2, default=str, sort_keys=True))
             elif cmd == "raw":
@@ -353,6 +372,7 @@ def print_help() -> None:
         """commands:
   help                      show this help
   agents | ls               list agents
+  operators                 list connected operator consoles
   use <agent-id>            select the current agent
   info [agent-id]           full agent record
   run <command>             queue a shell task and print its result
@@ -412,6 +432,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("agents", help="list agents")
+    sub.add_parser("operators", help="list connected operator consoles")
     sub.add_parser("stats", help="server statistics")
 
     audit_cmd = sub.add_parser("audit", help="recent operator actions (audit trail)")
@@ -507,6 +528,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.cmd == "agents":
             rows = client.agents()
             emit(rows) if args.json else print_agents(rows)
+        elif args.cmd == "operators":
+            rows = client.operators()
+            emit(rows) if args.json else print_operators(rows)
         elif args.cmd == "stats":
             emit(client.stats())
         elif args.cmd == "audit":

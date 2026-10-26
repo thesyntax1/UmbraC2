@@ -313,6 +313,7 @@ Task kinds understood by the reference implants:
 | `ping` | — | `pong` |
 
 Operator RPC commands: `ping`, `server.stats`, `agents.list`, `agents.info`,
+`operators.list`,
 `agents.sleep`, `agents.kill`, `task.submit`, `task.get`, `task.list`,
 `task.cancel`, `audit.tail`, `events.test`. Responses keep the `rid` of the request; events are
 asynchronous and can arrive at any time.

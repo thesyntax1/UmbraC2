@@ -135,7 +135,9 @@ server, and do not give operators write access to it.
 
 ```bash
 umbra --server 127.0.0.1:4002 --operator alice stats
+umbra --server 127.0.0.1:4002 --operator alice operators   # who else is connected
 umbra --server 127.0.0.1:4002 --operator alice audit --limit 20
+umbra --server 127.0.0.1:4002 --operator alice watch       # live event stream
 journalctl -u umbra-server | grep -E "handshake failed|exceeded frame budget|queue full"
 ```
 
@@ -146,7 +148,7 @@ Signals that matter:
 | `handshake failed` (repeated, same peer) | wrong PSK, clock skew > 300 s, or scanning |
 | `operator key used on the agent listener` | misconfigured implant (operator token in a beacon) |
 | `agent exceeded frame budget` | runaway or hostile peer; connection dropped |
-| `operator event queue full` | an operator console stopped reading; events are dropped, agent traffic is unaffected |
+| `operator event queue full` | an operator console stopped reading; events are dropped (counted in `stats.events_dropped`), agent traffic is unaffected |
 | `state save failed` | disk full/permissions — fix before restarting |
 | `audit write failed` | the audit trail is incomplete; fix the disk and treat the missing window as a gap in the record |
 | `rate limited` (in a response) | an operator console is looping faster than 40 RPC/s; the call was refused, not queued |

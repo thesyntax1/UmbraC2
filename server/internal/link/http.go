@@ -211,7 +211,8 @@ func (s *Server) dropHTTPSession(sid string) {
 	delete(s.httpSessions, sid)
 	s.httpMu.Unlock()
 	if ok {
-		s.Hub.UnregisterAgent(hs.agentID)
+		// Scoped to the session: a re-handshake may already own the agent id.
+		s.Hub.UnregisterSession(hs.agentID, sid)
 	}
 }
 
@@ -243,7 +244,7 @@ func (s *Server) sweepHTTPSessions(timeout time.Duration) {
 		hs.mu.Unlock()
 		if idle {
 			delete(s.httpSessions, sid)
-			s.Hub.UnregisterAgent(hs.agentID)
+			s.Hub.UnregisterSession(hs.agentID, sid)
 			s.Log.Info("http session expired", "agent", hs.agentID, "sid", sid)
 		}
 	}
