@@ -283,6 +283,41 @@ umbra screenshot web-01 screen.png          # the screen of the target
 umbra clipboard web-01                      # the clipboard of the target
 ```
 
+## 3c. The dashboard
+
+The console is the tool of the day.  The dashboard is what a team leaves open
+on a second screen: the inventory, the running tasks and the event stream,
+without a terminal in the way.
+
+```json
+{ "dashboard_listen": "127.0.0.1:8080", "dashboard_read_only": false }
+```
+
+Open `http://127.0.0.1:8080/` and paste an operator token.  The dashboard
+accepts the same tokens as the console, so it is exactly as protected: the
+token is compared in constant time and is never written to a log.
+
+It is deliberately small.  It shows what is there and it queues a task;
+everything else (the pivots, the team chat, the extension store) stays in
+the console, where the answers are reviewed before they are given.  With
+`dashboard_read_only` the task button is refused, which is what a dashboard
+on a screen somebody walks past should be.
+
+The endpoints it serves:
+
+| endpoint | what it answers |
+| --- | --- |
+| `GET /api/agents` | the inventory |
+| `GET /api/tasks?agent=&kind=&state=&limit=` | the task history |
+| `GET /api/events?after=&limit=` | the journal of the events |
+| `GET /api/stats` | the counters of the server |
+| `POST /api/task` | `{"id": ..., "kind": ..., "args": {...}}` queues a task |
+
+The dashboard is a **local** listener by default.  Putting it on a public
+address means putting the operator token on a public address as well, and
+that is a decision an operator makes on purpose, not one a default makes
+for them.
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)

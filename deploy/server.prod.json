@@ -18,6 +18,8 @@
   "vpn_network": "10.77.0.0/24",
   "socks_listen": "",
   "socks_agent": "",
+  "dashboard_listen": "",
+  "dashboard_read_only": true,
   "armory_dir": "/var/lib/umbra/armory",
   "armory_key": "/var/lib/umbra/armory/pubkey.pem",
   "psk_file": "/etc/umbra/agent.psk",

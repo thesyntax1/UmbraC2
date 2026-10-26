@@ -55,6 +55,7 @@ Added on top of that core:
 | Reliability | A task that is never answered fails instead of hanging forever, and the server sweeps the queue every 30 s | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
 | The way a team works | A command namespace of saved commands, a failed task that can be run again, and a report of an agent for the handover | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The journal | Every event is numbered and kept, so a console that was not watching can still ask what it missed | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
+| The dashboard | A web view of the inventory, the tasks and the event stream, on the same tokens as the console | [docs/OPERATIONS.md](docs/OPERATIONS.md#3c-the-dashboard) |
 | The process table | The pid, the parent, the user, the start time and the command line of every process, read from the operating system | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):

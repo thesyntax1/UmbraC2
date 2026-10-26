@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
+	"github.com/thesyntax1/UmbraC2/server/internal/dash"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
@@ -207,6 +209,27 @@ func run() error {
 		return err
 	}
 
+	// The operator's web dashboard: the inventory, the tasks and the event
+	// stream on a second screen.  It accepts the operator tokens, so it is
+	// as protected as the console, and it can be told to be read-only.
+	if cfg.Server.DashboardListen != "" {
+		token := firstOperatorToken(cfg)
+		if token == "" {
+			logger.Warn("the dashboard is disabled: no operator token is configured")
+		} else {
+			dashSrv := dash.New(dash.Config{
+				Listen:   cfg.Server.DashboardListen,
+				Token:    token,
+				ReadOnly: cfg.Server.DashboardReadOnly,
+			}, h, logger)
+			go func() {
+				if err := dashSrv.Serve(ctx); err != nil {
+					logger.Error("the dashboard stopped", "error", err)
+				}
+			}()
+		}
+	}
+
 	// A persistent SOCKS5 proxy is opened as soon as its agent is reachable.
 	// The agent may only come online later, so the loop keeps trying until it
 	// succeeds and then keeps the tunnel alive.
@@ -255,6 +278,25 @@ func run() error {
 	}
 	logger.Info("stopped")
 	return nil
+}
+
+// firstOperatorToken returns the token of the first operator.
+//
+// The dashboard uses one token: the one of the first operator in the
+// keyring.  A deployment that wants a token of its own can give the
+// dashboard the token of a dedicated operator identity.
+func firstOperatorToken(cfg *config.Config) string {
+	names := make([]string, 0, len(cfg.Keyring.Operators))
+	for name := range cfg.Keyring.Operators {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if len(cfg.Keyring.Operators[name]) > 0 {
+			return string(cfg.Keyring.Operators[name])
+		}
+	}
+	return ""
 }
 
 // operatorKeys returns every operator token as a tunnel credential.

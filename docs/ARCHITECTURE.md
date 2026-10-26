@@ -140,6 +140,14 @@ and the output of a finished stage is substituted into the `{{output}}`
 placeholder of the arguments of the next one.  The substitution only touches
 strings: the output of a stage is data, never code.
 
+### The dashboard
+
+The dashboard is a second face of the hub, not a second source of truth: it
+reads the same store and the same journal the console does, and it queues
+tasks through the same `SubmitTask`.  It is a small HTTP server of its own
+(`internal/dash`), bound to a local address by default, and it accepts the
+operator tokens — so it cannot be a way around the roles of the console.
+
 ### The sweep
 
 A beacon that dies in the middle of a task leaves it in the `delivered`

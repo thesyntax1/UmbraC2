@@ -18,6 +18,8 @@
   "vpn_network": "10.77.0.0/24",
   "socks_listen": "",
   "socks_agent": "",
+  "dashboard_listen": "127.0.0.1:8080",
+  "dashboard_read_only": false,
   "armory_dir": "data/armory",
   "armory_key": "",
   "psk_file": "secrets/agent.psk",

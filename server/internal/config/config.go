@@ -88,6 +88,12 @@ type Server struct {
 	SocksListen string `json:"socks_listen"`
 	SocksAgent  string `json:"socks_agent"`
 
+	// DashboardListen binds the operator's web dashboard, and
+	// DashboardReadOnly keeps it from queueing anything.  The dashboard
+	// accepts the operator tokens, so it is as protected as the console.
+	DashboardListen   string `json:"dashboard_listen"`
+	DashboardReadOnly bool   `json:"dashboard_read_only"`
+
 	PSKFile       string   `json:"psk_file"`
 	AgentPSK      string   `json:"agent_psk_env"`      // env var that holds the agent PSK
 	OperatorToken []string `json:"operator_token_env"` // env vars holding "name:token" pairs

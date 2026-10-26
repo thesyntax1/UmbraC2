@@ -3198,3 +3198,36 @@ def test_the_journal_keeps_what_a_console_missed():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_the_dashboard_serves_what_the_documentation_promises():
+    """The dashboard's endpoints are the ones the operations guide lists.
+
+    The dashboard is written in Go and the guide is a Markdown file, so
+    nothing but a check keeps the two in step.  This is that check.
+    """
+    dash_dir = os.path.join(ROOT, "server", "internal", "dash")
+    go = open(os.path.join(dash_dir, "dash.go"), encoding="utf-8").read()
+    page = open(os.path.join(dash_dir, "index.html"), encoding="utf-8").read()
+    guide = open(os.path.join(ROOT, "docs", "OPERATIONS.md"), encoding="utf-8").read()
+
+    endpoints = ["/api/agents", "/api/tasks", "/api/events", "/api/stats", "/api/task"]
+    for path in endpoints:
+        assert path in go, f"{path} is not served"
+        assert path in guide, f"{path} is not documented"
+
+    # The page uses the same endpoints.
+    for path in endpoints:
+        assert path in page, f"{path} is not used by the page"
+
+    # The dashboard is a local listener by default, and the deployed
+    # configuration says so.
+    with open(os.path.join(ROOT, "deploy", "server.prod.json"), encoding="utf-8") as fh:
+        prod = json.load(fh)
+    assert "dashboard_listen" in prod
+    assert prod["dashboard_listen"] == ""
+    assert prod["dashboard_read_only"] is True
+
+    # The token is the operator's, and it is compared in constant time.
+    assert "equalSecret" in go
+    assert "Authorization" in go
