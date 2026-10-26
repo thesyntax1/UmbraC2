@@ -50,9 +50,13 @@ class MockServer:
         host: str = "127.0.0.1",
         port: int = 0,
         rekey_after: Optional[int] = None,
+        roles: Optional[Dict[str, str]] = None,
     ) -> None:
         self.agent_psk = agent_psk
         self.operators = dict(operators)
+        # Roles mirror server/internal/rbac: everything defaults to admin so
+        # existing tests keep working, and `roles=` narrows a specific console.
+        self.roles = {name: (roles or {}).get(name, "admin") for name in self.operators}
         # Test hook: force a key rotation once a session has sent this many
         # frames in either direction (real servers use REKEY_AFTER).
         self.rekey_after = rekey_after
@@ -67,6 +71,8 @@ class MockServer:
         self.events: List[Dict[str, Any]] = []
         # Mirrors the Go server's audit trail: one entry per operator RPC.
         self.audit_entries: List[Dict[str, Any]] = []
+        self.chat: List[Dict[str, Any]] = []
+        self.schedules: Dict[str, Dict[str, Any]] = {}
         self.subscribers: List["queue.Queue[Dict[str, Any]]"] = []
         # task ids cancelled after delivery; the next check-in carries one
         # TASK_CANCEL frame each, before TASK_BATCH (same order as the server).
@@ -82,6 +88,10 @@ class MockServer:
         self._sock.listen(32)
         self._sock.settimeout(0.2)
         self.host, self.port = self._sock.getsockname()
+        ticker = threading.Thread(target=self._schedule_loop, name="mock-schedule", daemon=True)
+        ticker.start()
+        self._threads.append(ticker)
+
         t = threading.Thread(target=self._accept_loop, name="mock-accept", daemon=True)
         t.start()
         self._threads.append(t)
@@ -144,6 +154,14 @@ class MockServer:
             self._agent_loop(stream, result, str(addr))
 
     # -- agents ----------------------------------------------------------
+    def _schedule_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._due_schedules()
+            except Exception:  # pragma: no cover - dev helper
+                pass
+            self._stop.wait(0.1)
+
     def _agent_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
         sess = result.session
         agent_id = result.peer_id
@@ -303,10 +321,73 @@ class MockServer:
                     self.subscribers.remove(inbox)
             stream.close()
 
+    # Mirrors server/internal/rbac/resources.go: minimum role per command.
+    ROLE_RANK = {"viewer": 1, "operator": 2, "admin": 3}
+    REQUIREMENTS = {
+        "ping": "viewer",
+        "whoami": "viewer",
+        "server.stats": "viewer",
+        "audit.tail": "viewer",
+        "operators.list": "viewer",
+        "agents.list": "viewer",
+        "agents.info": "viewer",
+        "task.get": "viewer",
+        "task.list": "viewer",
+        "chat.history": "viewer",
+        "schedule.list": "viewer",
+        "task.submit": "operator",
+        "task.cancel": "operator",
+        "agents.kill": "operator",
+        "agents.exit": "operator",
+        "agents.sleep": "operator",
+        "chat.send": "operator",
+        "schedule.add": "operator",
+        "schedule.remove": "admin",
+        "events.test": "admin",
+    }
+
+    def min_role(self, cmd: str) -> str:
+        return self.REQUIREMENTS.get(cmd, "admin")
+
+    def allowed(self, role: str, cmd: str) -> bool:
+        return self.ROLE_RANK.get(role, 0) >= self.ROLE_RANK.get(self.min_role(cmd), 99)
+
+    def _due_schedules(self) -> None:
+        """Fire recurring tasks; the mock uses the same rules as the hub."""
+        now = time.time()
+        fired = []
+        with self._lock:
+            for sc in self.schedules.values():
+                if sc["next_run"] > now:
+                    continue
+                sc["next_run"] = now + sc["every"]
+                sc["runs"] += 1
+                fired.append(dict(sc))
+        for sc in fired:
+            with self._lock:
+                agent = self.agents.get(sc["agent_id"])
+                if agent is None:
+                    continue
+                task = {
+                    "id": new_id("t"),
+                    "agent_id": sc["agent_id"],
+                    "kind": sc["kind"],
+                    "args": sc["args"],
+                    "state": "queued",
+                    "code": 0,
+                    "out": b"",
+                    "err": "",
+                    "created": _now(),
+                }
+                self.tasks[task["id"]] = task
+                sc["last_task"] = task["id"]
+            self.emit("schedule.fired", sc["agent_id"], task_id=task["id"],
+                      data={"schedule_id": sc["id"], "kind": sc["kind"]})
+
     def dispatch(self, req: Dict[str, Any], operator: str = "mock", peer: str = "") -> Dict[str, Any]:
         """Handle one RPC and record it in the in-memory audit trail."""
         started = time.monotonic()
-        resp = self._handle(req)
+        resp = self._handle(req, operator)
         entry = {
             "at": _now(),
             "operator": operator,
@@ -327,7 +408,7 @@ class MockServer:
                 del self.audit_entries[:1000]
         return resp
 
-    def _handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle(self, req: Dict[str, Any], operator: str = "mock") -> Dict[str, Any]:
         rid = req.get("rid", 0)
         cmd = str(req.get("cmd", ""))
         args = req.get("args") or {}
@@ -342,8 +423,91 @@ class MockServer:
             resp["err"] = msg
             return resp
 
+        role = self.roles.get(operator, "operator")
+        if not self.allowed(role, cmd):
+            return fail(
+                f"permission denied: {cmd!r} requires role {self.min_role(cmd)} (you are {role})"
+            )
+
         if cmd == "ping":
             return ok({"pong": _now()})
+
+        if cmd == "whoami":
+            caps = sorted(c for c in self.REQUIREMENTS if self.allowed(role, c))
+            return ok(
+                {
+                    "name": operator,
+                    "role": role,
+                    "peer": "127.0.0.1:0",
+                    "transport": "tcp/operator",
+                    "since": _now(),
+                    "capabilities": caps,
+                }
+            )
+
+        if cmd == "chat.send":
+            text = str(args.get("text", "")).strip()
+            if not text:
+                return fail("chat.send needs non-empty text")
+            message = {"from": operator, "role": role, "text": text[:2000], "at": _now()}
+            with self._lock:
+                self.chat.append(message)
+                del self.chat[:-200]
+            self.emit("chat", data=dict(message))
+            return ok({"at": message["at"], "from": operator})
+
+        if cmd == "chat.history":
+            limit = int(args.get("limit", 50) or 50)
+            with self._lock:
+                return ok({"messages": [dict(m) for m in self.chat[-limit:]]})
+
+        if cmd == "schedule.add":
+            agent_id = str(args.get("id", ""))
+            kind = str(args.get("kind", ""))
+            every = int(args.get("every", 0) or 0)
+            with self._lock:
+                if agent_id not in self.agents:
+                    return fail(f"schedule.add: unknown agent {agent_id!r}")
+                if every < 5 or every > 86400:
+                    return fail("schedule.add: interval out of range")
+                schedule = {
+                    "id": new_id("s"),
+                    "agent_id": agent_id,
+                    "kind": kind,
+                    "args": args.get("args") or {},
+                    "every": every,
+                    "enabled": True,
+                    "runs": 0,
+                    "next_run": time.time() + every,
+                    "created": _now(),
+                    "last_task": "",
+                    "by": operator,
+                }
+                self.schedules[schedule["id"]] = schedule
+            self.emit("schedule.created", agent_id, data={"schedule_id": schedule["id"]})
+            return ok(
+                {
+                    "schedule_id": schedule["id"],
+                    "agent_id": agent_id,
+                    "kind": kind,
+                    "every": every,
+                    "next_run": int(schedule["next_run"]),
+                }
+            )
+
+        if cmd == "schedule.list":
+            with self._lock:
+                items = [dict(sc) for sc in self.schedules.values()]
+            return ok({"schedules": items})
+
+        if cmd == "schedule.remove":
+            schedule_id = str(args.get("schedule_id", ""))
+            with self._lock:
+                if schedule_id not in self.schedules:
+                    return fail(f"schedule.remove: unknown schedule {schedule_id!r}")
+                del self.schedules[schedule_id]
+            self.emit("schedule.removed", data={"schedule_id": schedule_id})
+            return ok({"schedule_id": schedule_id, "removed": True})
 
         if cmd == "server.stats":
             with self._lock:
@@ -358,6 +522,7 @@ class MockServer:
                             1 for t in self.tasks.values() if t["state"] in ("queued", "delivered")
                         ),
                         "operators": len(self.subscribers),
+                        "schedules": len(self.schedules),
                         "protocol": "umbra/v1",
                         "note": "mock server (test double)",
                     }

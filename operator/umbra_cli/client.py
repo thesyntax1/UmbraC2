@@ -180,6 +180,41 @@ class OperatorClient:
             raise OperatorError(res.error)
         return list(res.data.get("agents", []))
 
+    def whoami(self) -> Dict[str, Any]:
+        res = self.rpc("whoami")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def say(self, text: str) -> Dict[str, Any]:
+        res = self.rpc("chat.send", {"text": text})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def chat_history(self, limit: int = 50) -> List[Dict[str, Any]]:
+        res = self.rpc("chat.history", {"limit": limit})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("messages", []))
+
+    def schedules(self) -> List[Dict[str, Any]]:
+        res = self.rpc("schedule.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("schedules", []))
+
+    def add_schedule(self, agent_id: str, kind: str, every: int, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        res = self.rpc("schedule.add", {"id": agent_id, "kind": kind, "every": every, "args": args or {}})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def remove_schedule(self, schedule_id: str) -> None:
+        res = self.rpc("schedule.remove", {"schedule_id": schedule_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+
     def operators(self) -> List[Dict[str, Any]]:
         res = self.rpc("operators.list")
         if not res.ok:

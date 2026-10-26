@@ -1202,3 +1202,161 @@ def test_consistency_check_detects_an_unwritable_deploy_path():
     code, out = _run_checker("check_consistency.py", move_audit_to_log)
     assert code == 1
     assert "outside the writable paths" in out
+
+
+def test_consistency_check_detects_an_rbac_drift():
+    """A command documented as read-only but enforced as operator is a bug."""
+    def promote_task_submit_requirement(rel, text):
+        if rel.endswith("rbac.go"):
+            return text.replace('"task.submit": Operator,', '"task.submit": Viewer,')
+        return text
+
+    code, out = _run_checker("check_consistency.py", promote_task_submit_requirement)
+    assert code == 1
+    assert "task.submit documented as operator, enforced as viewer" in out
+
+
+def test_viewer_role_is_enforced_over_the_wire():
+    """The reference server refuses writes for a viewer token."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    viewer_token = b"viewer-token-0123456789abcd"
+    admin_token = b"admin-token-0123456789abcde"
+    server = MockServer(
+        AGENT_PSK,
+        {"watcher": viewer_token, "alice": admin_token},
+        roles={"watcher": "viewer"},
+    )
+    server.start()
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    viewer = OperatorClient(server.address, viewer_token.decode(), "watcher")
+    admin = OperatorClient(server.address, admin_token.decode(), "alice")
+    try:
+        viewer.connect()
+        admin.connect()
+
+        me = viewer.whoami()
+        assert me["role"] == "viewer"
+        assert "task.submit" not in me["capabilities"]
+        assert "agents.list" in me["capabilities"]
+
+        # Reads are fine.
+        assert viewer.agents() == []
+
+        # Writes are refused, and the refusal names the required role.
+        with pytest.raises(OperatorError) as excinfo:
+            viewer.submit("nobody", "shell", {"cmd": "id"})
+        assert "permission denied" in str(excinfo.value)
+        assert "operator" in str(excinfo.value)
+        with pytest.raises(OperatorError):
+            viewer.set_sleep("nobody", 10, 10)
+
+        # Admin-only commands are refused for a plain operator too.
+        operator_token = b"operator-token-rbac-01234567"
+        server.operators["bob"] = operator_token
+        server.roles["bob"] = "operator"
+        bob = OperatorClient(server.address, operator_token.decode(), "bob")
+        try:
+            bob.connect()
+            assert bob.whoami()["role"] == "operator"
+            with pytest.raises(OperatorError):
+                bob.remove_schedule("s-nope")
+            # ... but it may read the schedule list.
+            assert bob.schedules() == []
+        finally:
+            bob.close()
+    finally:
+        viewer.close()
+        admin.close()
+        server.stop()
+
+
+def test_operator_chat_is_broadcast_and_kept():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    alice_token = b"chat-token-alice-012345678"
+    bob_token = b"chat-token-bob-01234567890"
+    server = MockServer(AGENT_PSK, {"alice": alice_token, "bob": bob_token})
+    server.start()
+    from umbra_cli.client import OperatorClient
+
+    alice = OperatorClient(server.address, alice_token.decode(), "alice")
+    bob = OperatorClient(server.address, bob_token.decode(), "bob")
+    try:
+        alice.connect()
+        bob.connect()
+        alice.say("moving on web-01")
+        bob.say("ack")
+
+        history = alice.chat_history(10)
+        assert [m["text"] for m in history] == ["moving on web-01", "ack"]
+        assert history[0]["from"] == "alice"
+
+        # Messages are also pushed as events, so a watching console sees them.
+        # Earlier events (operator.connected) may be queued ahead of the chat.
+        kinds = [bob.next_event(timeout=2.0)["kind"] for _ in range(3)]
+        assert "chat" in kinds
+
+        with pytest.raises(Exception):
+            alice.say("   ")
+    finally:
+        alice.close()
+        bob.close()
+        server.stop()
+
+
+def test_schedules_fire_tasks():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"schedule-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-sched", interval=0.2)
+    agent.start()
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        created = client.add_schedule("agent-sched", "ping", 5)
+        assert created["every"] == 5
+        schedule_id = created["schedule_id"]
+
+        rows = client.schedules()
+        assert len(rows) == 1 and rows[0]["id"] == schedule_id
+        assert rows[0]["by"] == "alice"
+
+        # The interval floor protects the engagement; the server refuses 1s.
+        with pytest.raises(OperatorError):
+            client.add_schedule("agent-sched", "ping", 1)
+        with pytest.raises(OperatorError):
+            client.add_schedule("ghost-agent", "ping", 30)
+
+        # Force the next run into the past and wait for the ticker to fire it.
+        with server._lock:  # noqa: SLF001 - test double
+            server.schedules[schedule_id]["next_run"] = time.time() - 1
+        deadline = time.time() + 5
+        fired = None
+        while time.time() < deadline and fired is None:
+            fired = next((t for t in client.tasks("agent-sched") if t["kind"] == "ping"), None)
+            time.sleep(0.05)
+        assert fired is not None, "schedule never produced a task"
+
+        # And it is removable, which also stops it.
+        client.remove_schedule(schedule_id)
+        assert client.schedules() == []
+        with pytest.raises(OperatorError):
+            client.remove_schedule(schedule_id)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

@@ -12,6 +12,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
+	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
@@ -19,8 +20,9 @@ import (
 )
 
 var (
-	agentPSK = []byte("agent-psk-0123456789abcdef0123")
-	opToken  = []byte("operator-token-0123456789ab")
+	agentPSK    = []byte("agent-psk-0123456789abcdef0123")
+	opToken     = []byte("operator-token-0123456789ab")
+	viewerToken = []byte("viewer-token-0123456789abcd")
 )
 
 func newTestServer(t *testing.T) (*link.Server, *hub.Hub, string, string) {
@@ -34,7 +36,8 @@ func newTestServer(t *testing.T) (*link.Server, *hub.Hub, string, string) {
 	cfg.Server.Limits.IdleTimeoutSec = 10
 	cfg.Keyring = config.Keyring{
 		AgentPSK:  agentPSK,
-		Operators: map[string][]byte{"op1": opToken},
+		Operators: map[string][]byte{"op1": opToken, "viewer1": viewerToken},
+		Roles:     map[string]string{"op1": rbac.Admin, "viewer1": rbac.Viewer},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open("")
@@ -188,7 +191,7 @@ func (c *client) recv(t *testing.T) (byte, map[string]any) {
 func TestAgentErrorIsSurfacedToOperators(t *testing.T) {
 	_, h, agentAddr, _ := newTestServer(t)
 
-	op := h.Subscribe("watcher", "127.0.0.1:0", "tcp/operator")
+	op := h.Subscribe("watcher", rbac.Admin, "127.0.0.1:0", "tcp/operator")
 	defer h.Unsubscribe(op.ID)
 
 	ag := dial(t, agentAddr, agentPSK, crypt.RoleAgent, "agent-err-1")

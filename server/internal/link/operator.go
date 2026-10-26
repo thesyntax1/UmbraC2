@@ -11,6 +11,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
@@ -50,10 +51,11 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 		return
 	}
 
-	op := s.Hub.Subscribe(info.ID, addr, "tcp/operator")
+	role := s.Cfg.Keyring.Role(info.ID)
+	op := s.Hub.Subscribe(info.ID, role, addr, "tcp/operator")
 	defer s.Hub.Unsubscribe(op.ID)
 	defer s.forgetOperatorRate(info.ID)
-	log.Info("operator connected", "operator", info.ID, "suite", wire.SuiteName(info.Suite))
+	log.Info("operator connected", "operator", info.ID, "role", role, "suite", wire.SuiteName(info.Suite))
 
 	// The event pusher and the request handler below both write to this
 	// connection, so every frame goes through one Sender to keep the peer's
@@ -203,6 +205,14 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 
 	log.Debug("operator rpc", "operator", op.Name, "cmd", cmd)
 
+	// Authorisation comes first: an unauthorised call must not consume the
+	// rate budget (a viewer polling a denied command should not lock itself
+	// out of the commands it *can* run) and must be visible in the audit log.
+	if !rbac.Allowed(op.Role, strings.TrimSpace(cmd)) {
+		return fail("permission denied: %q requires role %s (you are %s)",
+			strings.TrimSpace(cmd), rbac.MinRole(strings.TrimSpace(cmd)), op.Role)
+	}
+
 	// The limiter sits inside the handler so a rate-limited call is still
 	// audited: "operator tried to flood" is exactly the kind of thing the log
 	// exists to show.
@@ -213,6 +223,22 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	switch strings.TrimSpace(cmd) {
 	case "ping":
 		return reply(upk.Map{"pong": time.Now().Unix()})
+
+	case "whoami":
+		caps := rbac.CapabilitiesFor(op.Role)
+		sort.Strings(caps)
+		out := make([]any, 0, len(caps))
+		for _, c := range caps {
+			out = append(out, c)
+		}
+		return reply(upk.Map{
+			"name":         op.Name,
+			"role":         op.Role,
+			"peer":         op.Peer,
+			"transport":    op.Transport,
+			"since":        op.Since.Format(time.RFC3339),
+			"capabilities": out,
+		})
 
 	case "audit.tail":
 		limit, ok := asInt64(args["limit"])
@@ -243,6 +269,91 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 
 	case "server.stats":
 		return reply(toUpkMap(s.Hub.Stats()))
+
+	case "chat.send":
+		text, _ := args["text"].(string)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return fail("chat.send needs non-empty text")
+		}
+		if len(text) > 2000 {
+			text = text[:2000]
+		}
+		msg := s.Hub.Say(op.Name, op.Role, text)
+		return reply(upk.Map{"at": msg.At.Unix(), "from": msg.From})
+
+	case "chat.history":
+		limit, ok := asInt64(args["limit"])
+		if !ok || limit <= 0 {
+			limit = 50
+		}
+		if limit > int64(hub.MaxChatHistory) {
+			limit = int64(hub.MaxChatHistory)
+		}
+		messages := s.Hub.Chat(int(limit))
+		out := make([]any, 0, len(messages))
+		for _, m := range messages {
+			out = append(out, upk.Map{
+				"from": m.From,
+				"role": m.Role,
+				"text": m.Text,
+				"at":   m.At.Unix(),
+			})
+		}
+		return reply(upk.Map{"messages": out})
+
+	case "schedule.add":
+		agentID, _ := args["id"].(string)
+		kind, _ := args["kind"].(string)
+		every, ok := asInt64(args["every"])
+		if !ok {
+			return fail("schedule.add needs a numeric \"every\" (seconds)")
+		}
+		taskArgs, _ := args["args"].(map[string]any)
+		if _, exists := s.Hub.Store().Agent(agentID); !exists {
+			return fail("schedule.add: unknown agent %q", agentID)
+		}
+		sc, err := s.Hub.Store().AddSchedule(&store.Schedule{
+			AgentID:   agentID,
+			Kind:      kind,
+			Args:      taskArgs,
+			EverySec:  int(every),
+			CreatedBy: op.Name,
+		})
+		if err != nil {
+			return fail("schedule.add: %v", err)
+		}
+		s.Hub.Store().SaveAsync()
+		s.Hub.Emit(hub.Event{Kind: "schedule.created", AgentID: sc.AgentID, Data: map[string]any{
+			"schedule_id": sc.ID, "kind": sc.Kind, "every": sc.EverySec,
+		}})
+		return reply(upk.Map{
+			"schedule_id": sc.ID,
+			"agent_id":    sc.AgentID,
+			"kind":        sc.Kind,
+			"every":       int64(sc.EverySec),
+			"next_run":    sc.NextRun.Unix(),
+		})
+
+	case "schedule.list":
+		all := s.Hub.Store().Schedules()
+		out := make([]any, 0, len(all))
+		for _, sc := range all {
+			out = append(out, scheduleMap(sc))
+		}
+		return reply(upk.Map{"schedules": out})
+
+	case "schedule.remove":
+		id, _ := args["schedule_id"].(string)
+		if id == "" {
+			return fail("schedule.remove needs schedule_id")
+		}
+		if !s.Hub.Store().RemoveSchedule(id) {
+			return fail("schedule.remove: unknown schedule %q", id)
+		}
+		s.Hub.Store().SaveAsync()
+		s.Hub.Emit(hub.Event{Kind: "schedule.removed", Data: map[string]any{"schedule_id": id}})
+		return reply(upk.Map{"schedule_id": id, "removed": true})
 
 	case "operators.list":
 		ops := s.Hub.Operators()
@@ -373,6 +484,22 @@ func eventMap(ev hub.Event) upk.Map {
 		m["data"] = toUpkMap(ev.Data)
 	}
 	return m
+}
+
+func scheduleMap(sc *store.Schedule) upk.Map {
+	return upk.Map{
+		"id":        sc.ID,
+		"agent_id":  sc.AgentID,
+		"kind":      sc.Kind,
+		"args":      toUpkMap(sc.Args),
+		"every":     int64(sc.EverySec),
+		"enabled":   sc.Enabled,
+		"runs":      int64(sc.Runs),
+		"next_run":  sc.NextRun.Unix(),
+		"created":   sc.Created.Unix(),
+		"last_task": sc.LastTask,
+		"by":        sc.CreatedBy,
+	}
 }
 
 func taskMap(t *store.Task) upk.Map {

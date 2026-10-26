@@ -334,11 +334,39 @@ Task kinds understood by the reference implants:
 | `exit` | — | beacon sends result, then BYE and terminates |
 | `ping` | — | `pong` |
 
-Operator RPC commands: `ping`, `server.stats`, `agents.list`, `agents.info`,
-`operators.list`,
-`agents.sleep`, `agents.kill`, `task.submit`, `task.get`, `task.list`,
-`task.cancel`, `audit.tail`, `events.test`. Responses keep the `rid` of the request; events are
-asynchronous and can arrive at any time.
+Operator RPC commands, with the minimum role each requires:
+
+| Command | Role | Notes |
+|---|---|---|
+| `ping` | viewer | liveness |
+| `whoami` | viewer | identity, role, peer, allowed commands |
+| `server.stats` | viewer | counters, including `events_dropped` |
+| `agents.list` | viewer | inventory |
+| `agents.info` | viewer | one agent and its recent tasks |
+| `operators.list` | viewer | connected consoles and their queue depth |
+| `task.get` | viewer | one task |
+| `task.list` | viewer | tasks for an agent |
+| `audit.tail` | viewer | recent operator actions |
+| `chat.history` | viewer | recent chat |
+| `schedule.list` | viewer | recurring tasks |
+| `task.submit` | operator | queue a task |
+| `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
+| `agents.sleep` | operator | change beacon cadence |
+| `agents.kill` | operator | queue the exit task |
+| `agents.exit` | operator | alias of `agents.kill` |
+| `chat.send` | operator | broadcast a chat line |
+| `schedule.add` | operator | recurring task (5–86400 s) |
+| `schedule.remove` | admin | remove a recurring task |
+| `events.test` | admin | emit a synthetic event |
+
+Roles are `viewer` < `operator` < `admin`. Identities come from
+`operator_token_env` entries formatted `name:token` (role defaults to
+`operator`) or `name:role:token`. A command that is not in the table requires
+`admin`, so a new RPC is closed by default. A refused call returns
+`{ok:false, err:"permission denied: …"}` and is recorded in the audit log.
+
+Responses keep the `rid` of the request; events are asynchronous and can arrive
+at any time.
 
 ## 8. Transports
 

@@ -33,6 +33,43 @@ const (
 	TaskCancelled = "cancelled"
 )
 
+// Schedule is a recurring task: "run this kind on this agent every N seconds".
+//
+// It lives in the store rather than in a scheduler's memory so a restart does
+// not silently stop an operator's collection run.
+type Schedule struct {
+	ID       string         `json:"id"`
+	AgentID  string         `json:"agent_id"`
+	Kind     string         `json:"kind"`
+	Args     map[string]any `json:"args"`
+	EverySec int            `json:"every_s"`
+	Enabled  bool           `json:"enabled"`
+	Created  time.Time      `json:"created"`
+	NextRun  time.Time      `json:"next_run"`
+	Runs     uint64         `json:"runs"`
+	LastTask string         `json:"last_task,omitempty"`
+	CreatedBy string        `json:"created_by,omitempty"`
+}
+
+// Clone returns a copy with its own Args map.
+func (s *Schedule) Clone() *Schedule {
+	c := *s
+	c.Args = make(map[string]any, len(s.Args))
+	for k, v := range s.Args {
+		c.Args[k] = v
+	}
+	return &c
+}
+
+// MinScheduleInterval keeps a schedule from turning into a self-inflicted DoS.
+const MinScheduleInterval = 5
+
+// MaxScheduleInterval is a day: anything longer is a typo or a job for cron.
+const MaxScheduleInterval = 86400
+
+// MaxSchedules bounds the table.
+const MaxSchedules = 256
+
 // MaxTasks bounds the in-memory history.
 const MaxTasks = 20000
 
@@ -86,8 +123,9 @@ func (t *Task) Clone() *Task {
 }
 
 type snapshot struct {
-	Agents []*Agent `json:"agents"`
-	Tasks  []*Task  `json:"tasks"`
+	Agents    []*Agent    `json:"agents"`
+	Tasks     []*Task     `json:"tasks"`
+	Schedules []*Schedule `json:"schedules,omitempty"`
 }
 
 // Store is the concurrency-safe data store.
@@ -97,6 +135,9 @@ type Store struct {
 	agents map[string]*Agent
 	tasks  map[string]*Task
 	order  []string
+
+	schedules map[string]*Schedule
+	schedIDs  []string // insertion order, for stable listing
 
 	// writeMu serialises file writes. Without it two goroutines shared one
 	// "<path>.tmp" file and could rename a half-rewritten document into place.
@@ -120,9 +161,10 @@ func (s *Store) SetSaveErrorHandler(fn func(error)) {
 // Open loads (or initialises) the store at path.
 func Open(path string) (*Store, error) {
 	s := &Store{
-		path:   path,
-		agents: make(map[string]*Agent),
-		tasks:  make(map[string]*Task),
+		path:      path,
+		agents:    make(map[string]*Agent),
+		tasks:     make(map[string]*Task),
+		schedules: make(map[string]*Schedule),
 	}
 	if path == "" {
 		return s, nil
@@ -148,6 +190,18 @@ func Open(path string) (*Store, error) {
 		if t.State == TaskDelivered {
 			t.State = TaskQueued // the agent may never have executed it
 		}
+	}
+	for _, sc := range snap.Schedules {
+		if sc.ID == "" {
+			continue
+		}
+		// A schedule whose time passed while the server was down must not fire
+		// a burst of catch-up runs; push the next run to the future instead.
+		if sc.Enabled && sc.NextRun.Before(time.Now().UTC()) {
+			sc.NextRun = time.Now().UTC().Add(time.Duration(sc.EverySec) * time.Second)
+		}
+		s.schedules[sc.ID] = sc
+		s.schedIDs = append(s.schedIDs, sc.ID)
 	}
 	return s, nil
 }
@@ -379,13 +433,22 @@ func (s *Store) Save() error {
 	defer s.writeMu.Unlock()
 
 	s.mu.RLock()
-	snap := snapshot{Agents: make([]*Agent, 0, len(s.agents)), Tasks: make([]*Task, 0, len(s.order))}
+	snap := snapshot{
+		Agents:    make([]*Agent, 0, len(s.agents)),
+		Tasks:     make([]*Task, 0, len(s.order)),
+		Schedules: make([]*Schedule, 0, len(s.schedIDs)),
+	}
 	for _, a := range s.agents {
 		snap.Agents = append(snap.Agents, a.Clone())
 	}
 	for _, id := range s.order {
 		if t := s.tasks[id]; t != nil {
 			snap.Tasks = append(snap.Tasks, t.Clone())
+		}
+	}
+	for _, id := range s.schedIDs {
+		if sc := s.schedules[id]; sc != nil {
+			snap.Schedules = append(snap.Schedules, sc.Clone())
 		}
 	}
 	s.mu.RUnlock()
@@ -487,6 +550,106 @@ func (s *Store) Flush() error {
 		<-waiter
 	}
 	return s.Save()
+}
+
+// AddSchedule stores a schedule and returns a copy.
+func (s *Store) AddSchedule(sc *Schedule) (*Schedule, error) {
+	if sc.AgentID == "" || sc.Kind == "" {
+		return nil, errors.New("store: schedule needs an agent and a kind")
+	}
+	if sc.EverySec < MinScheduleInterval || sc.EverySec > MaxScheduleInterval {
+		return nil, fmt.Errorf("store: schedule interval must be %d..%d seconds",
+			MinScheduleInterval, MaxScheduleInterval)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.schedIDs) >= MaxSchedules {
+		return nil, errors.New("store: too many schedules")
+	}
+	now := time.Now().UTC()
+	if sc.ID == "" {
+		sc.ID = NewID("s")
+	}
+	sc.Created = now
+	sc.Enabled = true
+	sc.NextRun = now.Add(time.Duration(sc.EverySec) * time.Second)
+	if sc.Args == nil {
+		sc.Args = map[string]any{}
+	}
+	s.schedules[sc.ID] = sc
+	s.schedIDs = append(s.schedIDs, sc.ID)
+	return sc.Clone(), nil
+}
+
+// Schedules returns every schedule in creation order.
+func (s *Store) Schedules() []*Schedule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Schedule, 0, len(s.schedIDs))
+	for _, id := range s.schedIDs {
+		if sc := s.schedules[id]; sc != nil {
+			out = append(out, sc.Clone())
+		}
+	}
+	return out
+}
+
+// Schedule returns one schedule by id.
+func (s *Store) Schedule(id string) (*Schedule, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sc, ok := s.schedules[id]
+	if !ok {
+		return nil, false
+	}
+	return sc.Clone(), true
+}
+
+// RemoveSchedule deletes a schedule.
+func (s *Store) RemoveSchedule(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.schedules[id]; !ok {
+		return false
+	}
+	delete(s.schedules, id)
+	for i, existing := range s.schedIDs {
+		if existing == id {
+			s.schedIDs = append(s.schedIDs[:i], s.schedIDs[i+1:]...)
+			break
+		}
+	}
+	return true
+}
+
+// DueSchedules advances every schedule whose time has come and returns them.
+//
+// Advancing NextRun rather than the caller doing it means a slow tick can never
+// cause the same schedule to fire twice, and a schedule that is minutes late
+// (a paused server, a long GC) fires once instead of N times.
+func (s *Store) DueSchedules(now time.Time) []*Schedule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Schedule
+	for _, id := range s.schedIDs {
+		sc := s.schedules[id]
+		if sc == nil || !sc.Enabled || sc.NextRun.After(now) {
+			continue
+		}
+		sc.NextRun = now.Add(time.Duration(sc.EverySec) * time.Second)
+		sc.Runs++
+		out = append(out, sc.Clone())
+	}
+	return out
+}
+
+// MarkScheduleRan records the task id a schedule produced.
+func (s *Store) MarkScheduleRan(id, taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sc := s.schedules[id]; sc != nil {
+		sc.LastTask = taskID
+	}
 }
 
 func (s *Store) pruneLocked() {

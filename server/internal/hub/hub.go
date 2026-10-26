@@ -4,6 +4,7 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,12 +44,15 @@ type Operator struct {
 	// recorded in the audit log so an entry can be traced to a session.
 	Peer      string
 	Transport string
+	// Role is the authorisation level resolved from the keyring.
+	Role string
 }
 
 // OperatorInfo is the public view of a connected operator console.
 type OperatorInfo struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
+	Role      string `json:"role"`
 	Peer      string `json:"peer"`
 	Transport string `json:"transport"`
 	Since     string `json:"since"`
@@ -83,6 +87,10 @@ type Hub struct {
 	// a health signal, not noise: if it grows, an operator is missing events.
 	dropped uint64
 
+	// chat keeps the last few chat messages so a console that joins late can
+	// see the conversation it missed.
+	chat []ChatMessage
+
 	// cancels holds task ids the operators cancelled after they were delivered
 	// to a beacon. The next check-in carries a TASK_CANCEL frame for each, so a
 	// task still sitting in the beacon's batch is not executed.
@@ -92,6 +100,44 @@ type Hub struct {
 // MaxPendingCancels bounds the cancel queue per agent; a cycle carries at most
 // this many frames.
 const MaxPendingCancels = 4
+
+// MaxChatHistory bounds the in-memory chat ring.
+const MaxChatHistory = 200
+
+// ChatMessage is one operator chat line.
+type ChatMessage struct {
+	From string    `json:"from"`
+	Role string    `json:"role"`
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+}
+
+// Say records a chat message and broadcasts it to every console.
+func (h *Hub) Say(from, role, text string) ChatMessage {
+	msg := ChatMessage{From: from, Role: role, Text: text, At: time.Now().UTC()}
+	h.mu.Lock()
+	h.chat = append(h.chat, msg)
+	if len(h.chat) > MaxChatHistory {
+		h.chat = h.chat[len(h.chat)-MaxChatHistory:]
+	}
+	h.mu.Unlock()
+	h.Emit(Event{Kind: "chat", Data: map[string]any{
+		"from": msg.From, "role": msg.Role, "text": msg.Text, "at": msg.At.Format(time.RFC3339),
+	}})
+	return msg
+}
+
+// Chat returns the most recent messages, oldest first, at most limit of them.
+func (h *Hub) Chat(limit int) []ChatMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if limit <= 0 || limit > len(h.chat) {
+		limit = len(h.chat)
+	}
+	out := make([]ChatMessage, limit)
+	copy(out, h.chat[len(h.chat)-limit:])
+	return out
+}
 
 // New creates a hub.
 func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Hub {
@@ -319,7 +365,7 @@ func (h *Hub) Policy(agentID string) (int, int) {
 }
 
 // Subscribe registers an operator event stream.
-func (h *Hub) Subscribe(name, peer, transport string) *Operator {
+func (h *Hub) Subscribe(name, role, peer, transport string) *Operator {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.nextSub++
@@ -330,6 +376,7 @@ func (h *Hub) Subscribe(name, peer, transport string) *Operator {
 		Since:     time.Now().UTC(),
 		Peer:      peer,
 		Transport: transport,
+		Role:      role,
 	}
 	h.subs[op.ID] = op
 	return op
@@ -371,6 +418,7 @@ func (h *Hub) Operators() []OperatorInfo {
 		out = append(out, OperatorInfo{
 			ID:        op.ID,
 			Name:      op.Name,
+			Role:      op.Role,
 			Peer:      op.Peer,
 			Transport: op.Transport,
 			Since:     op.Since.Format(time.RFC3339),
@@ -379,6 +427,51 @@ func (h *Hub) Operators() []OperatorInfo {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// StartScheduler fires due recurring tasks until ctx is cancelled.
+//
+// The tick is one second: the protocol's smallest schedule interval is five
+// seconds (store.MinScheduleInterval), so nothing can be missed, and a missed
+// tick only delays a run rather than duplicating it (DueSchedules advances
+// NextRun itself).
+func (h *Hub) StartScheduler(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				h.fireDueSchedules(now.UTC())
+			}
+		}
+	}()
+}
+
+func (h *Hub) fireDueSchedules(now time.Time) {
+	for _, sc := range h.store.DueSchedules(now) {
+		if _, ok := h.store.Agent(sc.AgentID); !ok {
+			// The agent is gone (or never checked in). Keep the schedule, skip
+			// the run, and say so once per firing rather than silently.
+			h.Emit(Event{Kind: "schedule.skipped", AgentID: sc.AgentID, Data: map[string]any{
+				"schedule_id": sc.ID, "reason": "unknown agent",
+			}})
+			continue
+		}
+		t, err := h.SubmitTask(sc.AgentID, sc.Kind, sc.Args)
+		if err != nil {
+			h.Emit(Event{Kind: "schedule.skipped", AgentID: sc.AgentID, Data: map[string]any{
+				"schedule_id": sc.ID, "reason": err.Error(),
+			}})
+			continue
+		}
+		h.store.MarkScheduleRan(sc.ID, t.ID)
+		h.store.SaveAsync()
+		h.Emit(Event{Kind: "schedule.fired", AgentID: sc.AgentID, TaskID: t.ID,
+			Data: map[string]any{"schedule_id": sc.ID, "kind": sc.Kind}})
+	}
 }
 
 // Stats returns a server-wide snapshot for the operator CLI.
@@ -390,6 +483,7 @@ func (h *Hub) Stats() map[string]any {
 	out["agents_live"] = live
 	out["operators"] = subs
 	out["events_dropped"] = dropped
+	out["schedules"] = len(h.store.Schedules())
 	out["uptime_s"] = int(time.Since(h.started).Seconds())
 	out["protocol"] = "umbra/v1"
 	out["suites"] = []string{"aes-256-gcm"}

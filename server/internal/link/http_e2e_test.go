@@ -14,6 +14,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
+	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
@@ -39,7 +40,8 @@ func newHTTPServer(t *testing.T) (*link.Server, *hub.Hub, string) {
 	cfg.Server.Limits.IdleTimeoutSec = 60
 	cfg.Keyring = config.Keyring{
 		AgentPSK:  agentPSK,
-		Operators: map[string][]byte{"op1": opToken},
+		Operators: map[string][]byte{"op1": opToken, "viewer1": viewerToken},
+		Roles:     map[string]string{"op1": rbac.Admin, "viewer1": rbac.Viewer},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open("")

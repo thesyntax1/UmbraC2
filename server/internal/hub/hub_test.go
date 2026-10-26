@@ -95,8 +95,8 @@ func TestForceUnregisterDropsAnySession(t *testing.T) {
 
 func TestOperatorsAreListedWithTheirBacklog(t *testing.T) {
 	h := newHub(t)
-	bob := h.Subscribe("bob", "10.0.0.7:1", "tcp/operator")
-	alice := h.Subscribe("alice", "10.0.0.5:2", "tcp/operator")
+	bob := h.Subscribe("bob", "operator", "10.0.0.7:1", "tcp/operator")
+	alice := h.Subscribe("alice", "operator", "10.0.0.5:2", "tcp/operator")
 	defer h.Unsubscribe(bob.ID)
 	defer h.Unsubscribe(alice.ID)
 
@@ -122,7 +122,7 @@ func TestOperatorsAreListedWithTheirBacklog(t *testing.T) {
 // visible in stats rather than silently swallowed.
 func TestDroppedEventsAreCounted(t *testing.T) {
 	h := newHub(t)
-	op := h.Subscribe("slow", "10.0.0.8:1", "tcp/operator")
+	op := h.Subscribe("slow", "operator", "10.0.0.8:1", "tcp/operator")
 	defer h.Unsubscribe(op.ID)
 
 	// The channel holds 256 events; push well past that without reading.

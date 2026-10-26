@@ -135,6 +135,41 @@ start-up when it is off, and `umbra audit` says so instead of showing an empty
 list. On a real engagement, treat the audit file as evidence: ship it off the
 server, and do not give operators write access to it.
 
+## 5b. Roles
+
+Operator identities are configured with a role:
+
+```bash
+# /etc/umbra/server.env
+UMBRA_OPERATOR_TOKENS=alice:admin:b0a1…,bob:operator:7c2e…,carol:viewer:91fd…
+```
+
+`name:token` (the old form) still works and defaults to `operator`. There must be
+at least one `admin`, or the server refuses to start — otherwise nobody can
+manage the engagement.
+
+| Role | Can |
+|---|---|
+| `viewer` | read agents, tasks, results, audit, operators, chat, schedules |
+| `operator` | everything a viewer can, plus submit/cancel tasks, change beacon cadence, kill, chat, add schedules |
+| `admin` | everything, plus remove schedules and other engagement-wide actions |
+
+`umbra whoami` prints your role and the exact command list it allows, and the
+console refuses locally what the server would refuse anyway. A refusal is
+audited (`ok=false`, `err` starting with `permission denied`), so "who tried
+what" includes what they were not allowed to do.
+
+## 5c. Chat and recurring tasks
+
+* `umbra chat hello team` / `umbra chat` — the last 200 messages are kept in
+  memory and every console receives them as a `chat` event.
+* `umbra schedule add web-01 sysinfo --every 300` creates a recurring task;
+  `umbra schedule list` shows the next run, the run count and who created it;
+  `umbra schedule rm <id>` deletes it. Schedules are persisted with the state
+  file, so a restart does not stop a collection run. The interval is clamped to
+  5–86400 s, and a schedule that came due while the server was down fires once,
+  not once per missed interval.
+
 ## 6. Monitoring
 
 ```bash

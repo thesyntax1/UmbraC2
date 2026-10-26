@@ -52,6 +52,7 @@ main: load config → build keyring → open store → start listeners
 | `hub` | broker | all state transitions in one place; transports never mutate state |
 | `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP; per-operator RPC rate limit |
 | `audit` | operator audit trail | JSON Lines, `fsync` per entry, size rotation, nil-safe |
+| `rbac` | operator roles | one declarative command → minimum-role table; unknown commands are admin-only (fail closed) |
 
 ### Connection handling
 
@@ -181,7 +182,9 @@ Short term: message padding, `CONFIG` as a first-class policy push, streaming fi
 transfer (chunked `download`/`upload`), per-agent authorisation profiles, HTTP
 transport keep-alive.
 
-Done: operator audit log (`internal/audit`, `audit.tail`, `umbra audit`), which
+Done: roles and authorisation (`rbac`: viewer/operator/admin per RPC, enforced
+server-side and audited); operator chat and recurring tasks (`schedule.*` with a
+1 s scheduler tick, persisted with the state file); operator audit log (`internal/audit`, `audit.tail`, `umbra audit`), which
 records every RPC with operator, peer, transport, task/agent id and outcome, and
 is rotated, fsynced per line, and readable from disk after a restart; and task
 cancel end-to-end (`TASK_CANCEL` control frames read by both reference implants,

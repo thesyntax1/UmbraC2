@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 )
 
 // Beacon is the default agent polling policy handed out at handshake time.
@@ -58,6 +60,21 @@ type Keyring struct {
 	AgentPSK []byte
 	// Operators maps operator identity -> raw token bytes.
 	Operators map[string][]byte
+	// Roles maps operator identity -> role (admin/operator/viewer). An identity
+	// with a token but no role gets DefaultOperatorRole, which is the
+	// least-surprising thing for an existing deployment.
+	Roles map[string]string
+}
+
+// DefaultOperatorRole is used when a token is configured without a role.
+const DefaultOperatorRole = rbac.Operator
+
+// Role returns the configured role for an operator identity.
+func (k Keyring) Role(name string) string {
+	if role, ok := k.Roles[name]; ok && rbac.Valid(role) {
+		return role
+	}
+	return DefaultOperatorRole
 }
 
 // Config is the validated, ready-to-run configuration.
@@ -107,6 +124,7 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) loadKeys() error {
 	c.Keyring.Operators = map[string][]byte{}
+	c.Keyring.Roles = map[string]string{}
 
 	agentPSK := os.Getenv(c.Server.AgentPSK)
 	if agentPSK == "" && c.Server.PSKFile != "" {
@@ -125,11 +143,28 @@ func (c *Config) loadKeys() error {
 			if pair == "" {
 				continue
 			}
-			name, token, ok := strings.Cut(pair, ":")
-			if !ok || name == "" || token == "" {
-				return fmt.Errorf("config: %s entry %q must be name:token", envName, pair)
+			// Accepted forms:
+			//   name:token              role defaults to operator
+			//   name:role:token         role is admin/operator/viewer
+			fields := strings.SplitN(pair, ":", 3)
+			name, role, token := "", DefaultOperatorRole, ""
+			switch len(fields) {
+			case 2:
+				name, token = fields[0], fields[1]
+			case 3:
+				name, role, token = fields[0], fields[1], fields[2]
+			default:
+				return fmt.Errorf("config: %s entry %q must be name:token or name:role:token", envName, pair)
+			}
+			if name == "" || token == "" {
+				return fmt.Errorf("config: %s entry %q must be name:token or name:role:token", envName, pair)
+			}
+			if !rbac.Valid(role) {
+				return fmt.Errorf("config: %s operator %q has unknown role %q (want one of %v)",
+					envName, name, role, rbac.Roles)
 			}
 			c.Keyring.Operators[name] = []byte(token)
+			c.Keyring.Roles[name] = role
 		}
 	}
 	return nil
@@ -148,6 +183,20 @@ func (c *Config) Validate() error {
 		if len(tok) < 16 {
 			return fmt.Errorf("config: operator %q token shorter than 16 bytes", name)
 		}
+		if role := c.Keyring.Role(name); !rbac.Valid(role) {
+			return fmt.Errorf("config: operator %q has unknown role %q", name, role)
+		}
+	}
+	// One admin must exist, otherwise nobody can manage the engagement (and the
+	// operator would find out by being refused at the worst moment).
+	admins := 0
+	for name := range c.Keyring.Operators {
+		if c.Keyring.Role(name) == rbac.Admin {
+			admins++
+		}
+	}
+	if admins == 0 {
+		return errors.New("config: at least one operator token must have role admin")
 	}
 	if s.AgentListen == "" && s.OperatorListen == "" && s.HTTPListen == "" {
 		return errors.New("config: no listener configured")

@@ -180,7 +180,9 @@ TASK_KIND_SPECS = {
 }
 
 RPC_SPECS = {
-    "go": r'case "([a-z]+\.[a-z]+)"',
+    # A Go case may list aliases on one line (`case "agents.kill", "agents.exit":`),
+    # so collect every quoted command in the case label, not just the first.
+    "go": r'(?:case|,) "([a-z]+\.[a-z]+)"',
     "python": r'self\.rpc\("([a-z]+\.[a-z]+)"',
     "cli": r'rpc\("([a-z]+\.[a-z]+)"',
 }
@@ -201,15 +203,72 @@ def doc_task_kinds() -> set[str]:
     """Task kinds listed in docs/PROTOCOL.md's kind table."""
     text = read("docs/PROTOCOL.md")
     section = text.split("Task kinds understood by the reference implants:", 1)[-1]
-    section = section.split("Operator RPC commands:", 1)[0]
+    section = section.split("Operator RPC commands", 1)[0]
     return set(re.findall(r"^\| `([a-z]+)` \|", section, re.M))
 
 
 def doc_rpc_commands() -> set[str]:
+    """Every RPC named in the protocol document, from the table or the prose."""
     text = read("docs/PROTOCOL.md")
-    section = text.split("Operator RPC commands:", 1)[-1]
-    section = section.split("\n\n", 1)[0]
-    return set(re.findall(r"`([a-z]+\.[a-z]+)`", section))
+    section = text.split("Operator RPC commands", 1)[-1]
+    # Stop at the next top-level section so we do not pick up unrelated text.
+    section = section.split("\n## ", 1)[0]
+    table = set(re.findall(r"^\| `([a-z]+\.[a-z]+)` \|", section, re.M))
+    prose = set(re.findall(r"`([a-z]+\.[a-z]+)`", section))
+    return table | prose
+
+
+def doc_rpc_roles() -> dict[str, str]:
+    """RPC -> minimum role, from the documented table."""
+    text = read("docs/PROTOCOL.md")
+    section = text.split("Operator RPC commands", 1)[-1].split("\n## ", 1)[0]
+    roles: dict[str, str] = {}
+    for line in section.splitlines():
+        match = re.match(r"^\| `([a-z]+\.[a-z]+)` \| (viewer|operator|admin) \|", line)
+        if match:
+            roles[match.group(1)] = match.group(2)
+    return roles
+
+
+def go_rpc_roles() -> dict[str, str]:
+    """RPC -> role, from server/internal/rbac."""
+    text = read("server/internal/rbac/rbac.go")
+    body = text.split("var requirements = map[string]string{", 1)[-1].split("\n}", 1)[0]
+    out: dict[str, str] = {}
+    for match in re.finditer(r'"([a-z]+\.[a-z]+)":\s*(Viewer|Operator|Admin)', body):
+        out[match.group(1)] = match.group(2).lower()
+    return out
+
+
+def check_rbac_table() -> int:
+    """The documented roles must match the enforcement table, exactly.
+
+    A mismatch is a security bug in one direction (documented read-only, actually
+    writable) and a support ticket in the other, so it is compared both ways.
+    """
+    documented = doc_rpc_roles()
+    enforced = go_rpc_roles()
+    problems = 0
+    if not documented:
+        print("  !! no role table found in docs/PROTOCOL.md")
+        return 1
+    if not enforced:
+        print("  !! no requirements table found in rbac.go")
+        return 1
+    for cmd, role in sorted(documented.items()):
+        actual = enforced.get(cmd)
+        if actual is None:
+            print(f"  !! RBAC: {cmd} is documented with role {role} but has no entry in rbac.go")
+            problems += 1
+        elif actual != role:
+            print(f"  !! RBAC: {cmd} documented as {role}, enforced as {actual}")
+            problems += 1
+    for cmd in sorted(set(enforced) - set(documented)):
+        print(f"  !! RBAC: {cmd} is enforced as {enforced[cmd]} but missing from the docs table")
+        problems += 1
+    if not problems:
+        print(f"  RBAC            {len(documented)} commands documented with matching minimum roles")
+    return problems
 
 
 def config_keys() -> set[str]:
@@ -442,6 +501,8 @@ def main() -> int:
     rpc_doc = doc_rpc_commands()
     go_rpc = set(re.findall(RPC_SPECS["go"], read("server/internal/link/operator.go")))
     py_rpc = set(re.findall(RPC_SPECS["python"], read("operator/umbra_cli/client.py")))
+    failures += check_rbac_table()
+
     missing_go = rpc_doc - go_rpc
     if missing_go:
         print(f"  !! RPC: Go server is missing {sorted(missing_go)}")

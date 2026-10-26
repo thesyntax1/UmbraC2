@@ -45,12 +45,19 @@ Explicitly out of scope for v0.1:
 | Stolen secret | Impact | Blast radius |
 |---|---|---|
 | Agent PSK | attacker can enrol fake implants, receive tasks, report fake results | **no operator access** — the operator API needs an operator token |
-| Operator token | full control of that operator identity: list agents, queue tasks, read results | cannot enrol implants, cannot authenticate as another operator |
+| Operator token | control of that operator identity, bounded by its role: a viewer reads, an operator queues tasks, an admin manages schedules | cannot enrol implants, cannot authenticate as another operator, cannot exceed its role |
 | `sid` (HTTP path) | can target the session with frames | cannot decrypt or forge: every frame is AEAD-sealed and nonce-ordered; wrong frames kill the session |
 | Team server host | everything | rotate all secrets, rebuild implants |
 
 Per-operator tokens are bound to the operator's name inside the authenticated
 transcript, so having one token does not let you claim another identity.
+
+Each identity also carries a role (`viewer` < `operator` < `admin`). The server
+enforces the minimum role per RPC from a single table
+(`server/internal/rbac`), refuses unknown commands to everyone but admins, and
+audits every refusal. A compromised viewer token therefore exposes the
+inventory and history (which is bad) but cannot queue commands, change beacon
+cadence or kill implants.
 
 Accountability is separate from authentication: every operator command is
 written to the audit log with the operator name, source address, transport and

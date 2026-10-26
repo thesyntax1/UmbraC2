@@ -117,6 +117,10 @@ func run() error {
 	if err := srv.Start(ctx); err != nil {
 		return err
 	}
+	// Recurring tasks are driven from the hub, so they survive restarts (the
+	// schedule lives in the store) and fire regardless of which transport the
+	// agent uses.
+	h.StartScheduler(ctx)
 	logFingerprints(logger, cfg)
 	logger.Warn("this build is for authorised lab use only")
 

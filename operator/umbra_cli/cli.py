@@ -113,6 +113,46 @@ def print_agents(agents: List[Dict[str, Any]]) -> None:
     print(table(["ID", "HOST", "OS", "USER", "STATE", "TRANSPORT", "BEACON", "LAST SEEN"], rows))
 
 
+def print_whoami(data: Dict[str, Any]) -> None:
+    caps = data.get("capabilities") or []
+    print(f"operator : {data.get('name')}")
+    print(f"role     : {data.get('role')}")
+    print(f"peer     : {data.get('peer')} ({data.get('transport')})")
+    print(f"since    : {data.get('since')}")
+    print(f"commands : {len(caps)} allowed")
+    if caps:
+        print("           " + " ".join(sorted(caps)))
+
+
+def print_chat(messages: List[Dict[str, Any]]) -> None:
+    if not messages:
+        print("no chat messages yet")
+        return
+    for m in messages:
+        role = m.get("role") or "?"
+        print(f"[{fmt_ts(m.get('at'))}] {m.get('from')} ({role}): {m.get('text')}")
+
+
+def print_schedules(schedules: List[Dict[str, Any]]) -> None:
+    if not schedules:
+        print("no recurring tasks")
+        return
+    rows = [
+        [
+            sc.get("id", "?"),
+            sc.get("agent_id", "?"),
+            sc.get("kind", "?"),
+            f"{sc.get('every', 0)}s",
+            str(sc.get("runs", 0)),
+            "on" if sc.get("enabled", True) else "off",
+            fmt_ts(sc.get("next_run")),
+            sc.get("by", "?"),
+        ]
+        for sc in schedules
+    ]
+    print(table(["ID", "AGENT", "KIND", "EVERY", "RUNS", "STATE", "NEXT RUN", "BY"], rows))
+
+
 def print_operators(operators: List[Dict[str, Any]]) -> None:
     if not operators:
         print("no operator consoles connected")
@@ -331,6 +371,28 @@ class Console:
             elif cmd in ("audit", "log"):
                 limit = int(rest[0]) if rest else 30
                 print_audit(self.client.audit(limit))
+            elif cmd in ("whoami", "me"):
+                print_whoami(self.client.whoami())
+            elif cmd in ("chat", "say"):
+                if rest:
+                    self.client.say(" ".join(rest))
+                    print("sent")
+                else:
+                    print_chat(self.client.chat_history(20))
+            elif cmd in ("schedule", "cron"):
+                sub_cmd = rest[0] if rest else "list"
+                if sub_cmd == "list":
+                    print_schedules(self.client.schedules())
+                elif sub_cmd == "add" and len(rest) >= 3:
+                    every = int(rest[3]) if len(rest) > 3 else 300
+                    data = self.client.add_schedule(
+                        self._resolve(rest[1]), rest[2], every)
+                    print(f"scheduled {data['schedule_id']} every {every}s")
+                elif sub_cmd in ("rm", "remove") and len(rest) >= 2:
+                    self.client.remove_schedule(rest[1])
+                    print(f"removed {rest[1]}")
+                else:
+                    print("usage: schedule [list | add <agent> <kind> [every] | rm <id>]")
             elif cmd in ("operators", "ops"):
                 print_operators(self.client.operators())
             elif cmd == "stats":
@@ -372,7 +434,10 @@ def print_help() -> None:
         """commands:
   help                      show this help
   agents | ls               list agents
+  whoami | me               your identity, role and allowed commands
   operators                 list connected operator consoles
+  chat [message]            send (or read) operator chat
+  schedule [list|add|rm]    recurring tasks
   use <agent-id>            select the current agent
   info [agent-id]           full agent record
   run <command>             queue a shell task and print its result
@@ -433,6 +498,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("agents", help="list agents")
     sub.add_parser("operators", help="list connected operator consoles")
+    sub.add_parser("whoami", help="your operator identity, role and capabilities")
+
+    chat = sub.add_parser("chat", help="operator chat")
+    chat.add_argument("message", nargs="*", help="send a message (omit to read history)")
+    chat.add_argument("--limit", type=int, default=20)
+
+    sched = sub.add_parser("schedule", help="recurring tasks")
+    sched.add_argument("action", choices=["list", "add", "rm"])
+    sched.add_argument("target", nargs="?", help="agent id (add) or schedule id (rm)")
+    sched.add_argument("kind", nargs="?", help="task kind for add")
+    sched.add_argument("--every", type=int, default=300, help="interval in seconds (min 5)")
+    sched.add_argument("--args", default="{}", help="task arguments as JSON (add)")
     sub.add_parser("stats", help="server statistics")
 
     audit_cmd = sub.add_parser("audit", help="recent operator actions (audit trail)")
@@ -528,6 +605,43 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.cmd == "agents":
             rows = client.agents()
             emit(rows) if args.json else print_agents(rows)
+        elif args.cmd == "whoami":
+            data = client.whoami()
+            emit(data) if args.json else print_whoami(data)
+        elif args.cmd == "chat":
+            if args.message:
+                text = " ".join(args.message).strip()
+                client.say(text)
+                emit({"sent": text}) if args.json else print(f"sent: {text}")
+            else:
+                messages = client.chat_history(args.limit)
+                emit(messages) if args.json else print_chat(messages)
+        elif args.cmd == "schedule":
+            if args.action == "list":
+                rows = client.schedules()
+                emit(rows) if args.json else print_schedules(rows)
+            elif args.action == "add":
+                if not args.target or not args.kind:
+                    print("usage: umbra schedule add <agent> <kind> [--every N] [--args JSON]",
+                          file=sys.stderr)
+                    return 2
+                try:
+                    task_args = json.loads(args.args)
+                except json.JSONDecodeError as exc:
+                    print(f"invalid --args json: {exc}", file=sys.stderr)
+                    return 2
+                data = client.add_schedule(args.target, args.kind, args.every, task_args)
+                emit(data) if args.json else print(
+                    f"scheduled {data['schedule_id']} ({args.kind} every {args.every}s on {args.target})"
+                )
+            else:
+                if not args.target:
+                    print("usage: umbra schedule rm <schedule-id>", file=sys.stderr)
+                    return 2
+                client.remove_schedule(args.target)
+                emit({"schedule_id": args.target, "removed": True}) if args.json else print(
+                    f"removed {args.target}"
+                )
         elif args.cmd == "operators":
             rows = client.operators()
             emit(rows) if args.json else print_operators(rows)
