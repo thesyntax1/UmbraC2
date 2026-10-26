@@ -144,7 +144,7 @@ def rust_module_idents(files: list[str]) -> set[str]:
     names: set[str] = set()
     for path in files:
         src = read(os.path.relpath(path, ROOT))
-        for match in re.finditer(r"\bpub\s+(?:fn|struct|enum|const|static|type|mod)\s+([A-Za-z_]\w*)", src):
+        for match in re.finditer(r"\bpub\s+(?:fn|struct|enum|const|static|type|mod|trait)\s+([A-Za-z_]\w*)", src):
             names.add(match.group(1))
         for match in re.finditer(r"\bpub\s+use\s+([A-Za-z_][\w:]*)(?:\s+as\s+(\w+))?", src):
             names.add(match.group(2) or match.group(1).split("::")[-1])

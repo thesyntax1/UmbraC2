@@ -1,17 +1,24 @@
 package link
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/thesyntax1/UmbraC2/server/internal/alias"
+	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
+	"github.com/thesyntax1/UmbraC2/server/internal/session"
+	"github.com/thesyntax1/UmbraC2/server/internal/stager"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
@@ -20,6 +27,8 @@ import (
 // Task kinds the server itself is allowed to synthesise.
 const (
 	TaskKindExit = "exit"
+	// TaskKindExtension runs an armory extension in memory on an agent.
+	TaskKindExtension = "ext"
 )
 
 // serveOperatorTCP runs a persistent operator control channel.
@@ -42,6 +51,16 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 		log.Warn("agent key used on the operator listener")
 		return
 	}
+	s.runOperator(stream, conn, sess, info, addr, "tcp/operator", log)
+}
+
+// runOperator carries the control channel of an operator that already
+// completed the handshake.
+//
+// Like runAgent, the handshake lives in the listener: the TLS listener
+// decides by the role in the HELLO whether the peer is an operator or an
+// agent, and only then hands the connection over.
+func (s *Server) runOperator(stream FrameStream, conn net.Conn, sess *session.Session, info *HelloInfo, addr, transport string, log *slog.Logger) {
 	if !s.claimOperatorSlot() {
 		log.Warn("operator limit reached, rejecting", "operator", info.ID)
 		return
@@ -52,7 +71,7 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 	}
 
 	role := s.Cfg.Keyring.Role(info.ID)
-	op := s.Hub.Subscribe(info.ID, role, addr, "tcp/operator")
+	op := s.Hub.Subscribe(info.ID, role, addr, transport)
 	defer s.Hub.Unsubscribe(op.ID)
 	defer s.forgetOperatorRate(info.ID)
 	log.Info("operator connected", "operator", info.ID, "role", role, "suite", wire.SuiteName(info.Suite))
@@ -93,6 +112,10 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 		if err != nil {
 			log.Warn("operator frame rejected", "err", err)
 			return
+		}
+		if msgType == wire.MsgPadding {
+			// Padding frames carry random bytes and are ignored.
+			continue
 		}
 		if msgType != wire.MsgOpRequest {
 			log.Warn("unexpected frame from operator", "type", wire.TypeName(msgType))
@@ -516,9 +539,352 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		s.Hub.Emit(hub.Event{Kind: "operator.test", Data: map[string]any{"from": op.Name}})
 		return reply(upk.Map{"emitted": true})
 
+	// ---- pivoting ----------------------------------------------------
+	case "pivot.list":
+		tunnels := []pivot.TunnelInfo{}
+		sessions := 0
+		if s.Pivot != nil {
+			tunnels = s.Pivot.List()
+			sessions = s.Pivot.Sessions()
+		}
+		out := make([]any, 0, len(tunnels))
+		for _, t := range tunnels {
+			out = append(out, upk.Map{
+				"stream":     t.Stream,
+				"agent_id":   t.AgentID,
+				"mode":       t.Mode,
+				"listen":     t.Listen,
+				"host":       t.Host,
+				"port":       int64(t.Port),
+				"opened":     t.Opened.Unix(),
+				"streams":    int64(t.Streams),
+				"bytes_up":   t.BytesUp,
+				"bytes_down": t.BytesDown,
+				"state":      t.State,
+			})
+		}
+		return reply(upk.Map{"tunnels": out, "sessions": int64(sessions)})
+
+	case "pivot.open":
+		if s.Pivot == nil {
+			return fail("pivot.open: pivoting is not enabled on this server")
+		}
+		id, _ := args["id"].(string)
+		if _, ok := s.Hub.Store().Agent(id); !ok {
+			return fail("pivot.open: unknown agent %q", id)
+		}
+		mode, _ := args["mode"].(string)
+		host, _ := args["host"].(string)
+		listen, _ := args["listen"].(string)
+		port, _ := asInt64(args["port"])
+		tun, err := s.Pivot.Open(id, mode, host, int(port), listen)
+		if err != nil {
+			return fail("pivot.open: %v", err)
+		}
+		return reply(upk.Map{
+			"stream":   tun.Stream,
+			"agent_id": tun.AgentID,
+			"mode":     tun.Mode,
+			"listen":   tun.Listen,
+			"host":     tun.Host,
+			"port":     int64(tun.Port),
+		})
+
+	case "pivot.close":
+		if s.Pivot == nil {
+			return fail("pivot.close: pivoting is not enabled on this server")
+		}
+		stream, _ := args["stream"].(string)
+		if err := s.Pivot.Close(stream); err != nil {
+			return fail("pivot.close: %v", err)
+		}
+		return reply(upk.Map{"stream": stream, "closed": true})
+
+	// ---- layer-3 tunnel ----------------------------------------------
+	case "vpn.status":
+		if s.VPN == nil {
+			return reply(upk.Map{"enabled": false})
+		}
+		status := s.VPN.Status()
+		status["enabled"] = true
+		return reply(toUpkMap(status))
+
+	case "vpn.peers":
+		if s.VPN == nil {
+			return reply(upk.Map{"peers": []any{}})
+		}
+		peers := s.VPN.Peers()
+		out := make([]any, 0, len(peers))
+		for _, p := range peers {
+			out = append(out, upk.Map{
+				"id":        p.ID,
+				"address":   p.Address,
+				"endpoint":  p.Endpoint,
+				"agent":     p.Agent,
+				"live":      p.Live,
+				"bytes_in":  p.BytesIn,
+				"bytes_out": p.BytesOut,
+				"last_seen": p.LastSeen,
+			})
+		}
+		return reply(upk.Map{"peers": out, "count": int64(len(out))})
+
+	case "vpn.allocate":
+		if s.VPN == nil {
+			return fail("vpn.allocate: the tunnel is not enabled on this server")
+		}
+		id, _ := args["id"].(string)
+		if id == "" {
+			return fail("vpn.allocate needs an agent id")
+		}
+		if _, ok := s.Hub.Store().Agent(id); !ok {
+			return fail("vpn.allocate: unknown agent %q", id)
+		}
+		ip, err := s.VPN.Allocate(id)
+		if err != nil {
+			return fail("vpn.allocate: %v", err)
+		}
+		return reply(upk.Map{"id": id, "address": ip.String()})
+
+	// ---- extensions ---------------------------------------------------
+	case "armory.list":
+		if s.Armory == nil {
+			return reply(upk.Map{"entries": []any{}, "installed": []any{}})
+		}
+		cat := s.Armory.Catalog()
+		entries := make([]any, 0, len(cat.Entries))
+		for _, m := range cat.Entries {
+			entries = append(entries, upk.Map{
+				"name":        m.Name,
+				"version":     m.Version,
+				"os":          m.OS,
+				"arch":        m.Arch,
+				"format":      m.Format,
+				"sha256":      m.SHA256,
+				"size":        m.Size,
+				"description": m.Description,
+				"args":        stringsToAny(m.Args),
+			})
+		}
+		installed := s.Armory.List()
+		rows := make([]any, 0, len(installed))
+		for _, ext := range installed {
+			rows = append(rows, upk.Map{
+				"name":      ext.Manifest.Name,
+				"version":   ext.Manifest.Version,
+				"sha256":    ext.Manifest.SHA256,
+				"size":      ext.Bytes,
+				"installed": ext.Installed.Unix(),
+			})
+		}
+		return reply(upk.Map{
+			"entries":   entries,
+			"installed": rows,
+			"verified":  s.Armory.Verified(),
+		})
+
+	case "armory.install":
+		if s.Armory == nil {
+			return fail("armory.install: the extension registry is not enabled")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("armory.install needs a name")
+		}
+		ext, err := s.Armory.InstallFrom(name)
+		if err != nil {
+			return fail("armory.install: %v", err)
+		}
+		return reply(upk.Map{
+			"name":      ext.Manifest.Name,
+			"sha256":    ext.Manifest.SHA256,
+			"size":      ext.Bytes,
+			"installed": ext.Installed.Unix(),
+		})
+
+	case "armory.remove":
+		if s.Armory == nil {
+			return fail("armory.remove: the extension registry is not enabled")
+		}
+		name, _ := args["name"].(string)
+		if err := s.Armory.Remove(name); err != nil {
+			return fail("armory.remove: %v", err)
+		}
+		return reply(upk.Map{"name": name, "removed": true})
+
+	case "armory.run":
+		name, _ := args["name"].(string)
+		agentID, _ := args["id"].(string)
+		taskArgs, _ := args["args"].(map[string]any)
+		t, err := s.submitExtension(agentID, name, taskArgs)
+		if err != nil {
+			return fail("armory.run: %v", err)
+		}
+		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name})
+
+	// ---- runtime command namespace -----------------------------------
+	case "alias.list":
+		aliases := []alias.Alias{}
+		if s.Aliases != nil {
+			aliases = s.Aliases.List()
+		}
+		out := make([]any, 0, len(aliases))
+		for _, a := range aliases {
+			out = append(out, upk.Map{
+				"name":        a.Name,
+				"kind":        a.Kind,
+				"extension":   a.Extension,
+				"args":        toUpkMap(a.Args),
+				"args_spec":   stringsToAny(a.ArgsSpec),
+				"description": a.Description,
+				"by":          a.CreatedBy,
+				"created":     a.Created.Unix(),
+			})
+		}
+		return reply(upk.Map{"aliases": out, "count": int64(len(out))})
+
+	case "alias.run":
+		if s.Aliases == nil {
+			return fail("alias.run: the command namespace is not enabled")
+		}
+		name, _ := args["name"].(string)
+		agentID, _ := args["id"].(string)
+		extra, _ := args["args"].(map[string]any)
+		kind, merged, extension, err := s.Aliases.Expand(name, extra)
+		if err != nil {
+			return fail("alias.run: %v", err)
+		}
+		if extension != "" {
+			t, err := s.submitExtension(agentID, extension, merged)
+			if err != nil {
+				return fail("alias.run: %v", err)
+			}
+			return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name})
+		}
+		t, err := s.Hub.SubmitTask(agentID, kind, merged)
+		if err != nil {
+			return fail("alias.run: %v", err)
+		}
+		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name, "kind": kind})
+
+	// ---- team synchronisation ----------------------------------------
+	case "team.sync":
+		agents := s.Hub.Agents()
+		agentRows := make([]any, 0, len(agents))
+		for _, a := range agents {
+			agentRows = append(agentRows, toUpkMap(a))
+		}
+		ops := s.Hub.Operators()
+		opRows := make([]any, 0, len(ops))
+		for _, o := range ops {
+			opRows = append(opRows, upk.Map{
+				"name":      o.Name,
+				"role":      o.Role,
+				"peer":      o.Peer,
+				"transport": o.Transport,
+				"since":     o.Since,
+				"focus":     o.Focus,
+				"focus_at":  o.FocusAt,
+				"idle_sec":  int64(o.IdleSec),
+			})
+		}
+		messages := s.Hub.Chat(50)
+		chatRows := make([]any, 0, len(messages))
+		for _, m := range messages {
+			row := upk.Map{
+				"from": m.From,
+				"role": m.Role,
+				"text": m.Text,
+				"at":   m.At.Unix(),
+			}
+			if m.To != "" {
+				row["to"] = m.To
+			}
+			chatRows = append(chatRows, row)
+		}
+		return reply(upk.Map{
+			"server_time": time.Now().Unix(),
+			"version":     hub.Version,
+			"agents":      agentRows,
+			"operators":   opRows,
+			"chat":        chatRows,
+		})
+
+	// ---- stagers ------------------------------------------------------
+	case "stager.generate":
+		platform, _ := args["platform"].(string)
+		transport, _ := args["transport"].(string)
+		server, _ := args["server"].(string)
+		url, _ := args["url"].(string)
+		digest, _ := args["sha256"].(string)
+		agentID, _ := args["agent_id"].(string)
+		if server == "" {
+			server = s.Cfg.Server.AgentListen
+		}
+		opts := stager.Options{
+			Platform:  platform,
+			Transport: transport,
+			Server:    server,
+			HTTPPath:  s.Cfg.Server.HTTPPath,
+			URL:       url,
+			SHA256:    digest,
+			PSK:       s.Cfg.Keyring.AgentPSK,
+			AgentID:   agentID,
+		}
+		script, err := stager.Render(opts)
+		if err != nil {
+			return fail("stager.generate: %v", err)
+		}
+		// The stager carries the agent PSK: it is a secret and must not be
+		// pasted into a ticket. The audit log records that it was generated.
+		return reply(upk.Map{
+			"platform":  platform,
+			"transport": transport,
+			"server":    server,
+			"stager":    script,
+		})
+
 	default:
 		return fail("unknown command %q", cmd)
 	}
+}
+
+// submitExtension ships an installed extension to an agent.
+//
+// The blob travels inside the task arguments, so it is bounded by the frame
+// limit: extensions are small in-memory modules, not payloads.
+func (s *Server) submitExtension(agentID, name string, args map[string]any) (*store.Task, error) {
+	if s.Armory == nil {
+		return nil, errors.New("the extension registry is not enabled")
+	}
+	ext, ok := s.Armory.Get(name)
+	if !ok {
+		return nil, fmt.Errorf("extension %q is not installed", name)
+	}
+	blob, err := os.ReadFile(ext.Path)
+	if err != nil {
+		return nil, fmt.Errorf("read extension %q: %w", name, err)
+	}
+	if len(blob) > armory.MaxBlobSize {
+		return nil, fmt.Errorf("extension %q is too large to run in one frame", name)
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	return s.Hub.SubmitTask(agentID, TaskKindExtension, upk.Map{
+		"name": name,
+		"data": blob,
+		"args": toUpkMap(args),
+	})
+}
+
+// stringsToAny converts a string slice into an upk-encodable slice.
+func stringsToAny(in []string) []any {
+	out := make([]any, 0, len(in))
+	for _, s := range in {
+		out = append(out, s)
+	}
+	return out
 }
 
 func eventMap(ev hub.Event) upk.Map {

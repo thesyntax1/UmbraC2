@@ -30,6 +30,10 @@ object Wire {
     const val MSG_KILL = 0x17.toByte()
     const val MSG_TASK_CANCEL = 0x18.toByte()
     const val MSG_BYE = 0x19.toByte()
+    const val MSG_TUNNEL_OPEN = 0x1A.toByte()
+    const val MSG_TUNNEL_DATA = 0x1B.toByte()
+    const val MSG_TUNNEL_CLOSE = 0x1C.toByte()
+    const val MSG_PADDING = 0x1E.toByte()
     const val MSG_ERROR = 0x1F.toByte()
 
     const val MARKER_HELLO = 0x01.toByte()

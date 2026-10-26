@@ -56,9 +56,22 @@ const (
 	MsgPing       byte = 0x14
 	MsgPong       byte = 0x15
 	MsgRekey      byte = 0x16
-	MsgKill       byte = 0x17
+	MsgKill      byte = 0x17
 	MsgTaskCancel byte = 0x18
 	MsgBye        byte = 0x19
+
+	// Pivoting tunnel frames. They ride the *same* session as the rest of
+	// the protocol: an agent dials back to the team server after a `tunnel`
+	// task, and the two ends multiplex logical streams over that callback
+	// connection (see server/internal/pivot).
+	MsgTunnelOpen  byte = 0x1A
+	MsgTunnelData  byte = 0x1B
+	MsgTunnelClose byte = 0x1C
+
+	// Padding frames carry random bytes and are ignored by the receiver.
+	// They let a transport pad its traffic to a fixed size bucket without
+	// changing the frame format (see docs/PROTOCOL.md §7.3).
+	MsgPadding byte = 0x1E
 
 	MsgError byte = 0x1F
 
@@ -110,6 +123,14 @@ func TypeName(t byte) string {
 		return "TASK_CANCEL"
 	case MsgBye:
 		return "BYE"
+	case MsgTunnelOpen:
+		return "TUNNEL_OPEN"
+	case MsgTunnelData:
+		return "TUNNEL_DATA"
+	case MsgTunnelClose:
+		return "TUNNEL_CLOSE"
+	case MsgPadding:
+		return "PADDING"
 	case MsgError:
 		return "ERROR"
 	case MsgOpRequest:

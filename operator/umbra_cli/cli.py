@@ -21,8 +21,9 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from . import __version__, crypto, netio, wire
+from . import __version__, crypto, db, netio, wire
 from .client import CHUNK_MAX, OperatorClient, OperatorError
+from .vpn import print_pivots, print_vpn_peers, print_vpn_status
 
 BANNER = r"""
   _   _ __  __ ___  ____      _    ____
@@ -220,6 +221,74 @@ def print_task_result(task: Dict[str, Any]) -> None:
         print(out.rstrip())
 
 
+def print_armory(payload: Dict[str, Any]) -> None:
+    """Render the extension store: the catalogue and what is installed."""
+    entries = payload.get("entries") or []
+    installed = payload.get("installed") or []
+    print(f"signing key verified: {'yes' if payload.get('verified') else 'no'}")
+    print("catalogue:")
+    rows = [
+        [
+            e.get("name", "?"),
+            e.get("version", "?"),
+            e.get("os", "?"),
+            e.get("arch", "?"),
+            e.get("format", "?"),
+            e.get("size", 0),
+            short(e.get("description", ""), 40),
+        ]
+        for e in entries
+    ]
+    print(table(["NAME", "VERSION", "OS", "ARCH", "FORMAT", "SIZE", "DESCRIPTION"], rows))
+    print("installed:")
+    rows = [
+        [
+            e.get("name", "?"),
+            e.get("version", "?"),
+            e.get("size", 0),
+            short(e.get("sha256", ""), 16),
+            fmt_ts(e.get("installed")),
+        ]
+        for e in installed
+    ]
+    print(table(["NAME", "VERSION", "SIZE", "SHA256", "INSTALLED"], rows))
+
+
+def print_aliases(aliases: List[Dict[str, Any]]) -> None:
+    """Render the saved command namespace."""
+    rows = [
+        [
+            a.get("name", "?"),
+            a.get("kind", "?"),
+            a.get("extension", "-"),
+            a.get("by", "-"),
+            fmt_ts(a.get("created")),
+            short(a.get("description", ""), 36),
+        ]
+        for a in aliases
+    ]
+    print(table(["NAME", "KIND", "EXTENSION", "BY", "CREATED", "DESCRIPTION"], rows))
+
+
+def print_team(payload: Dict[str, Any]) -> None:
+    """Render the team snapshot: agents, operators and the chat log."""
+    agents = payload.get("agents") or []
+    operators = payload.get("operators") or []
+    chat = payload.get("chat") or []
+    print(f"server time: {fmt_ts(payload.get('server_time'))}  version: {payload.get('version', '?')}")
+    print(f"agents ({len(agents)}):")
+    for a in agents:
+        print(f"  {a.get('id', '?'):<24} {a.get('host', '?'):<20} {a.get('state', '?')}")
+    print(f"operators ({len(operators)}):")
+    for o in operators:
+        focus = o.get("focus") or "-"
+        print(f"  {o.get('name', '?'):<16} {o.get('role', '?'):<10} focus={focus}")
+    print(f"chat ({len(chat)}):")
+    for m in chat:
+        target = f" -> {m['to']}" if m.get("to") else ""
+        print(f"  [{fmt_ts(m.get('at'))}] {m.get('from', '?')}{target}: {short(m.get('text', ''), 80)}")
+
+
 def print_audit(payload: Dict[str, Any], stream: Any = None) -> None:
     """Render the audit trail: one line per operator action, newest first."""
     out = stream or sys.stdout
@@ -313,10 +382,39 @@ def print_event(ev: Dict[str, Any], stream: Any = None) -> None:
 # client wrapper
 # ---------------------------------------------------------------------------
 class Console:
-    def __init__(self, client: OperatorClient, *, watch: bool = False) -> None:
+    def __init__(self, client: OperatorClient, *, watch: bool = False,
+                 store: Optional[db.StateStore] = None) -> None:
         self.client = client
         self.watch = watch
         self.current_agent: Optional[str] = None
+        # The local notebook is optional: the console works without it.
+        self.store = store
+        self.session = 0
+
+    # -- notebook --------------------------------------------------------
+    def note_task(self, task_id: str, agent: str, kind: str,
+                  args: Any = None) -> None:
+        """Record a queued task in the local state database."""
+        if self.store is None or not task_id:
+            return
+        try:
+            self.store.record_task(task_id, agent, kind, args, self.session)
+        except Exception:  # noqa: BLE001 - never break the console
+            pass
+
+    def note_result(self, task_id: str, task: Dict[str, Any]) -> None:
+        """Record a task result in the local state database."""
+        if self.store is None or not task_id:
+            return
+        try:
+            self.store.record_result(
+                task_id,
+                int(task.get("code") or 0),
+                task.get("out") or b"",
+                str(task.get("err") or ""),
+            )
+        except Exception:  # noqa: BLE001 - never break the console
+            pass
 
     def _resolve(self, agent: Optional[str]) -> str:
         target = agent or self.current_agent
@@ -412,6 +510,36 @@ class Console:
                     print(f"cancelled {rest[0]}")
                 except OperatorError as exc:
                     print(f"error: {exc}")
+            elif cmd == "db":
+                if self.store is None:
+                    print("no local database (start the console with --db PATH)")
+                    return True
+                action = rest[0].lower() if rest else "stats"
+                value = rest[1] if len(rest) > 1 else ""
+                try:
+                    if action == "stats":
+                        stats = self.store.stats()
+                        print(f"tasks {stats['tasks']}, results {stats['results']}, "
+                              f"notes {stats['notes']} ({stats['path']})")
+                    elif action == "tasks":
+                        print_db_tasks(self.store.tasks(value, 20))
+                    elif action == "results":
+                        print_db_results(self.store.results(value, 20))
+                    elif action == "notes":
+                        print_db_notes(self.store.notes(value, 20))
+                    elif action == "search":
+                        print_db_search(self.store.search(value, 20))
+                    elif action == "note":
+                        if not value:
+                            print("usage: db note \"what I found\"")
+                            return True
+                        note_id = self.store.add_note(value, "")
+                        print(f"note {note_id} recorded")
+                    else:
+                        print(f"unknown db action {action!r} "
+                              "(stats|tasks|results|notes|search|note)")
+                except db.StateError as exc:
+                    print(f"local state error: {exc}")
             elif cmd in ("audit", "log"):
                 limit = int(rest[0]) if rest else 30
                 print_audit(self.client.audit(limit))
@@ -462,6 +590,86 @@ class Console:
                     print("usage: schedule [list | add <agent> <kind> [every] | rm <id>]")
             elif cmd in ("operators", "ops"):
                 print_operators(self.client.operators())
+            elif cmd == "pivot":
+                sub_cmd = rest[0] if rest else "list"
+                if sub_cmd == "list":
+                    print_pivots(self.client.pivot_list(), self.client.pivot_sessions())
+                elif sub_cmd == "open" and len(rest) >= 2:
+                    mode = "socks"
+                    host = ""
+                    port = 0
+                    listen = ""
+                    for token in rest[2:]:
+                        if token.startswith("--mode="):
+                            mode = token.split("=", 1)[1]
+                        elif token.startswith("--host="):
+                            host = token.split("=", 1)[1]
+                        elif token.startswith("--port="):
+                            port = int(token.split("=", 1)[1])
+                        elif token.startswith("--listen="):
+                            listen = token.split("=", 1)[1]
+                    data = self.client.pivot_open(
+                        rest[1], mode=mode, host=host, port=port, listen=listen)
+                    print(f"pivot {data.get('stream')} open on {data.get('listen')}")
+                elif sub_cmd in ("close", "rm") and len(rest) >= 2:
+                    self.client.pivot_close(rest[1])
+                    print(f"closed {rest[1]}")
+                else:
+                    print("usage: pivot [list | open <agent> [--mode=] [--host=] [--port=] "
+                          "[--listen=] | close <tunnel>]")
+            elif cmd == "vpn":
+                sub_cmd = rest[0] if rest else "status"
+                if sub_cmd == "status":
+                    print_vpn_status(self.client.vpn_status())
+                elif sub_cmd == "peers":
+                    print_vpn_peers(self.client.vpn_peers())
+                elif sub_cmd == "allocate" and len(rest) >= 2:
+                    print(f"{rest[1]} -> {self.client.vpn_allocate(rest[1])}")
+                else:
+                    print("usage: vpn [status | peers | allocate <agent>]")
+            elif cmd == "armory":
+                sub_cmd = rest[0] if rest else "list"
+                if sub_cmd == "list":
+                    print_armory(self.client.armory_list())
+                elif sub_cmd == "install" and len(rest) >= 2:
+                    data = self.client.armory_install(rest[1])
+                    print(f"installed {data.get('name')} ({data.get('size')} bytes)")
+                elif sub_cmd in ("remove", "rm") and len(rest) >= 2:
+                    self.client.armory_remove(rest[1])
+                    print(f"removed {rest[1]}")
+                elif sub_cmd == "run" and len(rest) >= 3:
+                    task_id = self.client.armory_run(rest[1], rest[2])
+                    self.note_task(task_id, rest[2], f"armory:{rest[1]}")
+                    print(f"queued {task_id}")
+                else:
+                    print("usage: armory [list | install <name> | remove <name> | run <name> <agent>]")
+            elif cmd == "alias":
+                sub_cmd = rest[0] if rest else "list"
+                if sub_cmd == "list":
+                    print_aliases(self.client.alias_list())
+                elif sub_cmd == "run" and len(rest) >= 3:
+                    task_id = self.client.alias_run(rest[1], rest[2])
+                    self.note_task(task_id, rest[2], f"alias:{rest[1]}")
+                    print(f"queued {task_id}")
+                else:
+                    print("usage: alias [list | run <name> <agent>]")
+            elif cmd in ("team-sync", "team"):
+                print_team(self.client.team_sync())
+            elif cmd == "stager":
+                parts = dict()
+                for token in rest:
+                    if token.startswith("--") and "=" in token:
+                        key, _, value = token[2:].partition("=")
+                        parts[key.replace("-", "_")] = value
+                script = self.client.stager_generate(
+                    platform=parts.get("platform", "windows"),
+                    transport=parts.get("transport", "tcp"),
+                    server=parts.get("server", ""),
+                    url=parts.get("url", ""),
+                    sha256=parts.get("sha256", ""),
+                    agent_id=parts.get("agent_id", ""),
+                )
+                print(script)
             elif cmd == "stats":
                 print(json.dumps(self.client.stats(), indent=2, default=str, sort_keys=True))
             elif cmd == "raw":
@@ -484,6 +692,7 @@ class Console:
     def _submit_and_maybe_wait(self, kind: str, args: Dict[str, Any], *, watch: bool) -> None:
         agent = self._resolve(None)
         task_id = self.client.submit(agent, kind, args)
+        self.note_task(task_id, agent, kind, args)
         print(f"queued {task_id} for {agent} ({kind})")
         if watch or self.watch:
             try:
@@ -491,6 +700,7 @@ class Console:
             except OperatorError as exc:
                 print(f"error: {exc}")
                 return
+            self.note_result(task_id, task)
             print_task_result(task)
         else:
             print("use `result <task-id>` to collect the output")
@@ -540,9 +750,152 @@ def print_help() -> None:
   kill [agent-id]           tell an agent to exit
   audit [limit]             recent operator actions (audit trail)
   stats                     server statistics
+  pivot [list|open|close]   pivot through an agent (socks5 / port forward)
+  vpn [status|peers|alloc]  the layer-3 tunnel
+  armory [list|inst|rm|run] the extension store
+  alias [list|run]          saved commands
+  team-sync                 one snapshot of the team
+  stager [options]          render a stager script
+  db [action] [value]       the local notebook (stats|tasks|results|notes|search|note)
   raw <cmd> [json]          send a raw RPC
   quit                      disconnect and exit"""
     )
+
+
+# ---------------------------------------------------------------------------
+# local state database
+# ---------------------------------------------------------------------------
+def open_state(path: str) -> Optional[db.StateStore]:
+    """Open the local notebook.
+
+    A missing or broken database must never stop the console: the server
+    holds the authoritative state, the notebook is a convenience.
+    """
+    if not path:
+        return None
+    try:
+        return db.StateStore(path).open()
+    except db.StateError as exc:
+        print(f"local state unavailable: {exc}", file=sys.stderr)
+        return None
+
+
+def print_db_tasks(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        print("no tasks recorded")
+        return
+    print(table(
+        ["task", "agent", "kind", "state", "when"],
+        [[r.get("task_id", ""), r.get("agent", ""), r.get("kind", ""),
+          r.get("state", ""), fmt_ts(r.get("submitted", 0))] for r in rows]))
+
+
+def print_db_results(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        print("no results recorded")
+        return
+    print(table(
+        ["task", "code", "when", "output"],
+        [[r.get("task_id", ""), str(r.get("code", 0)), fmt_ts(r.get("finished", 0)),
+          short(decode_out(r.get("output") or b""), 48)] for r in rows]))
+
+
+def print_db_notes(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        print("no notes")
+        return
+    print(table(
+        ["when", "agent", "note"],
+        [[fmt_ts(r.get("created", 0)), r.get("agent", ""), short(r.get("body", ""), 60)]
+         for r in rows]))
+
+
+def print_db_search(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        print("nothing matched")
+        return
+    for row in rows:
+        stamp = fmt_ts(row.get("at", 0))
+        where = row.get("where", "?")
+        if where == "task":
+            print(f"[{stamp}] task {row['task_id']} on {row.get('agent') or '-'} "
+                  f"({row.get('kind', '')})")
+        elif where == "note":
+            print(f"[{stamp}] note on {row.get('agent') or '-'}: {row.get('body', '')}")
+        else:
+            print(f"[{stamp}] result {row.get('task_id', '')} "
+                  f"(code {row.get('code', 0)}): {row.get('excerpt', '')}")
+
+
+def run_db_command(args: argparse.Namespace) -> int:
+    """`umbra db ...` -- the local notebook; it needs no server connection."""
+    store = open_state(args.db)
+    if store is None:
+        return 2
+    try:
+        if args.action == "stats":
+            stats = store.stats()
+            if args.json:
+                print(json.dumps(stats, indent=2, sort_keys=True, default=json_default))
+            else:
+                print(f"database : {stats['path']}")
+                print(f"sessions : {stats['sessions']}")
+                print(f"tasks    : {stats['tasks']}")
+                print(f"results  : {stats['results']}")
+                print(f"notes    : {stats['notes']}")
+                print(f"agents   : {stats['agents']}")
+                for kind in stats["kinds"]:
+                    print(f"  {kind['kind']:<12} {kind['count']}")
+        elif args.action == "tasks":
+            rows = store.tasks(args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_tasks(rows)
+        elif args.action == "results":
+            rows = store.results(args.value, args.limit)
+            if args.json:
+                print(json.dumps(
+                    [{**r, "output": decode_out(r.get("output"))} for r in rows],
+                    indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_results(rows)
+        elif args.action == "notes":
+            rows = store.notes(args.agent or args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_notes(rows)
+        elif args.action == "search":
+            rows = store.search(args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_search(rows)
+        elif args.action == "note":
+            body = args.value or args.agent
+            if not body.strip():
+                print("usage: umbra db note \"what I found\"", file=sys.stderr)
+                return 2
+            note_id = store.add_note(body, args.agent)
+            if args.json:
+                print(json.dumps({"note_id": note_id, "agent": args.agent},
+                                 indent=2, sort_keys=True))
+            else:
+                print(f"note {note_id} recorded")
+        else:  # export
+            target = args.out or "umbra-state.json"
+            path = store.export(target)
+            if args.json:
+                print(json.dumps({"exported": path}, indent=2, sort_keys=True))
+            else:
+                print(f"exported to {path}")
+    except db.StateError as exc:
+        print(f"local state error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -581,8 +934,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--token", "-k", default=None, help="operator token (prefer --token-file or env)")
     p.add_argument("--token-file", default=None, help="file containing the operator token")
     p.add_argument("--timeout", type=float, default=15.0, help="socket/RPC timeout in seconds")
+    p.add_argument("--tls", action="store_true",
+                   help="wrap the operator connection in TLS (the server needs tls_listen)")
+    p.add_argument("--tls-ca", default=os.environ.get("UMBRA_TLS_CA", ""),
+                   help="PEM file with the certificate authority that signed the server certificate")
+    p.add_argument("--tls-server-name", default=os.environ.get("UMBRA_TLS_SERVER_NAME", ""),
+                   help="name the server certificate has to carry (SNI and verification)")
+    p.add_argument("--tls-cert", default=os.environ.get("UMBRA_TLS_CERT", ""),
+                   help="client certificate for a server that asks for one (mTLS)")
+    p.add_argument("--tls-key", default=os.environ.get("UMBRA_TLS_KEY", ""),
+                   help="private key of the client certificate")
     p.add_argument("--watch", action="store_true", help="print events as they arrive")
     p.add_argument("--quiet", action="store_true", help="do not print the event banner")
+    p.add_argument("--db", default=os.environ.get(
+        "UMBRA_DB", os.path.join(os.path.expanduser("~"), ".umbra", "state.db")),
+        help="local state database (SQLite); empty disables the notebook")
     p.add_argument("--json", action="store_true",
                    help="machine-readable output for agents/tasks/info/stats/result")
     p.add_argument("--version", action="version", version=f"umbra {__version__} ({wire.SUITE_NAMES[1]}, umbra/v1)")
@@ -669,11 +1035,66 @@ def build_parser() -> argparse.ArgumentParser:
     kill = sub.add_parser("kill", help="tell an agent to exit")
     kill.add_argument("agent")
 
+    # -- pivoting -------------------------------------------------------
+    pivot = sub.add_parser("pivot", help="pivot through an agent (socks5 / port forward)")
+    pivot.add_argument("action", choices=["list", "open", "close"],
+                       help="list the pivots, open one or close one")
+    pivot.add_argument("target", nargs="?", default="",
+                       help="agent id (open) or tunnel id (close)")
+    pivot.add_argument("--mode", choices=["socks", "forward"], default="socks",
+                       help="socks lets the client pick the target, forward fixes it")
+    pivot.add_argument("--host", default="", help="remote host (forward mode)")
+    pivot.add_argument("--port", type=int, default=0, help="remote port (forward mode)")
+    pivot.add_argument("--listen", default="", help="local bind address (default 127.0.0.1:0)")
+
+    # -- layer-3 tunnel --------------------------------------------------
+    vpn = sub.add_parser("vpn", help="the layer-3 tunnel between the implants and the server")
+    vpn.add_argument("action", choices=["status", "peers", "allocate"])
+    vpn.add_argument("target", nargs="?", default="", help="agent id (allocate)")
+
+    # -- extension store -------------------------------------------------
+    armory = sub.add_parser("armory", help="the extension store")
+    armory.add_argument("action", choices=["list", "install", "remove", "run"])
+    armory.add_argument("name", nargs="?", default="", help="extension name")
+    armory.add_argument("agent", nargs="?", default="", help="agent id (run)")
+    armory.add_argument("--args", default="{}", help="task arguments as JSON (run)")
+
+    # -- command namespace ------------------------------------------------
+    alias = sub.add_parser("alias", help="saved commands")
+    alias.add_argument("action", choices=["list", "run"])
+    alias.add_argument("name", nargs="?", default="", help="alias name")
+    alias.add_argument("agent", nargs="?", default="", help="agent id (run)")
+    alias.add_argument("--args", default="{}", help="task arguments as JSON (run)")
+
+    sub.add_parser("team-sync", help="one snapshot of the team (agents, operators, chat)")
+
+    # -- stagers ----------------------------------------------------------
+    stager = sub.add_parser("stager", help="render a stager script")
+    stager.add_argument("--platform", default="windows", choices=["windows", "linux"])
+    stager.add_argument("--transport", default="tcp", choices=["tcp", "http"])
+    stager.add_argument("--server", default="", help="agent listener (host:port)")
+    stager.add_argument("--url", default="", help="url the stager downloads from")
+    stager.add_argument("--sha256", default="", help="sha256 of the payload the stager fetches")
+    stager.add_argument("--agent-id", default="", help="agent id to bake into the stager")
+
+    # -- local state ------------------------------------------------------
+    dbcmd = sub.add_parser("db", help="the console's local state database (SQLite)")
+    dbcmd.add_argument("action", choices=[
+        "stats", "tasks", "results", "notes", "search", "note", "export"])
+    dbcmd.add_argument("value", nargs="?", default="",
+                       help="agent id, task id or search term (depends on the action)")
+    dbcmd.add_argument("--limit", type=int, default=50)
+    dbcmd.add_argument("--out", default="", help="output file for `db export`")
+    dbcmd.add_argument("--agent", default="", help="agent id for `db note`")
+
     return p
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cmd == "db":
+        # The notebook is local: it works without a server or a token.
+        return run_db_command(args)
     token = read_token(args)
 
     def on_event(ev: Dict[str, Any]) -> None:
@@ -683,7 +1104,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             print_event(ev, stream=sys.stderr)
 
     client = OperatorClient(
-        args.server, token, args.operator, timeout=args.timeout, on_event=on_event
+        args.server,
+        token,
+        args.operator,
+        timeout=args.timeout,
+        on_event=on_event,
+        tls=args.tls,
+        tls_ca=args.tls_ca,
+        tls_server_name=args.tls_server_name,
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
     )
     try:
         client.connect()
@@ -693,7 +1123,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"connection failed: {exc}", file=sys.stderr)
         return 2
 
-    console = Console(client, watch=args.watch)
+    # The local notebook: optional, and never fatal.
+    store = open_state(args.db)
+    console = Console(client, watch=args.watch, store=store)
+    if store is not None:
+        try:
+            console.session = store.start_session(
+                args.operator, args.server, client.session_id.hex())
+        except Exception:  # noqa: BLE001 - the console works without a notebook
+            console.session = 0
     try:
         if not args.quiet:
             # stderr, not stdout: `umbra tasks | jq` must receive pure data.
@@ -805,12 +1243,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print("no command given", file=sys.stderr)
                 return 2
             task_id = client.submit(args.agent, "shell", {"cmd": command})
+            console.note_task(task_id, args.agent, "shell", {"cmd": command})
             if args.json and not args.wait:
                 emit({"task_id": task_id, "agent": args.agent, "kind": "shell"})
             else:
                 print(f"queued {task_id}")
             if args.wait:
                 result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
                 emit(result) if args.json else print_task_result(result)
         elif args.cmd == "task":
             try:
@@ -819,12 +1259,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"invalid --args json: {exc}", file=sys.stderr)
                 return 2
             task_id = client.submit(args.agent, args.kind, task_args)
+            console.note_task(task_id, args.agent, args.kind, task_args)
             if args.json and not args.wait:
                 emit({"task_id": task_id, "agent": args.agent, "kind": args.kind})
             else:
                 print(f"queued {task_id}")
             if args.wait:
                 result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
                 emit(result) if args.json else print_task_result(result)
         elif args.cmd in ("download", "upload"):
             chunk = args.chunk or CHUNK_MAX
@@ -858,6 +1300,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             emit(rows) if args.json else print_tasks(rows)
         elif args.cmd == "result":
             task = client.task(args.task_id)
+            # Collecting the output is part of the history: it belongs in the
+            # notebook as much as the submission does.
+            console.note_result(args.task_id, task)
             if args.json:
                 emit(task)
                 # A failed task must fail the shell too, so scripts can branch
@@ -881,6 +1326,134 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "kill":
             res = client.rpc("agents.kill", {"id": args.agent})
             print("kill task queued" if res.ok else f"error: {res.error}")
+        elif args.cmd == "pivot":
+            if args.action == "list":
+                tunnels = client.pivot_list()
+                sessions = client.pivot_sessions()
+                if args.json:
+                    emit({"tunnels": tunnels, "sessions": sessions})
+                else:
+                    print_pivots(tunnels, sessions)
+            elif args.action == "open":
+                if not args.target:
+                    print("usage: umbra pivot open <agent> [--mode socks|forward] "
+                          "[--host H --port P] [--listen ADDR]", file=sys.stderr)
+                    return 2
+                data = client.pivot_open(
+                    args.target,
+                    mode=args.mode,
+                    host=args.host,
+                    port=args.port,
+                    listen=args.listen,
+                )
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"pivot {data.get('stream')} open on {data.get('listen')} "
+                          f"via {data.get('agent_id')} ({data.get('mode')})")
+            else:
+                if not args.target:
+                    print("usage: umbra pivot close <tunnel-id>", file=sys.stderr)
+                    return 2
+                client.pivot_close(args.target)
+                if args.json:
+                    emit({"stream": args.target, "closed": True})
+                else:
+                    print(f"closed {args.target}")
+        elif args.cmd == "vpn":
+            if args.action == "status":
+                status = client.vpn_status()
+                emit(status) if args.json else print_vpn_status(status)
+            elif args.action == "peers":
+                peers = client.vpn_peers()
+                emit(peers) if args.json else print_vpn_peers(peers)
+            else:
+                if not args.target:
+                    print("usage: umbra vpn allocate <agent>", file=sys.stderr)
+                    return 2
+                address = client.vpn_allocate(args.target)
+                if args.json:
+                    emit({"id": args.target, "address": address})
+                else:
+                    print(f"{args.target} -> {address}")
+        elif args.cmd == "armory":
+            if args.action == "list":
+                data = client.armory_list()
+                if args.json:
+                    emit(data)
+                else:
+                    print_armory(data)
+            elif args.action == "install":
+                if not args.name:
+                    print("usage: umbra armory install <name>", file=sys.stderr)
+                    return 2
+                data = client.armory_install(args.name)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"installed {data.get('name')} ({data.get('size')} bytes)")
+            elif args.action == "remove":
+                if not args.name:
+                    print("usage: umbra armory remove <name>", file=sys.stderr)
+                    return 2
+                client.armory_remove(args.name)
+                if args.json:
+                    emit({"name": args.name, "removed": True})
+                else:
+                    print(f"removed {args.name}")
+            else:
+                if not args.name or not args.agent:
+                    print("usage: umbra armory run <name> <agent> [--args JSON]", file=sys.stderr)
+                    return 2
+                try:
+                    task_args = json.loads(args.args)
+                except json.JSONDecodeError as exc:
+                    print(f"invalid --args json: {exc}", file=sys.stderr)
+                    return 2
+                task_id = client.armory_run(args.name, args.agent, task_args)
+                console.note_task(task_id, args.agent, f"armory:{args.name}", task_args)
+                if args.json:
+                    emit({"task_id": task_id, "name": args.name, "agent": args.agent})
+                else:
+                    print(f"queued {task_id} ({args.name} on {args.agent})")
+        elif args.cmd == "alias":
+            if args.action == "list":
+                aliases = client.alias_list()
+                if args.json:
+                    emit(aliases)
+                else:
+                    print_aliases(aliases)
+            else:
+                if not args.name or not args.agent:
+                    print("usage: umbra alias run <name> <agent> [--args JSON]", file=sys.stderr)
+                    return 2
+                try:
+                    task_args = json.loads(args.args)
+                except json.JSONDecodeError as exc:
+                    print(f"invalid --args json: {exc}", file=sys.stderr)
+                    return 2
+                task_id = client.alias_run(args.name, args.agent, task_args)
+                console.note_task(task_id, args.agent, f"alias:{args.name}", task_args)
+                if args.json:
+                    emit({"task_id": task_id, "name": args.name, "agent": args.agent})
+                else:
+                    print(f"queued {task_id} ({args.name} on {args.agent})")
+        elif args.cmd == "team-sync":
+            data = client.team_sync()
+            if args.json:
+                emit(data)
+            else:
+                print_team(data)
+        elif args.cmd == "stager":
+            script = client.stager_generate(
+                platform=args.platform,
+                transport=args.transport,
+                server=args.server,
+                url=args.url,
+                sha256=args.sha256,
+                agent_id=args.agent_id,
+            )
+            print(script)
         else:  # pragma: no cover - argparse covers this
             print(f"unknown command {args.cmd}", file=sys.stderr)
             return 2
@@ -889,6 +1462,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     finally:
         client.close()
+        if store is not None:
+            try:
+                store.end_session(console.session)
+            except Exception:  # noqa: BLE001
+                pass
+            store.close()
     return 0
 
 

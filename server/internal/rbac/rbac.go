@@ -88,9 +88,37 @@ var requirements = map[string]string{
 	// Focus is presence: which agent this console is looking at.
 	"operators.focus": Operator,
 
+	// ---- pivoting ------------------------------------------------------
+	// Opening a pivot reaches into a network the operator console cannot
+	// see, so it is an operator action; listing them is harmless.
+	"pivot.list":  Viewer,
+	"pivot.open":  Operator,
+	"pivot.close": Operator,
+
+	// ---- layer-3 tunnel ------------------------------------------------
+	"vpn.status":   Viewer,
+	"vpn.peers":    Viewer,
+	"vpn.allocate": Operator,
+
+	// ---- extensions ----------------------------------------------------
+	"armory.list":    Viewer,
+	"armory.install": Operator,
+	"armory.remove":  Admin,
+	"armory.run":     Operator,
+
+	// ---- runtime command namespace -------------------------------------
+	"alias.list": Viewer,
+	"alias.run":  Operator,
+
+	// ---- team synchronisation ------------------------------------------
+	"team.sync": Viewer,
+
 	// ---- affects the engagement or other operators --------------------
 	"schedule.remove": Admin,
 	"events.test":     Admin,
+	// A stager carries the agent pre-shared key, so generating one is an
+	// admin action: it hands out a credential that identifies an implant.
+	"stager.generate": Admin,
 }
 
 // MinRole returns the minimum role for cmd. An unknown command requires Admin.

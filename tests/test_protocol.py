@@ -1118,7 +1118,7 @@ def test_operators_list_against_the_mock_server():
     token = b"operator-token-ops-0123456789ab"
     server = MockServer(AGENT_PSK, {"alice": token})
     server.start()
-    from umbra_cli.client import OperatorClient
+    from umbra_cli.client import OperatorClient, OperatorError
 
     client = OperatorClient(server.address, token.decode(), "alice")
     try:
@@ -1145,7 +1145,7 @@ def test_task_cancel_reaches_the_beacon_before_the_next_batch():
     agent = FakeAgent(server.address, AGENT_PSK, "agent-cancel", interval=0.2)
     agent.start()
 
-    from umbra_cli.client import OperatorClient
+    from umbra_cli.client import OperatorClient, OperatorError
 
     client = OperatorClient(server.address, token.decode(), "alice")
     try:
@@ -1672,4 +1672,901 @@ def test_directed_chat_reaches_only_the_addressee():
         alice.close()
         bob.close()
         carol.close()
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# pivoting, the layer-3 tunnel and the extension store
+# ---------------------------------------------------------------------------
+def _echo_server() -> Tuple[socket.socket, threading.Thread, List[bytes]]:
+    """A tiny TCP echo server: the target the pivot has to reach."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    seen: List[bytes] = []
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    seen.append(data)
+                    conn.sendall(data)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return listener, thread, seen
+
+
+def _recv_exact(conn: socket.socket, n: int) -> bytes:
+    """Read exactly n bytes.
+
+    A plain recv() can return less than asked for, and the SOCKS5 replies of
+    the server may arrive in one segment: reading them apart keeps the test
+    honest about the wire format.
+    """
+    buf = b""
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            raise AssertionError("the connection closed early")
+        buf += chunk
+    return buf
+
+
+def _socks5_connect(proxy_host: str, proxy_port: int, host: str, port: int) -> socket.socket:
+    """Open a SOCKS5 tunnel through the proxy to `host:port`.
+
+    The proxy address and the target are two different things: the client
+    connects to the proxy and asks it to reach the target.
+    """
+    proxy_port = int(proxy_port)
+    port = int(port)
+    conn = socket.create_connection((proxy_host, proxy_port), timeout=10)
+    conn.sendall(b"\x05\x01\x00")
+    assert _recv_exact(conn, 2) == b"\x05\x00"
+    conn.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(host) + port.to_bytes(2, "big"))
+    reply = _recv_exact(conn, 10)
+    assert reply[1] == 0x00, reply
+    return conn
+
+
+def test_pivot_socks5_reaches_a_target_through_the_agent():
+    """The whole pivot path: operator -> server -> agent -> target."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server()
+    target_host, target_port = target.getsockname()
+
+    token = b"operator-token-pivot-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-pivot")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        # The server asks the agent for a callback session and then for the
+        # target; the agent dials back on its own.
+        tunnel = client.pivot_open("agent-pivot", mode="socks")
+        assert tunnel["mode"] == "socks"
+        assert tunnel["listen"].startswith("127.0.0.1:")
+
+        conn = _socks5_connect(
+            *tunnel["listen"].rsplit(":", 1),
+            "127.0.0.1", target_port,
+        )
+        conn.sendall(b"pivot-hello")
+        assert conn.recv(64) == b"pivot-hello"
+        conn.close()
+
+        assert seen and seen[0] == b"pivot-hello"
+
+        # The tunnel is visible in the list and can be closed again.
+        tunnels = client.pivot_list()
+        assert any(t["stream"] == tunnel["stream"] for t in tunnels)
+        client.pivot_close(tunnel["stream"])
+        assert all(t["stream"] != tunnel["stream"] for t in client.pivot_list())
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        target.close()
+
+
+def test_pivot_refuses_an_unknown_agent():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-pivot-2-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        with pytest.raises(OperatorError):
+            client.pivot_open("nobody")
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_vpn_status_peers_and_allocation():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-vpn-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-vpn")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        status = client.vpn_status()
+        assert status["enabled"] is True
+        assert status["network"]
+
+        address = client.vpn_allocate("agent-vpn")
+        assert address.startswith("10.77.0.")
+        peers = client.vpn_peers()
+        assert any(p["address"] == address for p in peers)
+
+        # A second allocation must not hand out the same address.
+        other = client.vpn_allocate("agent-vpn")
+        assert other != address
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_armory_install_run_and_remove():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-armory-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-armory")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        listing = client.armory_list()
+        assert listing["verified"] is True
+        assert any(e["name"] == "whoami" for e in listing["entries"])
+
+        installed = client.armory_install("whoami")
+        assert installed["name"] == "whoami"
+
+        task_id = client.armory_run("whoami", "agent-armory", {"domain": "lab"})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done"
+        assert b"whoami" in result["out"]
+
+        with pytest.raises(OperatorError):
+            client.armory_run("does-not-exist", "agent-armory")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_alias_run_expands_into_a_task():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-alias-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-alias")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        aliases = client.alias_list()
+        assert any(a["name"] == "whoami" for a in aliases)
+
+        task_id = client.alias_run("whoami", "agent-alias")
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done"
+
+        with pytest.raises(OperatorError):
+            client.alias_run("nope", "agent-alias")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_team_sync_returns_the_whole_team():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-team-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-team")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        client.say("working on web-01")
+
+        snapshot = client.team_sync()
+        assert snapshot["server_time"] > 0
+        assert any(a["id"] == "agent-team" for a in snapshot["agents"])
+        assert any(m["text"] == "working on web-01" for m in snapshot["chat"])
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_stager_generate_carries_the_server_address():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-stager-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        script = client.stager_generate(platform="windows", transport="tcp",
+                                         server="10.0.0.5:4001", agent_id="abc")
+        assert "10.0.0.5:4001" in script
+        assert "abc" in script
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_new_rpcs_are_role_checked():
+    """The new commands follow the same role ladder as the old ones."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-role-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token}, roles={"alice": "viewer"})
+    server.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        # A viewer may look, but not open a pivot.
+        assert client.pivot_list() == []
+        assert client.vpn_status()["enabled"] is True
+        assert client.armory_list()["verified"] is True
+        with pytest.raises(OperatorError):
+            client.pivot_open("agent-x")
+        with pytest.raises(OperatorError):
+            client.armory_run("whoami", "agent-x")
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_operator_console_renders_the_new_views(capsys):
+    """The console has to survive a payload it did not expect."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-render-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-render")
+    agent.start()
+
+    from umbra_cli import cli
+
+    client = cli.OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        cli.print_pivots(client.pivot_list(), client.pivot_sessions())
+        cli.print_vpn_status(client.vpn_status())
+        cli.print_vpn_peers(client.vpn_peers())
+        cli.print_armory(client.armory_list())
+        cli.print_aliases(client.alias_list())
+        cli.print_team(client.team_sync())
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+    out = capsys.readouterr().out
+    assert "callback sessions:" in out
+    assert "network" in out
+    assert "NAME" in out
+    assert "agents (" in out
+
+
+def test_dns_tunnel_carries_a_frame():
+    """The DNS transport: the frames survive the name based encoding."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import dns  # noqa: WPS433
+
+    server = dns.DnsTunnelServer("umbra.local")
+    server.start()
+    try:
+        client = dns.DnsTunnelClient(server.address, "umbra.local", "agent-dns")
+        # The agent sends a frame in its query.
+        client.write_frame(b"first-frame")
+        client.poll()
+        assert server.receive("agent-dns") == b"first-frame"
+
+        # The server answers with a frame of its own.
+        server.send("agent-dns", b"second-frame")
+        client.poll()
+        assert client.read_frame(timeout=2) == b"second-frame"
+    finally:
+        server.stop()
+
+
+def test_dns_tunnel_reassembles_a_split_frame():
+    """A frame that does not fit into one label is split and put back together."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import dns  # noqa: WPS433
+
+    server = dns.DnsTunnelServer("umbra.local")
+    server.start()
+    try:
+        client = dns.DnsTunnelClient(server.address, "umbra.local", "agent-dns")
+        payload = bytes(range(256)) * 2
+        client.write_frame(payload)
+        # 512 bytes plus the length prefix need several queries.
+        for _ in range(30):
+            client.poll()
+            frame = server.receive("agent-dns")
+            if frame is not None:
+                break
+        assert frame == payload
+    finally:
+        server.stop()
+
+
+def test_dns_tunnel_ignores_other_domains():
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import dns  # noqa: WPS433
+
+    server = dns.DnsTunnelServer("umbra.local")
+    server.start()
+    try:
+        query = dns.build_query(7, "00000001..YWdlbnQ.example.com")
+        assert server.handle(query) is None
+    finally:
+        server.stop()
+
+
+def test_dns_base32_matches_the_other_implementations():
+    """The Rust beacon and the Go server use the same base32 alphabet."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import dns  # noqa: WPS433
+
+    assert dns.base32_encode(b"foobar") == "MZXW6YTBOI"
+    assert dns.base32_decode("MZXW6YTBOI") == b"foobar"
+    assert dns.base32_decode(dns.base32_encode(b"\x00\xff\x10")) == b"\x00\xff\x10"
+
+
+# ---------------------------------------------------------------------------
+# mutual TLS: the operator console presents a certificate
+# ---------------------------------------------------------------------------
+def _write_certificates(tmp_path):
+    """Create a CA, a server certificate and a console certificate.
+
+    The Go server requires a client certificate when a client CA is
+    configured; the test double does the same, so a console that works
+    against the test double works against the real server.
+    """
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    later = now + datetime.timedelta(days=1)
+
+    def name(common_name):
+        return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(name("umbra-test-ca"))
+        .issuer_name(name("umbra-test-ca"))
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(later)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    def leaf(common_name, san):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name(common_name))
+            .issuer_name(ca_cert.subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5))
+            .not_valid_after(later)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(san, critical=False)
+            .sign(ca_key, hashes.SHA256())
+        )
+        return cert, key
+
+    import ipaddress
+
+    server_cert, server_key = leaf(
+        "localhost",
+        x509.SubjectAlternativeName([
+            x509.DNSName("localhost"),
+            x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+        ]),
+    )
+    client_cert, client_key = leaf("console", x509.SubjectAlternativeName([]))
+
+    def write(name_, cert, key):
+        path = os.path.join(tmp_path, name_)
+        with open(path, "wb") as handle:
+            handle.write(cert.public_bytes(serialization.Encoding.PEM))
+            handle.write(
+                key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
+        return path
+
+    ca_path = os.path.join(tmp_path, "ca.pem")
+    with open(ca_path, "wb") as handle:
+        handle.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+    return {
+        "ca": ca_path,
+        "server": write("server.pem", server_cert, server_key),
+        "client": write("client.pem", client_cert, client_key),
+    }
+
+
+def test_operator_console_connects_over_mutual_tls(tmp_path):
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    certs = _write_certificates(str(tmp_path))
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+    )
+    server.start()
+    try:
+        from umbra_cli.client import OperatorClient
+
+        client = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_cert=certs["client"],
+            tls_key=certs["client"],
+        )
+        try:
+            client.connect()
+            who = client.whoami()
+            assert who["name"] == "alice"
+            assert who["role"] == "admin"
+        finally:
+            client.close()
+    finally:
+        server.stop()
+
+
+def test_mutual_tls_refuses_a_console_without_a_certificate(tmp_path):
+    """A stolen token alone must not be enough to take over an operation."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    certs = _write_certificates(str(tmp_path))
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+    )
+    server.start()
+    try:
+        from umbra_cli.client import OperatorClient, OperatorError
+
+        client = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            timeout=5,
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+        )
+        try:
+            with pytest.raises((OperatorError, OSError)):
+                client.connect()
+        finally:
+            client.close()
+    finally:
+        server.stop()
+
+
+def test_operator_cli_reaches_a_mutual_tls_server(tmp_path):
+    """The global --tls flags have to reach the client."""
+    import subprocess
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    certs = _write_certificates(str(tmp_path))
+    token = b"operator-token-tls-0123456789"
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": token},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+    )
+    server.start()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    try:
+        live = subprocess.run(
+            [sys.executable, "-m", "umbra_cli", "--server", server.address,
+             "-o", "alice", "-k", token.decode(),
+             "--tls", "--tls-ca", certs["ca"], "--tls-server-name", "localhost",
+             "--tls-cert", certs["client"], "--tls-key", certs["client"],
+             "stats"],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+        assert live.returncode == 0, live.stdout + live.stderr
+        assert json.loads(live.stdout)["protocol"] == "umbra/v1"
+    finally:
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# the WebSocket transport
+# ---------------------------------------------------------------------------
+def test_websocket_accept_value_matches_rfc6455():
+    """The opening handshake has to match the example of RFC 6455."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import ws  # noqa: WPS433
+
+    assert ws.accept_value("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
+
+def test_websocket_frames_round_trip():
+    """A umbra frame survives the WebSocket framing in both directions."""
+    import struct as _struct
+
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import ws  # noqa: WPS433
+
+    payload = bytes(range(256))
+    masked = ws.encode_frame(payload, ws.OP_BINARY, b"\x01\x02\x03\x04")
+    assert masked[0] == 0x82  # FIN + binary
+    assert masked[1] & 0x80  # masked
+    assert _struct.unpack("!H", masked[2:4])[0] == len(payload)
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    host, port = server.getsockname()
+    received = []
+
+    def serve():
+        conn, _ = server.accept()
+        server_side = ws.WebSocketServer(conn)
+        assert server_side.handshake()
+        # A server frame is never masked.
+        server_side.write_frame(b"server-says-hi")
+        received.append(server_side.read_frame())
+        server_side.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        client = ws.WebSocketClient(host, port, path="/ws")
+        client.connect()
+        assert client.read_frame() == b"server-says-hi"
+        client.write_frame(payload)
+        thread.join(timeout=5)
+        assert received == [payload]
+        client.close()
+    finally:
+        server.close()
+
+
+def test_websocket_transport_carries_a_full_session():
+    """The reference agent speaks WebSocket to the same server."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-ws-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token}, websocket=True)
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-ws", interval=0.3, websocket=True)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents() and client.agents()[0]["id"] == "agent-ws"
+
+        task_id = client.submit("agent-ws", "shell", {"cmd": "echo umbra-ws"})
+        result = client.wait_for_result(task_id, timeout=15, poll=0.05)
+        assert result["state"] == "done"
+        assert b"umbra-ws" in result["out"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_padding_frames_are_ignored():
+    """A padding frame must not disturb the session.
+
+    The padding is what makes the size of a request uniform, so every
+    implementation has to step over it instead of dropping the link.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    server = MockServer(AGENT_PSK, {"alice": OP_TOKEN})
+    server.start()
+    try:
+        host, _, port = server.address.rpartition(":")
+        sock = socket.create_connection((host, int(port)), timeout=10)
+        stream = netio.Stream(sock, timeout=10)
+        result = handshake.client_handshake(
+            stream, psk=AGENT_PSK, role=crypto.ROLE_AGENT, ident="agent-pad"
+        )
+        sess = result.session
+        # A padding frame first, then the real check-in.
+        stream.send_frame(sess.encrypt(wire.MsgType.PADDING, {"pad": "x" * 32}))
+        stream.send_frame(sess.encrypt(wire.MsgType.CHECKIN, {"ts": 1, "n": 0}))
+        msg_type, _ = sess.decrypt_message(stream.recv_frame())
+        assert msg_type == wire.MsgType.TASK_BATCH
+        stream.close()
+    finally:
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Local state database
+#
+# The console keeps its own notebook in SQLite.  It has to survive a restart,
+# it must never hold a credential, and it must work without a server.
+# ---------------------------------------------------------------------------
+def test_local_state_database_round_trip(tmp_path):
+    from umbra_cli import db
+
+    path = tmp_path / "state.db"
+    store = db.StateStore(str(path)).open()
+    try:
+        session = store.start_session("alice", "127.0.0.1:4002", "abc123")
+        assert session > 0
+        store.record_task("task-1", "agent-1", "shell",
+                          {"cmd": "whoami"}, session)
+        store.record_result("task-1", 0, b"root\n", "")
+        store.record_task("task-2", "agent-2", "ls", {"path": "/tmp"}, session)
+        store.add_note("the DC is dc01.corp.example", "agent-1")
+
+        # The task and its result are both on disk now.
+        tasks = store.tasks("agent-1")
+        assert len(tasks) == 1
+        assert tasks[0]["kind"] == "shell"
+        assert tasks[0]["args"]["cmd"] == "whoami"
+        assert tasks[0]["state"] == "done"
+
+        results = store.results("task-1")
+        assert len(results) == 1
+        assert results[0]["output"] == b"root\n"
+
+        # A failed task is marked as such.
+        store.record_result("task-2", 1, b"", "no such file")
+        assert store.task("task-2")["state"] == "failed"
+
+        # Search reaches notes and result output.
+        found = store.search("dc01")
+        assert any(item["where"] == "note" for item in found)
+        store.record_result("task-3", 0, b"the flag is in /etc/shadow\n", "")
+        found = store.search("shadow")
+        assert any(item["where"] == "result" for item in found)
+
+        stats = store.stats()
+        assert stats["tasks"] == 2
+        assert stats["results"] == 3
+        assert stats["notes"] == 1
+        assert stats["agents"] == 2
+    finally:
+        store.close()
+
+    # A second process finds the same state: the notebook is a file, not a
+    # cache that dies with the console.
+    again = db.StateStore(str(path)).open()
+    try:
+        assert again.stats()["tasks"] == 2
+        assert len(again.notes()) == 1
+    finally:
+        again.close()
+
+
+def test_local_state_database_refuses_a_newer_schema(tmp_path):
+    from umbra_cli import db
+
+    path = tmp_path / "future.db"
+    store = db.StateStore(str(path)).open()
+    try:
+        store.conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                           (str(db.SCHEMA_VERSION + 1),))
+        store.conn.commit()
+    finally:
+        store.close()
+    with pytest.raises(db.StateError):
+        db.StateStore(str(path)).open()
+
+
+def test_operator_cli_db_commands_work_without_a_server(tmp_path):
+    """`umbra db ...` is local: it must not need a token or a connection."""
+    import subprocess
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    path = str(tmp_path / "cli.db")
+
+    done = subprocess.run(
+        [sys.executable, "-m", "umbra_cli", "--db", path, "db", "note",
+         "recon done", "--agent", "agent-1"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "note" in done.stdout
+
+    listed = subprocess.run(
+        [sys.executable, "-m", "umbra_cli", "--db", path, "--json", "db", "notes"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert listed.returncode == 0, listed.stdout + listed.stderr
+    payload = json.loads(listed.stdout)
+    assert payload and payload[0]["body"] == "recon done"
+    assert payload[0]["agent"] == "agent-1"
+
+
+def test_operator_cli_records_the_engagement_in_its_notebook(tmp_path):
+    """What the operator runs ends up in the console's own database."""
+    import subprocess
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-notebook-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-notebook", interval=0.2)
+    agent.start()
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    path = str(tmp_path / "notebook.db")
+    base = [sys.executable, "-m", "umbra_cli", "--server", server.address,
+            "-o", "alice", "-k", token.decode(), "--db", path]
+
+    def run(*argv: str) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(base + list(argv), capture_output=True, text=True,
+                              env=env, timeout=60)
+
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            out = json.loads(run("--json", "agents").stdout)
+            if out:
+                break
+            time.sleep(0.05)
+        assert out and out[0]["id"] == "agent-notebook"
+
+        submitted = json.loads(run("--json", "task", "agent-notebook", "shell",
+                                   "--args", '{"cmd":"echo notebook"}').stdout)
+        task_id = submitted["task_id"]
+
+        # The task is in the notebook straight away.
+        rows = json.loads(run("--json", "db", "tasks").stdout)
+        assert rows and rows[0]["task_id"] == task_id
+        assert rows[0]["kind"] == "shell"
+        assert rows[0]["args"]["cmd"] == "echo notebook"
+
+        # And the result joins it once the implant answered.
+        payload = {}
+        for _ in range(100):
+            payload = json.loads(run("--json", "result", task_id).stdout)
+            if payload.get("state") == "done":
+                break
+            time.sleep(0.1)
+        assert payload.get("state") == "done"
+
+        results = json.loads(run("--json", "db", "results").stdout)
+        assert results and results[0]["task_id"] == task_id
+        assert "notebook" in results[0]["output"]
+
+        # The notebook is searchable: the operator finds the output again.
+        found = json.loads(run("--json", "db", "search", "notebook").stdout)
+        assert found
+    finally:
+        agent.stop()
         server.stop()

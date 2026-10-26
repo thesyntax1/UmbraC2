@@ -16,9 +16,9 @@ not even the handshake.
 
 | Component | Language | State |
 |---|---|---|
-| Team server (TCP + HTTP transports, agent/operator links, task queue) | Go 1.22 (stdlib only) | v0.1 core |
-| Beacon (beaconing, task execution, TCP + HTTP) | Rust 1.75+ | v0.1 core |
-| Implant (foreground service, JNI recon, task execution) | Kotlin + C++ (NDK) | v0.1 core |
+| Team server (TCP + HTTP + WebSocket + DNS + mutual TLS, agent/operator links, task queue) | Go 1.22 (stdlib only) | v0.1 core |
+| Beacon (beaconing, task execution, TCP + HTTP + WebSocket + DNS, pivots, tunnel) | Rust 1.75+ | v0.1 core |
+| Implant (foreground service, JNI recon, task execution, pivot callback) | Kotlin + C++ (NDK) | v0.1 core |
 | Operator console + protocol reference implementation | Python 3.9+ | v0.1 core |
 | Protocol spec + cross-language conformance vectors | `docs/`, `contracts/` | v0.1 |
 
@@ -29,9 +29,27 @@ and task history persisted across restarts, TCP and HTTP transports, and an
 append-only operator audit trail (`umbra audit`) with per-operator RPC rate
 limiting.
 
+Added on top of that core:
+
+| Area | What works | Where |
+|---|---|---|
+| Pivoting | SOCKS5 proxy and TCP port forward through a compromised agent, agent-initiated callback sessions, peer-to-peer chains between implants | [docs/PIVOTING.md](docs/PIVOTING.md) |
+| Layer-3 tunnel | An encrypted tunnel between the console and the implants: every agent gets an address in the tunnel network | [docs/PIVOTING.md](docs/PIVOTING.md#the-layer-3-tunnel) |
+| DNS transport | The beacon talks to the server through TXT records when everything else is blocked | [docs/PIVOTING.md](docs/PIVOTING.md#the-dns-transport) |
+| In-memory modules | COFF/BOF objects and PE images are loaded and executed without touching the disk | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) |
+| Post-exploitation | Reflective loading, process migration, token impersonation, credential collection, privilege helpers | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#post-exploitation) |
+| Extension store | A signed catalogue of modules, installed on the server and pushed to the agents | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-extension-store) |
+| Command namespace | Named task templates (`umbra alias`) shared by the whole team | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-command-namespace) |
+| Stagers | One-line PowerShell and Bash stagers with the agent key baked in | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#stagers) |
+| Team work | Focus/presence, task claims, directed chat, and one `team.sync` snapshot of the whole team | [docs/PROTOCOL.md](docs/PROTOCOL.md#operator-rpcs) |
+| Covert channels | WebSocket and DNS transports, mutual TLS for the console, traffic padding, domain fronting through a configurable `Host` header | [docs/TRANSPORTS.md](docs/TRANSPORTS.md) |
+| Reconnaissance | Host facts, BloodHound-style domain edges, and awareness of debuggers and sandboxes | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#reconnaissance) |
+| Operator state | The console keeps its own SQLite notebook: the tasks it ran, their results and the notes it left | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-operators-notebook) |
+| Traffic hygiene | Sleep obfuscation on top of the jitter, and module images wiped from memory once they have run | [docs/SECURITY.md](docs/SECURITY.md) |
+
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
-peer-to-peer pivoting, SOCKS/proxy pivots, reflective loaders, process
-injection, BOF/COFF execution, S3/DNS transports, multi-player chat.
+S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,
+TLS inside the implant binaries, and a Go implant.
 
 ## Quick start (5 commands, no Go/Rust needed)
 
@@ -100,13 +118,16 @@ UmbraC2/
 │       ├── config/               #   JSON config + keyring
 │       ├── store/                #   agents/tasks, atomic JSON snapshots
 │       ├── hub/                  #   broker: registry, queue, operator events
-│       └── link/                 #   transports: agent TCP, operator TCP, HTTP
+│       └── link/                 #   transports: agent TCP, operator TCP, HTTP, WebSocket, DNS
 ├── implant/
 │   ├── rust/                     # Rust beacon (Windows/Linux/macOS)
 │   │   ├── src/{upk,crypto,wire,session,transport,task,beacon}.rs
+│   │   ├── src/{link,tunnel,vpn,dns,ws,bof,post}.rs   # pivoting, tunnels, transports, modules
+│   │   ├── src/{domain,evade}.rs                     # domain recon, debugger/sandbox awareness
 │   │   └── tests/vectors.rs      #   same vectors as Go and Python
 │   └── android/                  # Kotlin implant + C++/JNI recon helpers
 ├── operator/umbra_cli/           # Python reference implementation + operator console
+│   └── db.py                     #   the console's local notebook (SQLite)
 ├── tools/                        # mock server, reference agent, vector generator
 ├── deploy/                       # configs, systemd unit, TLS reverse-proxy example
 ├── scripts/                      # cross-build + secret generation helpers
@@ -121,7 +142,10 @@ UmbraC2/
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | component design, data flow, decisions, roadmap |
 | [docs/BUILD.md](docs/BUILD.md) | build & cross-compilation for every target, testing |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | deployment, secrets, hardening, troubleshooting |
-| [docs/SECURITY.md](docs/SECURITY.md) | threat model, cryptographic choices, limitations |
+| [docs/TRANSPORTS.md](docs/TRANSPORTS.md) | every transport, the traffic-shaping knobs, how to choose one |
+| [docs/PIVOTING.md](docs/PIVOTING.md) | SOCKS5, port forwards, peer-to-peer links, the layer-3 tunnel |
+| [docs/EXTENSIONS.md](docs/EXTENSIONS.md) | the extension store, the command namespace, stagers, in-memory modules, reconnaissance |
+| [docs/SECURITY.md](docs/SECURITY.md) | threat model, cryptographic choices, attack surface, limitations |
 
 ## Tests
 

@@ -313,6 +313,10 @@ All bodies are upk maps. Types are stable wire constants.
 | `0x17` | KILL | server → agent | `{reason}` |
 | `0x18` | TASK_CANCEL | server → agent | `{id}` — sent immediately before the `TASK_BATCH` it modifies (see §6); the beacon skips that task and reports `code 125` |
 | `0x19` | BYE | agent → server | `{}` — end of the beacon cycle |
+| `0x1A` | TUNNEL_OPEN | either | `{stream, op, host?, port?, ok?, err?}` — pivoting (§7.3) |
+| `0x1B` | TUNNEL_DATA | either | `{stream, data}` — payload bytes of one pivot stream |
+| `0x1C` | TUNNEL_CLOSE | either | `{stream, reason?}` — one pivot stream ended |
+| `0x1E` | PADDING | either | `{data}` — random bytes, ignored by the receiver; used to shape traffic |
 | `0x1F` | ERROR | either | `{code, msg}` — informational; the session stays up and the server emits a `beacon.error` operator event (message clipped to 512 bytes) |
 | `0x20` | OP_REQUEST | operator → server | `{rid, cmd, args}` |
 | `0x21` | OP_RESPONSE | server → operator | `{rid, ok, data, err}` |
@@ -326,13 +330,23 @@ Task kinds understood by the reference implants:
 |---|---|---|
 | `shell` | `cmd`, optional `timeout` (s) | stdout+stderr, exit code |
 | `sysinfo` | — | text report |
+| `recon` | — | host report, environment findings (debugger, sandbox) and domain edges |
 | `ls` | `path` | directory listing |
 | `download` | `path`, optional `offset`, `limit` | file bytes (≤ 900 KiB per task) + transfer metadata (§7.1) |
 | `upload` | `path`, `data` (bin), optional `offset`, `eof` | confirmation text + transfer metadata (§7.1) |
 | `ps` | — | process listing |
-| `sleep` | `sleep`, `jitter` | confirmation; beacon applies it |
+| `sleep` | `sleep`, `jitter` | confirmation; beacon applies it (with sleep obfuscation, §7.5) |
 | `exit` | — | beacon sends result, then BYE and terminates |
 | `ping` | — | `pong` |
+| `tunnel` | `stream` | opens a pivot callback session (§7.3) |
+| `p2p` | `action` (`connect`/`listen`), `host`, `port`, `stream` | peer-to-peer pivot link (§7.3) |
+| `bof` | `name`, `data` (bin, COFF object), `args` (list) | in-memory COFF execution: output + exit code |
+| `ext` | `name`, `data` (bin, module), `args` (map) | in-memory extension execution |
+| `inject` | `pid`, `mode` (`inject`/`migrate`/`reflect`), optional `data` (bin, PE) | process injection / migration / reflective load |
+| `creds` | `mode` (`vault`/`dpapi`/`lsass`) | credential material found on the host |
+| `token` | optional `pid` | duplicated access token of another user or service |
+| `privesc` | `mode` | local privilege escalation attempt |
+| `vpn` | `action` (`start`/`stop`), optional `addr` | layer-3 tunnel endpoint state |
 
 ### 7.1 Result metadata and chunked transfer
 
@@ -413,6 +427,20 @@ Operator RPC commands, with the minimum role each requires:
 | `operators.focus` | operator | announce the agent you are working on |
 | `schedule.remove` | admin | remove a recurring task |
 | `events.test` | admin | emit a synthetic event |
+| `pivot.list` | viewer | open pivots: agent, mode, listener, byte counters |
+| `pivot.open` | operator | open a SOCKS5 proxy or a port forward through an agent |
+| `pivot.close` | operator | close a pivot |
+| `vpn.status` | viewer | tunnel state: listener, network, peer count |
+| `vpn.peers` | viewer | tunnel peers and their addresses |
+| `vpn.allocate` | operator | reserve a tunnel address for an agent |
+| `armory.list` | viewer | catalogue and installed extensions |
+| `armory.install` | operator | fetch, verify and install an extension |
+| `armory.remove` | admin | delete an installed extension |
+| `armory.run` | operator | run an extension on an agent |
+| `alias.list` | viewer | the runtime command namespace |
+| `alias.run` | operator | run a named template on an agent |
+| `team.sync` | viewer | full state snapshot for a console that joins late |
+| `stager.generate` | admin | build a stage-0 one-liner (it carries the agent PSK) |
 
 Roles are `viewer` < `operator` < `admin`. Identities come from
 `operator_token_env` entries formatted `name:token` (role defaults to
@@ -422,6 +450,93 @@ Roles are `viewer` < `operator` < `admin`. Identities come from
 
 Responses keep the `rid` of the request; events are asynchronous and can arrive
 at any time.
+
+### 7.3 Pivoting, tunnels and the layer-3 VPN
+
+Pivoting is built on one rule: **the agent always dials out**. A beacon that
+can reach the team server can open a *callback session* on demand, so a
+network where the server cannot reach the host (NAT, a strict egress policy)
+is still reachable in the other direction.
+
+```
+operator            server                       agent
+  |  pivot.open       |                             |
+  |------------------>|  task "tunnel" {stream}    |
+  |                   |---------------------------->|
+  |                   |                             |  dial back to the
+  |                   |                             |  agent listener
+  |                   |<----------------------------|  HELLO {meta:{tunnel}}
+  |                   |  TUNNEL_OPEN {op:"ready"}   |
+  |                   |---------------------------->|
+  |                   |  TUNNEL_OPEN {op:"ok"}      |
+  |                   |<----------------------------|
+```
+
+The callback is a normal agent handshake: the HELLO carries `meta.tunnel =
+<stream>`, and the server pairs it with the queued `tunnel` task instead of
+registering a second live beacon. The callback connection then carries the
+tunnel frames and nothing else.
+
+Logical streams are multiplexed over that one connection:
+
+| direction | frame | meaning |
+|---|---|---|
+| server → agent | `TUNNEL_OPEN {stream, op:"open", host, port}` | open a connection to `host:port` |
+| agent → server | `TUNNEL_OPEN {stream, op:"result", ok, err}` | the result of that request |
+| either | `TUNNEL_DATA {stream, data}` | payload bytes (≤ 32 KiB per frame) |
+| either | `TUNNEL_CLOSE {stream, reason}` | the stream ended |
+
+Two local listeners sit in front of the streams:
+
+* **SOCKS5** (`pivot.open {id, mode:"socks"}`) — RFC 1928, `CONNECT` only, no
+  authentication, bound to loopback by default. The client picks the target.
+* **port forward** (`pivot.open {id, mode:"forward", host, port}`) — every
+  accepted connection is relayed to one fixed `host:port`.
+
+**Peer-to-peer** pivoting chains two beacons: the `p2p` task makes one agent
+open a TCP link to another agent (`action:"connect"` with `host`/`port`) or
+listen for one (`action:"listen"`). The link is encrypted with keys derived
+from the agent PSK and an X25519 exchange, and it carries the same
+`TUNNEL_*` frames, so a third host can be reached through a chain of
+beacons without the team server carrying the traffic.
+
+**The layer-3 tunnel** (`vpn`) is a transport of its own: a UDP socket with a
+Noise-IK-style handshake (`INIT`/`RESP`), AES-256-GCM data packets and a
+64-packet replay window. It exists because it keeps working when the
+beaconing channel does not: the console and the beacon exchange IPv4 packets
+over it, and the server routes them by tunnel address (`10.77.0.0/24` by
+default). The handshake MAC is keyed with a secret both sides already hold
+(the agent PSK or an operator token), so no additional key distribution is
+needed.
+
+### 7.4 Traffic shaping
+
+A `PADDING` frame (`0x1E`) carries random bytes and is ignored by the
+receiver. It exists so a transport can pad its bodies to a coarse size bucket
+(`http_pad`) without changing the frame format: the payload size of a frame
+stays hidden behind the bucket, and the padding is part of the AEAD, so it
+cannot be forged.
+
+The body of a padding frame is a binary upk value. Its size is chosen so the
+*whole* body reaches the bucket: the frame overhead is the prelude, the
+nonce, the upk tag of the body, the length prefix of the body and the
+authentication tag, and the length prefix grows with the body — so the length
+is solved for, not guessed. A receiver steps over a padding frame exactly
+like it steps over an unknown message type: it is ignored, and the session
+continues.
+
+### 7.5 Sleep obfuscation
+
+The beacon does not check in on a fixed period.  The jitter spreads the
+intervals around the configured sleep, and on top of that the beacon takes
+an occasional long nap (roughly one check-in in four sleeps 1.5 to 3.5 times
+longer).  A uniform distribution is a signature of its own: a beacon that
+checks in every 60.4 seconds on average is easier to find than one that
+sometimes sleeps for three minutes.
+
+The obfuscation can be switched off with `UMBRA_SLEEP_OBFUSCATE=0` when a
+fixed interval matters more than the traffic pattern (a lab test that needs
+a predictable check-in, for instance).
 
 ## 8. Transports
 
@@ -468,6 +583,72 @@ request if any frame fails. Limits: at most 16 frames per request, handshake
 bodies exactly one frame, empty bodies are a 400. A session is dropped — and the
 agent marked offline — on a bad frame, on BYE, or when it has not polled within
 `idle_timeout`.
+
+**DNS** — the same frames, carried by TXT records.  The transport is used when
+every other channel is blocked; the name of the query is the envelope:
+
+```
+query   <seq>.<chunk>.<agent>.<domain>
+answer  TXT records, each one base32 of a slice of the frame
+```
+
+| Label | Meaning |
+|---|---|
+| `seq` | the sequence number of the query, eight hex characters |
+| `chunk` | base32 of the bytes the agent sends; `-` means "nothing this time" |
+| `agent` | base32 of the agent id |
+
+Both directions are length prefixed: a four byte big endian length in front of
+every frame, so a chunk that ends in the middle of a frame is reassembled
+instead of breaking the stream.  One answer carries at most eight TXT records
+(8 × 32 bytes of payload), and a frame that is larger is continued in the next
+query.
+
+The frames that travel through the tunnel are ordinary umbra/v1 frames: the
+handshake, the key schedule, the task batch and the results are unchanged.  A
+DNS transport is therefore a *transport*, not a second protocol — a session
+that was established over DNS has the same properties as one that was
+established over TCP.
+
+The server answers only for its own domain (`dns_domain`); every other name
+is left to the resolver.  A query for a name outside the domain is not
+answered at all, and the tunnel never forwards anything.
+
+**WebSocket** — the same frames, carried by RFC 6455.  The client opens the
+beacon route with an upgrade request, and the server answers it on the same
+route the HTTP transport uses:
+
+```
+GET /api/v1/beacon HTTP/1.1
+Host: <host>
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: <base64 of 16 random bytes>
+Sec-WebSocket-Version: 13
+
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: base64(sha1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+```
+
+After the upgrade the connection is a frame stream again: one umbra frame per
+binary WebSocket frame, in order.  The rules are the ones of RFC 6455 with
+two restrictions: only binary frames are used (no text, no continuation), and
+a fragmented message is refused instead of reassembled — the umbra frames fit
+into one WebSocket frame, and refusing keeps the parser small.  A client
+masks its frames, a server does not; the client verifies the accept value, so
+an endpoint that is not a WebSocket server is detected immediately.
+
+The WebSocket transport carries the same handshake, the same key schedule and
+the same messages as every other transport: it is a transport, not a second
+protocol.
+
+**Mutual TLS** — a listener of its own (`tls_listen`).  The TLS layer proves
+*who* the peer is (a certificate signed by `tls_client_ca`, optionally pinned
+to a common name); the umbra handshake still decides *what* the peer may do.
+The role in the HELLO picks the session: an agent gets a beacon session, an
+operator gets a control channel.  TLS 1.3 is the minimum.
 
 ## 9. Failure handling
 

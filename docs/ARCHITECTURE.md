@@ -50,9 +50,17 @@ main: load config → build keyring → open store → start listeners
 | `config` | JSON config + keyring | secrets come from env or `0600` files, never from the config file |
 | `store` | agents, tasks | in-memory + atomic snapshot (`tmp` + `rename`), bounded history |
 | `hub` | broker | all state transitions in one place; transports never mutate state |
-| `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP; per-operator RPC rate limit |
+| `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP/WebSocket/DNS; per-operator RPC rate limit |
 | `audit` | operator audit trail | JSON Lines, `fsync` per entry, size rotation, nil-safe |
 | `rbac` | operator roles | one declarative command → minimum-role table; unknown commands are admin-only (fail closed) |
+| `pivot` | agent callback sessions | SOCKS5 proxy and TCP forward; the agent dials back, the server only drives |
+| `vpn` | layer-3 tunnel | X25519 + HKDF + AES-256-GCM datagrams, 64 packet replay window |
+| `dnstun` | DNS transport | TXT records carry the frames; the session above the transport does not change |
+| `armory` | extension store | Ed25519 signed catalogue; an unsigned catalogue installs nothing |
+| `alias` | command namespace | named task templates, call-time arguments win |
+| `stager` | stager generation | PowerShell and Bash; the agent key never reaches the audit log |
+| `coff` | object inspection | the server parses a module before it is pushed to an agent |
+| `mtls` | TLS configuration | mutual TLS for the operator listener, plain TLS for the agent listener |
 
 ### Connection handling
 
@@ -116,8 +124,17 @@ main → Config (compile-time defaults + env/flags) → Beacon::run
 | `wire` | frame read/write, `split_frames` for HTTP bodies |
 | `session` | same state machine as the server |
 | `transport` | `TcpChannel`, `HttpChannel` (hand-written HTTP/1.1, chunked decoding) |
+| `ws` | the WebSocket transport (RFC 6455, hand-written SHA-1 and base64) |
 | `task` | command execution with a hard timeout, output cap |
-| `beacon` | handshake, check-in, task dispatch, jitter/backoff |
+| `beacon` | handshake, check-in, task dispatch, jitter/obfuscated sleep/backoff |
+| `link` | the client half of the handshake, shared by the beacon and the pivot callback |
+| `tunnel` | pivot callbacks and peer-to-peer links |
+| `vpn` | the layer-3 tunnel client (TUN device on Linux) |
+| `dns` | the DNS transport: TXT records carry the frames |
+| `bof` | in-memory COFF loader |
+| `post` | reflective loading, injection, token and credential helpers |
+| `domain` | active directory reconnaissance, BloodHound-style edges |
+| `evade` | debugger and sandbox awareness |
 
 Choices worth knowing:
 
@@ -131,6 +148,9 @@ Choices worth knowing:
   `docs/SECURITY.md` §4, limitation 1);
 * **jitter** — uniform in `[sleep·(1−j), sleep·(1+j)]`, with exponential backoff
   (capped at 5 minutes) when a cycle fails;
+* **sleep obfuscation** — on top of the jitter the beacon takes an occasional
+  long nap (one check-in in four sleeps 1.5–3.5 times longer), because a
+  perfectly uniform distribution is a signature of its own;
 * **process execution** — `std::process::Command` with piped stdio: commands are
   never staged on disk (no temp scripts, no dropped helper binaries). The
   implant itself never writes to disk except for explicit `upload` tasks.
@@ -158,7 +178,13 @@ protocol:
   implementation used to generate `contracts/vectors.json`;
 * `client.py` — one reader thread, RPC responses matched by `rid`, events
   delivered through a callback;
-* `cli.py` — sub-commands for scripting and an interactive shell for live work.
+* `cli.py` — sub-commands for scripting and an interactive shell for live work;
+* `dns.py`, `ws.py` — reference implementations of the DNS tunnel and of the
+  WebSocket transport, so both can be exercised without a Go build;
+* `db.py` — the console's local notebook: a SQLite database with the tasks
+  this operator ran, their results and the notes they left. It is local on
+  purpose: the server stays dependency-free, and the engagement history
+  belongs to the operator who collected it.
 
 `tools/mock_server.py` implements the server side in Python (plus a reference
 agent) so the console and the protocol can be exercised without a Go build. It is
@@ -173,13 +199,13 @@ a test double, not a production server.
 | AES-256-GCM as the mandatory suite | in every stdlib we target (Go, JVM, RustCrypto) | no ChaCha fallback on the reference server |
 | Cleartext length in the prelude | framing without keys, cheap DoS bounds | leaks message sizes (mitigation: padding, on the roadmap) |
 | Pull-based beaconing | implants are stateless clients; simple retry semantics | worst-case latency = sleep interval |
-| JSON state file instead of a database | zero dependencies, easy to inspect and back up | not suitable beyond ~10⁴ agents/tasks (two generations on disk: `state.json` + `.bak`, schema version checked on load) |
+| JSON state file instead of a database | zero dependencies, easy to inspect and back up | not suitable beyond ~10⁴ agents/tasks (two generations on disk: `state.json` + `.bak`, schema version checked on load). The operator console keeps its own SQLite notebook (`umbra_cli/db.py`) for the history it collects |
 | Python reference implementation | generates the vectors, drives e2e tests, teaches the protocol | must be kept in lockstep with Go/Rust |
 
 ## 7. Roadmap
 
-Short term: message padding, `CONFIG` as a first-class policy push, per-agent
-authorisation profiles.
+Short term: `CONFIG` as a first-class policy push, per-agent authorisation
+profiles.
 
 Done: crash-safe state generations (`state.json` + `.bak`, schema version,
 fallback load with a loud warning); shared-work coordination (operator focus/presence in `operators.list`,
@@ -196,9 +222,34 @@ is rotated, fsynced per line, and readable from disk after a restart; and task
 cancel end-to-end (`TASK_CANCEL` control frames read by both reference implants,
 state preserved when a late result arrives).
 
-Medium term: DNS/S3/SMTP transports, SOCKS5 pivot, named pipes, BOF/COFF
-execution, in-memory reflection for Windows (`CreateProcess` + section-backed
-payloads), Go implant, multi-player operator chat with per-operator ACLs.
+Done (pivoting and extensions): agent callback sessions with a SOCKS5 proxy
+and a TCP port forward (`internal/pivot`), peer-to-peer links between implants
+(`implant/rust/src/tunnel.rs`), the layer-3 tunnel between the console and the
+beacons (`internal/vpn`, `implant/rust/src/vpn.rs`), the DNS transport
+(`internal/dnstun`, `implant/rust/src/dns.rs`), in-memory COFF execution and
+reflective PE loading (`implant/rust/src/bof.rs`, `implant/rust/src/post.rs`),
+the signed extension store (`internal/armory`), the shared command namespace
+(`internal/alias`), stager generation (`internal/stager`) and mutual TLS for
+the operator and agent listeners (`internal/mtls`).
+
+Done (covert channels): the WebSocket transport (`server/internal/link/ws.go`,
+`implant/rust/src/ws.rs`, `operator/umbra_cli/ws.py`), traffic padding with
+sealed `PADDING` frames (`http_pad` on the server, `UMBRA_HTTP_PAD` in the
+beacon), domain fronting through a configurable `Host` header on both the
+HTTP and the WebSocket transport, and the operator console speaking mutual
+TLS (`--tls`, `--tls-ca`, `--tls-server-name`, `--tls-cert`, `--tls-key`).
+See `docs/TRANSPORTS.md`.
+
+Done (reconnaissance and operator state): active directory reconnaissance
+with BloodHound-style edges (`implant/rust/src/domain.rs`), debugger and
+sandbox awareness (`implant/rust/src/evade.rs`), sleep obfuscation on top of
+the jitter (`UMBRA_SLEEP_OBFUSCATE`), module images wiped from memory once
+they have run (`crypto::zeroize`), and the console's local SQLite notebook
+(`operator/umbra_cli/db.py`, `umbra db`).
+
+Medium term: S3 and SMTP transports, named-pipe pivots, a Go implant,
+per-operator ACLs on the chat, and a sandbox for task modules that are not
+plain memory.
 
 Long term: trait-object plugin ABI for implants (new tasks without rebuilding),
 WASM-sandboxed task modules, automated detection-engineering fixtures.

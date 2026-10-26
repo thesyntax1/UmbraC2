@@ -33,6 +33,10 @@ pub const MSG_REKEY: u8 = 0x16;
 pub const MSG_KILL: u8 = 0x17;
 pub const MSG_TASK_CANCEL: u8 = 0x18;
 pub const MSG_BYE: u8 = 0x19;
+pub const MSG_TUNNEL_OPEN: u8 = 0x1A;
+pub const MSG_TUNNEL_DATA: u8 = 0x1B;
+pub const MSG_TUNNEL_CLOSE: u8 = 0x1C;
+pub const MSG_PADDING: u8 = 0x1E;
 pub const MSG_ERROR: u8 = 0x1F;
 
 pub const MARKER_HELLO: u8 = 0x01;
@@ -176,6 +180,10 @@ pub fn type_name(t: u8) -> &'static str {
         MSG_REKEY => "REKEY",
         MSG_KILL => "KILL",
         MSG_BYE => "BYE",
+        MSG_TUNNEL_OPEN => "TUNNEL_OPEN",
+        MSG_TUNNEL_DATA => "TUNNEL_DATA",
+        MSG_TUNNEL_CLOSE => "TUNNEL_CLOSE",
+        MSG_PADDING => "PADDING",
         MSG_ERROR => "ERROR",
         _ => "UNKNOWN",
     }

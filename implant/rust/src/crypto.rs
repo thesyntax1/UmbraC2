@@ -94,6 +94,20 @@ pub fn hkdf_sha256(ikm: &[u8], salt: &[u8], info: &[u8], len: usize) -> Result<V
     hkdf_expand(&hkdf_extract(salt, ikm), info, len)
 }
 
+/// Overwrite a buffer with zeroes.
+///
+/// The compiler is allowed to drop a write that is never read again, so a
+/// plain `buf.fill(0)` can be optimised away.  A volatile write cannot: the
+/// memory is written whether the program looks at it or not.  Every buffer
+/// that holds key material or a module image goes through this on the way
+/// out.
+pub fn zeroize(buf: &mut [u8]) {
+    for byte in buf.iter_mut() {
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     OsRng.fill_bytes(&mut b);
@@ -358,6 +372,13 @@ mod tests {
         let mut bad = ct.clone();
         bad[0] ^= 1;
         assert!(aead_decrypt(SUITE_AES256_GCM, &key, &nonce, aad, &bad).is_err());
+    }
+
+    #[test]
+    fn the_zeroizer_clears_the_buffer() {
+        let mut buf = vec![0xaau8; 64];
+        super::zeroize(&mut buf);
+        assert!(buf.iter().all(|b| *b == 0));
     }
 
     pub fn hex_encode(b: &[u8]) -> String {

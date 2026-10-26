@@ -37,6 +37,36 @@ type Server struct {
 	HTTPPath       string `json:"http_path"`
 	HTTPTLSCert    string `json:"http_tls_cert"`
 	HTTPTLSKey     string `json:"http_tls_key"`
+	// HTTPHostHeader is the Host header the beacon is expected to send.
+	// It is what makes domain fronting possible: the TCP connection goes
+	// to the C2 address, the Host header names a fronting domain.
+	HTTPHostHeader string `json:"http_host_header"`
+	// HTTPPad pads HTTP bodies to a bucket of this size (0 = off). It
+	// hides the real payload size behind a coarse traffic profile.
+	HTTPPad int `json:"http_pad"`
+
+	// TLSListen is a mutual-TLS listener for agents and operators. Every
+	// peer must present a certificate signed by TLSClientCA.
+	TLSListen   string `json:"tls_listen"`
+	TLSCert     string `json:"tls_cert"`
+	TLSKey      string `json:"tls_key"`
+	TLSClientCA string `json:"tls_client_ca"`
+
+	// DNSListen is the UDP/TCP listener of the DNS transport, and DNSDomain
+	// is the zone it answers for.
+	DNSListen string `json:"dns_listen"`
+	DNSDomain string `json:"dns_domain"`
+
+	// VPNListen binds the layer-3 tunnel, VPNAddr is the address the
+	// beacons and consoles connect to, VPNNetwork is the tunnel network.
+	VPNListen  string `json:"vpn_listen"`
+	VPNAddr    string `json:"vpn_addr"`
+	VPNNetwork string `json:"vpn_network"`
+
+	// SocksListen is a persistent SOCKS5 proxy that pivots through
+	// SocksAgent; SocksAgent is the agent it uses.
+	SocksListen string `json:"socks_listen"`
+	SocksAgent  string `json:"socks_agent"`
 
 	PSKFile       string   `json:"psk_file"`
 	AgentPSK      string   `json:"agent_psk_env"`      // env var that holds the agent PSK
@@ -48,6 +78,11 @@ type Server struct {
 	AuditFile      string `json:"audit_file"`
 	AuditMaxSizeMB int    `json:"audit_max_mb"`
 	LogLevel       string `json:"log_level"`
+
+	// ArmoryDir caches the signed extensions, ArmoryKey is the PEM file
+	// with the Ed25519 public key that signs the catalogue.
+	ArmoryDir string `json:"armory_dir"`
+	ArmoryKey string `json:"armory_key"`
 
 	Beacon         Beacon `json:"beacon"`
 	Limits         Limits `json:"limits"`
@@ -97,6 +132,9 @@ func Default() *Config {
 		AuditFile:       "data/audit.jsonl",
 		AuditMaxSizeMB:  8,
 		LogLevel:        "info",
+		VPNNetwork:      "10.77.0.0/24",
+		DNSDomain:       "umbra.local",
+		ArmoryDir:       "data/armory",
 		Beacon:          Beacon{Sleep: 5, Jitter: 20},
 		Limits:          Limits{MaxAgents: 512, MaxOperators: 16, HandshakeTimeoutSec: 15, IdleTimeoutSec: 120, MaxFrameBytesPerConn: 64 << 20},
 		MaxClockSkewS:   300,
@@ -218,6 +256,29 @@ func (c *Config) Validate() error {
 	}
 	if s.AuditFile != "" && s.DataFile != "" && s.AuditFile == s.DataFile {
 		return errors.New("config: audit_file must not be the data_file")
+	}
+	if s.TLSListen != "" {
+		if s.TLSCert == "" || s.TLSKey == "" {
+			return errors.New("config: tls_cert and tls_key are required when tls_listen is used")
+		}
+		if s.TLSClientCA == "" {
+			return errors.New("config: tls_client_ca is required when tls_listen is used (the listener is mutual TLS)")
+		}
+	}
+	if s.DNSListen != "" && s.DNSDomain == "" {
+		return errors.New("config: dns_domain must be set when dns_listen is used")
+	}
+	if s.VPNListen != "" && s.VPNNetwork == "" {
+		return errors.New("config: vpn_network must be set when vpn_listen is used")
+	}
+	if s.HTTPPad != 0 && (s.HTTPPad < 256 || s.HTTPPad > 65536) {
+		return errors.New("config: http_pad must be 0 (off) or between 256 and 65536 bytes")
+	}
+	if s.ArmoryKey != "" && s.ArmoryDir == "" {
+		return errors.New("config: armory_dir must be set when armory_key is used")
+	}
+	if s.SocksListen != "" && s.SocksAgent == "" {
+		return errors.New("config: socks_agent must be set when socks_listen is used")
 	}
 	return nil
 }

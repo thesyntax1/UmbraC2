@@ -97,6 +97,14 @@ class MsgType:
     TASK_CANCEL = 0x18
     BYE = 0x19
 
+    # pivoting tunnel frames (agent dials back, streams are multiplexed)
+    TUNNEL_OPEN = 0x1A
+    TUNNEL_DATA = 0x1B
+    TUNNEL_CLOSE = 0x1C
+
+    # padding frames: random bytes, ignored by the receiver
+    PADDING = 0x1E
+
     # errors / control
     ERROR = 0x1F
 

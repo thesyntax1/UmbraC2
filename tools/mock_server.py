@@ -18,6 +18,7 @@ import json
 import os
 import queue
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -27,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "operator"))
 
-from umbra_cli import crypto, handshake, netio, session, upk, wire  # noqa: E402
+from umbra_cli import crypto, handshake, netio, session, upk, wire, ws  # noqa: E402
 
 
 def _now() -> int:
@@ -36,6 +37,175 @@ def _now() -> int:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}-{crypto.random_bytes(4).hex()}"
+
+
+# ---------------------------------------------------------------------------
+# pivoting
+#
+# The test double implements the same callback protocol as the Go server:
+# the agent dials back, announces the session id in the HELLO metadata and
+# then serves logical streams.
+# ---------------------------------------------------------------------------
+def socks5_connect(conn: socket.socket) -> Tuple[Optional[str], int]:
+    """Read a SOCKS5 CONNECT request.
+
+    Returns ``(host, port)`` or ``(None, 0)`` when the client did not ask
+    for a plain TCP connection.  Only the no-authentication variant and the
+    CONNECT command are supported, exactly like the Go implementation.
+    """
+    try:
+        head = conn.recv(2)
+        if len(head) < 2:
+            return None, 0
+        conn.recv(head[1])  # the offered authentication methods
+        conn.sendall(b"\x05\x00")  # "no authentication required"
+        request = conn.recv(4)
+        if len(request) < 4 or request[1] != 0x01:
+            conn.sendall(b"\x05\x07\x00\x01" + b"\x00" * 6)
+            return None, 0
+        atyp = request[3]
+        if atyp == 0x01:
+            host = socket.inet_ntoa(conn.recv(4))
+        elif atyp == 0x03:
+            length = conn.recv(1)
+            if not length:
+                return None, 0
+            host = conn.recv(length[0]).decode("ascii", "replace")
+        else:
+            conn.sendall(b"\x05\x08\x00\x01" + b"\x00" * 6)
+            return None, 0
+        raw_port = conn.recv(2)
+        if len(raw_port) < 2:
+            return None, 0
+        conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
+        return host, int.from_bytes(raw_port, "big")
+    except OSError:
+        return None, 0
+
+
+class TunnelStream:
+    """One logical stream inside a tunnel session."""
+
+    def __init__(self, stream_id: str) -> None:
+        self.id = stream_id
+        # The answer to the open request: None means "connected".
+        self.result: "queue.Queue[Optional[str]]" = queue.Queue(maxsize=1)
+        self.data: "queue.Queue[bytes]" = queue.Queue(maxsize=64)
+        self.closed = threading.Event()
+
+
+class TunnelSession:
+    """One agent callback connection.
+
+    The server drives the session: it asks the agent to open a connection to
+    a target and relays the bytes over the callback.
+    """
+
+    def __init__(
+        self,
+        server: "MockServer",
+        agent_id: str,
+        sid: str,
+        stream: netio.Stream,
+        sess: session.Session,
+    ) -> None:
+        self.server = server
+        self.agent_id = agent_id
+        self.sid = sid
+        self.stream = stream
+        self.sess = sess
+        self.gate = netio.SendGate(sess, stream)
+        self.streams: Dict[str, TunnelStream] = {}
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        self.done = threading.Event()
+
+    def send(self, msg_type: int, body: Dict[str, Any]) -> None:
+        self.gate.send(msg_type, body)
+
+    def read_loop(self) -> None:
+        try:
+            while not self.server._stop.is_set():
+                msg_type, body = self.sess.decrypt_message(self.stream.recv_frame())
+                if msg_type == wire.MsgType.TUNNEL_OPEN:
+                    self._on_open(body)
+                elif msg_type == wire.MsgType.TUNNEL_DATA:
+                    self._on_data(body)
+                elif msg_type == wire.MsgType.TUNNEL_CLOSE:
+                    self._on_close(body)
+        except Exception:
+            pass
+        finally:
+            self.close()
+
+    def _on_open(self, body: Dict[str, Any]) -> None:
+        op = str(body.get("op", ""))
+        sid = str(body.get("stream", ""))
+        if op == "ready":
+            self.ready.set()
+            return
+        if op != "result":
+            return
+        with self.lock:
+            st = self.streams.get(sid)
+        if st is None:
+            return
+        ok = bool(body.get("ok"))
+        err = str(body.get("err", ""))
+        st.result.put(None if ok else (err or "the agent refused the stream"))
+
+    def _on_data(self, body: Dict[str, Any]) -> None:
+        sid = str(body.get("stream", ""))
+        data = body.get("data") or b""
+        with self.lock:
+            st = self.streams.get(sid)
+        if st is None:
+            return
+        try:
+            st.data.put_nowait(bytes(data))
+        except queue.Full:
+            st.closed.set()
+
+    def _on_close(self, body: Dict[str, Any]) -> None:
+        sid = str(body.get("stream", ""))
+        with self.lock:
+            st = self.streams.get(sid)
+        if st is not None:
+            st.closed.set()
+
+    def open_stream(self, host: str, port: int, timeout: float = 20.0) -> TunnelStream:
+        """Ask the agent to connect to ``host:port`` and wait for the answer."""
+        sid = new_id("s")
+        st = TunnelStream(sid)
+        with self.lock:
+            self.streams[sid] = st
+        self.send(
+            wire.MsgType.TUNNEL_OPEN,
+            {"stream": sid, "op": "open", "host": host, "port": int(port)},
+        )
+        try:
+            err = st.result.get(timeout=timeout)
+        except queue.Empty:
+            err = "the agent did not answer the stream request"
+        if err:
+            with self.lock:
+                self.streams.pop(sid, None)
+            raise RuntimeError(err)
+        return st
+
+    def close(self) -> None:
+        if self.done.is_set():
+            return
+        self.done.set()
+        with self.lock:
+            streams = list(self.streams.values())
+            self.streams.clear()
+        for st in streams:
+            st.closed.set()
+        with self.server._lock:
+            if self.server.tunnel_sessions.get(self.agent_id) is self:
+                del self.server.tunnel_sessions[self.agent_id]
+        self.server.emit("pivot.session_closed", self.agent_id, data={"session": self.sid})
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +222,10 @@ class MockServer:
         port: int = 0,
         rekey_after: Optional[int] = None,
         roles: Optional[Dict[str, str]] = None,
+        tls_cert: str = "",
+        tls_key: str = "",
+        tls_client_ca: str = "",
+        websocket: bool = False,
     ) -> None:
         self.agent_psk = agent_psk
         self.operators = dict(operators)
@@ -63,6 +237,15 @@ class MockServer:
         self.rekey_after = rekey_after
         self.host = host
         self.port = port
+        # The mutual TLS listener of the Go server, mirrored here so the
+        # operator console can be tested against a real certificate.
+        self.tls_cert = tls_cert
+        self.tls_key = tls_key
+        self.tls_client_ca = tls_client_ca
+        self._tls_ctx: Optional[ssl.SSLContext] = None
+        # The WebSocket transport: the same protocol, but every frame travels
+        # in a binary WebSocket frame.
+        self.websocket = websocket
         self._sock: Optional[socket.socket] = None
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
@@ -83,11 +266,67 @@ class MockServer:
         # task ids cancelled after delivery; the next check-in carries one
         # TASK_CANCEL frame each, before TASK_BATCH (same order as the server).
         self.pending_cancels: Dict[str, List[str]] = {}
+        # Callback sessions: agent id -> session.  A session is opened by the
+        # agent (it dials back), the server only asks for one.
+        self.tunnel_sessions: Dict[str, TunnelSession] = {}
+        self.pending_tunnels: Dict[str, Tuple[str, threading.Event]] = {}
+        # Open pivots: tunnel id -> description.
+        self.pivots: Dict[str, Dict[str, Any]] = {}
+        # The layer-3 tunnel: agent id -> peer record.
+        self.vpn_peers: Dict[str, Dict[str, Any]] = {}
+        # The extension store.  The test double keeps the blobs in memory; the
+        # Go server keeps them on disk and verifies their signature.
+        self.armory: Dict[str, Dict[str, Any]] = {}
+        # The command namespace: saved commands the team shares.
+        self.aliases: Dict[str, Dict[str, Any]] = {}
+        self._install_default_armory()
+        self._install_default_aliases()
         self.sleep = 5
         self.jitter = 20
 
+    def _install_default_armory(self) -> None:
+        """Register the two modules the test double knows about."""
+        for name, description, args in (
+            ("whoami", "print the token of the current user", ["domain"]),
+            ("lsecrets", "list the secrets of the machine", []),
+        ):
+            blob = f"UMBRA-MODULE:{name}".encode()
+            self.armory[name] = {
+                "name": name,
+                "sha256": hashlib.sha256(blob).hexdigest(),
+                "size": len(blob),
+                "description": description,
+                "args": args,
+                "data": blob,
+            }
+
+    def _install_default_aliases(self) -> None:
+        """Register the saved commands the test double knows about."""
+        self.aliases["whoami"] = {
+            "name": "whoami",
+            "kind": "ext",
+            "extension": "whoami",
+            "args": {},
+            "args_spec": ["domain"],
+            "description": "who am i, with the token of the current user",
+            "by": "mock",
+            "created": _now(),
+        }
+        self.aliases["ls"] = {
+            "name": "ls",
+            "kind": "ls",
+            "extension": "",
+            "args": {"path": "."},
+            "args_spec": ["path"],
+            "description": "list a directory",
+            "by": "mock",
+            "created": _now(),
+        }
+
     # -- lifecycle -------------------------------------------------------
     def start(self) -> Tuple[str, int]:
+        if self.tls_cert and self.tls_key:
+            self._tls_ctx = self._build_tls_context()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self.host, self.port))
@@ -125,6 +364,21 @@ class MockServer:
         return f"{self.host}:{self.port}"
 
     # -- accept / dispatch ----------------------------------------------
+    def _build_tls_context(self) -> ssl.SSLContext:
+        """Build the server side of the mutual TLS listener.
+
+        The Go server requires a client certificate when a client CA is
+        configured; the test double does the same, so a console that works
+        here works there.
+        """
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        ctx.load_cert_chain(self.tls_cert, self.tls_key)
+        if self.tls_client_ca:
+            ctx.load_verify_locations(self.tls_client_ca)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+        return ctx
+
     def _accept_loop(self) -> None:
         assert self._sock is not None
         while not self._stop.is_set():
@@ -134,6 +388,16 @@ class MockServer:
                 continue
             except OSError:
                 return
+            if self._tls_ctx is not None:
+                try:
+                    conn = self._tls_ctx.wrap_socket(conn, server_side=True)
+                except (ssl.SSLError, OSError):
+                    # A peer that fails the TLS handshake is not a session.
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    continue
             t = threading.Thread(target=self._serve, args=(conn, addr), daemon=True)
             t.start()
             self._threads.append(t)
@@ -145,7 +409,28 @@ class MockServer:
         return ring
 
     def _serve(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
-        stream = netio.Stream(conn, timeout=30)
+        if self.websocket:
+            # The WebSocket transport: the opening handshake comes first, then
+            # every umbra frame travels in a binary WebSocket frame.  A peer
+            # that does not ask for an upgrade (the operator console) is
+            # served the plain protocol, exactly like the Go server does.
+            try:
+                head = conn.recv(4, socket.MSG_PEEK)
+            except OSError:
+                return
+            if head.startswith(b"GET "):
+                server = ws.WebSocketServer(conn)
+                try:
+                    if not server.handshake():
+                        server.close()
+                        return
+                except (OSError, ws.WebSocketError):
+                    return
+                stream = ws.WebSocketStream(server)
+            else:
+                stream = netio.Stream(conn, timeout=30)
+        else:
+            stream = netio.Stream(conn, timeout=30)
         try:
             result = handshake.server_handshake(
                 stream, keyring=self._keyring(), cfg={"sleep": self.sleep, "jitter": self.jitter}
@@ -156,8 +441,145 @@ class MockServer:
 
         if result.peer_id in self.operators:
             self._operator_loop(stream, result, str(addr))
+        elif result.meta.get("tunnel"):
+            # A callback session: the agent dialled back to serve a pivot.
+            self._tunnel_loop(stream, result)
         else:
             self._agent_loop(stream, result, str(addr))
+
+    # -- pivoting -------------------------------------------------------
+    def _tunnel_loop(self, stream: netio.Stream, result: handshake.HandshakeResult) -> None:
+        """Serve one agent callback connection."""
+        agent_id = result.peer_id
+        sid = str(result.meta.get("tunnel", ""))
+        ts = TunnelSession(self, agent_id, sid, stream, result.session)
+        with self._lock:
+            self.tunnel_sessions[agent_id] = ts
+            pending = self.pending_tunnels.pop(agent_id, None)
+        if pending is not None and pending[0] == sid:
+            pending[1].set()
+        self.emit("pivot.session_open", agent_id, data={"session": sid})
+        try:
+            ts.read_loop()
+        finally:
+            ts.close()
+
+    def _tunnel_session(self, agent_id: str, timeout: float = 30.0) -> TunnelSession:
+        """Return the callback session of an agent, asking for one if needed."""
+        with self._lock:
+            ts = self.tunnel_sessions.get(agent_id)
+        if ts is not None and ts.ready.is_set():
+            return ts
+        sid = new_id("sid")
+        event = threading.Event()
+        with self._lock:
+            self.pending_tunnels[agent_id] = (sid, event)
+        task = {
+            "id": new_id("t"),
+            "agent_id": agent_id,
+            "kind": "tunnel",
+            "args": {"stream": sid},
+            "state": "queued",
+            "code": 0,
+            "out": b"",
+            "err": "",
+            "created": _now(),
+        }
+        with self._lock:
+            self.tasks[task["id"]] = task
+        if not event.wait(timeout):
+            with self._lock:
+                self.pending_tunnels.pop(agent_id, None)
+            raise RuntimeError("the agent did not open a tunnel session in time")
+        with self._lock:
+            ts = self.tunnel_sessions.get(agent_id)
+        if ts is None:
+            raise RuntimeError("the agent opened an unknown tunnel session")
+        return ts
+
+    def _pivot_accept(
+        self,
+        listener: socket.socket,
+        ts: TunnelSession,
+        mode: str,
+        host: str,
+        port: int,
+        tunnel_id: str,
+        agent_id: str,
+    ) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            t = threading.Thread(
+                target=self._pivot_handle,
+                args=(conn, ts, mode, host, port, tunnel_id, agent_id),
+                daemon=True,
+            )
+            t.start()
+
+    def _pivot_handle(
+        self,
+        conn: socket.socket,
+        ts: TunnelSession,
+        mode: str,
+        host: str,
+        port: int,
+        tunnel_id: str,
+        agent_id: str,
+    ) -> None:
+        """Turn one local connection into a stream through the agent."""
+        try:
+            if mode == "forward":
+                target_host, target_port = host, port
+            else:
+                target_host, target_port = socks5_connect(conn)
+                if not target_host:
+                    return
+            st = ts.open_stream(target_host, target_port)
+            with self._lock:
+                info = self.pivots.get(tunnel_id)
+                if info is not None:
+                    info["streams"] = info.get("streams", 0) + 1
+
+            def pump_in() -> None:
+                try:
+                    while True:
+                        data = conn.recv(32768)
+                        if not data:
+                            break
+                        ts.send(wire.MsgType.TUNNEL_DATA, {"stream": st.id, "data": data})
+                except OSError:
+                    pass
+                finally:
+                    try:
+                        ts.send(
+                            wire.MsgType.TUNNEL_CLOSE,
+                            {"stream": st.id, "reason": "the local side closed"},
+                        )
+                    except Exception:
+                        pass
+
+            t = threading.Thread(target=pump_in, daemon=True)
+            t.start()
+            while True:
+                if st.closed.is_set():
+                    break
+                try:
+                    chunk = st.data.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if not chunk:
+                    break
+                conn.sendall(chunk)
+        except Exception as exc:
+            self.emit("pivot.error", agent_id, data={"tunnel": tunnel_id, "err": str(exc)})
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     # -- agents ----------------------------------------------------------
     def _schedule_loop(self) -> None:
@@ -234,6 +656,9 @@ class MockServer:
                     seed = msg.get("seed", b"")
                     if isinstance(seed, (bytes, bytearray)) and len(seed) == 32:
                         sess.apply_rekey(bytes(seed))
+                elif msg_type == wire.MsgType.PADDING:
+                    # Padding frames carry random bytes and are ignored.
+                    pass
                 else:
                     break
         except (netio.StreamError, session.SessionError, OSError, ValueError):
@@ -342,6 +767,9 @@ class MockServer:
             while not self._stop.is_set():
                 raw = stream.recv_frame()
                 msg_type, req = sess.decrypt_message(raw)
+                if msg_type == wire.MsgType.PADDING:
+                    # Padding frames carry random bytes and are ignored.
+                    continue
                 if msg_type != wire.MsgType.OP_REQUEST:
                     break
                 with self._lock:
@@ -385,6 +813,20 @@ class MockServer:
         "operators.focus": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
+        "pivot.list": "viewer",
+        "pivot.open": "operator",
+        "pivot.close": "operator",
+        "vpn.status": "viewer",
+        "vpn.peers": "viewer",
+        "vpn.allocate": "operator",
+        "armory.list": "viewer",
+        "armory.install": "operator",
+        "armory.run": "operator",
+        "armory.remove": "admin",
+        "alias.list": "viewer",
+        "alias.run": "operator",
+        "team.sync": "viewer",
+        "stager.generate": "admin",
     }
 
     def min_role(self, cmd: str) -> str:
@@ -758,6 +1200,261 @@ class MockServer:
                 self.tasks[task["id"]] = task
             return ok({"task_id": task["id"], "agent_id": agent_id})
 
+        # ---- pivoting ---------------------------------------------------
+        if cmd == "pivot.list":
+            with self._lock:
+                tunnels = [dict(t) for t in self.pivots.values()]
+                sessions = len(self.tunnel_sessions)
+            return ok({"tunnels": tunnels, "sessions": sessions})
+
+        if cmd == "pivot.open":
+            agent_id = str(args.get("id", ""))
+            mode = str(args.get("mode", "socks")) or "socks"
+            host = str(args.get("host", ""))
+            port = int(args.get("port", 0) or 0)
+            listen = str(args.get("listen", "")) or "127.0.0.1:0"
+            with self._lock:
+                known = agent_id in self.agents
+            if not known:
+                return fail(f"unknown agent {agent_id!r}")
+            try:
+                ts = self._tunnel_session(agent_id)
+            except RuntimeError as exc:
+                return fail(str(exc))
+            lhost, _, lport = listen.rpartition(":")
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                listener.bind((lhost or "127.0.0.1", int(lport or 0)))
+            except OSError as exc:
+                listener.close()
+                return fail(f"pivot.open: listen {listen}: {exc}")
+            listener.listen(16)
+            bound = listener.getsockname()
+            address = f"{bound[0]}:{bound[1]}"
+            tunnel_id = new_id("tun")
+            with self._lock:
+                self.pivots[tunnel_id] = {
+                    "stream": tunnel_id,
+                    "agent_id": agent_id,
+                    "mode": mode,
+                    "listen": address,
+                    "host": host,
+                    "port": port,
+                    "opened": _now(),
+                    "streams": 0,
+                    "bytes_up": 0,
+                    "bytes_down": 0,
+                    "state": "open",
+                }
+            t = threading.Thread(
+                target=self._pivot_accept,
+                args=(listener, ts, mode, host, port, tunnel_id, agent_id),
+                daemon=True,
+            )
+            t.start()
+            self.emit("pivot.opened", agent_id, data={"tunnel": tunnel_id, "listen": address})
+            return ok({
+                "stream": tunnel_id,
+                "agent_id": agent_id,
+                "mode": mode,
+                "listen": address,
+                "host": host,
+                "port": port,
+            })
+
+        if cmd == "pivot.close":
+            tunnel_id = str(args.get("stream", ""))
+            with self._lock:
+                info = self.pivots.pop(tunnel_id, None)
+            if info is None:
+                return fail(f"unknown tunnel {tunnel_id!r}")
+            info["state"] = "closed"
+            self.emit("pivot.closed", str(info.get("agent_id", "")), data={"tunnel": tunnel_id})
+            return ok({"stream": tunnel_id, "closed": True})
+
+        # ---- layer-3 tunnel ----------------------------------------------
+        if cmd == "vpn.status":
+            with self._lock:
+                peers = list(self.vpn_peers.values())
+            return ok({
+                "enabled": True,
+                "listen": "127.0.0.1:0",
+                "network": "10.77.0.0/24",
+                "peers": len(peers),
+                "allocated": len(peers),
+                "bytes_in": sum(int(p.get("bytes_in", 0)) for p in peers),
+                "bytes_out": sum(int(p.get("bytes_out", 0)) for p in peers),
+            })
+
+        if cmd == "vpn.peers":
+            with self._lock:
+                peers = [dict(p) for p in self.vpn_peers.values()]
+            return ok({"peers": peers, "count": len(peers)})
+
+        if cmd == "vpn.allocate":
+            agent_id = str(args.get("id", ""))
+            with self._lock:
+                known = agent_id in self.agents
+            if not known:
+                return fail(f"unknown agent {agent_id!r}")
+            with self._lock:
+                used = {p["address"] for p in self.vpn_peers.values()}
+                index = 2
+                while f"10.77.0.{index}" in used:
+                    index += 1
+                address = f"10.77.0.{index}"
+                self.vpn_peers[agent_id] = {
+                    "id": agent_id,
+                    "address": address,
+                    "endpoint": "",
+                    "agent": agent_id,
+                    "live": False,
+                    "bytes_in": 0,
+                    "bytes_out": 0,
+                    "last_seen": _now(),
+                }
+            return ok({"id": agent_id, "address": address})
+
+        # ---- extension store ----------------------------------------------
+        if cmd == "armory.list":
+            with self._lock:
+                installed = [dict(e) for e in self.armory.values()]
+            return ok({
+                "entries": [
+                    {
+                        "name": e["name"],
+                        "version": "1.0",
+                        "os": "windows",
+                        "arch": "amd64",
+                        "format": "coff",
+                        "sha256": e["sha256"],
+                        "size": e["size"],
+                        "description": e.get("description", ""),
+                        "args": e.get("args", []),
+                    }
+                    for e in installed
+                ],
+                "installed": installed,
+                "verified": True,
+            })
+
+        if cmd == "armory.install":
+            name = str(args.get("name", ""))
+            if not name:
+                return fail("armory.install needs a name")
+            with self._lock:
+                entry = self.armory.get(name)
+            if entry is None:
+                return fail(f"unknown extension {name!r}")
+            return ok({
+                "name": entry["name"],
+                "sha256": entry["sha256"],
+                "size": entry["size"],
+                "installed": _now(),
+            })
+
+        if cmd == "armory.remove":
+            name = str(args.get("name", ""))
+            with self._lock:
+                entry = self.armory.pop(name, None)
+            if entry is None:
+                return fail(f"unknown extension {name!r}")
+            return ok({"name": name, "removed": True})
+
+        if cmd == "armory.run":
+            name = str(args.get("name", ""))
+            agent_id = str(args.get("id", ""))
+            with self._lock:
+                entry = self.armory.get(name)
+                known = agent_id in self.agents
+            if entry is None:
+                return fail(f"unknown extension {name!r}")
+            if not known:
+                return fail(f"unknown agent {agent_id!r}")
+            task = {
+                "id": new_id("t"),
+                "agent_id": agent_id,
+                "kind": "ext",
+                "args": {"name": name, "data": entry["data"], "args": args.get("args") or {}},
+                "state": "queued",
+                "code": 0,
+                "out": b"",
+                "err": "",
+                "created": _now(),
+            }
+            with self._lock:
+                self.tasks[task["id"]] = task
+            return ok({"task_id": task["id"], "agent_id": agent_id, "name": name})
+
+        # ---- command namespace ---------------------------------------------
+        if cmd == "alias.list":
+            with self._lock:
+                aliases = [dict(a) for a in self.aliases.values()]
+            return ok({"aliases": aliases, "count": len(aliases)})
+
+        if cmd == "alias.run":
+            name = str(args.get("name", ""))
+            agent_id = str(args.get("id", ""))
+            with self._lock:
+                entry = self.aliases.get(name)
+                known = agent_id in self.agents
+            if entry is None:
+                return fail(f"unknown alias {name!r}")
+            if not known:
+                return fail(f"unknown agent {agent_id!r}")
+            task = {
+                "id": new_id("t"),
+                "agent_id": agent_id,
+                "kind": entry["kind"],
+                "args": {**entry.get("args", {}), **(args.get("args") or {})},
+                "state": "queued",
+                "code": 0,
+                "out": b"",
+                "err": "",
+                "created": _now(),
+            }
+            with self._lock:
+                self.tasks[task["id"]] = task
+            return ok({"task_id": task["id"], "agent_id": agent_id, "name": name})
+
+        # ---- team ------------------------------------------------------------
+        if cmd == "team.sync":
+            with self._lock:
+                agents = [dict(a) for a in self.agents.values()]
+                operators = [dict(o) for o in self.op_sessions.values()]
+                chat = [dict(m) for m in self.chat[-50:]]
+            return ok({
+                "server_time": _now(),
+                "version": "mock",
+                "agents": agents,
+                "operators": operators,
+                "chat": chat,
+            })
+
+        # ---- stagers ----------------------------------------------------------
+        if cmd == "stager.generate":
+            platform = str(args.get("platform", "windows"))
+            transport = str(args.get("transport", "tcp"))
+            server = str(args.get("server", "")) or "127.0.0.1:4001"
+            url = str(args.get("url", ""))
+            digest = str(args.get("sha256", ""))
+            agent_id = str(args.get("agent_id", ""))
+            script = (
+                "# umbra stager (mock)\n"
+                f"$UMBRA_SERVER = '{server}'\n"
+                f"$UMBRA_TRANSPORT = '{transport}'\n"
+                f"$UMBRA_AGENT_ID = '{agent_id}'\n"
+                f"$UMBRA_URL = '{url}'\n"
+                f"$UMBRA_SHA256 = '{digest}'\n"
+            )
+            return ok({
+                "platform": platform,
+                "transport": transport,
+                "server": server,
+                "stager": script,
+            })
+
         return fail(f"unknown command {cmd!r}")
 
     # -- events ----------------------------------------------------------
@@ -819,11 +1516,15 @@ class FakeAgent(threading.Thread):
         transport_meta: Optional[Dict[str, Any]] = None,
         execute_shell: bool = True,
         interval: float = 0.3,
+        websocket: bool = False,
     ) -> None:
         super().__init__(daemon=True, name="mock-agent")
         self.server = server
         self.psk = psk
         self.agent_id = agent_id or new_id("agent")
+        # The WebSocket transport talks to the same server, but through an
+        # HTTP upgrade instead of a raw socket.
+        self.websocket = websocket
         self.meta = transport_meta or {
             "host": "lab-host",
             "os": sys.platform,
@@ -856,8 +1557,13 @@ class FakeAgent(threading.Thread):
 
     def _cycle(self) -> None:
         host, _, port = self.server.rpartition(":")
-        sock = socket.create_connection((host, int(port)), timeout=5)
-        stream = netio.Stream(sock, timeout=5)
+        if self.websocket:
+            client = ws.WebSocketClient(host, int(port), path="/ws", timeout=5)
+            client.connect()
+            stream = ws.WebSocketStream(client)
+        else:
+            sock = socket.create_connection((host, int(port)), timeout=5)
+            stream = netio.Stream(sock, timeout=5)
         try:
             result = handshake.client_handshake(
                 stream,
@@ -939,6 +1645,17 @@ class FakeAgent(threading.Thread):
         if kind == "sysinfo":
             report = "\n".join(f"{k}: {v}" for k, v in sorted(self.meta.items()))
             return 0, report.encode(), "", {}
+        if kind == "recon":
+            # Mirrors the Rust beacon's recon report: the host facts, the
+            # environment findings and the domain edges, in that order.
+            report = "\n".join(f"{k}: {v}" for k, v in sorted(self.meta.items()))
+            lines = [
+                report,
+                "environment: nothing unusual",
+                "domain    : (not in a domain)",
+                "edges     : none",
+            ]
+            return 0, ("\n".join(lines) + "\n").encode(), "", {}
         if kind in ("exit", "kill"):
             self._stop.set()
             return 0, b"bye\n", "", {}
@@ -946,7 +1663,125 @@ class FakeAgent(threading.Thread):
             return self._download(args)
         if kind == "upload":
             return self._upload(args)
+        if kind == "tunnel":
+            return self._tunnel(args)
+        if kind in ("ext", "bof"):
+            data = args.get("data") or b""
+            name = str(args.get("name", "module"))
+            return 0, f"module {name} ran in memory ({len(bytes(data))} bytes)\n".encode(), "", {}
+        if kind in ("vpn", "p2p"):
+            return 0, f"the mock agent cannot run {kind!r}\n".encode(), "", {}
         return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}
+
+    # -- pivoting (mirrors implant/rust/src/tunnel.rs) --------------------
+    def _tunnel(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """Open a callback session with the team server."""
+        sid = str(args.get("stream", ""))
+        if not sid:
+            return 1, b"", "tunnel requires args.stream", {}
+        t = threading.Thread(target=self._tunnel_callback, args=(sid,), daemon=True)
+        t.start()
+        return 0, f"tunnel session {sid} opened\n".encode(), "", {}
+
+    def _tunnel_callback(self, sid: str) -> None:
+        host, _, port = self.server.rpartition(":")
+        try:
+            sock = socket.create_connection((host, int(port)), timeout=5)
+        except OSError:
+            return
+        stream = netio.Stream(sock, timeout=30)
+        try:
+            meta = dict(self.meta)
+            meta["tunnel"] = sid
+            result = handshake.client_handshake(
+                stream,
+                psk=self.psk,
+                role=crypto.ROLE_AGENT,
+                ident=self.agent_id,
+                meta=meta,
+            )
+            sess = result.session
+            gate = netio.SendGate(sess, stream)
+            gate.send(wire.MsgType.TUNNEL_OPEN, {"stream": sid, "op": "ready"})
+            targets: Dict[str, socket.socket] = {}
+            while True:
+                msg_type, body = sess.decrypt_message(stream.recv_frame())
+                if msg_type == wire.MsgType.TUNNEL_OPEN and str(body.get("op", "")) == "open":
+                    stream_id = str(body.get("stream", ""))
+                    target_host = str(body.get("host", ""))
+                    target_port = int(body.get("port", 0) or 0)
+                    threading.Thread(
+                        target=self._tunnel_stream,
+                        args=(gate, stream_id, target_host, target_port, targets),
+                        daemon=True,
+                    ).start()
+                elif msg_type == wire.MsgType.TUNNEL_DATA:
+                    stream_id = str(body.get("stream", ""))
+                    target = targets.get(stream_id)
+                    if target is not None:
+                        try:
+                            target.sendall(bytes(body.get("data") or b""))
+                        except OSError:
+                            pass
+                elif msg_type == wire.MsgType.TUNNEL_CLOSE:
+                    stream_id = str(body.get("stream", ""))
+                    target = targets.pop(stream_id, None)
+                    if target is not None:
+                        try:
+                            target.close()
+                        except OSError:
+                            pass
+        except Exception:
+            pass
+        finally:
+            stream.close()
+
+    def _tunnel_stream(
+        self,
+        gate: netio.SendGate,
+        stream_id: str,
+        host: str,
+        port: int,
+        targets: Dict[str, socket.socket],
+    ) -> None:
+        """Connect to the target the server asked for and relay it."""
+        try:
+            target = socket.create_connection((host, port), timeout=5)
+            # The connect timeout must not turn into an idle timeout: a quiet
+            # target is normal.
+            target.settimeout(None)
+        except OSError as exc:
+            gate.send(
+                wire.MsgType.TUNNEL_OPEN,
+                {"stream": stream_id, "op": "result", "ok": False, "err": str(exc)},
+            )
+            return
+        targets[stream_id] = target
+        gate.send(
+            wire.MsgType.TUNNEL_OPEN,
+            {"stream": stream_id, "op": "result", "ok": True},
+        )
+
+        def pump() -> None:
+            try:
+                while True:
+                    data = target.recv(32768)
+                    if not data:
+                        break
+                    gate.send(wire.MsgType.TUNNEL_DATA, {"stream": stream_id, "data": data})
+            except OSError:
+                pass
+            finally:
+                try:
+                    gate.send(
+                        wire.MsgType.TUNNEL_CLOSE,
+                        {"stream": stream_id, "reason": "the target closed the connection"},
+                    )
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=pump, daemon=True)
+        t.start()
 
     # -- chunked transfer (mirrors implant/rust/src/task.rs) --------------
     def _download(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
@@ -1017,6 +1852,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="operator credentials (repeatable)",
     )
     parser.add_argument("--spawn-agent", action="store_true", help="also start a fake agent")
+    parser.add_argument("--tls-cert", default="", help="PEM certificate of the TLS listener")
+    parser.add_argument("--tls-key", default="", help="PEM key of the TLS listener")
+    parser.add_argument(
+        "--tls-ca",
+        default="",
+        help="PEM bundle of the client CA (the listener then requires a client certificate)",
+    )
     parser.add_argument(
         "--agent-interval",
         type=float,
@@ -1037,12 +1879,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         token = crypto.random_bytes(16).hex()
         operators["operator"] = token.encode()
 
-    server = MockServer(psk, operators, args.host, args.port)
+    server = MockServer(
+        psk,
+        operators,
+        args.host,
+        args.port,
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
+        tls_client_ca=args.tls_ca,
+    )
     host, port = server.start()
     print(f"[mock] agent PSK   : {psk.hex()}")
     for name, token in operators.items():
         print(f"[mock] operator    : {name}:{token.decode()}")
     print(f"[mock] listening   : {host}:{port}")
+    if args.tls_cert:
+        print("[mock] tls         : mutual TLS is on")
 
     agent: Optional[FakeAgent] = None
     if args.spawn_agent:

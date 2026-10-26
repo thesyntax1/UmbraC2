@@ -1,0 +1,768 @@
+// Package pivot implements agent-assisted pivoting.
+//
+// A beacon that can reach the team server opens a *callback session*: the
+// server asks the agent (with a `tunnel` task) to dial back, and the agent
+// answers on the agent listener with a HELLO that carries the tunnel session
+// id. The two ends then multiplex logical streams over that one connection:
+//
+//	server -> agent   TUNNEL_OPEN  {stream, op:"open",   host, port}
+//	agent  -> server  TUNNEL_OPEN  {stream, op:"result", ok, err}
+//	both              TUNNEL_DATA  {stream, data}
+//	both              TUNNEL_CLOSE {stream, reason}
+//
+// On top of that the package exposes the two things an operator actually
+// wants: a SOCKS5 proxy and a plain TCP port forward. Both bind to loopback
+// by default, because a pivot that listens on every interface is an ingress
+// into the internal network for anybody who can reach the server.
+//
+// The callback is agent-initiated on purpose: it works from inside networks
+// where the team server cannot reach the agent, and it survives the agent
+// being behind NAT.
+package pivot
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/session"
+	"github.com/thesyntax1/UmbraC2/server/internal/upk"
+	"github.com/thesyntax1/UmbraC2/server/internal/wire"
+)
+
+// TaskKindTunnel is the task kind that asks a beacon to open a callback
+// session with the team server.
+const TaskKindTunnel = "tunnel"
+
+// Modes a tunnel can run in.
+const (
+	// ModeSOCKS exposes a SOCKS5 proxy: the client picks the target.
+	ModeSOCKS = "socks"
+	// ModeForward forwards a local port to one fixed remote host:port.
+	ModeForward = "forward"
+)
+
+// Limits. They are deliberately small: every open stream costs a file
+// descriptor on the agent and a goroutine here.
+const (
+	// MaxSessions bounds the number of agents that may hold a session.
+	MaxSessions = 64
+	// MaxStreamsPerSession bounds the concurrent streams of one session.
+	MaxStreamsPerSession = 128
+	// MaxPendingOpens bounds the number of unanswered tunnel requests.
+	MaxPendingOpens = 32
+	// OpenTimeout is how long the server waits for the agent to dial back.
+	OpenTimeout = 30 * time.Second
+	// StreamTimeout is how long the server waits for a stream to be opened.
+	StreamTimeout = 30 * time.Second
+	// ChunkSize is the payload size of one TUNNEL_DATA frame.
+	ChunkSize = 32 * 1024
+	// StreamBuffer is how many chunks may queue for one stream.
+	StreamBuffer = 64
+)
+
+// FrameStream is the transport a tunnel session needs. link.FrameStream
+// satisfies it, which keeps this package independent of the transports.
+type FrameStream interface {
+	ReadFrame() ([]byte, error)
+	WriteFrame(frame []byte) error
+}
+
+// TunnelInfo is the operator-visible description of one tunnel.
+type TunnelInfo struct {
+	Stream    string    `json:"stream"`
+	AgentID   string    `json:"agent_id"`
+	Mode      string    `json:"mode"`
+	Listen    string    `json:"listen"`
+	Host      string    `json:"host,omitempty"`
+	Port      int       `json:"port,omitempty"`
+	Opened    time.Time `json:"opened"`
+	Streams   int       `json:"streams"`
+	BytesUp   int64     `json:"bytes_up"`
+	BytesDown int64     `json:"bytes_down"`
+	State     string    `json:"state"`
+}
+
+// Manager owns every tunnel, tunnel session and local listener.
+type Manager struct {
+	hub *hub.Hub
+	log *slog.Logger
+
+	mu       sync.Mutex
+	sessions map[string]*tunnelSession // agent id -> callback session
+	tunnels  map[string]*tunnel         // tunnel id -> tunnel
+	pending  map[string]*pendingOpen    // agent id -> unanswered request
+	closed   bool
+}
+
+// New creates a pivot manager.
+func New(h *hub.Hub, log *slog.Logger) *Manager {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Manager{
+		hub:      h,
+		log:      log,
+		sessions: make(map[string]*tunnelSession),
+		tunnels:  make(map[string]*tunnel),
+		pending:  make(map[string]*pendingOpen),
+	}
+}
+
+// Open creates a tunnel through agentID and starts its local listener.
+//
+// mode is "socks" (the client picks the target) or "forward" (host:port are
+// fixed). listen is the local bind address; the default is a random loopback
+// port, and the caller learns the real address from the returned TunnelInfo.
+func (m *Manager) Open(agentID, mode, host string, port int, listen string) (*TunnelInfo, error) {
+	switch mode {
+	case "":
+		mode = ModeSOCKS
+	case ModeSOCKS, ModeForward:
+	default:
+		return nil, fmt.Errorf("pivot: unknown mode %q", mode)
+	}
+	if agentID == "" {
+		return nil, errors.New("pivot: an agent id is required")
+	}
+	if mode == ModeForward {
+		if host == "" {
+			return nil, errors.New("pivot: forward mode needs a remote host")
+		}
+		if port <= 0 || port > 65535 {
+			return nil, errors.New("pivot: forward mode needs a valid remote port")
+		}
+	}
+	if listen == "" {
+		listen = "127.0.0.1:0"
+	}
+	sess, err := m.session(agentID)
+	if err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return nil, fmt.Errorf("pivot: listen %s: %w", listen, err)
+	}
+	tun := &tunnel{
+		id:      newID("tun"),
+		agentID: agentID,
+		mode:    mode,
+		host:    host,
+		port:    port,
+		opened:  time.Now().UTC(),
+		state:   "open",
+	}
+	tun.listener = ln
+	tun.listen = ln.Addr().String()
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		_ = ln.Close()
+		return nil, errors.New("pivot: the manager is shutting down")
+	}
+	m.tunnels[tun.id] = tun
+	m.mu.Unlock()
+
+	go m.serve(tun, sess)
+	m.log.Info("pivot tunnel opened", "tunnel", tun.id, "agent", agentID,
+		"mode", mode, "listen", tun.listen)
+	m.hub.Emit(hub.Event{Kind: "pivot.opened", AgentID: agentID, Data: map[string]any{
+		"tunnel": tun.id, "mode": mode, "listen": tun.listen,
+		"host": host, "port": int64(port),
+	}})
+	return m.info(tun), nil
+}
+
+// Close tears a tunnel down and releases its listener.
+func (m *Manager) Close(id string) error {
+	m.mu.Lock()
+	tun, ok := m.tunnels[id]
+	if ok {
+		delete(m.tunnels, id)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return errors.New("pivot: unknown tunnel")
+	}
+	if tun.listener != nil {
+		_ = tun.listener.Close()
+	}
+	tun.setState("closed")
+	m.log.Info("pivot tunnel closed", "tunnel", tun.id, "agent", tun.agentID)
+	m.hub.Emit(hub.Event{Kind: "pivot.closed", AgentID: tun.agentID, Data: map[string]any{
+		"tunnel": tun.id,
+	}})
+	return nil
+}
+
+// List returns every open tunnel.
+func (m *Manager) List() []TunnelInfo {
+	m.mu.Lock()
+	tunnels := make([]*tunnel, 0, len(m.tunnels))
+	for _, t := range m.tunnels {
+		tunnels = append(tunnels, t)
+	}
+	m.mu.Unlock()
+	out := make([]TunnelInfo, 0, len(tunnels))
+	for _, t := range tunnels {
+		out = append(out, m.info(t))
+	}
+	return out
+}
+
+// Sessions reports how many agents currently hold a callback session.
+func (m *Manager) Sessions() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sessions)
+}
+
+// CloseAll shuts every tunnel and session down.
+func (m *Manager) CloseAll() {
+	m.mu.Lock()
+	tunnels := m.tunnels
+	sessions := m.sessions
+	m.tunnels = make(map[string]*tunnel)
+	m.sessions = make(map[string]*tunnelSession)
+	m.pending = make(map[string]*pendingOpen)
+	m.closed = true
+	m.mu.Unlock()
+	for _, t := range tunnels {
+		if t.listener != nil {
+			_ = t.listener.Close()
+		}
+	}
+	for _, s := range sessions {
+		s.shutdown()
+	}
+}
+
+// Attach registers a callback session an agent opened.
+//
+// The link layer calls this after a handshake whose HELLO carried a tunnel
+// session id; the session then owns the connection until it fails.
+func (m *Manager) Attach(agentID, sid string, stream FrameStream, sess *session.Session) (<-chan struct{}, error) {
+	ts := &tunnelSession{
+		mgr:     m,
+		agentID: agentID,
+		sid:     sid,
+		stream:  stream,
+		sess:    sess,
+		streams: make(map[string]*tunnelStream),
+		ready:   make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errors.New("pivot: the manager is shutting down")
+	}
+	if len(m.sessions) >= MaxSessions {
+		m.mu.Unlock()
+		return nil, errors.New("pivot: too many tunnel sessions")
+	}
+	if _, exists := m.sessions[agentID]; exists {
+		m.mu.Unlock()
+		return nil, errors.New("pivot: this agent already holds a tunnel session")
+	}
+	m.sessions[agentID] = ts
+	p, ok := m.pending[agentID]
+	if ok && p.sid == sid {
+		delete(m.pending, agentID)
+	}
+	m.mu.Unlock()
+
+	if ok && p.sid == sid {
+		close(p.ready)
+	}
+	go ts.readLoop()
+	m.log.Info("tunnel session attached", "agent", agentID, "sid", sid)
+	return ts.done, nil
+}
+
+// session returns a ready callback session for agentID, asking the agent to
+// open one when there is none.
+func (m *Manager) session(agentID string) (*tunnelSession, error) {
+	m.mu.Lock()
+	ts, ok := m.sessions[agentID]
+	m.mu.Unlock()
+	if ok {
+		select {
+		case <-ts.ready:
+			return ts, nil
+		default:
+		}
+	}
+
+	sid := newID("sid")
+	p := &pendingOpen{sid: sid, ready: make(chan struct{})}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errors.New("pivot: the manager is shutting down")
+	}
+	if len(m.pending) >= MaxPendingOpens {
+		m.mu.Unlock()
+		return nil, errors.New("pivot: too many pending tunnel requests")
+	}
+	m.pending[agentID] = p
+	m.mu.Unlock()
+
+	// Whatever happens, the pending entry must not outlive this call.
+	defer func() {
+		m.mu.Lock()
+		if m.pending[agentID] == p {
+			delete(m.pending, agentID)
+		}
+		m.mu.Unlock()
+	}()
+
+	if _, err := m.hub.SubmitTask(agentID, TaskKindTunnel, upk.Map{"stream": sid}); err != nil {
+		return nil, err
+	}
+	select {
+	case <-p.ready:
+	case <-time.After(OpenTimeout):
+		return nil, errors.New("pivot: the agent did not open a tunnel session in time")
+	}
+
+	m.mu.Lock()
+	ts = m.sessions[agentID]
+	m.mu.Unlock()
+	if ts == nil {
+		return nil, errors.New("pivot: the agent opened an unknown tunnel session")
+	}
+	select {
+	case <-ts.ready:
+		return ts, nil
+	case <-time.After(OpenTimeout):
+		return nil, errors.New("pivot: the agent did not confirm the tunnel session in time")
+	}
+}
+
+// serve accepts local connections and turns each of them into a stream.
+func (m *Manager) serve(tun *tunnel, sess *tunnelSession) {
+	for {
+		conn, err := tun.listener.Accept()
+		if err != nil {
+			return
+		}
+		go m.handle(tun, sess, conn)
+	}
+}
+
+// handle proxies one local connection through the agent.
+func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
+
+	var (
+		host string
+		port int
+	)
+	if tun.mode == ModeForward {
+		host, port = tun.host, tun.port
+	} else {
+		h, p, err := socks5Handshake(conn)
+		if err != nil {
+			m.log.Debug("socks5 handshake failed", "tunnel", tun.id, "err", err)
+			return
+		}
+		host, port = h, p
+	}
+
+	stream, err := sess.openStream(host, port)
+	if err != nil {
+		m.log.Warn("pivot stream failed", "tunnel", tun.id, "host", host, "err", err)
+		if tun.mode == ModeSOCKS {
+			_ = socks5Reply(conn, 0x01, "0.0.0.0", 0)
+		}
+		m.hub.Emit(hub.Event{Kind: "pivot.error", AgentID: tun.agentID, Data: map[string]any{
+			"tunnel": tun.id, "host": host, "port": int64(port), "err": err.Error(),
+		}})
+		return
+	}
+	tun.addStream(1)
+	defer tun.addStream(-1)
+	defer stream.close()
+
+	if tun.mode == ModeSOCKS {
+		if err := socks5Reply(conn, 0x00, "0.0.0.0", 0); err != nil {
+			return
+		}
+	}
+	// The deadline above only guards the handshake; a relayed stream is
+	// allowed to idle.
+	_ = conn.SetDeadline(time.Time{})
+
+	// local -> agent
+	go func() {
+		buf := make([]byte, ChunkSize)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				if werr := stream.write(buf[:n]); werr != nil {
+					break
+				}
+				tun.addUp(int64(n))
+			}
+			if err != nil {
+				break
+			}
+		}
+		stream.closeWrite()
+	}()
+
+	// agent -> local
+	buf := make([]byte, ChunkSize)
+	for {
+		n, err := stream.read(buf)
+		if n > 0 {
+			if _, werr := conn.Write(buf[:n]); werr != nil {
+				break
+			}
+			tun.addDown(int64(n))
+		}
+		if err != nil {
+			break
+		}
+	}
+}
+
+// info snapshots a tunnel.
+func (m *Manager) info(tun *tunnel) TunnelInfo {
+	tun.mu.Lock()
+	defer tun.mu.Unlock()
+	return TunnelInfo{
+		Stream:    tun.id,
+		AgentID:   tun.agentID,
+		Mode:      tun.mode,
+		Listen:    tun.listen,
+		Host:      tun.host,
+		Port:      tun.port,
+		Opened:    tun.opened,
+		Streams:   tun.streams,
+		BytesUp:   tun.bytesUp,
+		BytesDown: tun.bytesDown,
+		State:     tun.state,
+	}
+}
+
+// tunnel is one operator-visible pivot.
+type tunnel struct {
+	id       string
+	agentID  string
+	mode     string
+	listen   string
+	host     string
+	port     int
+	opened   time.Time
+	listener net.Listener
+
+	mu        sync.Mutex
+	streams   int
+	bytesUp   int64
+	bytesDown int64
+	state     string
+}
+
+func (t *tunnel) addStream(delta int) {
+	t.mu.Lock()
+	t.streams += delta
+	t.mu.Unlock()
+}
+
+func (t *tunnel) addUp(n int64) {
+	t.mu.Lock()
+	t.bytesUp += n
+	t.mu.Unlock()
+}
+
+func (t *tunnel) addDown(n int64) {
+	t.mu.Lock()
+	t.bytesDown += n
+	t.mu.Unlock()
+}
+
+func (t *tunnel) setState(s string) {
+	t.mu.Lock()
+	t.state = s
+	t.mu.Unlock()
+}
+
+// pendingOpen is an unanswered request for a callback session.
+type pendingOpen struct {
+	sid   string
+	ready chan struct{}
+}
+
+// tunnelSession is one agent callback connection.
+type tunnelSession struct {
+	mgr     *Manager
+	agentID string
+	sid     string
+	stream  FrameStream
+	sess    *session.Session
+
+	// writeMu serialises sealing and writing: two goroutines may send at
+	// the same time, and the peer insists on strictly increasing nonces.
+	writeMu sync.Mutex
+
+	mu        sync.Mutex
+	streams   map[string]*tunnelStream
+	readyOnce sync.Once
+	ready     chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// readLoop owns the callback connection.
+func (ts *tunnelSession) readLoop() {
+	defer ts.shutdown()
+	for {
+		raw, err := ts.stream.ReadFrame()
+		if err != nil {
+			return
+		}
+		msgType, msg, err := ts.sess.OpenMessage(raw)
+		if err != nil {
+			ts.mgr.log.Warn("tunnel frame rejected", "agent", ts.agentID, "err", err)
+			return
+		}
+		switch msgType {
+		case wire.MsgTunnelOpen:
+			ts.onOpen(msg)
+		case wire.MsgTunnelData:
+			ts.onData(msg)
+		case wire.MsgTunnelClose:
+			ts.onClose(msg)
+		case wire.MsgPadding:
+			// padding frames carry nothing
+		default:
+			ts.mgr.log.Debug("unexpected frame on a tunnel session",
+				"agent", ts.agentID, "type", wire.TypeName(msgType))
+		}
+	}
+}
+
+// send seals and writes one frame in a single critical section.
+func (ts *tunnelSession) send(msgType byte, body any) error {
+	ts.writeMu.Lock()
+	defer ts.writeMu.Unlock()
+	frame, err := ts.sess.Encrypt(msgType, body)
+	if err != nil {
+		return err
+	}
+	return ts.stream.WriteFrame(frame)
+}
+
+func (ts *tunnelSession) onOpen(msg map[string]any) {
+	op, _ := msg["op"].(string)
+	id, _ := msg["stream"].(string)
+	switch op {
+	case "ready":
+		ts.readyOnce.Do(func() { close(ts.ready) })
+	case "result":
+		ok, _ := msg["ok"].(bool)
+		text, _ := msg["err"].(string)
+		ts.mu.Lock()
+		st := ts.streams[id]
+		ts.mu.Unlock()
+		if st == nil {
+			return
+		}
+		if ok {
+			st.result <- nil
+			return
+		}
+		if text == "" {
+			text = "the agent refused the stream"
+		}
+		st.result <- errors.New(text)
+	}
+}
+
+func (ts *tunnelSession) onData(msg map[string]any) {
+	id, _ := msg["stream"].(string)
+	data, _ := msg["data"].([]byte)
+	ts.mu.Lock()
+	st := ts.streams[id]
+	ts.mu.Unlock()
+	if st == nil {
+		return
+	}
+	select {
+	case st.data <- data:
+	case <-st.closed:
+	default:
+		// The agent is faster than the consumer. Dropping the stream is
+		// better than buffering without bound.
+		st.closeWith("pivot: the stream buffer overflowed")
+	}
+}
+
+func (ts *tunnelSession) onClose(msg map[string]any) {
+	id, _ := msg["stream"].(string)
+	reason, _ := msg["reason"].(string)
+	ts.mu.Lock()
+	st := ts.streams[id]
+	ts.mu.Unlock()
+	if st == nil {
+		return
+	}
+	if reason == "" {
+		reason = "the agent closed the stream"
+	}
+	st.closeWith(reason)
+}
+
+// openStream asks the agent to open a connection to host:port.
+func (ts *tunnelSession) openStream(host string, port int) (*tunnelStream, error) {
+	id := newID("s")
+	st := &tunnelStream{
+		id:     id,
+		sess:   ts,
+		result: make(chan error, 1),
+		data:   make(chan []byte, StreamBuffer),
+		closed: make(chan struct{}),
+	}
+	ts.mu.Lock()
+	if len(ts.streams) >= MaxStreamsPerSession {
+		ts.mu.Unlock()
+		return nil, errors.New("pivot: too many streams on this session")
+	}
+	ts.streams[id] = st
+	ts.mu.Unlock()
+
+	body := upk.Map{"stream": id, "op": "open", "host": host, "port": int64(port)}
+	if err := ts.send(wire.MsgTunnelOpen, body); err != nil {
+		ts.dropStream(id)
+		return nil, err
+	}
+	select {
+	case err := <-st.result:
+		if err != nil {
+			ts.dropStream(id)
+			return nil, err
+		}
+	case <-time.After(StreamTimeout):
+		ts.dropStream(id)
+		return nil, errors.New("pivot: the agent did not answer the stream request")
+	case <-ts.done:
+		ts.dropStream(id)
+		return nil, errors.New("pivot: the tunnel session closed")
+	}
+	return st, nil
+}
+
+func (ts *tunnelSession) dropStream(id string) {
+	ts.mu.Lock()
+	delete(ts.streams, id)
+	ts.mu.Unlock()
+}
+
+// shutdown closes the session and every stream on it.
+func (ts *tunnelSession) shutdown() {
+	ts.closeOnce.Do(func() {
+		ts.mgr.mu.Lock()
+		if cur, ok := ts.mgr.sessions[ts.agentID]; ok && cur == ts {
+			delete(ts.mgr.sessions, ts.agentID)
+		}
+		ts.mgr.mu.Unlock()
+
+		ts.mu.Lock()
+		streams := ts.streams
+		ts.streams = make(map[string]*tunnelStream)
+		ts.mu.Unlock()
+		for _, st := range streams {
+			st.closeWith("pivot: the tunnel session closed")
+		}
+		close(ts.done)
+		ts.mgr.log.Info("tunnel session closed", "agent", ts.agentID, "sid", ts.sid)
+		ts.mgr.hub.Emit(hub.Event{Kind: "pivot.session_closed", AgentID: ts.agentID,
+			Data: map[string]any{"session": ts.sid}})
+	})
+}
+
+// tunnelStream is one logical stream inside a tunnel session.
+type tunnelStream struct {
+	id     string
+	sess   *tunnelSession
+	result chan error
+	data   chan []byte
+	closed chan struct{}
+
+	once   sync.Once
+	mu     sync.Mutex
+	reason string
+}
+
+// write forwards bytes to the agent.
+func (st *tunnelStream) write(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	body := upk.Map{"stream": st.id, "data": data}
+	return st.sess.send(wire.MsgTunnelData, body)
+}
+
+// closeWrite tells the agent that this side is done sending.
+func (st *tunnelStream) closeWrite() {
+	body := upk.Map{"stream": st.id, "reason": "local side closed"}
+	_ = st.sess.send(wire.MsgTunnelClose, body)
+}
+
+// read returns the next chunk from the agent.
+func (st *tunnelStream) read(buf []byte) (int, error) {
+	select {
+	case chunk := <-st.data:
+		if len(chunk) == 0 {
+			return 0, io.EOF
+		}
+		n := copy(buf, chunk)
+		return n, nil
+	case <-st.closed:
+		// Drain whatever is still buffered before reporting the close.
+		select {
+		case chunk := <-st.data:
+			n := copy(buf, chunk)
+			return n, nil
+		default:
+			return 0, io.EOF
+		}
+	}
+}
+
+// close tears the stream down.
+func (st *tunnelStream) close() {
+	st.closeWith("closed")
+}
+
+// closeWith tears the stream down and remembers why.
+func (st *tunnelStream) closeWith(reason string) {
+	st.once.Do(func() {
+		st.mu.Lock()
+		st.reason = reason
+		st.mu.Unlock()
+		close(st.closed)
+		st.sess.dropStream(st.id)
+	})
+}
+
+// newID returns a short random identifier.
+func newID(prefix string) string {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return prefix + "-" + fmt.Sprintf("%012x", time.Now().UnixNano()&0xffffffffffff)
+	}
+	return prefix + "-" + hex.EncodeToString(b)
+}

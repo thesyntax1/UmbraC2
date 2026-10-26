@@ -58,6 +58,10 @@ func (l *AgentLink) HandleFrame(raw []byte) ([][]byte, error) {
 		return nil, nil
 	case wire.MsgError:
 		return l.onError(msg)
+	case wire.MsgPadding:
+		// Padding frames carry random bytes and are ignored: they only make
+		// the traffic shape uniform.
+		return nil, nil
 	case wire.MsgRekey:
 		seed, _ := msg["seed"].([]byte)
 		if len(seed) != 32 {
@@ -265,10 +269,37 @@ func (s *Server) serveAgentTCP(conn net.Conn) {
 		return
 	}
 	s.guard.Succeed(addr)
+	s.runAgent(stream, conn, sess, info, addr, "tcp", log)
+}
+
+// runAgent carries the beacon session of an agent that already completed the
+// handshake.
+//
+// The handshake is not part of this function on purpose: the TLS listener
+// hands the connection over after it decided that the peer is an agent, and
+// the plain TCP listener does the same after the HELLO was read.
+func (s *Server) runAgent(stream FrameStream, conn net.Conn, sess *session.Session, info *HelloInfo, addr, transport string, log *slog.Logger) {
+	// A pivot callback: the agent was asked to open a tunnel session and
+	// dialled back. It must not be registered as a live beacon -- it is a
+	// separate connection that only carries tunnel frames.
+	if sid, ok := tunnelSessionID(info.Meta); ok {
+		if s.Pivot == nil {
+			log.Warn("tunnel callback refused: pivoting is not enabled", "agent", info.ID)
+			return
+		}
+		done, err := s.Pivot.Attach(info.ID, sid, stream, sess)
+		if err != nil {
+			log.Warn("tunnel callback refused", "agent", info.ID, "err", err)
+			return
+		}
+		<-done
+		log.Info("tunnel session ended", "agent", info.ID)
+		return
+	}
 
 	sleep, jitter := s.Cfg.Server.Beacon.Sleep, s.Cfg.Server.Beacon.Jitter
-	meta := AgentMeta(info, "tcp", addr, sleep, jitter)
-	rec, _, err := s.Hub.RegisterAgent(meta, "tcp", addr, info.Suite, info.SessionID)
+	meta := AgentMeta(info, transport, addr, sleep, jitter)
+	rec, _, err := s.Hub.RegisterAgent(meta, transport, addr, info.Suite, info.SessionID)
 	if err != nil {
 		log.Warn("agent registration refused", "err", err)
 		return
@@ -277,7 +308,7 @@ func (s *Server) serveAgentTCP(conn net.Conn) {
 	// entry, and this goroutine must not delete its successor's record.
 	defer s.Hub.UnregisterSession(rec.ID, fmt.Sprintf("%x", info.SessionID))
 
-	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "tcp", Log: s.Log}
+	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: transport, Log: s.Log}
 	budget := int64(s.Cfg.Server.Limits.MaxFrameBytesPerConn)
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(s.Cfg.IdleTimeout()))
@@ -317,4 +348,25 @@ func isBenignNetErr(err error) bool {
 		return true
 	}
 	return false
+}
+
+// tunnelSessionID extracts the pivot session id an agent announced in its
+// HELLO metadata. The id is what pairs the callback with the `tunnel` task
+// the server queued, so it is checked for shape before it is used.
+func tunnelSessionID(meta map[string]any) (string, bool) {
+	raw, _ := meta["tunnel"].(string)
+	if raw == "" || len(raw) > 64 {
+		return "", false
+	}
+	for _, r := range raw {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		case r == '-':
+		default:
+			return "", false
+		}
+	}
+	return raw, true
 }

