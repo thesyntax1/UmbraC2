@@ -1,0 +1,25 @@
+{
+  "agent_listen": "127.0.0.1:4001",
+  "operator_listen": "127.0.0.1:4002",
+  "http_listen": "",
+  "http_path": "/api/v1/beacon",
+  "http_tls_cert": "",
+  "http_tls_key": "",
+  "psk_file": "secrets/agent.psk",
+  "agent_psk_env": "UMBRA_AGENT_PSK",
+  "operator_token_env": ["UMBRA_OPERATOR_TOKENS"],
+  "data_file": "data/state.json",
+  "audit_file": "data/audit.jsonl",
+  "audit_max_mb": 8,
+  "log_level": "debug",
+  "beacon": { "sleep": 5, "jitter": 20 },
+  "limits": {
+    "max_agents": 256,
+    "max_operators": 8,
+    "handshake_timeout_s": 15,
+    "idle_timeout_s": 120,
+    "max_frame_bytes_per_conn": 67108864
+  },
+  "max_clock_skew_s": 300,
+  "session_timeout_s": 300
+}

@@ -1,0 +1,7 @@
+# Test/QA dependencies for the Python reference implementation and tooling.
+# Pinned: the conformance suite is a security gate, so a surprise major bump
+# should be a reviewable diff rather than something CI discovers at random.
+cryptography==43.0.3
+pytest==8.3.3
+PyYAML==6.0.2
+

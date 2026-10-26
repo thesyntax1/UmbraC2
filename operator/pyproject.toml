@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+license = {text = "MIT"}
+name = "umbra-cli"
+version = "0.1.0"
+description = "UmbraC2 operator console and Python reference implementation of umbra/v1"
+requires-python = ">=3.9"
+dependencies = ["cryptography>=42"]
+
+[project.scripts]
+umbra = "umbra_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["umbra_cli*"]
