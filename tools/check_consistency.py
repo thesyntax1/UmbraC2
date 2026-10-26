@@ -275,6 +275,39 @@ def check_deploy_configs() -> int:
     return problems
 
 
+def check_deploy_paths() -> int:
+    """Every path the server *writes* must be writable under the systemd unit.
+
+    ProtectSystem=strict makes everything outside ReadWritePaths read-only, so a
+    production config pointing audit_file at /var/log/umbra would simply fail to
+    start. Static checks are the only place this is visible without a box.
+    """
+    import json
+    import posixpath
+
+    written_keys = ("data_file", "audit_file")
+    unit = read("deploy/umbra-server.service")
+    roots = set(re.findall(r"^ReadWritePaths=(.+)$", unit, re.M))
+    roots = {p.strip() for line in roots for p in line.split()}
+    state_dir = re.search(r"^StateDirectory=(.+)$", unit, re.M)
+    if state_dir:
+        roots.add(posixpath.join("/var/lib", state_dir.group(1).strip()))
+
+    problems = 0
+    for name in ("deploy/server.dev.json", "deploy/server.prod.json"):
+        doc = json.loads(read(name))
+        for key in written_keys:
+            path = doc.get(key) or ""
+            if not path.startswith("/"):
+                continue  # relative paths follow the working directory
+            if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots):
+                print(f"  !! {name}: {key}={path} is outside the writable paths {sorted(roots)}")
+                problems += 1
+    if not problems:
+        print(f"  DEPLOY_PATHS    writable paths covered by {sorted(roots)}")
+    return problems
+
+
 def check_ci_env_names() -> int:
     """The CI build must set the env vars the Gradle file actually reads.
 
@@ -398,6 +431,9 @@ def main() -> int:
 
     print("\n== deploy config vs config.Server ==")
     failures += check_deploy_configs()
+
+    print("\n== deploy paths vs the systemd unit ==")
+    failures += check_deploy_paths()
 
     print("\n== CI environment vs the Gradle build ==")
     failures += check_ci_env_names()

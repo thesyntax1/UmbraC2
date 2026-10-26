@@ -113,6 +113,10 @@ before the reply is sent:
 
 * Written with `O_APPEND` + `fsync` per line over a `0600` file: a line that is
   lost in a crash would defeat the point.
+* Lives next to the state file (`/var/lib/umbra/audit.jsonl` in the shipped
+  unit) because that is the only directory the unit can write to
+  (`ProtectSystem=strict`). Ship it off-box: a server that can rewrite its own
+  audit log is not an audit log.
 * `audit_max_mb` (default 8) rotates the file to `*.1`…`*.5`; old files are
   never truncated in place.
 * Free-form fields (arguments, errors) are clipped to 512 characters, so one

@@ -20,6 +20,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# StateDirectory creates /var/lib/umbra with the right ownership; the server
+# writes both state.json and audit.jsonl there. Everything else is read-only,
+# so the audit log cannot be rewritten by the unit even if the process is
+# compromised -- ship it off-box for a tamper-evident trail.
+StateDirectory=umbra
+StateDirectoryMode=0700
 ReadWritePaths=/var/lib/umbra
 CapabilityBoundingSet=
 AmbientCapabilities=

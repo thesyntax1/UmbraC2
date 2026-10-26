@@ -1190,3 +1190,15 @@ def test_task_cancel_reaches_the_beacon_before_the_next_batch():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_consistency_check_detects_an_unwritable_deploy_path():
+    """ProtectSystem=strict makes an outside path fail only at runtime."""
+    def move_audit_to_log(rel, text):
+        if rel.endswith("server.prod.json"):
+            return text.replace('"/var/lib/umbra/audit.jsonl"', '"/var/log/umbra/audit.jsonl"')
+        return text
+
+    code, out = _run_checker("check_consistency.py", move_audit_to_log)
+    assert code == 1
+    assert "outside the writable paths" in out
