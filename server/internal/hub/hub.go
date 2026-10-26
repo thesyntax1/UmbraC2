@@ -33,6 +33,17 @@ type Event struct {
 	TaskID  string         `json:"task_id,omitempty"`
 	Data    map[string]any `json:"data,omitempty"`
 	At      time.Time      `json:"at"`
+	// From and To address an event to one console. An empty To broadcasts, as
+	// everything did before directed chat existed.
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+}
+
+// forOperator reports whether a console subscribed as `name` should receive
+// this event. Directed events still reach their sender: a console showing its
+// own outgoing message should not have to guess that it was delivered.
+func (e Event) forOperator(name string) bool {
+	return e.To == "" || name == e.To || name == e.From
 }
 
 // Operator is a subscribed control channel.
@@ -47,6 +58,12 @@ type Operator struct {
 	Transport string
 	// Role is the authorisation level resolved from the keyring.
 	Role string
+	// Focus is the agent this console is currently working on. It is how a
+	// team avoids three operators reading the same shell history at once.
+	Focus   string
+	FocusAt time.Time
+	// LastSeen is touched on every RPC, so a stalled console is visible.
+	LastSeen time.Time
 }
 
 // OperatorInfo is the public view of a connected operator console.
@@ -60,6 +77,11 @@ type OperatorInfo struct {
 	// Backlog is how many events are queued for this console but not yet sent.
 	// A persistently growing backlog means the console stopped reading.
 	Backlog int `json:"backlog"`
+	// Focus is the agent this console selected, empty when it has none.
+	Focus   string `json:"focus,omitempty"`
+	FocusAt string `json:"focus_at,omitempty"`
+	// IdleSec is how long since this console last sent an RPC.
+	IdleSec int `json:"idle_sec"`
 }
 
 // Live describes a currently connected agent.
@@ -108,23 +130,32 @@ const MaxChatHistory = 200
 // ChatMessage is one operator chat line.
 type ChatMessage struct {
 	From string    `json:"from"`
+	// To is the operator a message was addressed to; empty means the whole
+	// team. It addresses a message, it does not hide it: the history stays
+	// complete, because a shared operation needs a shared record.
+	To   string    `json:"to,omitempty"`
 	Role string    `json:"role"`
 	Text string    `json:"text"`
 	At   time.Time `json:"at"`
 }
 
-// Say records a chat message and broadcasts it to every console.
-func (h *Hub) Say(from, role, text string) ChatMessage {
-	msg := ChatMessage{From: from, Role: role, Text: text, At: time.Now().UTC()}
+// Say records a chat message and pushes it to the addressed console (or to
+// every console when `to` is empty).
+func (h *Hub) Say(from, role, text, to string) ChatMessage {
+	msg := ChatMessage{From: from, To: to, Role: role, Text: text, At: time.Now().UTC()}
 	h.mu.Lock()
 	h.chat = append(h.chat, msg)
 	if len(h.chat) > MaxChatHistory {
 		h.chat = h.chat[len(h.chat)-MaxChatHistory:]
 	}
 	h.mu.Unlock()
-	h.Emit(Event{Kind: "chat", Data: map[string]any{
+	data := map[string]any{
 		"from": msg.From, "role": msg.Role, "text": msg.Text, "at": msg.At.Format(time.RFC3339),
-	}})
+	}
+	if msg.To != "" {
+		data["to"] = msg.To
+	}
+	h.Emit(Event{Kind: "chat", From: msg.From, To: msg.To, Data: data})
 	return msg
 }
 
@@ -327,6 +358,32 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	h.store.SaveAsync()
 }
 
+// ClaimTask records that an operator took ownership of a task, so a team does
+// not run the same command twice. A claim is advisory and never delays the
+// beacon.
+func (h *Hub) ClaimTask(taskID, operator string) (*store.Task, error) {
+	t, err := h.store.Claim(taskID, operator)
+	if err != nil {
+		return nil, err
+	}
+	h.Emit(Event{Kind: "task.claimed", AgentID: t.AgentID, TaskID: t.ID, From: operator,
+		Data: map[string]any{"by": operator}})
+	h.store.SaveAsync()
+	return t, nil
+}
+
+// ReleaseTask drops a claim so another operator can pick the task up.
+func (h *Hub) ReleaseTask(taskID, operator string) (*store.Task, error) {
+	t, err := h.store.Release(taskID, operator)
+	if err != nil {
+		return nil, err
+	}
+	h.Emit(Event{Kind: "task.released", AgentID: t.AgentID, TaskID: t.ID, From: operator,
+		Data: map[string]any{"by": operator}})
+	h.store.SaveAsync()
+	return t, nil
+}
+
 // CancelTask cancels a task and, if it had already been delivered, queues a
 // control frame so the beacon stops before running it.
 func (h *Hub) CancelTask(taskID string) bool {
@@ -401,9 +458,62 @@ func (h *Hub) Subscribe(name, role, peer, transport string) *Operator {
 		Peer:      peer,
 		Transport: transport,
 		Role:      role,
+		LastSeen:  time.Now().UTC(),
 	}
 	h.subs[op.ID] = op
 	return op
+}
+
+// Touch records operator activity, so `operators.list` can show who is idle
+// and who is driving the engagement.
+func (h *Hub) Touch(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now().UTC()
+	for _, op := range h.subs {
+		if op.Name == name {
+			op.LastSeen = now
+		}
+	}
+}
+
+// HasOperator reports whether a console with that name is connected, so a
+// directed message can fail loudly instead of being addressed to nobody.
+func (h *Hub) HasOperator(name string) bool {
+	if name == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, op := range h.subs {
+		if op.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SetFocus records which agent an operator is working on and returns the
+// previous value. Both are broadcast so a teammate's console can follow along.
+func (h *Hub) SetFocus(name, agentID string) (previous string, ok bool) {
+	h.mu.Lock()
+	now := time.Now().UTC()
+	for _, op := range h.subs {
+		if op.Name != name {
+			continue
+		}
+		previous = op.Focus
+		op.Focus = agentID
+		op.FocusAt = now
+		ok = true
+	}
+	h.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	h.Emit(Event{Kind: "operator.focus", From: name,
+		Data: map[string]any{"operator": name, "agent_id": agentID}})
+	return previous, true
 }
 
 // Unsubscribe removes and closes an operator stream.
@@ -424,6 +534,9 @@ func (h *Hub) Emit(ev Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, op := range h.subs {
+		if !ev.forOperator(op.Name) {
+			continue
+		}
 		select {
 		case op.Events <- ev:
 		default:
@@ -447,10 +560,30 @@ func (h *Hub) Operators() []OperatorInfo {
 			Transport: op.Transport,
 			Since:     op.Since.Format(time.RFC3339),
 			Backlog:   len(op.Events),
+			Focus:     op.Focus,
+			FocusAt:   focusAt(op),
+			IdleSec:   int(time.Since(lastSeen(op)).Seconds()),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// focusAt formats when an operator selected its current agent, if ever.
+func focusAt(op *Operator) string {
+	if op.Focus == "" || op.FocusAt.IsZero() {
+		return ""
+	}
+	return op.FocusAt.UTC().Format(time.RFC3339)
+}
+
+// lastSeen is the operator's last activity, falling back to the moment the
+// console connected when it has not sent anything yet.
+func lastSeen(op *Operator) time.Time {
+	if op.LastSeen.IsZero() {
+		return op.Since
+	}
+	return op.LastSeen
 }
 
 // StartScheduler fires due recurring tasks until ctx is cancelled.

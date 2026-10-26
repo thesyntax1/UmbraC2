@@ -367,6 +367,25 @@ type. The CLI drives the loop (`umbra download` / `umbra upload`) and verifies
 each chunk hash, the final size and the whole-file hash before it renames
 `<local>.part` into place.
 
+### 7.2 Shared-work coordination
+
+Three small pieces make a team on one server workable, and none of them change
+what a beacon does:
+
+* **Focus** — `operators.focus {id}` records which agent a console is looking
+  at (`id` empty clears it) and pushes an `operator.focus` event, so a teammate
+  opens `operators.list` and sees `focus`/`focus_at`/`idle_sec` instead of
+  guessing. The interactive console sends it automatically on `use <agent>`.
+* **Claims** — `task.claim {task_id}` records `claimed_by`/`claimed_at` on the
+  task; a second operator gets `task is claimed by <name>` until the holder runs
+  `task.release`. A claim is advisory: it orders human work and never delays or
+  blocks the task. A finished task cannot be claimed; claiming twice is a no-op.
+* **Directed chat** — `chat.send {text, to}` addresses one connected operator
+  (`to` must be a live name, otherwise the call fails). The event is delivered
+  only to that console and the sender, while `chat.history` keeps the message
+  with its `to` field: on a shared engagement the record is shared too. It is
+  addressing, not a private channel — do not put secrets in chat.
+
 Operator RPC commands, with the minimum role each requires:
 
 | Command | Role | Notes |
@@ -376,7 +395,7 @@ Operator RPC commands, with the minimum role each requires:
 | `server.stats` | viewer | counters, including `events_dropped` |
 | `agents.list` | viewer | inventory |
 | `agents.info` | viewer | one agent and its recent tasks |
-| `operators.list` | viewer | connected consoles and their queue depth |
+| `operators.list` | viewer | connected consoles: focus agent, idle time, queue depth |
 | `task.get` | viewer | one task |
 | `task.list` | viewer | tasks for an agent |
 | `audit.tail` | viewer | recent operator actions |
@@ -387,8 +406,11 @@ Operator RPC commands, with the minimum role each requires:
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.kill` | operator | queue the exit task |
 | `agents.exit` | operator | alias of `agents.kill` |
-| `chat.send` | operator | broadcast a chat line |
+| `chat.send` | operator | team message; `to` addresses one operator |
 | `schedule.add` | operator | recurring task (5–86400 s) |
+| `task.claim` | operator | take ownership of a task |
+| `task.release` | operator | drop your claim |
+| `operators.focus` | operator | announce the agent you are working on |
 | `schedule.remove` | admin | remove a recurring task |
 | `events.test` | admin | emit a synthetic event |
 

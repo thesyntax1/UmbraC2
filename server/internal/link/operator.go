@@ -219,6 +219,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	if !s.allowOperatorRPC(op.Name) {
 		return fail("rate limited: at most %d calls/s per operator", int(operatorRPCPerSec))
 	}
+	// Presence: operators.list shows who is idle. A rate-limited call does not
+	// count as activity.
+	s.Hub.Touch(op.Name)
 
 	switch strings.TrimSpace(cmd) {
 	case "ping":
@@ -237,8 +240,22 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"peer":         op.Peer,
 			"transport":    op.Transport,
 			"since":        op.Since.Format(time.RFC3339),
+			"focus":        op.Focus,
 			"capabilities": out,
 		})
+
+	case "operators.focus":
+		id, _ := args["id"].(string)
+		if id != "" {
+			if _, ok := s.Hub.Store().Agent(id); !ok {
+				return fail("operators.focus: unknown agent %q", id)
+			}
+		}
+		previous, ok := s.Hub.SetFocus(op.Name, id)
+		if !ok {
+			return fail("operators.focus: %q is not a connected operator", op.Name)
+		}
+		return reply(upk.Map{"operator": op.Name, "agent_id": id, "previous": previous})
 
 	case "audit.tail":
 		limit, ok := asInt64(args["limit"])
@@ -279,8 +296,17 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if len(text) > 2000 {
 			text = text[:2000]
 		}
-		msg := s.Hub.Say(op.Name, op.Role, text)
-		return reply(upk.Map{"at": msg.At.Unix(), "from": msg.From})
+		to, _ := args["to"].(string)
+		to = strings.TrimSpace(to)
+		if to != "" && !s.Hub.HasOperator(to) {
+			return fail("chat.send: %q is not a connected operator", to)
+		}
+		msg := s.Hub.Say(op.Name, op.Role, text, to)
+		out := upk.Map{"at": msg.At.Unix(), "from": msg.From}
+		if msg.To != "" {
+			out["to"] = msg.To
+		}
+		return reply(out)
 
 	case "chat.history":
 		limit, ok := asInt64(args["limit"])
@@ -293,12 +319,16 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		messages := s.Hub.Chat(int(limit))
 		out := make([]any, 0, len(messages))
 		for _, m := range messages {
-			out = append(out, upk.Map{
+			row := upk.Map{
 				"from": m.From,
 				"role": m.Role,
 				"text": m.Text,
 				"at":   m.At.Unix(),
-			})
+			}
+			if m.To != "" {
+				row["to"] = m.To
+			}
+			out = append(out, row)
 		}
 		return reply(upk.Map{"messages": out})
 
@@ -366,6 +396,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				"transport": o.Transport,
 				"since":     o.Since,
 				"backlog":   int64(o.Backlog),
+				"focus":     o.Focus,
+				"focus_at":  o.FocusAt,
+				"idle_sec":  int64(o.IdleSec),
 			})
 		}
 		return reply(upk.Map{"operators": out, "count": int64(len(out))})
@@ -411,6 +444,25 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			return fail("task.submit: %v", err)
 		}
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "state": t.State})
+
+	case "task.claim":
+		taskID, _ := args["task_id"].(string)
+		t, err := s.Hub.ClaimTask(taskID, op.Name)
+		if err != nil {
+			return fail("task.claim: %v", err)
+		}
+		return reply(upk.Map{
+			"task_id": t.ID, "agent_id": t.AgentID, "claimed_by": t.ClaimedBy,
+			"state": t.State,
+		})
+
+	case "task.release":
+		taskID, _ := args["task_id"].(string)
+		t, err := s.Hub.ReleaseTask(taskID, op.Name)
+		if err != nil {
+			return fail("task.release: %v", err)
+		}
+		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "claimed_by": t.ClaimedBy})
 
 	case "task.cancel":
 		taskID, _ := args["task_id"].(string)
@@ -480,6 +532,12 @@ func eventMap(ev hub.Event) upk.Map {
 	if ev.TaskID != "" {
 		m["task_id"] = ev.TaskID
 	}
+	if ev.From != "" {
+		m["from"] = ev.From
+	}
+	if ev.To != "" {
+		m["to"] = ev.To
+	}
 	if ev.Data != nil {
 		m["data"] = toUpkMap(ev.Data)
 	}
@@ -523,6 +581,10 @@ func taskMap(t *store.Task) upk.Map {
 	}
 	if len(t.Meta) > 0 {
 		m["meta"] = toUpkMap(t.Meta)
+	}
+	if t.ClaimedBy != "" {
+		m["claimed_by"] = t.ClaimedBy
+		m["claimed_at"] = t.ClaimedAt.Unix()
 	}
 	return m
 }

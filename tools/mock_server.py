@@ -74,7 +74,12 @@ class MockServer:
         self.audit_entries: List[Dict[str, Any]] = []
         self.chat: List[Dict[str, Any]] = []
         self.schedules: Dict[str, Dict[str, Any]] = {}
-        self.subscribers: List["queue.Queue[Dict[str, Any]]"] = []
+        # Named subscriber queues, so a directed event can be addressed to one
+        # console (the Go hub filters on the operator name the same way).
+        self.subscribers: List[Tuple[str, "queue.Queue[Dict[str, Any]]"]] = []
+        # Presence per operator identity: which agent they are looking at and
+        # when they last did anything.
+        self.op_sessions: Dict[str, Dict[str, Any]] = {}
         # task ids cancelled after delivery; the next check-in carries one
         # TASK_CANCEL frame each, before TASK_BATCH (same order as the server).
         self.pending_cancels: Dict[str, List[str]] = {}
@@ -303,7 +308,17 @@ class MockServer:
         sess = result.session
         inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=512)
         with self._lock:
-            self.subscribers.append(inbox)
+            self.subscribers.append((result.peer_id, inbox))
+            self.op_sessions[result.peer_id] = {
+                "name": result.peer_id,
+                "role": self.roles.get(result.peer_id, "operator"),
+                "peer": addr,
+                "transport": "tcp/operator",
+                "since": _now(),
+                "focus": "",
+                "focus_at": "",
+                "last_seen": time.time(),
+            }
         self.emit("operator.connected", result.peer_id)
 
         # Both the event pusher and the request handler write to this
@@ -329,14 +344,19 @@ class MockServer:
                 msg_type, req = sess.decrypt_message(raw)
                 if msg_type != wire.MsgType.OP_REQUEST:
                     break
+                with self._lock:
+                    # NB: `session` is the module; do not shadow it here.
+                    presence = self.op_sessions.get(result.peer_id)
+                    if presence is not None:
+                        presence["last_seen"] = time.time()
                 resp = self.dispatch(req, operator=result.peer_id, peer=addr)
                 gate.send(wire.MsgType.OP_RESPONSE, resp)
         except (netio.StreamError, session.SessionError, OSError, ValueError):
             pass
         finally:
             with self._lock:
-                if inbox in self.subscribers:
-                    self.subscribers.remove(inbox)
+                self.subscribers = [(n, q) for (n, q) in self.subscribers if q is not inbox]
+                self.op_sessions.pop(result.peer_id, None)
             stream.close()
 
     # Mirrors server/internal/rbac/resources.go: minimum role per command.
@@ -360,6 +380,9 @@ class MockServer:
         "agents.sleep": "operator",
         "chat.send": "operator",
         "schedule.add": "operator",
+        "task.claim": "operator",
+        "task.release": "operator",
+        "operators.focus": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
     }
@@ -459,6 +482,7 @@ class MockServer:
                     "peer": "127.0.0.1:0",
                     "transport": "tcp/operator",
                     "since": _now(),
+                    "focus": (self.op_sessions.get(operator) or {}).get("focus", ""),
                     "capabilities": caps,
                 }
             )
@@ -467,12 +491,20 @@ class MockServer:
             text = str(args.get("text", "")).strip()
             if not text:
                 return fail("chat.send needs non-empty text")
-            message = {"from": operator, "role": role, "text": text[:2000], "at": _now()}
+            to = str(args.get("to", "") or "").strip()
             with self._lock:
+                if to and to not in self.op_sessions:
+                    return fail(f"chat.send: {to!r} is not a connected operator")
+                message = {"from": operator, "role": role, "text": text[:2000], "at": _now()}
+                if to:
+                    message["to"] = to
                 self.chat.append(message)
                 del self.chat[:-200]
-            self.emit("chat", data=dict(message))
-            return ok({"at": message["at"], "from": operator})
+            self.emit("chat", data=dict(message), to=to, sender=operator)
+            out = {"at": message["at"], "from": operator}
+            if to:
+                out["to"] = to
+            return ok(out)
 
         if cmd == "chat.history":
             limit = int(args.get("limit", 50) or 50)
@@ -548,17 +580,25 @@ class MockServer:
 
         if cmd == "operators.list":
             with self._lock:
-                ops = [
-                    {
-                        "id": i + 1,
-                        "name": "mock",
-                        "peer": "127.0.0.1:0",
-                        "transport": "tcp/operator",
-                        "since": _now(),
-                        "backlog": self.subscribers[i].qsize() if hasattr(self.subscribers[i], "qsize") else 0,
-                    }
-                    for i in range(len(self.subscribers))
-                ]
+                backlog: Dict[str, int] = {}
+                for name, q in self.subscribers:
+                    backlog[name] = backlog.get(name, 0) + q.qsize()
+                ops = []
+                for i, (name, live) in enumerate(sorted(self.op_sessions.items())):
+                    ops.append(
+                        {
+                            "id": i + 1,
+                            "name": name,
+                            "role": live.get("role", ""),
+                            "peer": live.get("peer", ""),
+                            "transport": live.get("transport", ""),
+                            "since": live.get("since", ""),
+                            "backlog": backlog.get(name, 0),
+                            "focus": live.get("focus", ""),
+                            "focus_at": live.get("focus_at", ""),
+                            "idle_sec": int(max(0.0, time.time() - live.get("last_seen", time.time()))),
+                        }
+                    )
             return ok({"operators": ops, "count": len(ops)})
 
         if cmd == "agents.list":
@@ -608,6 +648,56 @@ class MockServer:
             with self._lock:
                 items = [t for t in self.tasks.values() if t["agent_id"] == agent_id]
             return ok({"tasks": [_task_out(t) for t in items[-limit:]]})
+
+        if cmd in ("task.claim", "task.release"):
+            task_id = str(args.get("task_id", ""))
+            with self._lock:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    return fail(f"{cmd}: no such task")
+                holder = str(task.get("claimed_by", ""))
+                if cmd == "task.claim":
+                    if task.get("state") in ("done", "failed", "cancelled"):
+                        return fail(f"task.claim: task {task_id} is already {task['state']}")
+                    if holder and holder != operator:
+                        return fail(f"task.claim: task {task_id} is claimed by {holder}")
+                    if not holder:
+                        task["claimed_by"] = operator
+                        task["claimed_at"] = _now()
+                else:
+                    if holder and holder != operator:
+                        return fail(f"task.release: task {task_id} is claimed by {holder}")
+                    task.pop("claimed_by", None)
+                    task.pop("claimed_at", None)
+                snapshot = dict(task)
+            kind = "task.claimed" if cmd == "task.claim" else "task.released"
+            self.emit(kind, snapshot["agent_id"], task_id=task_id, data={"by": operator})
+            return ok(
+                {
+                    "task_id": task_id,
+                    "agent_id": snapshot["agent_id"],
+                    "claimed_by": snapshot.get("claimed_by", ""),
+                    "state": snapshot.get("state", ""),
+                }
+            )
+
+        if cmd == "operators.focus":
+            agent_id = str(args.get("id", ""))
+            with self._lock:
+                if agent_id and agent_id not in self.agents:
+                    return fail(f"operators.focus: unknown agent {agent_id!r}")
+                presence = self.op_sessions.get(operator)
+                if presence is None:
+                    return fail(f"operators.focus: {operator!r} is not connected")
+                previous = presence.get("focus", "")
+                presence["focus"] = agent_id
+                presence["focus_at"] = _now() if agent_id else ""
+            self.emit(
+                "operator.focus",
+                data={"operator": operator, "agent_id": agent_id},
+                sender=operator,
+            )
+            return ok({"operator": operator, "agent_id": agent_id, "previous": previous})
 
         if cmd == "task.cancel":
             task_id = str(args.get("task_id", ""))
@@ -671,12 +761,28 @@ class MockServer:
         return fail(f"unknown command {cmd!r}")
 
     # -- events ----------------------------------------------------------
-    def emit(self, kind: str, agent_id: str = "", *, task_id: str = "", data: Optional[Dict[str, Any]] = None) -> None:
+    def emit(
+        self,
+        kind: str,
+        agent_id: str = "",
+        *,
+        task_id: str = "",
+        data: Optional[Dict[str, Any]] = None,
+        to: str = "",
+        sender: str = "",
+    ) -> None:
+        """Publish an event; `to` addresses it to one console (empty = team)."""
         ev = {"kind": kind, "at": _now(), "agent_id": agent_id, "task_id": task_id, "data": data or {}}
+        if sender:
+            ev["from"] = sender
+        if to:
+            ev["to"] = to
         with self._lock:
             self.events.append(ev)
             subs = list(self.subscribers)
-        for q in subs:
+        for name, q in subs:
+            if to and name not in (to, sender):
+                continue
             try:
                 q.put_nowait(ev)
             except queue.Full:

@@ -22,6 +22,7 @@ import (
 var (
 	agentPSK    = []byte("agent-psk-0123456789abcdef0123")
 	opToken     = []byte("operator-token-0123456789ab")
+	op2Token    = []byte("operator-token-2-0123456789")
 	viewerToken = []byte("viewer-token-0123456789abcd")
 )
 
@@ -36,8 +37,8 @@ func newTestServer(t *testing.T) (*link.Server, *hub.Hub, string, string) {
 	cfg.Server.Limits.IdleTimeoutSec = 10
 	cfg.Keyring = config.Keyring{
 		AgentPSK:  agentPSK,
-		Operators: map[string][]byte{"op1": opToken, "viewer1": viewerToken},
-		Roles:     map[string]string{"op1": rbac.Admin, "viewer1": rbac.Viewer},
+		Operators: map[string][]byte{"op1": opToken, "op2": op2Token, "viewer1": viewerToken},
+		Roles:     map[string]string{"op1": rbac.Admin, "op2": rbac.Operator, "viewer1": rbac.Viewer},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open("")

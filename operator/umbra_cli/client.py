@@ -192,8 +192,33 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data
 
-    def say(self, text: str) -> Dict[str, Any]:
-        res = self.rpc("chat.send", {"text": text})
+    def focus(self, agent_id: str) -> Dict[str, Any]:
+        """Announce which agent this console is working on (empty clears it)."""
+        res = self.rpc("operators.focus", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def claim(self, task_id: str) -> Dict[str, Any]:
+        """Take ownership of a task so teammates do not duplicate the work."""
+        res = self.rpc("task.claim", {"task_id": task_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def release(self, task_id: str) -> Dict[str, Any]:
+        """Drop a claim; the task stays queued for whoever picks it up next."""
+        res = self.rpc("task.release", {"task_id": task_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def say(self, text: str, to: str = "") -> Dict[str, Any]:
+        """Send a chat message; `to` addresses one operator instead of the team."""
+        args: Dict[str, Any] = {"text": text}
+        if to:
+            args["to"] = to
+        res = self.rpc("chat.send", args)
         if not res.ok:
             raise OperatorError(res.error)
         return res.data

@@ -24,6 +24,12 @@ const (
 	StateOffline = "offline"
 )
 
+// Store-level errors callers may match instead of parsing messages.
+var (
+	ErrNoSuchTask  = errors.New("no such task")
+	ErrNoSuchAgent = errors.New("no such agent")
+)
+
 // Task lifecycle states.
 const (
 	TaskQueued    = "queued"
@@ -111,7 +117,11 @@ type Task struct {
 	// which only stores and forwards them, so new beacon-side metadata never
 	// needs a server change.
 	Meta      map[string]any `json:"meta,omitempty"`
-	Created   time.Time      `json:"created"`
+	// ClaimedBy is the operator who took this task, so two consoles do not
+	// duplicate work on the same target.
+	ClaimedBy string    `json:"claimed_by,omitempty"`
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	Created   time.Time `json:"created"`
 	Delivered time.Time      `json:"delivered,omitempty"`
 	Completed time.Time      `json:"completed,omitempty"`
 }
@@ -358,6 +368,55 @@ func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string
 	}
 	t.Completed = time.Now().UTC()
 	return t.Clone(), true
+}
+
+// Claim takes ownership of a task for one operator.
+//
+// Claiming is advisory: it orders human work, it does not gate execution, so a
+// claim never blocks the beacon. Re-claiming your own task is a no-op, and a
+// finished task can no longer be claimed.
+func (s *Store) Claim(taskID, by string) (*Task, error) {
+	if by == "" {
+		return nil, errors.New("claim needs an operator")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return nil, ErrNoSuchTask
+	}
+	switch t.State {
+	case TaskDone, TaskFailed, TaskCancelled:
+		return nil, fmt.Errorf("task %s is already %s", taskID, t.State)
+	}
+	if t.ClaimedBy != "" && t.ClaimedBy != by {
+		return nil, fmt.Errorf("task %s is claimed by %s", taskID, t.ClaimedBy)
+	}
+	if t.ClaimedBy == "" {
+		t.ClaimedBy = by
+		t.ClaimedAt = time.Now().UTC()
+	}
+	return t.Clone(), nil
+}
+
+// Release drops a claim. Only the holder (or an admin, decided by the caller)
+// may release it; releasing an unclaimed task is a no-op.
+func (s *Store) Release(taskID, by string) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return nil, ErrNoSuchTask
+	}
+	if t.ClaimedBy == "" {
+		return t.Clone(), nil
+	}
+	if t.ClaimedBy != by {
+		return nil, fmt.Errorf("task %s is claimed by %s", taskID, t.ClaimedBy)
+	}
+	t.ClaimedBy = ""
+	t.ClaimedAt = time.Time{}
+	return t.Clone(), nil
 }
 
 // Cancel marks a queued or delivered task as cancelled and reports the state it

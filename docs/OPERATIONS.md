@@ -170,7 +170,28 @@ what" includes what they were not allowed to do.
   5–86400 s, and a schedule that came due while the server was down fires once,
   not once per missed interval.
 
-## 5d. File transfer
+## 5d. Working as a team
+
+The server is shared state: everything one console does is visible to the
+others, and three small mechanisms keep a team from stepping on each other.
+
+* **Who is where** — `umbra operators` lists every connected console with its
+  role, the agent it is focused on, how long it has been idle and how deep its
+  event queue is. The interactive console announces your focus automatically on
+  `use <agent>`; `umbra focus web-01` (or `focus` to clear) does it from a
+  script. Teammates see an `operator.focus` event.
+* **Claims** — before working a task that someone else might grab, run
+  `umbra claim <task-id>`. `umbra tasks` then shows `CLAIMED BY`, `task.claim`
+  refuses a second operator with `task is claimed by <name>`, and
+  `umbra release <task-id>` frees it. A claim orders people, it does not gate
+  the task: the beacon never waits for one, and a finished task cannot be
+  claimed. Claims survive a restart with the task itself.
+* **Directed chat** — `umbra chat --to bob "web-01 is staged"` (or
+  `chat @bob …` in the console) pushes the line only to Bob's console and your
+  own. The history stays shared and shows the recipient, because a shared
+  engagement needs a shared record: treat it as addressing, not encryption.
+
+## 5e. File transfer
 
 ```bash
 umbra --server 127.0.0.1:4002 --operator alice download web-01 /etc/passwd ./passwd

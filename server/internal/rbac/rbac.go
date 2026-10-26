@@ -72,13 +72,21 @@ var requirements = map[string]string{
 	"schedule.list":  Viewer,
 
 	// ---- state-changing on a host -------------------------------------
-	"task.submit": Operator,
-	"task.cancel": Operator,
-	"agents.kill": Operator,
-	"agents.exit": Operator,
+	"task.submit":  Operator,
+	"task.cancel":  Operator,
+	"agents.kill":  Operator,
+	"agents.exit":  Operator,
 	"agents.sleep": Operator,
 	"chat.send":    Operator,
 	"schedule.add": Operator,
+
+	// ---- coordinating a shared engagement -----------------------------
+	// A claim orders human work; it never touches a host, so a junior
+	// operator may take and drop one.
+	"task.claim":      Operator,
+	"task.release":    Operator,
+	// Focus is presence: which agent this console is looking at.
+	"operators.focus": Operator,
 
 	// ---- affects the engagement or other operators --------------------
 	"schedule.remove": Admin,

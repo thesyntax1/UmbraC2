@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import io
 import json
+import re
 import os
 import socket
 import sys
@@ -1208,7 +1209,8 @@ def test_consistency_check_detects_an_rbac_drift():
     """A command documented as read-only but enforced as operator is a bug."""
     def promote_task_submit_requirement(rel, text):
         if rel.endswith("rbac.go"):
-            return text.replace('"task.submit": Operator,', '"task.submit": Viewer,')
+            # Tolerate gofmt alignment inside the map literal.
+            return re.sub(r'"task\.submit":\s+Operator,', '"task.submit": Viewer,', text)
         return text
 
     code, out = _run_checker("check_consistency.py", promote_task_submit_requirement)
@@ -1488,4 +1490,186 @@ def test_task_result_events_carry_metadata_not_payloads(tmp_path):
         assert data["meta"]["eof"] is True
     finally:
         client.close()
+        server.stop()
+
+
+def test_task_claims_order_shared_work(tmp_path):
+    """Two operators must not run the same task; a claim is advisory but visible."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    alice_token = b"claim-token-alice-01234567"
+    bob_token = b"claim-token-bob-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": alice_token, "bob": bob_token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-claim", interval=0.2)
+    agent.start()
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    alice = OperatorClient(server.address, alice_token.decode(), "alice")
+    bob = OperatorClient(server.address, bob_token.decode(), "bob")
+    try:
+        alice.connect()
+        bob.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not alice.agents():
+            time.sleep(0.05)
+
+        task_id = alice.submit("agent-claim", "ping", {})
+        data = alice.claim(task_id)
+        assert data["claimed_by"] == "alice"
+
+        # The claim is part of the task view, so a teammate sees it before
+        # duplicating the work.
+        assert alice.task(task_id)["claimed_by"] == "alice"
+
+        with pytest.raises(OperatorError) as excinfo:
+            bob.claim(task_id)
+        assert "claimed by alice" in str(excinfo.value)
+
+        # Claiming twice is a no-op, not an error.
+        assert alice.claim(task_id)["claimed_by"] == "alice"
+
+        # Bob cannot release someone else's claim either.
+        with pytest.raises(OperatorError):
+            bob.release(task_id)
+
+        alice.release(task_id)
+        assert "claimed_by" not in alice.task(task_id)
+        assert bob.claim(task_id)["claimed_by"] == "bob"
+    finally:
+        alice.close()
+        bob.close()
+        server.stop()
+
+
+def test_claim_is_rejected_once_the_task_is_finished():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"claim-done-token-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        with server._lock:  # noqa: SLF001 - test double
+            server.tasks["t-done"] = {
+                "id": "t-done", "agent_id": "agent-x", "kind": "ping", "args": {},
+                "state": "done", "code": 0, "out": b"pong\n", "err": "",
+                "created": time.time(), "completed": time.time(),
+            }
+        with pytest.raises(OperatorError) as excinfo:
+            client.claim("t-done")
+        assert "already done" in str(excinfo.value)
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_focus_is_shared_with_the_team():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    alice_token = b"focus-token-alice-01234567"
+    bob_token = b"focus-token-bob-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": alice_token, "bob": bob_token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-focus", interval=0.2)
+    agent.start()
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    alice = OperatorClient(server.address, alice_token.decode(), "alice")
+    bob = OperatorClient(server.address, bob_token.decode(), "bob")
+    try:
+        alice.connect()
+        bob.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not alice.agents():
+            time.sleep(0.05)
+
+        alice.focus("agent-focus")
+        rows = {o["name"]: o for o in bob.operators()}
+        assert rows["alice"]["focus"] == "agent-focus"
+        assert "focus_at" in rows["alice"] and rows["alice"]["focus_at"]
+        assert "idle_sec" in rows["alice"]
+
+        # The change is pushed, so a console does not have to poll for it.
+        kinds = []
+        for _ in range(4):
+            ev = bob.next_event(timeout=2.0)
+            if ev is None:
+                break
+            kinds.append(ev["kind"])
+            if ev["kind"] == "operator.focus":
+                assert ev["data"]["agent_id"] == "agent-focus"
+                break
+        assert "operator.focus" in kinds
+
+        alice.focus("")  # clears it
+        rows = {o["name"]: o for o in bob.operators()}
+        assert rows["alice"]["focus"] == ""
+
+        with pytest.raises(OperatorError):
+            alice.focus("ghost-agent")
+    finally:
+        alice.close()
+        bob.close()
+        server.stop()
+
+
+def test_directed_chat_reaches_only_the_addressee():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    alice_token = b"dm-token-alice-0123456789"
+    bob_token = b"dm-token-bob-0123456789ab"
+    carol_token = b"dm-token-carol-01234567"
+    server = MockServer(AGENT_PSK, {"alice": alice_token, "bob": bob_token, "carol": carol_token})
+    server.start()
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    alice = OperatorClient(server.address, alice_token.decode(), "alice")
+    bob = OperatorClient(server.address, bob_token.decode(), "bob")
+    carol = OperatorClient(server.address, carol_token.decode(), "carol")
+    try:
+        alice.connect()
+        bob.connect()
+        carol.connect()
+
+        alice.say("web-01 is staged, taking it", to="bob")
+
+        # Bob receives it...
+        got = []
+        for _ in range(4):
+            ev = bob.next_event(timeout=2.0)
+            if ev is None:
+                break
+            got.append(ev)
+            if ev["kind"] == "chat":
+                break
+        assert any(e["kind"] == "chat" and e["data"]["text"].startswith("web-01") for e in got)
+        chat_ev = next(e for e in got if e["kind"] == "chat")
+        assert chat_ev["data"]["to"] == "bob"
+
+        # ... Carol does not (only her own join events are queued).
+        while True:
+            ev = carol.next_event(timeout=0.5)
+            if ev is None:
+                break
+            assert ev["kind"] != "chat", ev
+
+        # The history is shared and keeps the recipient, by design.
+        history = carol.chat_history(10)
+        assert history[-1]["to"] == "bob"
+
+        # Addressing a console that is not connected fails loudly.
+        with pytest.raises(OperatorError):
+            alice.say("anyone?", to="dave")
+    finally:
+        alice.close()
+        bob.close()
+        carol.close()
         server.stop()

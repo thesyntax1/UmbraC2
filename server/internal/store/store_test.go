@@ -274,3 +274,52 @@ func TestResultMetaPersistsAcrossReload(t *testing.T) {
 		t.Fatal("Clone shared the Meta map")
 	}
 }
+
+// Claims order human work: they must be exclusive, releasable by the holder,
+// and impossible once the task has finished.
+func TestTaskClaimLifecycle(t *testing.T) {
+	st, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "a1", Host: "lab"})
+	task := st.AddTask(&store.Task{AgentID: "a1", Kind: "ping"})
+
+	if _, err := st.Claim(task.ID, ""); err == nil {
+		t.Fatal("claim without an operator succeeded")
+	}
+	claimed, err := st.Claim(task.ID, "alice")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if claimed.ClaimedBy != "alice" || claimed.ClaimedAt.IsZero() {
+		t.Fatalf("claim not recorded: %+v", claimed)
+	}
+	// Idempotent for the holder.
+	if again, err := st.Claim(task.ID, "alice"); err != nil || again.ClaimedBy != "alice" {
+		t.Fatalf("re-claim by the holder: %v / %+v", err, again)
+	}
+	// Refused for everyone else, release included.
+	if _, err := st.Claim(task.ID, "bob"); err == nil {
+		t.Fatal("bob stole a claim")
+	}
+	if _, err := st.Release(task.ID, "bob"); err == nil {
+		t.Fatal("bob released someone else's claim")
+	}
+	if _, err := st.Release(task.ID, "alice"); err != nil {
+		t.Fatalf("release by the holder: %v", err)
+	}
+	if got, _ := st.Task(task.ID); got.ClaimedBy != "" || !got.ClaimedAt.IsZero() {
+		t.Fatalf("claim survived release: %+v", got)
+	}
+	// A finished task cannot be claimed.
+	if _, ok := st.Complete(task.ID, 0, []byte("pong\n"), "", nil); !ok {
+		t.Fatal("complete failed")
+	}
+	if _, err := st.Claim(task.ID, "bob"); err == nil {
+		t.Fatal("a finished task was claimed")
+	}
+	if _, err := st.Claim("t-missing", "alice"); err == nil {
+		t.Fatal("claiming a missing task succeeded")
+	}
+}

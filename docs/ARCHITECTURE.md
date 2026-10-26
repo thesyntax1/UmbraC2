@@ -181,7 +181,9 @@ a test double, not a production server.
 Short term: message padding, `CONFIG` as a first-class policy push, per-agent
 authorisation profiles.
 
-Done: HTTP transport keep-alive (length-delimited replies, a socket pooled for
+Done: shared-work coordination (operator focus/presence in `operators.list`,
+advisory `task.claim`/`task.release` so a team does not duplicate work, directed
+`chat.send`); HTTP transport keep-alive (length-delimited replies, a socket pooled for
 the whole beacon cycle, one reconnect-and-retry on a stale pooled socket);
 chunked `download`/`upload` (900 KiB steps, per-chunk SHA-256, `total`/
 `offset`/`eof` result metadata stored with the task, `.part` plus rename on the

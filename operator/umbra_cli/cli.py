@@ -119,6 +119,8 @@ def print_whoami(data: Dict[str, Any]) -> None:
     print(f"role     : {data.get('role')}")
     print(f"peer     : {data.get('peer')} ({data.get('transport')})")
     print(f"since    : {data.get('since')}")
+    if data.get("focus"):
+        print(f"focus    : {data['focus']}")
     print(f"commands : {len(caps)} allowed")
     if caps:
         print("           " + " ".join(sorted(caps)))
@@ -130,7 +132,11 @@ def print_chat(messages: List[Dict[str, Any]]) -> None:
         return
     for m in messages:
         role = m.get("role") or "?"
-        print(f"[{fmt_ts(m.get('at'))}] {m.get('from')} ({role}): {m.get('text')}")
+        to = m.get("to") or ""
+        # A directed message is marked, because the room sees it in the history:
+        # addressing is a label for the team, not a private channel.
+        arrow = f" -> {to}" if to else ""
+        print(f"[{fmt_ts(m.get('at'))}] {m.get('from')}{arrow} ({role}): {m.get('text')}")
 
 
 def print_schedules(schedules: List[Dict[str, Any]]) -> None:
@@ -160,14 +166,16 @@ def print_operators(operators: List[Dict[str, Any]]) -> None:
     rows = [
         [
             o.get("name", "?"),
+            o.get("role", "?"),
+            o.get("focus") or "-",
+            f"{o.get('idle_sec', 0)}s",
             o.get("peer", "?"),
             o.get("transport", "?"),
-            str(o.get("since", "?")),
             str(o.get("backlog", 0)),
         ]
         for o in operators
     ]
-    print(table(["OPERATOR", "PEER", "TRANSPORT", "CONNECTED", "BACKLOG"], rows))
+    print(table(["OPERATOR", "ROLE", "FOCUS", "IDLE", "PEER", "TRANSPORT", "BACKLOG"], rows))
 
 
 def print_tasks(tasks: List[Dict[str, Any]]) -> None:
@@ -181,12 +189,13 @@ def print_tasks(tasks: List[Dict[str, Any]]) -> None:
                 t.get("id", "?"),
                 t.get("kind", "?"),
                 t.get("state", "?"),
+                t.get("claimed_by") or "-",
                 t.get("code", "?"),
                 short(decode_out(t.get("out", "")), 60) or "-",
                 fmt_ts(t.get("created")),
             ]
         )
-    print(table(["TASK", "KIND", "STATE", "CODE", "OUTPUT", "CREATED"], rows))
+    print(table(["TASK", "KIND", "STATE", "CLAIMED BY", "CODE", "OUTPUT", "CREATED"], rows))
 
 
 def print_task_result(task: Dict[str, Any]) -> None:
@@ -195,6 +204,8 @@ def print_task_result(task: Dict[str, Any]) -> None:
     print(f"kind    : {task.get('kind')}")
     print(f"state   : {task.get('state')}")
     print(f"exit    : {task.get('code')}")
+    if task.get("claimed_by"):
+        print(f"claimed : {task['claimed_by']}")
     if task.get("err"):
         print(f"error   : {task['err']}")
     meta = task.get("meta") or {}
@@ -336,6 +347,12 @@ class Console:
                 else:
                     self.current_agent = rest[0]
                     print(f"current agent: {self.current_agent}")
+                    # Tell the team; a shared engagement should not need a
+                    # second message to say who is looking at what.
+                    try:
+                        self.client.focus(rest[0])
+                    except OperatorError as exc:
+                        print(f"focus not shared: {exc}")
             elif cmd == "info":
                 data = self.client.agent_info(self._resolve(rest[0] if rest else None))
                 print(json.dumps(data, indent=2, default=str, sort_keys=True))
@@ -402,10 +419,33 @@ class Console:
                 print_whoami(self.client.whoami())
             elif cmd in ("chat", "say"):
                 if rest:
-                    self.client.say(" ".join(rest))
-                    print("sent")
+                    to = ""
+                    body = list(rest)
+                    if body[0].startswith("@") and len(body[0]) > 1:
+                        to = body.pop(0)[1:]
+                    text = " ".join(body).strip()
+                    if not text:
+                        print(f"usage: say [@operator] <message>")
+                        return True
+                    self.client.say(text, to)
+                    print(f"sent -> {to}" if to else "sent")
                 else:
                     print_chat(self.client.chat_history(20))
+            elif cmd in ("claim", "take"):
+                if not rest:
+                    print("usage: claim <task-id>")
+                    return True
+                data = self.client.claim(rest[0])
+                print(f"claimed {rest[0]} ({data.get('state', '?')})")
+            elif cmd in ("release", "drop"):
+                if not rest:
+                    print("usage: release <task-id>")
+                    return True
+                self.client.release(rest[0])
+                print(f"released {rest[0]}")
+            elif cmd == "focus":
+                data = self.client.focus(rest[0] if rest else "")
+                print(f"focus: {data.get('agent_id') or '(none)'}")
             elif cmd in ("schedule", "cron"):
                 sub_cmd = rest[0] if rest else "list"
                 if sub_cmd == "list":
@@ -479,7 +519,10 @@ def print_help() -> None:
   agents | ls               list agents
   whoami | me               your identity, role and allowed commands
   operators                 list connected operator consoles
-  chat [message]            send (or read) operator chat
+  chat [@op] [message]      send (or read) operator chat
+  focus [agent-id]          tell the team which agent you are on
+  claim <task-id>           take ownership of a task
+  release <task-id>         drop your claim
   schedule [list|add|rm]    recurring tasks
   use <agent-id>            select the current agent
   info [agent-id]           full agent record
@@ -527,6 +570,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="umbra",
         description="UmbraC2 operator console (umbra/v1)",
         epilog="This tool is for authorised security testing only.",
+        # No abbreviations: `--to` must not be guessed as `--token`, and an
+        # ambiguous prefix should fail instead of silently picking one.
+        allow_abbrev=False,
     )
     p.add_argument("--server", "-s", default=os.environ.get("UMBRA_SERVER", "127.0.0.1:4002"),
                    help="team server operator listener (default 127.0.0.1:4002)")
@@ -550,6 +596,16 @@ def build_parser() -> argparse.ArgumentParser:
     chat = sub.add_parser("chat", help="operator chat")
     chat.add_argument("message", nargs="*", help="send a message (omit to read history)")
     chat.add_argument("--limit", type=int, default=20)
+    chat.add_argument("--to", default="", help="address one operator instead of the team")
+
+    focus = sub.add_parser("focus", help="announce the agent you are working on")
+    focus.add_argument("agent", nargs="?", default="", help="agent id (omit to clear)")
+
+    claim = sub.add_parser("claim", help="take ownership of a task")
+    claim.add_argument("task_id")
+
+    release = sub.add_parser("release", help="drop your claim on a task")
+    release.add_argument("task_id")
 
     sched = sub.add_parser("schedule", help="recurring tasks")
     sched.add_argument("action", choices=["list", "add", "rm"])
@@ -672,8 +728,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "chat":
             if args.message:
                 text = " ".join(args.message).strip()
-                client.say(text)
-                emit({"sent": text}) if args.json else print(f"sent: {text}")
+                to = args.to
+                # `chat @bob hello` is the same as `chat --to bob hello`.
+                if not to and text.startswith("@"):
+                    head, _, rest = text[1:].partition(" ")
+                    if head and rest.strip():
+                        to, text = head, rest.strip()
+                data = client.say(text, to)
+                if args.json:
+                    emit({"sent": text, **({"to": to} if to else {})})
+                else:
+                    print(f"sent: {text}" + (f" -> {to}" if to else ""))
             else:
                 messages = client.chat_history(args.limit)
                 emit(messages) if args.json else print_chat(messages)
@@ -703,6 +768,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 emit({"schedule_id": args.target, "removed": True}) if args.json else print(
                     f"removed {args.target}"
                 )
+        elif args.cmd == "focus":
+            data = client.focus(args.agent)
+            if args.json:
+                emit(data)
+            elif args.agent:
+                print(f"focus: {args.agent}")
+            else:
+                print("focus cleared")
+        elif args.cmd == "claim":
+            data = client.claim(args.task_id)
+            emit(data) if args.json else print(f"claimed {args.task_id} ({data.get('state', '?')})")
+        elif args.cmd == "release":
+            data = client.release(args.task_id)
+            if args.json:
+                emit(data)
+            else:
+                print(f"released {args.task_id}" if not data.get("claimed_by")
+                      else f"still claimed by {data['claimed_by']}")
         elif args.cmd == "operators":
             rows = client.operators()
             emit(rows) if args.json else print_operators(rows)
