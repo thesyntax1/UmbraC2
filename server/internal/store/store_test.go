@@ -209,7 +209,7 @@ func TestCancelStateMachine(t *testing.T) {
 	}
 
 	// The command did run; the result is recorded but the state stays cancelled.
-	rec, ok := st.Complete(delivered.ID, 0, []byte("ran anyway\n"), "")
+	rec, ok := st.Complete(delivered.ID, 0, []byte("ran anyway\n"), "", nil)
 	if !ok {
 		t.Fatal("Complete reported the task missing")
 	}
@@ -221,8 +221,56 @@ func TestCancelStateMachine(t *testing.T) {
 	}
 
 	done := st.AddTask(&store.Task{AgentID: "a", Kind: "ping"})
-	st.Complete(done.ID, 0, []byte("pong\n"), "")
+	st.Complete(done.ID, 0, []byte("pong\n"), "", nil)
 	if _, ok := st.Cancel(done.ID); ok {
 		t.Fatal("a finished task was cancelled")
+	}
+}
+
+// Result metadata must survive a restart: it is what makes a chunked transfer
+// resumable, so losing it after a server restart would silently turn a partial
+// download into an accepted one.
+func TestResultMetaPersistsAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "a1", Host: "lab"})
+	task := st.AddTask(&store.Task{AgentID: "a1", Kind: "download",
+		Args: map[string]any{"path": "/etc/hostname", "offset": 0}})
+	if _, ok := st.Complete(task.ID, 0, []byte("lab\n"), "", map[string]any{
+		"total": uint64(4), "offset": uint64(0), "eof": true, "sha256": "abc123",
+	}); !ok {
+		t.Fatal("complete failed")
+	}
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reopened.Task(task.ID)
+	if !ok {
+		t.Fatal("task lost on reload")
+	}
+	if got.Meta["sha256"] != "abc123" {
+		t.Fatalf("meta lost on reload: %v", got.Meta)
+	}
+	// JSON numbers come back as float64; the value must still be readable.
+	if got.Meta["total"] != float64(4) && got.Meta["total"] != 4 {
+		t.Fatalf("total meta wrong: %#v", got.Meta["total"])
+	}
+	if eof, _ := got.Meta["eof"].(bool); !eof {
+		t.Fatalf("eof meta wrong: %#v", got.Meta["eof"])
+	}
+	// The copy must not share the map with the store.
+	got.Meta["sha256"] = "tampered"
+	if again, _ := reopened.Task(task.ID); again.Meta["sha256"] == "tampered" {
+		t.Fatal("Clone shared the Meta map")
 	}
 }

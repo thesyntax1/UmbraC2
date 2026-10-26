@@ -22,7 +22,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from . import __version__, crypto, netio, wire
-from .client import OperatorClient, OperatorError
+from .client import CHUNK_MAX, OperatorClient, OperatorError
 
 BANNER = r"""
   _   _ __  __ ___  ____      _    ____
@@ -197,6 +197,12 @@ def print_task_result(task: Dict[str, Any]) -> None:
     print(f"exit    : {task.get('code')}")
     if task.get("err"):
         print(f"error   : {task['err']}")
+    meta = task.get("meta") or {}
+    if meta:
+        # Transfer metadata (total/offset/eof/sha256) and anything else the
+        # beacon attached to the RESULT; sorted so the output is stable.
+        items = ", ".join(f"{k}={meta[k]}" for k in sorted(meta))
+        print(f"meta    : {items}")
     out = decode_out(task.get("out", ""))
     if out:
         print("--- output " + "-" * 50)
@@ -270,9 +276,16 @@ def print_event(ev: Dict[str, Any], stream: Any = None) -> None:
     detail = ""
     if kind == "task.result":
         detail = f"task={ev.get('task_id')} exit={data.get('code')}"
-        out = decode_out(data.get("output", ""))
-        if out:
-            detail += f" out={short(out, 60)!r}"
+        if data.get("binary"):
+            # The event carries only a size for binary payloads; the bytes are
+            # in task.get.
+            detail += f" binary={data.get('size', 0)}B"
+        else:
+            out = decode_out(data.get("output", ""))
+            if out:
+                detail += f" out={short(out, 60)!r}"
+        if data.get("meta"):
+            detail += " meta=" + ",".join(sorted(str(k) for k in data["meta"]))
     elif kind in ("agent.new", "agent.online"):
         parts = [f"{k}={data[k]}" for k in ("host", "os", "transport") if data.get(k)]
         detail = " ".join(parts)
@@ -338,6 +351,20 @@ class Console:
                 kind = rest[0]
                 args = json.loads(" ".join(rest[1:])) if len(rest) > 1 else {}
                 self._submit_and_maybe_wait(kind, args, watch=True)
+            elif cmd in ("get", "download"):
+                if len(rest) < 2:
+                    print("usage: get <remote-path> <local-path>")
+                    return True
+                info = self.client.download_file(
+                    self._resolve(None), rest[0], rest[1], progress=_progress_printer())
+                print(f"downloaded {info['bytes']} bytes -> {info['local']} ({info['chunks']} chunk(s))")
+            elif cmd in ("put", "upload"):
+                if len(rest) < 2:
+                    print("usage: put <local-path> <remote-path>")
+                    return True
+                info = self.client.upload_file(
+                    self._resolve(None), rest[0], rest[1], progress=_progress_printer())
+                print(f"uploaded {info['bytes']} bytes -> {info['path']} ({info['chunks']} chunk(s))")
             elif cmd == "tasks":
                 limit = int(rest[0]) if rest else 20
                 print_tasks(self.client.tasks(self._resolve(None), limit))
@@ -429,6 +456,22 @@ class Console:
             print("use `result <task-id>` to collect the output")
 
 
+def _progress_printer() -> Any:
+    """Return a `(done, total, final=False)` callback that redraws one stderr line."""
+    state = {"last": -1.0}
+
+    def show(done: int, total: int, *, final: bool = False) -> None:
+        pct = (done / total * 100.0) if total > 0 else 0.0
+        if not final and pct - state["last"] < 1.0:
+            return
+        state["last"] = pct
+        total_txt = f"{total}" if total > 0 else "?"
+        end = "\n" if final else "\r"
+        print(f"  {done}/{total_txt} bytes ({pct:5.1f}%)", file=sys.stderr, end=end, flush=True)
+
+    return show
+
+
 def print_help() -> None:
     print(
         """commands:
@@ -442,6 +485,10 @@ def print_help() -> None:
   info [agent-id]           full agent record
   run <command>             queue a shell task and print its result
   exec <kind> [json]        queue arbitrary task (sysinfo, ls, download, ...)
+  get <remote> <local>      pull a file from the current agent
+  put <local> <remote>      push a file to the current agent
+  download <agent> <remote> <local>   pull a file (chunked, verified)
+  upload <agent> <local> <remote>     push a file (chunked, verified)
   tasks [limit]             recent tasks for the current agent
   result <task-id>          print a task result
   cancel <task-id>          cancel a queued task
@@ -530,6 +577,20 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--args", default="{}", help="task arguments as JSON")
     task.add_argument("--wait", action="store_true")
     task.add_argument("--timeout", type=float, default=120.0)
+
+    down = sub.add_parser("download", help="pull a file from an agent (chunked)")
+    down.add_argument("agent")
+    down.add_argument("remote", help="path on the agent")
+    down.add_argument("local", help="destination path on this host")
+    down.add_argument("--chunk", type=int, default=0, help="bytes per request (max 900 KiB)")
+    down.add_argument("--timeout", type=float, default=120.0, help="per-chunk timeout")
+
+    up = sub.add_parser("upload", help="push a file to an agent (chunked)")
+    up.add_argument("agent")
+    up.add_argument("local", help="source path on this host")
+    up.add_argument("remote", help="destination path on the agent")
+    up.add_argument("--chunk", type=int, default=0, help="bytes per request (max 900 KiB)")
+    up.add_argument("--timeout", type=float, default=120.0, help="per-chunk timeout")
 
     tasks = sub.add_parser("tasks", help="list tasks for an agent")
     tasks.add_argument("agent")
@@ -682,6 +743,33 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.wait:
                 result = client.wait_for_result(task_id, timeout=args.timeout)
                 emit(result) if args.json else print_task_result(result)
+        elif args.cmd in ("download", "upload"):
+            chunk = args.chunk or CHUNK_MAX
+            if chunk < 1 or chunk > CHUNK_MAX:
+                print(f"--chunk must be between 1 and {CHUNK_MAX}", file=sys.stderr)
+                return 2
+            bar = None if args.json else _progress_printer()
+
+            def note(done: int, total: int) -> None:
+                if bar is not None:
+                    bar(done, total)
+
+            if args.cmd == "download":
+                info = client.download_file(
+                    args.agent, args.remote, args.local,
+                    timeout=args.timeout, chunk=chunk, progress=note,
+                )
+            else:
+                info = client.upload_file(
+                    args.agent, args.local, args.remote,
+                    timeout=args.timeout, chunk=chunk, progress=note,
+                )
+            if bar is not None:
+                bar(info["bytes"], info["bytes"], final=True)
+            emit(info) if args.json else print(
+                f"{args.cmd} {info['path']} {info['bytes']} bytes in {info['chunks']} chunk(s)"
+                f" sha256={info['sha256'][:16]}…"
+            )
         elif args.cmd == "tasks":
             rows = client.tasks(args.agent, args.limit)
             emit(rows) if args.json else print_tasks(rows)

@@ -56,6 +56,7 @@ umbra[-]> agents
 umbra[-]> use agent-mock-1
 umbra[agent-mock-1]> run id
 umbra[agent-mock-1]> exec sysinfo
+umbra[agent-mock-1]> get /etc/hostname ./hostname   # chunked, hash-verified pull
 ```
 
 ## Quick start (real components)

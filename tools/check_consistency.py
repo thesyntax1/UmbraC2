@@ -203,7 +203,10 @@ def doc_task_kinds() -> set[str]:
     """Task kinds listed in docs/PROTOCOL.md's kind table."""
     text = read("docs/PROTOCOL.md")
     section = text.split("Task kinds understood by the reference implants:", 1)[-1]
-    section = section.split("Operator RPC commands", 1)[0]
+    # Stop at the next section: later subsections have their own tables, whose
+    # first column is also a backticked lowercase word.
+    for marker in ("Operator RPC commands", "\n### "):
+        section = section.split(marker, 1)[0]
     return set(re.findall(r"^\| `([a-z]+)` \|", section, re.M))
 
 

@@ -170,6 +170,32 @@ what" includes what they were not allowed to do.
   5–86400 s, and a schedule that came due while the server was down fires once,
   not once per missed interval.
 
+## 5d. File transfer
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice download web-01 /etc/passwd ./passwd
+umbra --server 127.0.0.1:4002 --operator alice upload   web-01 ./collector /tmp/collector
+```
+
+Inside the console the same commands are `get <remote> <local>` and
+`put <local> <remote>` for the selected agent. Both are chunked at 900 KiB, the
+largest payload that still fits in one frame, so arbitrary file sizes work
+without a new message type or a second connection:
+
+* every chunk is checked against the SHA-256 the beacon reports;
+* downloads are written to `<local>.part` and renamed only after the last chunk
+  and the size check pass, so a failed transfer never leaves a truncated file
+  that looks complete;
+* uploads truncate at offset 0 and report the whole-file hash on the final
+  chunk, which the CLI compares with the local file;
+* `--chunk` lowers the step size (useful on lossy links); `--timeout` applies
+  per chunk, not to the whole transfer.
+
+A transfer is a sequence of ordinary tasks, so it appears in `tasks`, in the
+audit trail and in the cancel path like anything else. The beacon reports
+`total`, `offset`, `eof` and `sha256` in each RESULT, and the server stores them
+as task metadata that `result <task-id>` prints.
+
 ## 6. Monitoring
 
 ```bash

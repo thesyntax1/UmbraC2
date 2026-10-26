@@ -80,6 +80,12 @@ impl Value {
     pub fn i64_or(&self, key: &str, default: i64) -> i64 {
         self.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
     }
+    pub fn bool_or(&self, key: &str, default: bool) -> bool {
+        match self.get(key) {
+            Some(Value::Bool(b)) => *b,
+            _ => default,
+        }
+    }
     pub fn bin_or(&self, key: &str, default: &[u8]) -> Vec<u8> {
         self.get(key)
             .and_then(|v| v.as_bin())
@@ -115,6 +121,10 @@ pub fn u(v: u64) -> Value {
 
 pub fn i(v: i64) -> Value {
     Value::Int(v)
+}
+
+pub fn bool_(v: bool) -> Value {
+    Value::Bool(v)
 }
 
 #[derive(Debug)]

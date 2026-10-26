@@ -178,8 +178,32 @@ func (l *AgentLink) onResult(msg map[string]any) ([][]byte, error) {
 	}
 	output, _ := msg["out"].([]byte)
 	errMsg, _ := msg["err"].(string)
-	l.Hub.CompleteTask(l.AgentID, taskID, code, output, errMsg)
+	l.Hub.CompleteTask(l.AgentID, taskID, code, output, errMsg, resultMeta(msg))
 	return nil, nil
+}
+
+// resultMeta picks the extra fields a beacon attached to a RESULT body (offset,
+// total, eof, sha256, ...) and keeps only JSON-safe scalars, so a hostile or
+// buggy beacon cannot stuff nested data into the state file.
+func resultMeta(msg map[string]any) map[string]any {
+	if len(msg) <= 4 {
+		return nil
+	}
+	meta := make(map[string]any, len(msg)-4)
+	for k, v := range msg {
+		switch k {
+		case "id", "code", "out", "err":
+			continue
+		}
+		switch v.(type) {
+		case string, bool, int64, uint64, float64:
+			meta[k] = v
+		}
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 // AgentMeta converts HELLO metadata into a store record.

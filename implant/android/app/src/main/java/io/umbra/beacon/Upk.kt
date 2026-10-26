@@ -302,4 +302,6 @@ fun Upk.bytes(): ByteArray? = when (this) {
 
 fun Upk.long(): Long? = (this as? Upk.Num)?.value
 
+fun Upk.flag(): Boolean? = (this as? Upk.Bool)?.value
+
 fun Upk.list(): List<Upk> = (this as? Upk.Arr)?.items ?: emptyList()

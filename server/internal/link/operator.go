@@ -521,6 +521,9 @@ func taskMap(t *store.Task) upk.Map {
 	if !t.Completed.IsZero() {
 		m["completed"] = t.Completed.Unix()
 	}
+	if len(t.Meta) > 0 {
+		m["meta"] = toUpkMap(t.Meta)
+	}
 	return m
 }
 

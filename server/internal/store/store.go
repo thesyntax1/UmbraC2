@@ -106,6 +106,11 @@ type Task struct {
 	Output    []byte         `json:"output,omitempty"`
 	Code      int64          `json:"code"`
 	Err       string         `json:"err,omitempty"`
+	// Meta carries extra result fields the beacon attached to the RESULT body
+	// (`total`, `offset`, `eof`, `sha256`, ...). They are opaque to the server,
+	// which only stores and forwards them, so new beacon-side metadata never
+	// needs a server change.
+	Meta      map[string]any `json:"meta,omitempty"`
 	Created   time.Time      `json:"created"`
 	Delivered time.Time      `json:"delivered,omitempty"`
 	Completed time.Time      `json:"completed,omitempty"`
@@ -117,6 +122,12 @@ func (t *Task) Clone() *Task {
 	c.Args = make(map[string]any, len(t.Args))
 	for k, v := range t.Args {
 		c.Args[k] = v
+	}
+	if t.Meta != nil {
+		c.Meta = make(map[string]any, len(t.Meta))
+		for k, v := range t.Meta {
+			c.Meta[k] = v
+		}
 	}
 	c.Output = append([]byte(nil), t.Output...)
 	return &c
@@ -322,7 +333,7 @@ func (s *Store) Pending(agentID string, max int) []*Task {
 // only be interrupted between cycles). Overwriting that with "done" would hide
 // both the cancellation and the fact that the command actually executed -- the
 // output is still stored, because it is evidence either way.
-func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string) (*Task, bool) {
+func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string, meta map[string]any) (*Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[taskID]
@@ -339,6 +350,12 @@ func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string
 	t.Code = code
 	t.Output = append([]byte(nil), output...)
 	t.Err = errMsg
+	if len(meta) > 0 {
+		t.Meta = make(map[string]any, len(meta))
+		for k, v := range meta {
+			t.Meta[k] = v
+		}
+	}
 	t.Completed = time.Now().UTC()
 	return t.Clone(), true
 }

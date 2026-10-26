@@ -13,6 +13,7 @@ It is also imported by the test-suite:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -264,21 +265,38 @@ class MockServer:
             task["code"] = int(msg.get("code", 0))
             task["out"] = out
             task["err"] = str(msg.get("err", ""))
+            meta = {
+                k: v
+                for k, v in msg.items()
+                if k not in ("id", "code", "out", "err") and isinstance(v, (str, bool, int, float))
+            }
+            if meta:
+                task["meta"] = meta
             task["completed"] = _now()
             snapshot = dict(task)
-        self.emit(
-            "task.result",
-            snapshot["agent_id"],
-            task_id=task_id,
-            data={
-                "code": snapshot["code"],
-                "state": snapshot["state"],
-                "output": snapshot["out"].decode("utf-8", "replace")
-                if isinstance(snapshot["out"], (bytes, bytearray))
-                else str(snapshot["out"]),
-                "err": snapshot["err"],
-            },
-        )
+        raw = snapshot["out"]
+        if not isinstance(raw, (bytes, bytearray)):
+            raw = str(raw).encode()
+        raw = bytes(raw)
+        data = {
+            "code": snapshot["code"],
+            "state": snapshot["state"],
+            "err": snapshot["err"],
+            # Bounded preview, exactly like the Go server: a binary chunk is not
+            # pushed to every watching console, and task.get has the real bytes.
+            "size": len(raw),
+        }
+        if raw:
+            preview = raw[:EVENT_OUTPUT_MAX]
+            try:
+                data["output"] = preview.decode("utf-8")
+            except UnicodeDecodeError:
+                data["binary"] = True
+            if len(raw) > EVENT_OUTPUT_MAX:
+                data["truncated"] = True
+        if snapshot.get("meta"):
+            data["meta"] = snapshot["meta"]
+        self.emit("task.result", snapshot["agent_id"], task_id=task_id, data=data)
 
     # -- operators -------------------------------------------------------
     def _operator_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
@@ -673,6 +691,13 @@ def _task_out(task: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# Mirrors store.CHUNK_MAX / the Rust beacon's output budget: one transfer step
+# never carries more than this, so it always fits in a single RESULT frame.
+CHUNK_MAX = 900 * 1024
+# Mirrors hub.maxEventOutput: events carry a preview, not the payload.
+EVENT_OUTPUT_MAX = 4096
+
+
 # ---------------------------------------------------------------------------
 # reference agent (Python stand-in for the Rust beacon)
 # ---------------------------------------------------------------------------
@@ -766,27 +791,30 @@ class FakeAgent(threading.Thread):
                     # The command is still reported so the server can show that
                     # it was cancelled and that nothing ran.
                     self.cancelled_ids.append(str(task.get("id", "")))
-                    outcome = (125, b"", "cancelled before execution")
+                    outcome = (125, b"", "cancelled before execution", {})
                 else:
                     outcome = self._execute(task)
-                stream.send_frame(
-                    sess.encrypt(
-                        wire.MsgType.RESULT,
-                        {
-                            "id": task.get("id", ""),
-                            "code": outcome[0],
-                            "out": outcome[1],
-                            "err": outcome[2],
-                        },
-                    )
-                )
+                body: Dict[str, Any] = {
+                    "id": task.get("id", ""),
+                    "code": outcome[0],
+                    "out": outcome[1],
+                    "err": outcome[2],
+                }
+                if len(outcome) > 3 and outcome[3]:
+                    body.update(outcome[3])
+                stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
                 self.completed.set()
             stream.send_frame(sess.encrypt(wire.MsgType.BYE, {}))
             self.sent_bye = True
         finally:
             stream.close()
 
-    def _execute(self, task: Dict[str, Any]) -> Tuple[int, bytes, str]:
+    def _execute(self, task: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """Run one task, returning (code, stdout, stderr, meta).
+
+        `meta` mirrors the Rust beacon's extra RESULT fields, so chunked
+        transfers behave identically against the test double.
+        """
         kind = str(task.get("kind", ""))
         args = task.get("args") or {}
         if kind == "shell" and self.execute_shell:
@@ -799,16 +827,72 @@ class FakeAgent(threading.Thread):
                     timeout=30,
                     text=False,
                 )
-                return proc.returncode, proc.stdout + proc.stderr, ""
+                return proc.returncode, proc.stdout + proc.stderr, "", {}
             except subprocess.SubprocessError as exc:
-                return 1, b"", f"exec failed: {exc}"
+                return 1, b"", f"exec failed: {exc}", {}
         if kind == "sysinfo":
             report = "\n".join(f"{k}: {v}" for k, v in sorted(self.meta.items()))
-            return 0, report.encode(), ""
+            return 0, report.encode(), "", {}
         if kind in ("exit", "kill"):
             self._stop.set()
-            return 0, b"bye\n", ""
-        return 0, f"mock agent cannot run {kind!r}\n".encode(), ""
+            return 0, b"bye\n", "", {}
+        if kind in ("download", "cat"):
+            return self._download(args)
+        if kind == "upload":
+            return self._upload(args)
+        return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}
+
+    # -- chunked transfer (mirrors implant/rust/src/task.rs) --------------
+    def _download(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        path = str(args.get("path", ""))
+        if not path:
+            return 1, b"", "download requires args.path", {}
+        offset = int(args.get("offset", 0) or 0)
+        limit = int(args.get("limit", CHUNK_MAX) or CHUNK_MAX)
+        limit = max(1, min(limit, CHUNK_MAX))
+        try:
+            size = os.path.getsize(path)
+            if offset > size:
+                return 1, b"", f"download {path}: offset {offset} past end ({size})", {}
+            with open(path, "rb") as fh:
+                fh.seek(offset)
+                chunk = fh.read(limit)
+        except OSError as exc:
+            return 1, b"", f"download {path}: {exc}", {}
+        eof = offset + len(chunk) >= size
+        return 0, chunk, "", {
+            "total": size,
+            "offset": offset,
+            "eof": eof,
+            "sha256": hashlib.sha256(chunk).hexdigest(),
+        }
+
+    def _upload(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        path = str(args.get("path", ""))
+        data = args.get("data", b"")
+        data = bytes(data) if isinstance(data, (bytes, bytearray)) else bytes(str(data), "utf-8")
+        offset = int(args.get("offset", 0) or 0)
+        eof = bool(args.get("eof", True))
+        if not path:
+            return 1, b"", "upload requires args.path", {}
+        try:
+            mode = "wb" if offset == 0 else "r+b"
+            with open(path, mode) as fh:
+                fh.seek(offset)
+                fh.write(data)
+        except OSError as exc:
+            return 1, b"", f"upload {path}: {exc}", {}
+        written = offset + len(data)
+        meta: Dict[str, Any] = {"written": written, "eof": eof}
+        if eof:
+            try:
+                with open(path, "rb") as fh:
+                    whole = fh.read()
+            except OSError as exc:
+                return 1, b"", f"upload {path}: verify: {exc}", {}
+            meta["total"] = len(whole)
+            meta["sha256"] = hashlib.sha256(whole).hexdigest()
+        return 0, f"wrote {len(data)} bytes at offset {offset} to {path}\n".encode(), "", meta
 
 
 # ---------------------------------------------------------------------------

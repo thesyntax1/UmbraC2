@@ -20,22 +20,35 @@ pub struct Outcome {
     pub code: i64,
     pub out: Vec<u8>,
     pub err: String,
+    /// Extra result fields (`total`, `eof`, `sha256`, ...). They are merged into
+    /// the RESULT body, so the server and the operator can see transfer metadata
+    /// without changing the message shape.
+    pub extra: Vec<(&'static str, Value)>,
 }
 
 impl Outcome {
     pub fn ok(out: Vec<u8>) -> Self {
-        Outcome { code: 0, out, err: String::new() }
+        Outcome { code: 0, out, err: String::new(), extra: Vec::new() }
     }
     pub fn err(code: i64, msg: impl Into<String>) -> Self {
-        Outcome { code, out: Vec::new(), err: msg.into() }
+        Outcome { code, out: Vec::new(), err: msg.into(), extra: Vec::new() }
+    }
+    /// Attach a metadata field to the result.
+    pub fn with(mut self, key: &'static str, value: Value) -> Self {
+        self.extra.push((key, value));
+        self
     }
     pub fn to_value(&self, task_id: &str) -> Value {
-        upk::map(vec![
+        let mut fields = vec![
             ("id", upk::s(task_id)),
             ("code", upk::i(self.code)),
             ("out", upk::bin(&self.out)),
             ("err", upk::s(&self.err)),
-        ])
+        ];
+        for (k, v) in &self.extra {
+            fields.push((*k, v.clone()));
+        }
+        upk::map(fields)
     }
 }
 
@@ -167,11 +180,117 @@ pub fn shell(cmd: &str, timeout_secs: u64) -> Outcome {
             code: 124,
             out: truncate(out),
             err: format!("command timed out after {limit}s"),
+            extra: Vec::new(),
         };
     }
 
     let code = child.wait().ok().and_then(|s| s.code()).map(|c| c as i64).unwrap_or(0);
-    Outcome { code, out: truncate(out), err: String::new() }
+    Outcome { code, out: truncate(out), err: String::new(), extra: Vec::new() }
+}
+
+/// Read one chunk of a file.
+///
+/// A whole file rarely fits in a frame (1 MiB body, 900 KiB output budget), so
+/// transfers are chunked: the caller asks for a byte range and gets it back with
+/// `total`, `offset`, `eof` and a SHA-256 of *this chunk* in the result, which is
+/// what makes a multi-request transfer verifiable instead of hopeful.
+pub fn download(path: &str, offset: u64, limit: u64) -> Outcome {
+    if path.is_empty() {
+        return Outcome::err(1, "download requires args.path");
+    }
+    let limit = limit.clamp(1, MAX_OUTPUT as u64) as usize;
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => return Outcome::err(1, format!("download {path}: {e}")),
+    };
+    if meta.is_dir() {
+        return Outcome::err(1, format!("download {path}: is a directory"));
+    }
+    let total = meta.len();
+    if offset > total {
+        return Outcome::err(1, format!("download {path}: offset {offset} past end ({total})"));
+    }
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return Outcome::err(1, format!("download {path}: {e}")),
+    };
+    if offset > 0 {
+        use std::io::Seek;
+        if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)) {
+            return Outcome::err(1, format!("download {path}: seek: {e}"));
+        }
+    }
+    let mut buf = vec![0u8; limit];
+    let mut read = 0usize;
+    while read < buf.len() {
+        match file.read(&mut buf[read..]) {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Outcome::err(1, format!("download {path}: {e}")),
+        }
+    }
+    buf.truncate(read);
+    let digest = crate::crypto::sha256(&buf);
+    let eof = offset.saturating_add(read as u64) >= total;
+    Outcome::ok(buf)
+        .with("total", upk::u(total))
+        .with("offset", upk::u(offset))
+        .with("eof", upk::bool_(eof))
+        .with("sha256", upk::s(&crate::config::hex_encode(&digest)))
+}
+
+/// Write one chunk of a file at `offset`.
+///
+/// The first chunk (`offset == 0`) truncates, later chunks are written at their
+/// offset, so a retried transfer cannot leave a half-old file behind. On the
+/// final chunk the result carries the SHA-256 of the whole file, which the
+/// caller compares with the local hash.
+pub fn upload(path: &str, offset: u64, data: &[u8], eof: bool) -> Outcome {
+    if path.is_empty() {
+        return Outcome::err(1, "upload requires args.path");
+    }
+    use std::io::{Seek, Write};
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(offset == 0)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) => return Outcome::err(1, format!("upload {path}: {e}")),
+    };
+    if offset > 0 {
+        if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)) {
+            return Outcome::err(1, format!("upload {path}: seek: {e}"));
+        }
+    }
+    if let Err(e) = file.write_all(data) {
+        return Outcome::err(1, format!("upload {path}: {e}"));
+    }
+    if let Err(e) = file.flush() {
+        return Outcome::err(1, format!("upload {path}: flush: {e}"));
+    }
+    drop(file);
+
+    let written = offset.saturating_add(data.len() as u64);
+    let mut outcome = Outcome::ok(
+        format!("wrote {} bytes at offset {offset} to {path}\n", data.len()).into_bytes(),
+    )
+    .with("written", upk::u(written))
+    .with("eof", upk::bool_(eof));
+    if eof {
+        match std::fs::read(path) {
+            Ok(whole) => {
+                let digest = crate::crypto::sha256(&whole);
+                outcome = outcome
+                    .with("total", upk::u(whole.len() as u64))
+                    .with("sha256", upk::s(&crate::config::hex_encode(&digest)));
+            }
+            Err(e) => return Outcome::err(1, format!("upload {path}: verify: {e}")),
+        }
+    }
+    outcome
 }
 
 /// Execute one task. `sleep`/`exit` are handled by the beacon loop itself, so
@@ -213,24 +332,16 @@ pub fn run(kind: &str, args: &Value) -> Outcome {
         }
         "download" | "cat" => {
             let path = args.str_or("path", "");
-            if path.is_empty() {
-                return Outcome::err(1, "download requires args.path");
-            }
-            match std::fs::read(&path) {
-                Ok(data) => Outcome::ok(truncate(data)),
-                Err(e) => Outcome::err(1, format!("download {path}: {e}")),
-            }
+            let offset = args.u64_or("offset", 0);
+            let limit = args.u64_or("limit", MAX_OUTPUT as u64);
+            download(&path, offset, limit)
         }
         "upload" => {
             let path = args.str_or("path", "");
             let data = args.bin_or("data", b"");
-            if path.is_empty() {
-                return Outcome::err(1, "upload requires args.path");
-            }
-            match std::fs::write(&path, &data) {
-                Ok(()) => Outcome::ok(format!("wrote {} bytes to {path}\n", data.len()).into_bytes()),
-                Err(e) => Outcome::err(1, format!("upload {path}: {e}")),
-            }
+            let offset = args.u64_or("offset", 0);
+            let eof = args.bool_or("eof", true);
+            upload(&path, offset, &data, eof)
         }
         "ps" => {
             // Portable enough for a PoC: ask the platform for the process list.
@@ -278,6 +389,65 @@ mod tests {
         let kept = drain(std::io::Cursor::new(vec![b'x'; MAX_OUTPUT + 10_000]));
         assert_eq!(kept.len(), MAX_OUTPUT + 4096);
         assert!(kept.iter().all(|b| *b == b'x'));
+    }
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        // No tempfile dependency: the pid + a counter is unique enough here.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("umbra-test-{}-{tag}-{n}", std::process::id()))
+    }
+
+    #[test]
+    fn download_is_chunked_and_hashed() {
+        let path = temp_path("dl");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let first = download(path.to_str().unwrap(), 0, 4);
+        assert_eq!(first.code, 0);
+        assert_eq!(&first.out[..], b"0123");
+        let eof = |o: &Outcome, key: &str| o.extra.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()).unwrap();
+        assert!(matches!(eof(&first, "eof"), Value::Bool(false)));
+        assert!(matches!(eof(&first, "total"), Value::Uint(10)));
+
+        let last = download(path.to_str().unwrap(), 8, 4);
+        assert_eq!(last.code, 0);
+        assert_eq!(&last.out[..], b"89");
+        assert!(matches!(eof(&last, "eof"), Value::Bool(true)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn download_rejects_bad_ranges() {
+        let path = temp_path("dl-bad");
+        std::fs::write(&path, b"abc").unwrap();
+        let past = download(path.to_str().unwrap(), 99, 4);
+        assert_eq!(past.code, 1);
+        assert!(past.err.contains("past end"));
+        let dir = std::env::temp_dir();
+        let is_dir = download(dir.to_str().unwrap(), 0, 4);
+        assert_eq!(is_dir.code, 1);
+        let missing = download("/nonexistent/umbra/file", 0, 4);
+        assert_eq!(missing.code, 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn upload_rewrites_from_zero_and_verifies() {
+        let path = temp_path("up");
+        std::fs::write(&path, b"aaaaaaaaaa").unwrap();
+        let short = upload(path.to_str().unwrap(), 0, b"bb", true);
+        assert_eq!(short.code, 0);
+        assert_eq!(&std::fs::read(&path).unwrap()[..], b"bb");
+        // The final chunk reports the whole-file hash, not just the chunk's.
+        let digest = short
+            .extra
+            .iter()
+            .find(|(k, _)| *k == "sha256")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert!(matches!(digest, Value::Str(ref s) if s == &crate::config::hex_encode(&crate::crypto::sha256(b"bb"))));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

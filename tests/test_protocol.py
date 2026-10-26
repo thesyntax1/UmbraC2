@@ -1360,3 +1360,132 @@ def test_schedules_fire_tasks():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_chunked_download_and_upload_round_trip(tmp_path):
+    """A file larger than one chunk survives both directions, hash-verified."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"transfer-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-xfer", interval=0.2)
+    agent.start()
+    from umbra_cli.client import CHUNK_MAX, OperatorClient, OperatorError
+
+    # Comfortably more than one chunk, so the loop has to iterate.
+    blob = os.urandom(CHUNK_MAX + 4096)
+    remote = tmp_path / "remote.bin"
+    remote.write_bytes(blob)
+    local = tmp_path / "pulled.bin"
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        seen = []
+        info = client.download_file(
+            "agent-xfer", str(remote), str(local), chunk=CHUNK_MAX, progress=lambda d, t: seen.append((d, t))
+        )
+        assert info["chunks"] == 2
+        assert info["bytes"] == len(blob)
+        assert local.read_bytes() == blob
+        assert info["sha256"] == hashlib.sha256(blob).hexdigest()
+        # Progress is reported per chunk and the total comes from the beacon.
+        assert seen[-1][0] == len(blob) and seen[-1][1] == len(blob)
+        # The `.part` file is renamed into place, never left behind.
+        assert not (tmp_path / "pulled.bin.part").exists()
+
+        # A missing remote file fails cleanly and leaves no output file.
+        with pytest.raises(OperatorError):
+            client.download_file("agent-xfer", str(tmp_path / "nope.bin"), str(tmp_path / "nope.out"))
+        assert not (tmp_path / "nope.out").exists()
+
+        # Upload the same bytes back under a new name and compare hashes.
+        pushed = tmp_path / "pushed.bin"
+        up = client.upload_file("agent-xfer", str(local), str(pushed), chunk=CHUNK_MAX)
+        assert up["chunks"] == 2
+        assert up["sha256"] == hashlib.sha256(blob).hexdigest()
+        assert pushed.read_bytes() == blob
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_upload_rewrites_from_offset_zero(tmp_path):
+    """Re-uploading a shorter file must not leave the old tail behind."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"truncate-token-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-up", interval=0.2)
+    agent.start()
+    from umbra_cli.client import OperatorClient
+
+    target = tmp_path / "target.bin"
+    target.write_bytes(b"A" * 5000)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"B" * 100)
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        client.upload_file("agent-up", str(source), str(target))
+        assert target.read_bytes() == b"B" * 100
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_task_result_events_carry_metadata_not_payloads(tmp_path):
+    """Events get a bounded preview plus the transfer metadata."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import EVENT_OUTPUT_MAX, FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"preview-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-prev", interval=0.2)
+    agent.start()
+    from umbra_cli.client import OperatorClient
+
+    blob = os.urandom(EVENT_OUTPUT_MAX * 2)  # binary, larger than the preview
+    remote = tmp_path / "blob.bin"
+    remote.write_bytes(blob)
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        info = client.download_file("agent-prev", str(remote), str(tmp_path / "out.bin"))
+        assert (tmp_path / "out.bin").read_bytes() == blob
+
+        result = None
+        deadline = time.time() + 5
+        while time.time() < deadline and result is None:
+            ev = client.next_event(timeout=1.0)
+            if ev and ev.get("kind") == "task.result":
+                result = ev
+        assert result is not None, "no task.result event"
+
+        data = result["data"]
+        # Binary payloads are never pushed: only their size is.
+        assert "output" not in data and data.get("binary") is True
+        assert data.get("size") == info["bytes"]
+        assert data["meta"]["sha256"] == info["sha256"]
+        assert data["meta"]["eof"] is True
+    finally:
+        client.close()
+        server.stop()
