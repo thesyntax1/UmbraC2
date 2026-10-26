@@ -1129,3 +1129,64 @@ def test_operators_list_against_the_mock_server():
     finally:
         client.close()
         server.stop()
+
+
+def test_task_cancel_reaches_the_beacon_before_the_next_batch():
+    """0x18 used to be "reserved": the server flipped the store row and nothing
+    was ever sent. Now a delivered task's cancel rides the control path, and a
+    beacon that does not understand it must not lose the cycle."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-cancel-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-cancel", interval=0.2)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "agent never registered"
+
+        # A slow command keeps the task in "delivered" long enough to cancel it
+        # while the beacon is holding it.
+        task_id = client.submit("agent-cancel", "shell", {"cmd": "sleep 1"})
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.task(task_id)["state"] == "delivered":
+                break
+            time.sleep(0.02)
+        assert client.task(task_id)["state"] == "delivered"
+
+        client.cancel(task_id)
+
+        # The next check-in must carry TASK_CANCEL, and the reference agent must
+        # survive it (an unknown control frame used to end the cycle).
+        deadline = time.time() + 8
+        while time.time() < deadline and task_id not in agent.cancels_received:
+            time.sleep(0.05)
+        assert task_id in agent.cancels_received, "cancel frame never reached the beacon"
+
+        # The command had already run; its result must not resurrect the task.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            state = client.task(task_id)["state"]
+            if state in ("done", "failed"):
+                pytest.fail(f"a cancelled task was re-marked {state}")
+            time.sleep(0.05)
+        assert client.task(task_id)["state"] == "cancelled"
+
+        # And the beacon keeps working afterwards: an unhandled control frame
+        # used to end the cycle before the batch was even read.
+        follow = client.submit("agent-cancel", "ping", {})
+        assert client.wait_for_result(follow, timeout=10, poll=0.05)["state"] == "done"
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

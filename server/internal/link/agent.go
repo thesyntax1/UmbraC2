@@ -123,6 +123,23 @@ func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 		}
 	}
 
+	// Cancel frames ride the same control path as REKEY: they must be sealed
+	// before the batch they refer to, with whatever keys are current now.
+	//
+	// This is taken *after* NextTasks() marked the tasks delivered, which is
+	// deliberate: a cancel that arrives in that window refers to a task sitting
+	// in the batch we are about to send, and the beacon needs the id to skip it.
+	for _, taskID := range l.Hub.TakeCancels(l.AgentID) {
+		frame, err := l.Session.Encrypt(wire.MsgTaskCancel, upk.Map{"id": taskID})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, frame)
+		if l.Log != nil {
+			l.Log.Debug("queued task cancel", "agent", l.AgentID, "task", taskID)
+		}
+	}
+
 	frame, err := l.Session.Encrypt(wire.MsgTaskBatch, body)
 	if err != nil {
 		return nil, err

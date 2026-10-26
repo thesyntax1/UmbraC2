@@ -290,20 +290,25 @@ func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string
 }
 
 // Cancel marks a queued or delivered task as cancelled.
-func (s *Store) Cancel(taskID string) bool {
+// Cancel marks a queued or delivered task as cancelled and reports the state it
+// was in, so the caller can tell "it never shipped" from "the beacon may already
+// be running it".
+func (s *Store) Cancel(taskID string) (previous string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, ok := s.tasks[taskID]
-	if !ok {
-		return false
+	t, found := s.tasks[taskID]
+	if !found {
+		return "", false
 	}
 	// A task that already finished cannot be cancelled; reporting success would
 	// tell the operator something that is not true.
-	if t.State == TaskDone || t.State == TaskFailed || t.State == TaskCancelled {
-		return false
+	switch t.State {
+	case TaskDone, TaskFailed, TaskCancelled:
+		return t.State, false
 	}
+	previous = t.State
 	t.State = TaskCancelled
-	return true
+	return previous, true
 }
 
 // Task returns a copy of one task.

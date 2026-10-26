@@ -68,6 +68,9 @@ class MockServer:
         # Mirrors the Go server's audit trail: one entry per operator RPC.
         self.audit_entries: List[Dict[str, Any]] = []
         self.subscribers: List["queue.Queue[Dict[str, Any]]"] = []
+        # task ids cancelled after delivery; the next check-in carries one
+        # TASK_CANCEL frame each, before TASK_BATCH (same order as the server).
+        self.pending_cancels: Dict[str, List[str]] = {}
         self.sleep = 5
         self.jitter = 20
 
@@ -189,6 +192,13 @@ class MockServer:
                         seed = crypto.random_bytes(32)
                         stream.send_frame(sess.encrypt(wire.MsgType.REKEY, {"seed": seed}))
                         sess.apply_rekey(seed)
+                    # Cancels sit between REKEY and TASK_BATCH: they are sealed
+                    # with whatever keys are current, and must arrive before the
+                    # batch whose tasks they refer to.
+                    with self._lock:
+                        cancels = self.pending_cancels.pop(agent_id, [])
+                    for task_id in cancels:
+                        stream.send_frame(sess.encrypt(wire.MsgType.TASK_CANCEL, {"id": task_id}))
                     stream.send_frame(sess.encrypt(wire.MsgType.TASK_BATCH, body))
                 elif msg_type == wire.MsgType.RESULT:
                     self._complete_task(msg)
@@ -231,7 +241,8 @@ class MockServer:
             task = self.tasks.get(task_id)
             if task is None:
                 return
-            task["state"] = "done" if int(msg.get("code", 0)) == 0 else "failed"
+            if task["state"] != "cancelled":
+                task["state"] = "done" if int(msg.get("code", 0)) == 0 else "failed"
             task["code"] = int(msg.get("code", 0))
             task["out"] = out
             task["err"] = str(msg.get("err", ""))
@@ -425,8 +436,14 @@ class MockServer:
                 # task cannot be cancelled again.
                 if task["state"] in ("done", "failed", "cancelled"):
                     return fail(f"task {task_id!r} cannot be cancelled")
+                previous = task["state"]
                 task["state"] = "cancelled"
-            self.emit("task.cancelled", task["agent_id"], task_id=task_id)
+                agent_id = task["agent_id"]
+                if previous == "delivered":
+                    queue = self.pending_cancels.setdefault(agent_id, [])
+                    if len(queue) < 4:
+                        queue.append(task_id)
+            self.emit("task.cancelled", agent_id, task_id=task_id, data={"was": previous})
             return ok({"task_id": task_id, "state": "cancelled"})
 
         if cmd == "audit.tail":
@@ -526,6 +543,9 @@ class FakeAgent(threading.Thread):
         self.completed = threading.Event()
         self.sent_bye = False
         self.rekeys = 0
+        self.cancelled_ids: List[str] = []
+        # Control frames actually received (proves 0x18 is on the wire).
+        self.cancels_received: List[str] = []
 
     def stop(self) -> None:
         self._stop.set()
@@ -555,8 +575,14 @@ class FakeAgent(threading.Thread):
             # A REKEY frame may precede the batch; it is sealed with the old key
             # set, so apply it and keep reading until TASK_BATCH arrives.
             batch: Dict[str, Any] = {}
-            for _ in range(4):
+            cancelled: set = set()
+            for _ in range(8):
                 msg_type, frame_body = sess.decrypt_message(stream.recv_frame())
+                if msg_type == wire.MsgType.TASK_CANCEL:
+                    task_id = str(frame_body.get("id", ""))
+                    cancelled.add(task_id)
+                    self.cancels_received.append(task_id)
+                    continue
                 if msg_type == wire.MsgType.REKEY:
                     seed = frame_body.get("seed", b"")
                     if not isinstance(seed, (bytes, bytearray)) or len(seed) != 32:
@@ -571,7 +597,13 @@ class FakeAgent(threading.Thread):
             if not batch:
                 return
             for task in batch.get("tasks", []):
-                outcome = self._execute(task)
+                if str(task.get("id", "")) in cancelled:
+                    # The command is still reported so the server can show that
+                    # it was cancelled and that nothing ran.
+                    self.cancelled_ids.append(str(task.get("id", "")))
+                    outcome = (125, b"", "cancelled before execution")
+                else:
+                    outcome = self._execute(task)
                 stream.send_frame(
                     sess.encrypt(
                         wire.MsgType.RESULT,

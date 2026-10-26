@@ -82,7 +82,16 @@ type Hub struct {
 	// dropped counts events discarded because a console's queue was full. It is
 	// a health signal, not noise: if it grows, an operator is missing events.
 	dropped uint64
+
+	// cancels holds task ids the operators cancelled after they were delivered
+	// to a beacon. The next check-in carries a TASK_CANCEL frame for each, so a
+	// task still sitting in the beacon's batch is not executed.
+	cancels map[string][]string
 }
+
+// MaxPendingCancels bounds the cancel queue per agent; a cycle carries at most
+// this many frames.
+const MaxPendingCancels = 4
 
 // New creates a hub.
 func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Hub {
@@ -92,6 +101,7 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Hub {
 		log:     log,
 		live:    make(map[string]*Live),
 		subs:    make(map[int64]*Operator),
+		cancels: make(map[string][]string),
 		started: time.Now().UTC(),
 	}
 }
@@ -247,13 +257,43 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	h.store.SaveAsync()
 }
 
-// CancelTask cancels a task.
+// CancelTask cancels a task and, if it had already been delivered, queues a
+// control frame so the beacon stops before running it.
 func (h *Hub) CancelTask(taskID string) bool {
-	ok := h.store.Cancel(taskID)
-	if ok {
-		h.Emit(Event{Kind: "task.cancelled", TaskID: taskID})
+	previous, ok := h.store.Cancel(taskID)
+	if !ok {
+		return false
 	}
-	return ok
+	t, found := h.store.Task(taskID)
+	if !found {
+		return false
+	}
+	if previous == store.TaskDelivered {
+		h.mu.Lock()
+		queue := h.cancels[t.AgentID]
+		if len(queue) < MaxPendingCancels {
+			h.cancels[t.AgentID] = append(queue, taskID)
+		} else {
+			h.log.Warn("cancel queue full, dropping cancelled task id",
+				"agent", t.AgentID, "task", taskID)
+		}
+		h.mu.Unlock()
+	}
+	h.Emit(Event{Kind: "task.cancelled", AgentID: t.AgentID, TaskID: taskID,
+		Data: map[string]any{"was": previous}})
+	return true
+}
+
+// TakeCancels returns and clears the pending cancel frames for an agent.
+func (h *Hub) TakeCancels(agentID string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	queue := h.cancels[agentID]
+	if len(queue) == 0 {
+		return nil
+	}
+	delete(h.cancels, agentID)
+	return queue
 }
 
 // SetPolicy updates an agent's beacon cadence.

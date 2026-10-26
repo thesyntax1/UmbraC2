@@ -138,6 +138,7 @@ umbra --server 127.0.0.1:4002 --operator alice stats
 umbra --server 127.0.0.1:4002 --operator alice operators   # who else is connected
 umbra --server 127.0.0.1:4002 --operator alice audit --limit 20
 umbra --server 127.0.0.1:4002 --operator alice watch       # live event stream
+umbra --server 127.0.0.1:4002 --operator alice cancel t-9f3a
 journalctl -u umbra-server | grep -E "handshake failed|exceeded frame budget|queue full"
 ```
 

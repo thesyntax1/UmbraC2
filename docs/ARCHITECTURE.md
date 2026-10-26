@@ -178,12 +178,14 @@ a test double, not a production server.
 ## 7. Roadmap
 
 Short term: message padding, `CONFIG` as a first-class policy push, streaming file
-transfer (chunked `download`/`upload`), task cancel end-to-end, per-agent
-authorisation profiles, HTTP transport keep-alive.
+transfer (chunked `download`/`upload`), per-agent authorisation profiles, HTTP
+transport keep-alive.
 
 Done: operator audit log (`internal/audit`, `audit.tail`, `umbra audit`), which
 records every RPC with operator, peer, transport, task/agent id and outcome, and
-is rotated, fsynced per line, and readable from disk after a restart.
+is rotated, fsynced per line, and readable from disk after a restart; and task
+cancel end-to-end (`TASK_CANCEL` control frames read by both reference implants,
+state preserved when a late result arrives).
 
 Medium term: DNS/S3/SMTP transports, SOCKS5 pivot, named pipes, BOF/COFF
 execution, in-memory reflection for Windows (`CreateProcess` + section-backed

@@ -250,6 +250,28 @@ okm(72) = HKDF-Expand(new_prk, "umbra/v1/rekey/keys", 72)
 The seed is delivered in a `REKEY` message. Because the running PRK is mixed in,
 an attacker who learns the current key set cannot derive past or future key sets.
 
+### Control frames before a batch
+
+A check-in response may start with up to **8** control frames, in this order,
+before the `TASK_BATCH` that ends the response:
+
+```
+[REKEY]  [TASK_CANCEL ×≤4]  TASK_BATCH
+```
+
+* `REKEY` is sealed with the **old** key set and resets both counters to 0, so
+  it must come first; everything after it uses the new keys.
+* `TASK_CANCEL` names a task the beacon already holds and must arrive before the
+  batch that could still contain it. The beacon records the id, keeps reading,
+  and skips that task if it appears — reporting `{code: 125, err: "cancelled
+  before execution"}` rather than pretending the task never existed.
+* The beacon therefore reads until it sees `TASK_BATCH` (bounded by the frame
+  count above), not a fixed number of frames. A server that sends more, or
+  something else entirely, gets the cycle dropped, not a hung beacon.
+
+This window exists because cancels are taken *after* the batch is built: a task
+can be delivered to the batch and cancelled before the frames are sealed.
+
 Rotation ordering is forced by two rules that interact:
 
 1. the `REKEY` frame is sealed with the **old** key set, because the peer cannot
@@ -289,7 +311,7 @@ All bodies are upk maps. Types are stable wire constants.
 | `0x15` | PONG | either | `{ts}` |
 | `0x16` | REKEY | either | `{seed}` |
 | `0x17` | KILL | server → agent | `{reason}` |
-| `0x18` | TASK_CANCEL | server → agent | `{id}` (reserved) |
+| `0x18` | TASK_CANCEL | server → agent | `{id}` — sent immediately before the `TASK_BATCH` it modifies (see §6); the beacon skips that task and reports `code 125` |
 | `0x19` | BYE | agent → server | `{}` — end of the beacon cycle |
 | `0x1F` | ERROR | either | `{code, msg}` — informational; the session stays up and the server emits a `beacon.error` operator event (message clipped to 512 bytes) |
 | `0x20` | OP_REQUEST | operator → server | `{rid, cmd, args}` |
@@ -369,6 +391,8 @@ agent marked offline — on a bad frame, on BYE, or when it has not polled withi
 | bad upk (non-canonical, truncated, oversized) | connection dropped |
 | task result for an unknown task id | logged, session continues |
 | agent sends ERROR (0x1F) | surfaced as a `beacon.error` operator event, session continues |
+| `task.cancel` for a finished/cancelled task | refused ("cannot be cancelled"), nothing is sent |
+| `task.cancel` for a delivered task | a `TASK_CANCEL` frame goes out before the next `TASK_BATCH`; a result that arrives later keeps the `cancelled` state and its output is still stored |
 | HTTP request with an empty body | `400`, session kept |
 | HTTP request with more than 16 frames | `413`, request dropped before any AEAD work |
 | HTTP request for an unknown or expired session id | `410 Gone`, beacon re-handshakes |

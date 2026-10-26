@@ -12,7 +12,9 @@ use crate::wire;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_TASKS_PER_CYCLE: usize = 64;
 /// Control frames (REKEY) tolerated before a TASK_BATCH.
-const MAX_REKEY_ROUNDS: usize = 4;
+// Control frames that may precede TASK_BATCH in one cycle: one REKEY plus up
+// to four TASK_CANCEL frames (hub.MaxPendingCancels on the server).
+const MAX_REKEY_ROUNDS: usize = 8;
 
 pub struct Beacon {
     pub cfg: Config,
@@ -231,6 +233,7 @@ impl Beacon {
         // TASK_BATCH, so read until the batch arrives instead of guessing a
         // frame count. Bound the loop so a hostile server cannot stall us.
         let mut batch = upk::map(vec![]);
+        let mut cancelled: Vec<String> = Vec::new();
         let mut seen = 0;
         loop {
             seen += 1;
@@ -249,6 +252,17 @@ impl Beacon {
                         sess.apply_rekey(&seed).map_err(|e| format!("rekey: {e}"))?;
                         self.log("session rekeyed");
                     }
+                }
+                wire::MSG_TASK_CANCEL => {
+                    // The operator cancelled a task that this beacon had already
+                    // received. Record it and keep reading: the batch that
+                    // follows is the one that decides what runs.
+                    let id = body.str_or("id", "");
+                    if id.is_empty() {
+                        return Err("TASK_CANCEL without a task id".to_string());
+                    }
+                    self.log(&format!("task {id} cancelled by operator"));
+                    cancelled.push(id);
                 }
                 wire::MSG_TASK_BATCH => {
                     batch = body;
@@ -278,6 +292,15 @@ impl Beacon {
             let id = t.str_or("id", "");
             let kind = t.str_or("kind", "");
             let args = t.get("args").cloned().unwrap_or_else(|| upk::map(vec![]));
+
+            if cancelled.iter().any(|c| c == &id) {
+                // Still report: the server keeps the cancelled state and stores
+                // the output, so the operator sees that nothing ran.
+                self.log(&format!("task {id} skipped (cancelled)"));
+                let outcome = task::Outcome::err(125, "cancelled before execution");
+                self.send_result(&id, &outcome)?;
+                continue;
+            }
             self.log(&format!("task {id} kind={kind}"));
 
             match kind.as_str() {

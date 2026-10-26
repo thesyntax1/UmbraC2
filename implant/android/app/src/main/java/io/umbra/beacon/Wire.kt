@@ -28,7 +28,9 @@ object Wire {
     const val MSG_PONG = 0x15.toByte()
     const val MSG_REKEY = 0x16.toByte()
     const val MSG_KILL = 0x17.toByte()
+    const val MSG_TASK_CANCEL = 0x18.toByte()
     const val MSG_BYE = 0x19.toByte()
+    const val MSG_ERROR = 0x1F.toByte()
 
     const val MARKER_HELLO = 0x01.toByte()
     const val MARKER_HELLO_ACK = 0x02.toByte()

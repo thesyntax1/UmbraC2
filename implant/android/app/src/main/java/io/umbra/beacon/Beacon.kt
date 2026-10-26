@@ -74,7 +74,8 @@ class Beacon(
         const val STOP_JOIN_MILLIS = 2000L
 
         /** Control frames (REKEY) tolerated before a TASK_BATCH. */
-        const val MAX_CONTROL_FRAMES = 4
+        // One REKEY plus up to four TASK_CANCEL frames may precede the batch.
+        const val MAX_CONTROL_FRAMES = 8
     }
 
     private fun loop() {
@@ -198,6 +199,7 @@ class Beacon(
         // TASK_BATCH, so read until the batch arrives (bounded) instead of
         // guessing a frame count.
         var batch: Upk? = null
+        val cancelled = HashSet<String>()
         var rounds = 0
         while (true) {
             rounds += 1
@@ -209,6 +211,15 @@ class Beacon(
                     if (seed == null || seed.size != 32) throw SessionException("malformed REKEY seed")
                     sess.applyRekey(seed)
                     log("session rekeyed")
+                }
+                Wire.MSG_TASK_CANCEL -> {
+                    // The operator cancelled a task this beacon already holds.
+                    // Remember it and keep reading: the batch that follows says
+                    // what to run, and the cancelled ids are skipped there.
+                    val id = body.field("id")?.text() ?: ""
+                    if (id.isEmpty()) throw SessionException("TASK_CANCEL without a task id")
+                    cancelled.add(id)
+                    log("task $id cancelled by operator")
                 }
                 Wire.MSG_TASK_BATCH -> {
                     batch = body
@@ -232,6 +243,18 @@ class Beacon(
             val id = task.field("id")?.text() ?: ""
             val kind = task.field("kind")?.text() ?: ""
             val args = task.field("args") ?: Upk.map()
+            if (id in cancelled) {
+                // Still report: the server keeps the cancelled state and stores
+                // the output, so the operator can see that nothing ran.
+                log("task $id skipped (cancelled)")
+                ch.writeFrame(
+                    sess.sealValue(
+                        Wire.MSG_RESULT,
+                        TaskRunner.Outcome(125, ByteArray(0), "cancelled before execution").toValue(id),
+                    )
+                )
+                continue
+            }
             log("task $id kind=$kind")
             when (kind) {
                 "exit", "kill" -> {
