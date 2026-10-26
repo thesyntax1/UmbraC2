@@ -140,6 +140,17 @@ and the output of a finished stage is substituted into the `{{output}}`
 placeholder of the arguments of the next one.  The substitution only touches
 strings: the output of a stage is data, never code.
 
+### The sweep
+
+A beacon that dies in the middle of a task leaves it in the `delivered`
+state.  The hub sweeps the queue every 30 s and fails the tasks that were
+delivered and never answered (`task_timeout_s`, zero disables it), so the
+operator gets a `task.timeout` event instead of a task that never ends.
+
+The sweep never re-queues anything.  A task that may have run must not run
+twice: the same rule that re-queues on a *restart* (where the beacon is
+known to be gone) does not apply to a timeout (where it is not).
+
 ### Concurrency and safety
 
 * one goroutine per connection, no shared mutable message state;

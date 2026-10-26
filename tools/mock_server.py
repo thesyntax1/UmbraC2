@@ -727,10 +727,37 @@ class MockServer:
             for task in self.tasks.values():
                 if task["agent_id"] == agent_id and task["state"] == "queued" and len(out) < 32:
                     task["state"] = "delivered"
+                    task["delivered"] = _now()
                     out.append({"id": task["id"], "kind": task["kind"], "args": task["args"]})
         for t in out:
             self.emit("task.delivered", agent_id, task_id=t["id"])
         return out
+
+    def sweep_tasks(self, timeout_s: int) -> List[str]:
+        """Fail the tasks that were delivered but never completed.
+
+        Mirrors the Go server's sweep: a beacon that dies in the middle of
+        a task leaves it in the "delivered" state, and the operator has to
+        learn that instead of waiting forever.
+        """
+        if timeout_s <= 0:
+            return []
+        cutoff = _now() - timeout_s
+        failed: List[str] = []
+        with self._lock:
+            for task in self.tasks.values():
+                if task["state"] != "delivered":
+                    continue
+                delivered = int(task.get("delivered", 0))
+                if delivered == 0 or delivered > cutoff:
+                    continue
+                task["state"] = "failed"
+                task["err"] = "the agent never answered"
+                task["completed"] = _now()
+                failed.append(task["id"])
+        for task_id in failed:
+            self.emit("task.timeout", task_id=task_id, data={})
+        return failed
 
     def _queue_task(self, agent_id: str, kind: str,
                     task_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2094,6 +2121,11 @@ class FakeAgent(threading.Thread):
                     break
             report = f"scanned files, {len(hits)} hits\n" + "\n".join(hits)
             return 0, report.encode(), "", {}
+        if kind == "persist":
+            return 0, b"mock agent: the implant would be installed\n", "", {}
+        if kind == "update":
+            path = str(args.get("path", ""))
+            return 0, f"mock agent: the implant would be replaced with {path}\n".encode(), "", {}
         if kind == "netinfo":
             report = "source: mock\ninterfaces:\n  lo 127.0.0.1\n"
             return 0, report.encode(), "", {}

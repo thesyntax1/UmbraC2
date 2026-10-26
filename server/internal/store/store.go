@@ -516,6 +516,48 @@ func (s *Store) AppendOutput(taskID string, chunk []byte) (*Task, bool) {
 	return t.Clone(), true
 }
 
+// StaleTasks returns the tasks that were delivered but never completed.
+//
+// A beacon that dies in the middle of a task leaves it in the "delivered"
+// state.  The operator has to learn that, so the sweep finds those tasks.
+func (s *Store) StaleTasks(older time.Duration) []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().UTC().Add(-older)
+	out := make([]*Task, 0, 8)
+	for _, id := range s.order {
+		t := s.tasks[id]
+		if t == nil || t.State != TaskDelivered {
+			continue
+		}
+		if t.Delivered.IsZero() || t.Delivered.After(cutoff) {
+			continue
+		}
+		out = append(out, t.Clone())
+	}
+	return out
+}
+
+// FailTask marks a task as failed without a result.
+//
+// The task is not queued again: a task that may have run must not run a
+// second time, so the operator decides what happens next.
+func (s *Store) FailTask(taskID, errMsg string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return false
+	}
+	if t.State != TaskDelivered && t.State != TaskQueued {
+		return false
+	}
+	t.State = TaskFailed
+	t.Err = errMsg
+	t.Completed = time.Now().UTC()
+	return true
+}
+
 // SetChain records that a task is a stage of a multi-stage task.
 func (s *Store) SetChain(taskID, chainID string, stage int) bool {
 	s.mu.Lock()

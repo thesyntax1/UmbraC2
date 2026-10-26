@@ -410,6 +410,16 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             Err(e) => Outcome::err(1, e),
         },
 
+        // ---- installing and updating -------------------------------------
+        "persist" => match crate::install::persist(&args) {
+            Ok(report) => Outcome::ok(report.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "update" => match crate::install::update(&args) {
+            Ok(report) => Outcome::ok(report.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+
         // ---- the operator's own desktop ---------------------------------
         "screenshot" => match crate::desktop::screen() {
             Ok(data) => Outcome::ok(data).with("format", upk::s("bmp")),

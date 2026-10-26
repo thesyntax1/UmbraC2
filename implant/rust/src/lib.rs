@@ -19,6 +19,7 @@
 //!   netinfo  the network configuration of the host
 //!   sessions interactive sessions (a process the operator writes to)
 //!   desktop the screen, the clipboard and the keyboard
+//!   install installing the implant and replacing it
 //!   beacon   the actual loop
 
 pub mod beacon;
@@ -28,6 +29,7 @@ pub mod crypto;
 pub mod dns;
 pub mod domain;
 pub mod evade;
+pub mod install;
 pub mod link;
 pub mod netinfo;
 pub mod post;

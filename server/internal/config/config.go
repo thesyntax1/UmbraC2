@@ -107,6 +107,9 @@ type Server struct {
 	// Alerts are rules on the event stream: when a rule matches, the server
 	// logs the event loudly and pushes an "alert" event to the consoles.
 	Alerts []AlertRule `json:"alerts,omitempty"`
+	// TaskTimeoutSec is how long a delivered task may stay unanswered
+	// before the server gives up on it (0 = never).
+	TaskTimeoutSec int `json:"task_timeout_s"`
 	Beacon         Beacon `json:"beacon"`
 	Limits         Limits `json:"limits"`
 	MaxClockSkewS  int    `json:"max_clock_skew_s"`
@@ -160,6 +163,7 @@ func Default() *Config {
 		ArmoryDir:       "data/armory",
 		Beacon:          Beacon{Sleep: 5, Jitter: 20},
 		Limits:          Limits{MaxAgents: 512, MaxOperators: 16, HandshakeTimeoutSec: 15, IdleTimeoutSec: 120, MaxFrameBytesPerConn: 64 << 20},
+		TaskTimeoutSec:  300,
 		MaxClockSkewS:   300,
 		SessionTimeout:  300,
 	}}
@@ -330,6 +334,17 @@ func (c *Config) IdleTimeout() time.Duration {
 }
 
 // MaxSkew is the tolerated clock difference during the handshake.
+// TaskTimeout is how long a delivered task may stay unanswered.
+//
+// Zero means "wait forever": some tasks are meant to take a long time (a
+// screenshot of a slow desktop, a key logger that runs for an hour).
+func (c *Config) TaskTimeout() time.Duration {
+	if c.Server.TaskTimeoutSec <= 0 {
+		return 0
+	}
+	return time.Duration(c.Server.TaskTimeoutSec) * time.Second
+}
+
 func (c *Config) MaxSkew() time.Duration {
 	return time.Duration(c.Server.MaxClockSkewS) * time.Second
 }

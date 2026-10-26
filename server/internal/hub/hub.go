@@ -983,15 +983,48 @@ func (h *Hub) StartScheduler(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
+		// The sweep runs on its own, slower clock: a task that timed out
+		// does not become interesting again in the next second.
+		sweep := time.NewTicker(30 * time.Second)
+		defer sweep.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
 				h.fireDueSchedules(now.UTC())
+			case <-sweep.C:
+				h.SweepTasks(h.cfg.Server.TaskTimeout())
 			}
 		}
 	}()
+}
+
+// SweepTasks fails the tasks that were delivered but never completed.
+//
+// A beacon that dies in the middle of a task leaves it in the "delivered"
+// state forever.  After the timeout the task is failed and the operator sees
+// a `task.timeout` event, instead of a task that never ends.  The task is
+// not run again: a task that may have run must not run twice.
+func (h *Hub) SweepTasks(timeout time.Duration) int {
+	if timeout <= 0 {
+		return 0
+	}
+	stale := h.store.StaleTasks(timeout)
+	for _, t := range stale {
+		if !h.store.FailTask(t.ID, "the agent never answered") {
+			continue
+		}
+		h.Emit(Event{Kind: "task.timeout", AgentID: t.AgentID, TaskID: t.ID,
+			Data: map[string]any{
+				"kind":   t.Kind,
+				"waited": int64(timeout.Seconds()),
+			}})
+	}
+	if len(stale) > 0 {
+		h.store.SaveAsync()
+	}
+	return len(stale)
 }
 
 func (h *Hub) fireDueSchedules(now time.Time) {

@@ -3018,3 +3018,39 @@ def test_the_console_queues_a_chain_and_lists_the_alerts():
     finally:
         agent.stop()
         server.stop()
+
+
+def test_a_task_that_is_never_answered_fails():
+    """A beacon that dies mid-task must not leave a task hanging forever."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-timeout-0123"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        # A task that is still queued is not the sweep's business: the
+        # agent may check in tomorrow.
+        with server._lock:
+            server.tasks["t-queued"] = {
+                "id": "t-queued", "agent_id": "agent-x", "kind": "sysinfo",
+                "args": {}, "state": "queued", "code": 0, "out": b"",
+                "err": "", "created": time.time(),
+            }
+            # A task that was delivered and never answered.
+            server.tasks["t-stuck"] = {
+                "id": "t-stuck", "agent_id": "agent-x", "kind": "sysinfo",
+                "args": {}, "state": "delivered", "code": 0, "out": b"",
+                "err": "", "created": time.time(), "delivered": time.time() - 600,
+            }
+        assert server.sweep_tasks(300) == ["t-stuck"]
+        assert client.task("t-queued")["state"] == "queued"
+        task = client.task("t-stuck")
+        assert task["state"] == "failed"
+        assert "never answered" in task.get("err", "")
+    finally:
+        client.close()
+        server.stop()

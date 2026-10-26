@@ -51,6 +51,8 @@ Added on top of that core:
 | Task chains | Several tasks in a row, where the output of one becomes the input of the next | [docs/PROTOCOL.md](docs/PROTOCOL.md#72d-multi-stage-tasks) |
 | Alerts | The server watches its own event stream and raises an alert when a rule matches | [docs/PROTOCOL.md](docs/PROTOCOL.md#72e-alert-rules) |
 | Host triage | Hashes, entropy and file type of a file on the target, a search by name or content, and the network configuration | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
+| Staying alive | The implant installs itself so it survives a reboot, replaces itself with a verified new build, and dials a list of servers through a proxy | [docs/OPERATIONS.md](docs/OPERATIONS.md#keeping-the-implant-alive) |
+| Reliability | A task that is never answered fails instead of hanging forever, and the server sweeps the queue every 30 s | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

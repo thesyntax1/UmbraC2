@@ -242,6 +242,8 @@ object TaskRunner {
             "token" -> unsupported("token", "token impersonation is a Windows capability")
             "privesc" -> unsupported("privesc", "privilege escalation is a Windows capability")
             "vpn" -> unsupported("vpn", "the layer-3 tunnel needs a tun device")
+            "persist" -> unsupported("persist", "the implant is installed by the service")
+            "update" -> unsupported("update", "the implant is updated by the service")
             "session.open" -> unsupported("session.open", "an interactive session needs the desktop implant")
             "session.input" -> unsupported("session.input", "an interactive session needs the desktop implant")
             "session.close" -> unsupported("session.close", "an interactive session needs the desktop implant")

