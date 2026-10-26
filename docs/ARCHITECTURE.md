@@ -179,9 +179,11 @@ a test double, not a production server.
 ## 7. Roadmap
 
 Short term: message padding, `CONFIG` as a first-class policy push, per-agent
-authorisation profiles, HTTP transport keep-alive.
+authorisation profiles.
 
-Done: chunked `download`/`upload` (900 KiB steps, per-chunk SHA-256, `total`/
+Done: HTTP transport keep-alive (length-delimited replies, a socket pooled for
+the whole beacon cycle, one reconnect-and-retry on a stale pooled socket);
+chunked `download`/`upload` (900 KiB steps, per-chunk SHA-256, `total`/
 `offset`/`eof` result metadata stored with the task, `.part` plus rename on the
 operator side); roles and authorisation (`rbac`: viewer/operator/admin per RPC, enforced
 server-side and audited); operator chat and recurring tasks (`schedule.*` with a

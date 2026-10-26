@@ -112,8 +112,13 @@ class HttpChannel(
             val frames = Wire.splitFrames(payload)
             if (frames.isEmpty() && !allowEmpty) throw TransportException("empty response body")
             pending.addAll(frames)
-        } finally {
+        } catch (t: Throwable) {
+            // Only a failed exchange tears the socket down; on success the
+            // stream is closed by `use` and HttpURLConnection returns the
+            // connection to its keep-alive pool, so the next beacon POST
+            // reuses it instead of paying for another handshake.
             conn.disconnect()
+            throw t
         }
     }
 }

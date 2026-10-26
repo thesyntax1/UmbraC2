@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"testing"
 	"time"
 
@@ -320,5 +321,60 @@ func TestHTTPRejectsEmptyBody(t *testing.T) {
 	}
 	if _, ok := h.Live("agent-http-3"); !ok {
 		t.Error("session dropped by an empty body")
+	}
+}
+
+// Keep-alive only works if every reply is length-delimited: a chunked body can
+// only be ended by closing the connection, so the beacon would pay for a new
+// TCP (and TLS, behind a proxy) handshake on every POST of a cycle. This pins
+// both halves: an explicit Content-Length on the wire and a second request that
+// reuses the same connection.
+func TestHTTPRepliesAreLengthDelimitedAndReusable(t *testing.T) {
+	_, _, addr := newHTTPServer(t)
+	agent := dialHTTP(t, addr, "agent-keepalive")
+	url := agent.base + "/" + agent.sid
+
+	var reused int
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if info.Reused {
+				reused++
+			}
+		},
+	}
+	client := &http.Client{Transport: &http.Transport{MaxConnsPerHost: 1}}
+
+	for i := 0; i < 2; i++ {
+		frame := agent.seal(t, wire.MsgCheckin, upk.Map{"ts": uint64(time.Now().Unix())})
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(frame))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("post %d: %v", i, err)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("post %d: status %d", i, resp.StatusCode)
+		}
+		if resp.ContentLength < 0 {
+			t.Fatalf("post %d: reply had no Content-Length (chunked or close-delimited)", i)
+		}
+		if len(resp.TransferEncoding) != 0 {
+			t.Fatalf("post %d: reply used %v", i, resp.TransferEncoding)
+		}
+		if resp.ContentLength != int64(len(raw)) {
+			t.Fatalf("post %d: Content-Length %d != body %d", i, resp.ContentLength, len(raw))
+		}
+	}
+	if reused == 0 {
+		t.Fatal("the second POST opened a new connection instead of reusing the first")
 	}
 }

@@ -413,13 +413,20 @@ Everything after the handshake reuses the same connection, so a cycle costs a
 single TCP handshake. Operators use the same listener type but keep the
 connection open and multiplex RPCs by `rid`.
 
-**HTTP** — the same frames inside POST bodies, one request per direction step:
+**HTTP** — the same frames inside POST bodies, one request per direction step,
+over a kept-alive connection:
 
 ```
 POST /api/v1/beacon            body: HELLO       → body: HELLO_ACK   (+ sid)
 POST /api/v1/beacon/<sid-hex>  body: CHECKIN     → body: TASK_BATCH
 POST /api/v1/beacon/<sid-hex>  body: RESULT…,BYE → empty body (200)
 ```
+
+Every reply carries an explicit `Content-Length` and never uses chunked framing,
+so the connection stays open: the three POSTs of a cycle share one TCP connection
+(the Rust implant pools the socket for the cycle and retries once on a fresh one
+if the pooled socket was already closed; the Android beacon leaves
+`HttpURLConnection`'s keep-alive pool alone instead of calling `disconnect()`).
 
 `<sid-hex>` is the 128-bit session id from HELLO_ACK; it selects the server-side
 session and acts as an unguessable routing capability. It cannot be used to read

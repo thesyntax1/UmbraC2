@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -112,9 +113,7 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 	s.httpSessions[sid] = &httpSession{link: link, agentID: rec.ID, suite: info.Suite, last: time.Now()}
 	s.httpMu.Unlock()
 
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(out.Bytes())
+	writeFrames(w, [][]byte{out.Bytes()})
 	s.Log.Info("http agent registered", "agent", rec.ID, "peer", addr, "sid", sid)
 }
 
@@ -190,16 +189,28 @@ func (s *Server) handleBeaconFrame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad frame", http.StatusBadRequest)
 		return
 	}
-	if len(out) > 0 {
-		w.Header().Set("Content-Type", "application/octet-stream")
+	writeFrames(w, out)
+	if closed {
+		s.dropHTTPSession(sid)
 	}
-	for _, f := range out {
+}
+
+// writeFrames sends the reply frames as one body with an explicit
+// Content-Length. Without it Go falls back to chunked framing for bodies over a
+// couple of KiB, and a chunked body can only be delimited by closing the
+// connection — which defeats HTTP keep-alive on the beacon side.
+func writeFrames(w http.ResponseWriter, frames [][]byte) {
+	total := 0
+	for _, f := range frames {
+		total += len(f)
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(total))
+	w.WriteHeader(http.StatusOK)
+	for _, f := range frames {
 		if _, err := w.Write(f); err != nil {
 			return
 		}
-	}
-	if closed {
-		s.dropHTTPSession(sid)
 	}
 }
 

