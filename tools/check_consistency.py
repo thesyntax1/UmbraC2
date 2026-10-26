@@ -212,6 +212,99 @@ def doc_rpc_commands() -> set[str]:
     return set(re.findall(r"`([a-z]+\.[a-z]+)`", section))
 
 
+def config_keys() -> set[str]:
+    """JSON field names declared on config.Server."""
+    text = read("server/internal/config/config.go")
+    start = text.index("type Server struct {")
+    body = text[start:text.index("\n}", start)]
+    return set(re.findall(r'json:"([a-z0-9_]+)"', body))
+
+
+def nested_config_keys(struct_name: str) -> set[str]:
+    text = read("server/internal/config/config.go")
+    start = text.index(f"type {struct_name} struct {{")
+    body = text[start:text.index("\n}", start)]
+    return set(re.findall(r'json:"([a-z0-9_]+)"', body))
+
+
+def check_deploy_configs() -> int:
+    """Every key in deploy/*.json must be a real config key.
+
+    A typo like ``audit_max_size_mb`` is silently ignored by encoding/json, so
+    the server starts with the default and nobody notices until the log fills a
+    disk. This is cheap to check and impossible to notice by reading.
+    """
+    import json
+
+    problems = 0
+    top = config_keys()
+    nested = {
+        "beacon": nested_config_keys("Beacon"),
+        "limits": nested_config_keys("Limits"),
+    }
+    for name in ("deploy/server.dev.json", "deploy/server.prod.json"):
+        try:
+            doc = json.loads(read(name))
+        except ValueError as exc:
+            print(f"  !! {name}: invalid JSON ({exc})")
+            problems += 1
+            continue
+        for key, value in doc.items():
+            if key not in top:
+                print(f"  !! {name}: unknown key {key!r} (not a config.Server field)")
+                problems += 1
+                continue
+            if isinstance(value, dict):
+                allowed = nested.get(key)
+                if allowed is None:
+                    continue
+                for sub in value:
+                    if sub not in allowed:
+                        print(f"  !! {name}: unknown key {key}.{sub!r}")
+                        problems += 1
+        missing = top - set(doc)
+        # Optional keys may be omitted; only report ones that are not optional.
+        required = {"agent_listen", "operator_listen", "data_file"}
+        for key in sorted(required - set(doc)):
+            print(f"  !! {name}: missing required key {key!r}")
+            problems += 1
+        if missing:
+            print(f"   . {name}: omits {sorted(missing)} (defaults apply)")
+    if not problems:
+        print("  DEPLOY_CONFIG   every deployed key exists in config.Server")
+    return problems
+
+
+def check_ci_env_names() -> int:
+    """The CI build must set the env vars the Gradle file actually reads.
+
+    The Android job used to pass UMBRA_SERVER while app/build.gradle reads
+    UMBRA_HOST/UMBRA_PORT. Nothing failed: the APK simply baked in the default
+    address and the CI build proved nothing. Names are now compared.
+    """
+    gradle = read("implant/android/app/build.gradle")
+    read_by_gradle = set(re.findall(r"env(?:Or|Str|Int)\('(UMBRA_[A-Z0-9_]+)'", gradle))
+    if not read_by_gradle:
+        print("  !! could not find any envOr/envStr/envInt call in app/build.gradle")
+        return 1
+
+    ci = read(".github/workflows/ci.yml")
+    # Only the Android job's env block matters; match "NAME:" under any env:.
+    set_by_ci = set(re.findall(r"^\s+(UMBRA_[A-Z0-9_]+):", ci, re.M))
+
+    unknown = set_by_ci - read_by_gradle
+    problems = 0
+    for name in sorted(unknown):
+        print(f"  !! ci.yml sets {name} but app/build.gradle never reads it")
+        problems += 1
+    missing = read_by_gradle - set_by_ci
+    if missing:
+        print(f"   . ci.yml relies on defaults for {sorted(missing)}")
+    if not problems:
+        print(f"  CI_ENV          {len(set_by_ci & read_by_gradle)} variable names match app/build.gradle")
+    return problems
+
+
 def kind_set(spec: str, rel: str) -> set[str]:
     """All quoted kinds, including the aliases on a combined match arm."""
     text = read(rel)
@@ -302,6 +395,12 @@ def main() -> int:
                             "implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
     failures += check_set("TASK_KINDS", documented, rust_kinds, "rust")
     failures += check_set("TASK_KINDS", documented, kotlin_kinds, "kotlin")
+
+    print("\n== deploy config vs config.Server ==")
+    failures += check_deploy_configs()
+
+    print("\n== CI environment vs the Gradle build ==")
+    failures += check_ci_env_names()
 
     print("\n== operator RPC commands ==")
     rpc_doc = doc_rpc_commands()

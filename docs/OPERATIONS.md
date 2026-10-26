@@ -102,10 +102,40 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
   agent PSK and operator tokens** (delete the implants or they will simply
   re-register).
 
+## 5a. Audit trail
+
+Every operator command is appended to `audit_file` as one JSON object per line,
+before the reply is sent:
+
+```json
+{"at":"2026-10-26T09:14:03.511Z","operator":"alice","peer":"10.0.0.5:51822","transport":"tcp/operator","cmd":"task.submit","ok":true,"agent_id":"web-01","task_id":"t-9f3a","detail":"map[cmd:id kind:shell]","ms":2}
+```
+
+* Written with `O_APPEND` + `fsync` per line over a `0600` file: a line that is
+  lost in a crash would defeat the point.
+* `audit_max_mb` (default 8) rotates the file to `*.1`…`*.5`; old files are
+  never truncated in place.
+* Free-form fields (arguments, errors) are clipped to 512 characters, so one
+  huge `--args` blob cannot make a line unbounded.
+* An audit write failure is logged and the RPC still completes — a full disk
+  must not stop an engagement, but it must be visible in `journalctl`.
+* Read it back with `umbra audit --limit 20` (newest first), or from the file:
+
+```bash
+jq -c 'select(.ok == false)' data/audit.jsonl | tail
+jq -r '[.at, .operator, .cmd] | @tsv' data/audit.jsonl | tail -20
+```
+
+Setting `audit_file` to `""` disables auditing; the server logs a warning at
+start-up when it is off, and `umbra audit` says so instead of showing an empty
+list. On a real engagement, treat the audit file as evidence: ship it off the
+server, and do not give operators write access to it.
+
 ## 6. Monitoring
 
 ```bash
 umbra --server 127.0.0.1:4002 --operator alice stats
+umbra --server 127.0.0.1:4002 --operator alice audit --limit 20
 journalctl -u umbra-server | grep -E "handshake failed|exceeded frame budget|queue full"
 ```
 
@@ -118,6 +148,8 @@ Signals that matter:
 | `agent exceeded frame budget` | runaway or hostile peer; connection dropped |
 | `operator event queue full` | an operator console stopped reading; events are dropped, agent traffic is unaffected |
 | `state save failed` | disk full/permissions — fix before restarting |
+| `audit write failed` | the audit trail is incomplete; fix the disk and treat the missing window as a gap in the record |
+| `rate limited` (in a response) | an operator console is looping faster than 40 RPC/s; the call was refused, not queued |
 
 Clock skew is the most common deployment issue: the handshake rejects peers whose
 `ts` differs by more than `max_clock_skew_s` (default 300 s). Keep both sides on

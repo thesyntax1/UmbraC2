@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
@@ -90,6 +91,25 @@ func run() error {
 	})
 	h := hub.New(cfg, st, logger)
 	srv := link.New(cfg, h, logger)
+
+	auditLog, err := audit.Open(audit.Options{
+		Path:     cfg.Server.AuditFile,
+		MaxBytes: int64(cfg.Server.AuditMaxSizeMB) << 20,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := auditLog.Close(); err != nil {
+			logger.Warn("audit close", "err", err)
+		}
+	}()
+	srv.SetAudit(auditLog)
+	if auditLog.Enabled() {
+		logger.Info("operator audit log enabled", "file", auditLog.Path())
+	} else {
+		logger.Warn("operator audit log disabled (audit_file is empty)")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

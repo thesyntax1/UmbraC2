@@ -41,7 +41,11 @@ type Server struct {
 	OperatorToken []string `json:"operator_token_env"` // env vars holding "name:token" pairs
 
 	DataFile string `json:"data_file"`
-	LogLevel string `json:"log_level"`
+	// AuditFile receives one JSON line per operator command. Empty disables
+	// auditing; keep it enabled anywhere a human can type.
+	AuditFile      string `json:"audit_file"`
+	AuditMaxSizeMB int    `json:"audit_max_mb"`
+	LogLevel       string `json:"log_level"`
 
 	Beacon         Beacon `json:"beacon"`
 	Limits         Limits `json:"limits"`
@@ -73,6 +77,8 @@ func Default() *Config {
 		AgentPSK:        "UMBRA_AGENT_PSK",
 		OperatorToken:   []string{"UMBRA_OPERATOR_TOKENS"},
 		DataFile:        "data/state.json",
+		AuditFile:       "data/audit.jsonl",
+		AuditMaxSizeMB:  8,
 		LogLevel:        "info",
 		Beacon:          Beacon{Sleep: 5, Jitter: 20},
 		Limits:          Limits{MaxAgents: 512, MaxOperators: 16, HandshakeTimeoutSec: 15, IdleTimeoutSec: 120, MaxFrameBytesPerConn: 64 << 20},
@@ -157,6 +163,12 @@ func (c *Config) Validate() error {
 	}
 	if s.HTTPListen != "" && s.HTTPPath == "" {
 		return errors.New("config: http_path must be set when http_listen is used")
+	}
+	if s.AuditFile != "" && s.AuditMaxSizeMB <= 0 {
+		return errors.New("config: audit_max_mb must be positive when audit_file is set")
+	}
+	if s.AuditFile != "" && s.DataFile != "" && s.AuditFile == s.DataFile {
+		return errors.New("config: audit_file must not be the data_file")
 	}
 	return nil
 }

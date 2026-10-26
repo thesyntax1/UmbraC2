@@ -63,6 +63,9 @@ class OperatorClient:
         self._lock = threading.Lock()
         self._reader: Optional[threading.Thread] = None
         self._closing = threading.Event()
+        # Events are pushed to a bounded queue as well as to the callback, so
+        # `umbra watch` can block on them without polling or a second thread.
+        self._events: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=1024)
         self.session_id = b""
         self.server_meta: Dict[str, Any] = {}
 
@@ -153,6 +156,16 @@ class OperatorClient:
                 if inbox is not None:
                     inbox.put(body)
             elif msg_type == wire.MsgType.OP_EVENT:
+                try:
+                    self._events.put_nowait(body)
+                except queue.Full:
+                    # A console that is not consuming events (a slow terminal)
+                    # must not stall the reader: drop the oldest queued event.
+                    try:
+                        self._events.get_nowait()
+                        self._events.put_nowait(body)
+                    except queue.Empty:  # pragma: no cover - racy but harmless
+                        pass
                 if self.on_event:
                     try:
                         self.on_event(body)
@@ -193,6 +206,29 @@ class OperatorClient:
 
     def stats(self) -> Dict[str, Any]:
         res = self.rpc("server.stats")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def next_event(self, timeout: Optional[float] = 3600.0) -> Optional[Dict[str, Any]]:
+        """Return the next pushed event, or None if none arrives in time."""
+        try:
+            return self._events.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def cancel(self, task_id: str) -> None:
+        res = self.rpc("task.cancel", {"task_id": task_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+
+    def audit(self, limit: int = 50) -> Dict[str, Any]:
+        """Recent operator actions, newest first.
+
+        Returns the whole payload (``entries`` + ``enabled``) so the caller can
+        tell "nothing has happened yet" from "auditing is switched off".
+        """
+        res = self.rpc("audit.tail", {"limit": limit})
         if not res.ok:
             raise OperatorError(res.error)
         return res.data

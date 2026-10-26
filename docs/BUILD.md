@@ -180,6 +180,13 @@ PYTHONPATH=operator python3 -m umbra_cli --help
 
 Only runtime dependency: `cryptography` (X25519 + AES-GCM).
 
+For the test suite (and to reproduce CI locally):
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt   # cryptography, pytest, PyYAML
+make check && make test-py
+```
+
 ---
 
 ## 5. What is installed?

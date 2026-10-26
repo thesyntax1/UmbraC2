@@ -65,6 +65,8 @@ class MockServer:
         self.agents: Dict[str, Dict[str, Any]] = {}
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self.events: List[Dict[str, Any]] = []
+        # Mirrors the Go server's audit trail: one entry per operator RPC.
+        self.audit_entries: List[Dict[str, Any]] = []
         self.subscribers: List["queue.Queue[Dict[str, Any]]"] = []
         self.sleep = 5
         self.jitter = 20
@@ -280,7 +282,7 @@ class MockServer:
                 msg_type, req = sess.decrypt_message(raw)
                 if msg_type != wire.MsgType.OP_REQUEST:
                     break
-                resp = self.dispatch(req)
+                resp = self.dispatch(req, operator=result.peer_id, peer=addr)
                 gate.send(wire.MsgType.OP_RESPONSE, resp)
         except (netio.StreamError, session.SessionError, OSError, ValueError):
             pass
@@ -290,7 +292,31 @@ class MockServer:
                     self.subscribers.remove(inbox)
             stream.close()
 
-    def dispatch(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def dispatch(self, req: Dict[str, Any], operator: str = "mock", peer: str = "") -> Dict[str, Any]:
+        """Handle one RPC and record it in the in-memory audit trail."""
+        started = time.monotonic()
+        resp = self._handle(req)
+        entry = {
+            "at": _now(),
+            "operator": operator,
+            "peer": peer,
+            "transport": "tcp/operator",
+            "cmd": str(req.get("cmd", "")),
+            "ok": bool(resp.get("ok")),
+            "err": str(resp.get("err", "")),
+            "agent_id": str((req.get("args") or {}).get("id", "")),
+            "task_id": str((req.get("args") or {}).get("task_id", "")
+                           or (resp.get("data") or {}).get("task_id", "")),
+            "detail": str(req.get("args") or ""),
+            "ms": int((time.monotonic() - started) * 1000),
+        }
+        with self._lock:
+            self.audit_entries.append(entry)
+            if len(self.audit_entries) > 2000:
+                del self.audit_entries[:1000]
+        return resp
+
+    def _handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
         rid = req.get("rid", 0)
         cmd = str(req.get("cmd", ""))
         args = req.get("args") or {}
@@ -380,8 +406,21 @@ class MockServer:
                 task = self.tasks.get(task_id)
                 if task is None:
                     return fail("unknown task")
+                # Same rule as the Go server: a finished or already cancelled
+                # task cannot be cancelled again.
+                if task["state"] in ("done", "failed", "cancelled"):
+                    return fail(f"task {task_id!r} cannot be cancelled")
                 task["state"] = "cancelled"
+            self.emit("task.cancelled", task["agent_id"], task_id=task_id)
             return ok({"task_id": task_id, "state": "cancelled"})
+
+        if cmd == "audit.tail":
+            # The mock keeps the same append-only JSONL format in memory so the
+            # CLI path can be exercised without a Go server.
+            limit = int(args.get("limit", 50) or 50)
+            with self._lock:
+                entries = list(self.audit_entries)[-limit:][::-1]
+            return ok({"entries": entries, "enabled": True})
 
         if cmd == "agents.sleep":
             agent_id = str(args.get("id", ""))

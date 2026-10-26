@@ -52,6 +52,14 @@ Explicitly out of scope for v0.1:
 Per-operator tokens are bound to the operator's name inside the authenticated
 transcript, so having one token does not let you claim another identity.
 
+Accountability is separate from authentication: every operator command is
+written to the audit log with the operator name, source address, transport and
+outcome, so a stolen token does not give the attacker an unattributable window.
+The log is append-only from the server's point of view (`O_APPEND`, `0600`,
+fsync per line, size rotation) and can be read back with `umbra audit`. See
+`docs/OPERATIONS.md` §5a. Operators are also rate limited (120 burst / 40 s⁻¹)
+so a runaway console cannot starve beacon traffic.
+
 ## 3. Secret handling
 
 * Secrets come from environment variables or `0600` files, never from the JSON

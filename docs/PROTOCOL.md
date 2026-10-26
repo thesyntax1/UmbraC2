@@ -314,7 +314,7 @@ Task kinds understood by the reference implants:
 
 Operator RPC commands: `ping`, `server.stats`, `agents.list`, `agents.info`,
 `agents.sleep`, `agents.kill`, `task.submit`, `task.get`, `task.list`,
-`task.cancel`, `events.test`. Responses keep the `rid` of the request; events are
+`task.cancel`, `audit.tail`, `events.test`. Responses keep the `rid` of the request; events are
 asynchronous and can arrive at any time.
 
 ## 8. Transports

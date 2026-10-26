@@ -262,6 +262,12 @@ func (s *Store) Pending(agentID string, max int) []*Task {
 }
 
 // Complete records a task result.
+//
+// A result that arrives after the task was cancelled keeps the cancelled state:
+// the operator wanted it stopped and the beacon ran it anyway (the beacon can
+// only be interrupted between cycles). Overwriting that with "done" would hide
+// both the cancellation and the fact that the command actually executed -- the
+// output is still stored, because it is evidence either way.
 func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string) (*Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -269,9 +275,12 @@ func (s *Store) Complete(taskID string, code int64, output []byte, errMsg string
 	if !ok {
 		return nil, false
 	}
-	t.State = TaskDone
-	if code != 0 || errMsg != "" {
-		t.State = TaskFailed
+	cancelled := t.State == TaskCancelled
+	if !cancelled {
+		t.State = TaskDone
+		if code != 0 || errMsg != "" {
+			t.State = TaskFailed
+		}
 	}
 	t.Code = code
 	t.Output = append([]byte(nil), output...)
@@ -288,7 +297,9 @@ func (s *Store) Cancel(taskID string) bool {
 	if !ok {
 		return false
 	}
-	if t.State == TaskDone || t.State == TaskFailed {
+	// A task that already finished cannot be cancelled; reporting success would
+	// tell the operator something that is not true.
+	if t.State == TaskDone || t.State == TaskFailed || t.State == TaskCancelled {
 		return false
 	}
 	t.State = TaskCancelled

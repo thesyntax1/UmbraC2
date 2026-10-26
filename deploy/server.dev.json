@@ -9,6 +9,8 @@
   "agent_psk_env": "UMBRA_AGENT_PSK",
   "operator_token_env": ["UMBRA_OPERATOR_TOKENS"],
   "data_file": "data/state.json",
+  "audit_file": "data/audit.jsonl",
+  "audit_max_mb": 8,
   "log_level": "debug",
   "beacon": { "sleep": 5, "jitter": 20 },
   "limits": {

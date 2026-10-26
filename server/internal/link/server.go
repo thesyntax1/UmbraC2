@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
@@ -24,6 +25,7 @@ type Server struct {
 	Log *slog.Logger
 
 	guard *guard
+	audit *audit.Logger
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -35,6 +37,7 @@ type Server struct {
 
 	opMu    sync.Mutex
 	opCount int
+	opRate  map[string]*tokenBucket
 }
 
 // New creates a link server.
@@ -45,8 +48,15 @@ func New(cfg *config.Config, h *hub.Hub, log *slog.Logger) *Server {
 		Log:          log,
 		guard:        newGuard(4096, 10*time.Minute),
 		httpSessions: make(map[string]*httpSession),
+		opRate:       make(map[string]*tokenBucket),
 	}
 }
+
+// SetAudit attaches the operator audit log. A nil logger disables auditing.
+func (s *Server) SetAudit(l *audit.Logger) { s.audit = l }
+
+// Audit exposes the audit log (used by the audit.tail RPC).
+func (s *Server) Audit() *audit.Logger { return s.audit }
 
 // Start binds every configured listener and begins serving.
 func (s *Server) Start(ctx context.Context) error {

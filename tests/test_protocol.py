@@ -943,3 +943,138 @@ def test_upk_rejects_duplicate_map_keys_explicitly():
     # check is defensive; the vector is the case that actually occurs on the
     # wire (two entries claiming the same key must both be read, then refused).
     assert upk.encode({"a": 1}) == bytes.fromhex("09010601610301")
+
+
+def test_consistency_check_detects_an_unknown_deploy_key():
+    """encoding/json ignores unknown keys, so a typo in deploy/ would be silent."""
+    def typo_audit_key(rel, text):
+        if rel.endswith("server.dev.json"):
+            return text.replace('"audit_max_mb"', '"audit_max_size_mb"')
+        return text
+
+    code, out = _run_checker("check_consistency.py", typo_audit_key)
+    assert code == 1
+    assert "unknown key 'audit_max_size_mb'" in out
+
+
+def test_consistency_check_detects_a_missing_required_deploy_key():
+    def drop_listen(rel, text):
+        if rel.endswith("server.prod.json"):
+            return text.replace('"agent_listen": "0.0.0.0:4001",\n', "")
+        return text
+
+    code, out = _run_checker("check_consistency.py", drop_listen)
+    assert code == 1
+    assert "missing required key 'agent_listen'" in out
+
+
+def test_audit_tail_is_wired_end_to_end():
+    """The CLI must expose the audit trail the server records."""
+    from umbra_cli import cli, client
+
+    parser = cli.build_parser()
+    args = parser.parse_args(["audit", "--limit", "7"])
+    assert args.cmd == "audit" and args.limit == 7
+
+    # client.audit() asks for exactly the documented RPC.
+    captured = {}
+
+    class Stub:
+        def rpc(self, cmd, args=None):
+            captured["cmd"] = cmd
+            captured["args"] = args
+
+            class R:
+                ok = True
+                data = {"entries": [], "enabled": True}
+
+            return R()
+
+    assert client.OperatorClient.audit(Stub(), 7) == {"entries": [], "enabled": True}
+    assert captured == {"cmd": "audit.tail", "args": {"limit": 7}}
+
+
+def test_print_audit_marks_failures_and_clips_noise():
+    from umbra_cli import cli
+
+    buf = io.StringIO()
+    cli.print_audit(
+        {
+            "enabled": True,
+            "entries": [
+                {"at": 1700000000, "operator": "alice", "cmd": "task.submit", "ok": True,
+                 "agent_id": "web-01", "task_id": "t-1", "ms": 3},
+                {"at": 1700000001, "operator": "bob", "cmd": "agents.kill", "ok": False,
+                 "err": "no such agent", "ms": 1},
+            ],
+        },
+        stream=buf,
+    )
+    lines = buf.getvalue().strip().splitlines()
+    assert len(lines) == 2
+    assert "ok " in lines[0] and "task=t-1" in lines[0]
+    assert "ERR" in lines[1] and "no such agent" in lines[1]
+
+    disabled = io.StringIO()
+    cli.print_audit({"enabled": False, "entries": []}, stream=disabled)
+    assert "disabled" in disabled.getvalue()
+
+
+def test_consistency_check_detects_a_ci_env_typo():
+    """The Android CI job once set UMBRA_SERVER while Gradle reads UMBRA_HOST."""
+    def typo_host(rel, text):
+        if rel.endswith("ci.yml"):
+            return text.replace("UMBRA_HOST: 127.0.0.1", "UMBRA_SERVER: 127.0.0.1")
+        return text
+
+    code, out = _run_checker("check_consistency.py", typo_host)
+    assert code == 1
+    assert "UMBRA_SERVER" in out and "never reads it" in out
+
+
+def test_audit_and_cancel_against_the_server():
+    """The audit trail and task cancellation must work over the real wire."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-audit-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-audit")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "agent never registered"
+
+        payload = client.audit(10)
+        assert payload["enabled"] is True
+        entries = payload["entries"]
+        assert entries, "no audit entries recorded"
+        # Newest first, and attributed to the connected operator.
+        assert entries[0]["operator"] == "alice"
+        assert entries[0]["transport"] == "tcp/operator"
+        assert any(e["cmd"] == "agents.list" for e in entries)
+
+        # A failing RPC is recorded as a failure, not omitted.
+        with pytest.raises(OperatorError):
+            client.agent_info("does-not-exist")
+        failed = [e for e in client.audit(20)["entries"] if e["cmd"] == "agents.info"]
+        assert failed and failed[0]["ok"] is False and failed[0]["err"]
+
+        # Cancelling works once, then reports the truth the second time.
+        task_id = client.submit("agent-audit", "shell", {"cmd": "sleep 0.6"})
+        client.cancel(task_id)
+        with pytest.raises(OperatorError):
+            client.cancel(task_id)
+        assert client.task(task_id)["state"] in ("cancelled", "done", "failed")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

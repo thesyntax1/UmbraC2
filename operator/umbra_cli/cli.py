@@ -146,6 +146,65 @@ def print_task_result(task: Dict[str, Any]) -> None:
         print(out.rstrip())
 
 
+def print_audit(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the audit trail: one line per operator action, newest first."""
+    out = stream or sys.stdout
+    entries = payload.get("entries") or []
+    if not payload.get("enabled", True):
+        print("audit log is disabled on this server (audit_file is empty)", file=out)
+        return
+    if not entries:
+        print("no recorded operator actions", file=out)
+        return
+    for e in entries:
+        mark = "ok " if e.get("ok") else "ERR"
+        detail = short(e.get("detail") or "", 40)
+        extra = ""
+        if e.get("agent_id"):
+            extra += f" agent={e['agent_id']}"
+        if e.get("task_id"):
+            extra += f" task={e['task_id']}"
+        if e.get("err"):
+            extra += f" err={short(e['err'], 40)!r}"
+        if detail:
+            extra += f" {detail}"
+        print(
+            f"[{fmt_ts(e.get('at'))}] {mark} {str(e.get('operator')):<12} "
+            f"{str(e.get('cmd')):<14}{extra} ({e.get('ms', 0)} ms)",
+            file=out,
+        )
+
+
+def watch_events(client: OperatorClient, limit: int = 0, as_json: bool = False) -> int:
+    """Block, printing events as they arrive, until Ctrl-C or `limit` events.
+
+    `umbra watch` exists because events are the only way to notice a new beacon
+    or a finished task without polling: the console prints them on stderr while
+    a command runs, but a dedicated stream is what an operator leaves open on a
+    second terminal.
+    """
+    seen = 0
+    try:
+        while True:
+            ev = client.next_event(timeout=3600.0)
+            if ev is None:
+                continue
+            if as_json:
+                print(json.dumps({"kind": ev.get("kind"), "at": ev.get("at"),
+                                  "agent_id": ev.get("agent_id"), "task_id": ev.get("task_id"),
+                                  "data": ev.get("data") or {}},
+                                 sort_keys=True, default=json_default), flush=True)
+            else:
+                print_event(ev, stream=sys.stdout)
+                sys.stdout.flush()
+            seen += 1
+            if limit and seen >= limit:
+                return 0
+    except KeyboardInterrupt:
+        print(f"\n{seen} event(s)", file=sys.stderr)
+        return 0
+
+
 def print_event(ev: Dict[str, Any], stream: Any = None) -> None:
     kind = ev.get("kind", "?")
     at = fmt_ts(ev.get("at"))
@@ -158,7 +217,8 @@ def print_event(ev: Dict[str, Any], stream: Any = None) -> None:
         if out:
             detail += f" out={short(out, 60)!r}"
     elif kind in ("agent.new", "agent.online"):
-        detail = f"host={data.get('host')} os={data.get('os')}"
+        parts = [f"{k}={data[k]}" for k in ("host", "os", "transport") if data.get(k)]
+        detail = " ".join(parts)
     elif kind == "task.queued":
         detail = f"task={ev.get('task_id')} kind={data.get('kind')}"
     elif kind == "beacon.error":
@@ -242,6 +302,18 @@ class Console:
             elif cmd == "kill":
                 res = self.client.rpc("agents.kill", {"id": self._resolve(rest[0] if rest else None)})
                 print("kill task queued" if res.ok else f"error: {res.error}")
+            elif cmd in ("cancel", "kill-task"):
+                if not rest:
+                    print("usage: cancel <task-id>")
+                    return True
+                try:
+                    self.client.cancel(rest[0])
+                    print(f"cancelled {rest[0]}")
+                except OperatorError as exc:
+                    print(f"error: {exc}")
+            elif cmd in ("audit", "log"):
+                limit = int(rest[0]) if rest else 30
+                print_audit(self.client.audit(limit))
             elif cmd == "stats":
                 print(json.dumps(self.client.stats(), indent=2, default=str, sort_keys=True))
             elif cmd == "raw":
@@ -287,9 +359,11 @@ def print_help() -> None:
   exec <kind> [json]        queue arbitrary task (sysinfo, ls, download, ...)
   tasks [limit]             recent tasks for the current agent
   result <task-id>          print a task result
+  cancel <task-id>          cancel a queued task
   watch [on|off]            toggle automatic result printing
   sleep <secs> [jitter%]    change the beacon interval
   kill [agent-id]           tell an agent to exit
+  audit [limit]             recent operator actions (audit trail)
   stats                     server statistics
   raw <cmd> [json]          send a raw RPC
   quit                      disconnect and exit"""
@@ -340,6 +414,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("agents", help="list agents")
     sub.add_parser("stats", help="server statistics")
 
+    audit_cmd = sub.add_parser("audit", help="recent operator actions (audit trail)")
+    audit_cmd.add_argument("--limit", type=int, default=50)
+
     info = sub.add_parser("info", help="show one agent")
     info.add_argument("agent")
 
@@ -362,6 +439,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     result = sub.add_parser("result", help="print a task result")
     result.add_argument("task_id")
+
+    cancel = sub.add_parser("cancel", help="cancel a queued task")
+    cancel.add_argument("task_id")
+
+    watch = sub.add_parser("watch", help="stream events until interrupted")
+    watch.add_argument("--limit", type=int, default=0, help="stop after N events (0 = forever)")
 
     sleep = sub.add_parser("sleep", help="change beacon interval")
     sleep.add_argument("agent")
@@ -426,6 +509,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             emit(rows) if args.json else print_agents(rows)
         elif args.cmd == "stats":
             emit(client.stats())
+        elif args.cmd == "audit":
+            payload = client.audit(args.limit)
+            if args.json:
+                emit(payload)
+            else:
+                print_audit(payload)
         elif args.cmd == "info":
             emit(client.agent_info(args.agent))
         elif args.cmd == "run":
@@ -466,6 +555,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 # on the exit status instead of parsing output.
                 return 0 if task.get("state") == "done" and not task.get("code") else 1
             print_task_result(task)
+        elif args.cmd == "cancel":
+            client.cancel(args.task_id)
+            if args.json:
+                emit({"task_id": args.task_id, "state": "cancelled"})
+            else:
+                print(f"cancelled {args.task_id}")
+        elif args.cmd == "watch":
+            return watch_events(client, args.limit, as_json=args.json)
         elif args.cmd == "sleep":
             client.set_sleep(args.agent, args.seconds, args.jitter)
             if args.json:

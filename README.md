@@ -25,7 +25,9 @@ not even the handshake.
 Implemented end-to-end in this version: mutual authentication, session
 establishment, beacon check-in, task dispatch and result collection, beacon
 sleep/jitter control, key rotation, live operator event stream, agent inventory
-and task history persisted across restarts, TCP and HTTP transports.
+and task history persisted across restarts, TCP and HTTP transports, and an
+append-only operator audit trail (`umbra audit`) with per-operator RPC rate
+limiting.
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 peer-to-peer pivoting, SOCKS/proxy pivots, reflective loaders, process

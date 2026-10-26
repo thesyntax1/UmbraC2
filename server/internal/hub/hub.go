@@ -38,6 +38,10 @@ type Operator struct {
 	Name   string
 	Events chan Event
 	Since  time.Time
+	// Peer and Transport identify where the operator connected from; both are
+	// recorded in the audit log so an entry can be traced to a session.
+	Peer      string
+	Transport string
 }
 
 // Live describes a currently connected agent.
@@ -235,15 +239,17 @@ func (h *Hub) Policy(agentID string) (int, int) {
 }
 
 // Subscribe registers an operator event stream.
-func (h *Hub) Subscribe(name string) *Operator {
+func (h *Hub) Subscribe(name, peer, transport string) *Operator {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.nextSub++
 	op := &Operator{
-		ID:     h.nextSub,
-		Name:   name,
-		Events: make(chan Event, 256),
-		Since:  time.Now().UTC(),
+		ID:        h.nextSub,
+		Name:      name,
+		Events:    make(chan Event, 256),
+		Since:     time.Now().UTC(),
+		Peer:      peer,
+		Transport: transport,
 	}
 	h.subs[op.ID] = op
 	return op

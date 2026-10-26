@@ -188,7 +188,7 @@ func (c *client) recv(t *testing.T) (byte, map[string]any) {
 func TestAgentErrorIsSurfacedToOperators(t *testing.T) {
 	_, h, agentAddr, _ := newTestServer(t)
 
-	op := h.Subscribe("watcher")
+	op := h.Subscribe("watcher", "127.0.0.1:0", "tcp/operator")
 	defer h.Unsubscribe(op.ID)
 
 	ag := dial(t, agentAddr, agentPSK, crypt.RoleAgent, "agent-err-1")

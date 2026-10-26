@@ -50,7 +50,8 @@ main: load config → build keyring → open store → start listeners
 | `config` | JSON config + keyring | secrets come from env or `0600` files, never from the config file |
 | `store` | agents, tasks | in-memory + atomic snapshot (`tmp` + `rename`), bounded history |
 | `hub` | broker | all state transitions in one place; transports never mutate state |
-| `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP |
+| `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP; per-operator RPC rate limit |
+| `audit` | operator audit trail | JSON Lines, `fsync` per entry, size rotation, nil-safe |
 
 ### Connection handling
 
@@ -174,7 +175,11 @@ a test double, not a production server.
 
 Short term: message padding, `CONFIG` as a first-class policy push, streaming file
 transfer (chunked `download`/`upload`), task cancel end-to-end, per-agent
-authorisation profiles, HTTP transport keep-alive, operator audit log.
+authorisation profiles, HTTP transport keep-alive.
+
+Done: operator audit log (`internal/audit`, `audit.tail`, `umbra audit`), which
+records every RPC with operator, peer, transport, task/agent id and outcome, and
+is rotated, fsynced per line, and readable from disk after a restart.
 
 Medium term: DNS/S3/SMTP transports, SOCKS5 pivot, named pipes, BOF/COFF
 execution, in-memory reflection for Windows (`CreateProcess` + section-backed

@@ -5,8 +5,7 @@ name: ci
 # not part of the default matrix.
 
 on:
-  push:
-    branches: [main]
+  push:            # every branch: a long-lived topic branch must stay green
   pull_request:
 
 permissions:
@@ -20,13 +19,15 @@ jobs:
   protocol:
     name: protocol (python reference + contract)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4       # zizmor: ignore[unpinned-uses]
       - uses: actions/setup-python@v5   # zizmor: ignore[unpinned-uses]
         with:
           python-version: "3.11"
+          cache: pip
       - name: install test dependencies
-        run: python -m pip install --upgrade pip cryptography pytest
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
       - name: cross-language constant check
         run: python tools/check_consistency.py
       - name: static symbol check (go + rust, no toolchain needed)
@@ -41,6 +42,7 @@ jobs:
   go:
     name: go server
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: server
@@ -64,10 +66,17 @@ jobs:
         run: go test ./... -race -count=1
       - name: build
         run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/umbra-server ./cmd/umbra-server
+      - name: vet with the race build tag
+        run: go vet -race ./...
+      - name: module is tidy (stdlib only, so it must have no requirements)
+        run: |
+          test ! -s go.sum || { echo "::error::unexpected go.sum: the server must stay dependency-free"; exit 1; }
+          go mod verify
 
   rust:
     name: rust beacon
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: implant/rust
@@ -93,11 +102,15 @@ jobs:
         run: cargo build --release ${{ matrix.features }}
       - name: selftest
         run: ./target/release/umbra-beacon --selftest
+      - name: beacon starts and exits cleanly against an unreachable server
+        run: |
+          timeout 20 ./target/release/umbra-beacon --selftest --server 127.0.0.1:1 || true
+          ./target/release/umbra-beacon --version
 
   android:
     name: android implant (compile only)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4               # zizmor: ignore[unpinned-uses]
       - uses: actions/setup-java@v4             # zizmor: ignore[unpinned-uses]
@@ -111,7 +124,12 @@ jobs:
       - name: compile (assembleDebug, no signing)
         working-directory: implant/android
         env:
-          UMBRA_SERVER: 127.0.0.1:4001
+          # These names must match the buildConfigField() reads in
+          # app/build.gradle -- a mismatched name is silently ignored and the
+          # APK quietly ships with the default server address.
+          UMBRA_HOST: 127.0.0.1
+          UMBRA_PORT: "4001"
+          UMBRA_TRANSPORT: tcp
           UMBRA_PSK: 00000000000000000000000000000000000000000000000000000000000000ff
           UMBRA_AGENT_ID: ci-build
         run: gradle --no-daemon assembleDebug

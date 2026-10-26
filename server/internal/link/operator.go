@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
@@ -48,8 +49,9 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 		return
 	}
 
-	op := s.Hub.Subscribe(info.ID)
+	op := s.Hub.Subscribe(info.ID, addr, "tcp/operator")
 	defer s.Hub.Unsubscribe(op.ID)
+	defer s.forgetOperatorRate(info.ID)
 	log.Info("operator connected", "operator", info.ID, "suite", wire.SuiteName(info.Suite))
 
 	// The event pusher and the request handler below both write to this
@@ -103,7 +105,72 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 
 // dispatch executes one operator RPC. Errors are returned *inside* the
 // response so the operator UI can show them without losing the session.
+// dispatch executes one RPC and records it in the audit log.
+//
+// Auditing wraps the real handler rather than living inside it so that no RPC
+// can be added without being logged: there is exactly one code path in.
 func (s *Server) dispatch(log *slog.Logger, op *hub.Operator, req map[string]any) upk.Map {
+	started := time.Now()
+	cmd, _ := req["cmd"].(string)
+	args, _ := req["args"].(map[string]any)
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	out := s.handleRPC(log, op, req)
+	ok, _ := out["ok"].(bool)
+	errText, _ := out["err"].(string)
+
+	var taskID, agentID string
+	if out["data"] != nil {
+		if data, isMap := out["data"].(upk.Map); isMap {
+			taskID, _ = data["task_id"].(string)
+			agentID, _ = data["agent_id"].(string)
+		}
+	}
+	if taskID == "" {
+		taskID, _ = args["task_id"].(string)
+	}
+	if agentID == "" {
+		agentID, _ = args["id"].(string)
+	}
+	s.record(op, cmd, args, ok, errText, agentID, taskID, time.Since(started).Milliseconds())
+	return out
+}
+
+// record writes one audit line. Auditing never fails an RPC: a disk problem is
+// logged, because refusing to work is worse than a gap in the trail.
+func (s *Server) record(op *hub.Operator, cmd string, args map[string]any, ok bool, errText, agentID, taskID string, ms int64) {
+	if s.audit == nil {
+		return
+	}
+	detail := ""
+	if len(args) > 0 {
+		detail = audit.Clip(fmt.Sprintf("%v", args))
+	}
+	name := ""
+	peer, transport := "", ""
+	if op != nil {
+		name, peer, transport = op.Name, op.Peer, op.Transport
+	}
+	err := s.audit.Record(audit.Entry{
+		Operator:  name,
+		Peer:      peer,
+		Transport: transport,
+		Cmd:       cmd,
+		OK:        ok,
+		Err:       errText,
+		AgentID:   agentID,
+		TaskID:    taskID,
+		Detail:    detail,
+		Millis:    ms,
+	})
+	if err != nil {
+		s.Log.Warn("audit write failed", "err", err, "cmd", cmd, "operator", name)
+	}
+}
+
+func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]any) upk.Map {
 	rid, _ := number(req["rid"])
 	cmd, _ := req["cmd"].(string)
 	args, _ := req["args"].(map[string]any)
@@ -124,9 +191,43 @@ func (s *Server) dispatch(log *slog.Logger, op *hub.Operator, req map[string]any
 
 	log.Debug("operator rpc", "operator", op.Name, "cmd", cmd)
 
+	// The limiter sits inside the handler so a rate-limited call is still
+	// audited: "operator tried to flood" is exactly the kind of thing the log
+	// exists to show.
+	if !s.allowOperatorRPC(op.Name) {
+		return fail("rate limited: at most %d calls/s per operator", int(operatorRPCPerSec))
+	}
+
 	switch strings.TrimSpace(cmd) {
 	case "ping":
 		return reply(upk.Map{"pong": time.Now().Unix()})
+
+	case "audit.tail":
+		limit, ok := asInt64(args["limit"])
+		if !ok || limit <= 0 {
+			limit = 50
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+		entries := s.audit.Tail(int(limit))
+		out := make([]any, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, upk.Map{
+				"at":        e.At.Unix(),
+				"operator":  e.Operator,
+				"peer":      e.Peer,
+				"transport": e.Transport,
+				"cmd":       e.Cmd,
+				"ok":        e.OK,
+				"err":       e.Err,
+				"agent_id":  e.AgentID,
+				"task_id":   e.TaskID,
+				"detail":    e.Detail,
+				"ms":        e.Millis,
+			})
+		}
+		return reply(upk.Map{"entries": out, "enabled": s.audit.Enabled()})
 
 	case "server.stats":
 		return reply(toUpkMap(s.Hub.Stats()))
