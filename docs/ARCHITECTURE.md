@@ -96,6 +96,31 @@ Delivery is **pull-based**: the server never pushes work to a sleeping implant,
 so an offline agent simply keeps its queue until it checks in again (the store
 re-queues anything left `delivered` after a restart).
 
+### The inventory and the selection rule
+
+The agent list is the operator's map of the engagement, so it has to answer two
+questions quickly: *what is alive* and *what do I want to act on*.
+
+**What is alive.**  The beacon opens one connection per cycle and closes it
+again, so the link is down most of the time.  "Online" therefore describes the
+*check-in*, not the socket: an agent stays online while it keeps checking in
+and turns offline once it has been quiet for longer than the grace period
+(90 s, or three of its own intervals — whichever is longer).  The state is
+recomputed whenever the inventory is read, so a beacon that died silently
+disappears from the online view without anybody having to notice the socket
+closing.
+
+**What to act on.**  Every agent carries operator-owned tags (`finance`,
+`dc-01`, `cobalt`); the server never derives a label from the target, it only
+stores what an operator typed.  On top of that, a selection is a filter —
+`state`, `transport`, `os`, `arch`, `tag`, `user` — that the same code path
+uses for listing, for tagging, for pushing a policy and for queueing a task.
+
+**One rule everywhere.**  An operation that acts on more than one agent must
+name its targets: an explicit list of ids, a filter, or both.  A bulk
+operation without either is refused, because "I forgot the filter and now it
+runs on two hundred machines" is not a mistake an operator can take back.
+
 ### Concurrency and safety
 
 * one goroutine per connection, no shared mutable message state;
@@ -107,6 +132,12 @@ re-queues anything left `delivered` after a restart).
 * unregistering is **session-scoped** — a beacon that reconnects with the same
   id would otherwise have its predecessor's deferred cleanup delete the new live
   entry; only expiry uses the force variant;
+* the online state is **derived from the last check-in**, not from the socket:
+  a closed connection between two cycles is a sleeping beacon, and the
+  `agent.offline` event is only emitted when the agent really went quiet;
+* the beacon cadence is **owned by the operator** — a beacon that has not
+  applied a pushed policy yet still reports its old interval, and the report
+  is kept in its own field instead of overwriting the policy;
 * all sizes are bounded before allocation (frame ≤ 1 MiB, upk limits, HTTP body
   cap, header cap, operator/agent caps).
 

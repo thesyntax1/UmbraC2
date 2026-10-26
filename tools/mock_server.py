@@ -31,6 +31,11 @@ sys.path.insert(0, os.path.join(ROOT, "operator"))
 from umbra_cli import crypto, handshake, netio, session, upk, wire, ws  # noqa: E402
 
 
+# How long an agent stays online after its last check-in.  Mirrors
+# store.OfflineGrace in the Go server.
+OFFLINE_GRACE = 90
+
+
 def _now() -> int:
     return int(time.time())
 
@@ -433,7 +438,8 @@ class MockServer:
             stream = netio.Stream(conn, timeout=30)
         try:
             result = handshake.server_handshake(
-                stream, keyring=self._keyring(), cfg={"sleep": self.sleep, "jitter": self.jitter}
+                stream, keyring=self._keyring(),
+                cfg={"sleep": self.sleep, "jitter": self.jitter, "obf": True}
             )
         except (handshake.HandshakeError, netio.StreamError, OSError):
             stream.close()
@@ -609,8 +615,10 @@ class MockServer:
                     "transport": "tcp",
                     "addr": addr,
                     "state": "online",
-                    "sleep": self.sleep,
-                    "jitter": self.jitter,
+                    # The cadence the operator configured survives a
+                    # re-registration: the beacon reconnects every cycle.
+                    "sleep": record.get("sleep", self.sleep),
+                    "jitter": record.get("jitter", self.jitter),
                     "last_seen": _now(),
                     "first_seen": record.get("first_seen", _now()),
                 }
@@ -622,11 +630,24 @@ class MockServer:
                 raw = stream.recv_frame()
                 msg_type, msg = sess.decrypt_message(raw)
                 if msg_type == wire.MsgType.CHECKIN:
+                    with self._lock:
+                        record = self.agents.get(agent_id)
+                        if record is not None:
+                            record["last_seen"] = _now()
+                            record["state"] = "online"
                     batch = self._take_tasks(agent_id)
+                    # The cadence the server pushes is the one the operator
+                    # configured for this agent.
+                    with self._lock:
+                        record = self.agents.get(agent_id) or {}
+                        sleep = int(record.get("sleep", self.sleep))
+                        jitter = int(record.get("jitter", self.jitter))
+                        obfuscate = bool(record.get("obfuscate", True))
                     body = {
                         "tasks": batch,
-                        "sleep": self.sleep,
-                        "jitter": self.jitter,
+                        "sleep": sleep,
+                        "jitter": jitter,
+                        "obf": obfuscate,
                         "server_time": _now(),
                     }
                     # Rotation order is part of the protocol: the REKEY frame is
@@ -664,10 +685,19 @@ class MockServer:
         except (netio.StreamError, session.SessionError, OSError, ValueError):
             pass
         finally:
+            # The beacon closes its connection after every cycle, so a closed
+            # link does not mean a dead agent: it is offline once it has been
+            # quiet for longer than the grace period.
+            went_offline = False
             with self._lock:
-                if agent_id in self.agents:
-                    self.agents[agent_id]["state"] = "offline"
-            self.emit("agent.offline", agent_id)
+                record = self.agents.get(agent_id)
+                if record is not None:
+                    record["last_seen"] = _now()
+                    if _now() - int(record.get("last_seen", 0)) > OFFLINE_GRACE:
+                        record["state"] = "offline"
+                        went_offline = True
+            if went_offline:
+                self.emit("agent.offline", agent_id)
             stream.close()
 
     def _take_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
@@ -803,9 +833,12 @@ class MockServer:
         "schedule.list": "viewer",
         "task.submit": "operator",
         "task.cancel": "operator",
+        "task.bulk": "operator",
         "agents.kill": "operator",
         "agents.exit": "operator",
         "agents.sleep": "operator",
+        "agents.policy": "operator",
+        "agents.tag": "operator",
         "chat.send": "operator",
         "schedule.add": "operator",
         "task.claim": "operator",
@@ -1045,7 +1078,62 @@ class MockServer:
 
         if cmd == "agents.list":
             with self._lock:
-                return ok({"agents": [dict(a) for a in self.agents.values()]})
+                rows = [dict(a) for a in self.agents.values()
+                        if _agent_matches(a, args)]
+            return ok({"agents": rows, "count": len(rows)})
+
+        if cmd == "agents.tag":
+            tags = _string_list(args.get("tags") or args.get("tag"))
+            if not tags:
+                return fail("agents.tag needs at least one tag")
+            mode = str(args.get("mode", "add") or "add")
+            if mode not in ("add", "remove", "set"):
+                return fail("agents.tag: mode must be add, remove or set")
+            if not _has_targets(args):
+                return fail("agents.tag: no targets")
+            targets = _select_agents(self.agents, args)
+            updated = []
+            with self._lock:
+                for rec in targets:
+                    current = [str(t) for t in rec.get("tags", [])]
+                    if mode == "set":
+                        current = list(tags)
+                    elif mode == "remove":
+                        current = [t for t in current if t not in tags]
+                    else:
+                        for tag in tags:
+                            if tag not in current:
+                                current.append(tag)
+                    rec["tags"] = sorted(current)
+                    updated.append(rec["id"])
+            self.emit("agent.tags", updated[0] if updated else "",
+                      data={"tags": tags, "mode": mode})
+            return ok({"updated": updated, "tags": tags, "mode": mode})
+
+        if cmd == "agents.policy":
+            if "sleep" not in args or "jitter" not in args:
+                return fail("agents.policy needs numeric sleep and jitter")
+            sleep = int(args.get("sleep"))
+            jitter = int(args.get("jitter"))
+            obfuscate = args.get("obfuscate")
+            if not _has_targets(args):
+                return fail("agents.policy: no targets")
+            targets = _select_agents(self.agents, args)
+            updated = []
+            with self._lock:
+                for rec in targets:
+                    rec["sleep"] = sleep
+                    rec["jitter"] = jitter
+                    if isinstance(obfuscate, bool):
+                        rec["obfuscate"] = obfuscate
+                    updated.append(rec["id"])
+            for agent_id in updated:
+                self.emit("agent.policy", agent_id,
+                          data={"sleep": sleep, "jitter": jitter})
+            out = {"updated": updated, "sleep": sleep, "jitter": jitter}
+            if isinstance(obfuscate, bool):
+                out["obfuscate"] = obfuscate
+            return ok(out)
 
         if cmd == "agents.info":
             with self._lock:
@@ -1086,10 +1174,46 @@ class MockServer:
 
         if cmd == "task.list":
             agent_id = str(args.get("id", ""))
+            kind = str(args.get("kind", "") or "")
+            state = str(args.get("state", "") or "")
             limit = int(args.get("limit", 50))
             with self._lock:
-                items = [t for t in self.tasks.values() if t["agent_id"] == agent_id]
-            return ok({"tasks": [_task_out(t) for t in items[-limit:]]})
+                items = [t for t in self.tasks.values()
+                         if (not agent_id or t["agent_id"] == agent_id)
+                         and (not kind or t["kind"] == kind)
+                         and (not state or t["state"] == state)]
+            return ok({"tasks": [_task_out(t) for t in items[-limit:]],
+                       "count": len(items[-limit:])})
+
+        if cmd == "task.bulk":
+            kind = str(args.get("kind", "") or "")
+            if not kind:
+                return fail("task.bulk needs a task kind")
+            task_args = args.get("args") or {}
+            if not _has_targets(args):
+                return fail("task.bulk: no targets")
+            targets = _select_agents(self.agents, args)
+            rows = []
+            with self._lock:
+                for rec in targets:
+                    task = {
+                        "id": new_id("t"),
+                        "agent_id": rec["id"],
+                        "kind": kind,
+                        "args": task_args,
+                        "state": "queued",
+                        "code": 0,
+                        "out": b"",
+                        "err": "",
+                        "created": _now(),
+                    }
+                    self.tasks[task["id"]] = task
+                    rows.append({"agent_id": rec["id"], "task_id": task["id"],
+                                 "state": "queued"})
+            for row in rows:
+                self.emit("task.queued", row["agent_id"],
+                          task_id=row["task_id"], data={"kind": kind})
+            return ok({"tasks": rows, "count": len(rows)})
 
         if cmd in ("task.claim", "task.release"):
             task_id = str(args.get("task_id", ""))
@@ -1486,6 +1610,71 @@ class MockServer:
                 pass
 
 
+def _string_list(value: Any) -> List[str]:
+    """Read a list of strings; a comma separated string counts as one."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+    return []
+
+
+def _filter_of(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The filter of an RPC: a nested map or the flat arguments."""
+    raw = args.get("filter")
+    if isinstance(raw, dict):
+        merged = dict(raw)
+        for key in ("state", "transport", "os", "arch", "tag", "user"):
+            if key not in merged and key in args:
+                merged[key] = args[key]
+        return merged
+    return {key: args[key] for key in ("state", "transport", "os", "arch", "tag", "user")
+            if key in args}
+
+
+def _agent_matches(agent: Dict[str, Any], args: Dict[str, Any]) -> bool:
+    """Does the agent match the filter of the call?"""
+    filt = _filter_of(args)
+    for key in ("state", "transport", "os", "arch", "user"):
+        want = filt.get(key)
+        if want in (None, ""):
+            continue
+        if str(agent.get(key, "")).lower() != str(want).lower():
+            return False
+    tag = filt.get("tag")
+    if tag:
+        tags = [str(t).lower() for t in agent.get("tags", [])]
+        if str(tag).lower() not in tags:
+            return False
+    return True
+
+
+def _has_targets(args: Dict[str, Any]) -> bool:
+    """Did the call name any target at all?"""
+    if _string_list(args.get("agents")) or _string_list(args.get("ids")):
+        return True
+    return bool(_filter_of(args))
+
+
+def _select_agents(agents: Dict[str, Any], args: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The agents an operation applies to: the named ones, narrowed by the filter."""
+    named = _string_list(args.get("agents")) or _string_list(args.get("ids"))
+    out = []
+    for rec in agents.values():
+        if named and rec["id"] not in named:
+            continue
+        if not _agent_matches(rec, args):
+            continue
+        out.append(rec)
+    return out
+
+
 def _task_out(task: Dict[str, Any]) -> Dict[str, Any]:
     """Normalise a task record for the wire (bytes stay bytes, upk encodes them)."""
     out = dict(task)
@@ -1543,6 +1732,8 @@ class FakeAgent(threading.Thread):
         self.cancelled_ids: List[str] = []
         # Control frames actually received (proves 0x18 is on the wire).
         self.cancels_received: List[str] = []
+        # The last policy the server pushed (sleep, jitter, obfuscation).
+        self.policy: Dict[str, Any] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -1594,6 +1785,13 @@ class FakeAgent(threading.Thread):
                     continue
                 if msg_type == wire.MsgType.TASK_BATCH:
                     batch = frame_body
+                    # The cadence travels with the batch: remember it so a
+                    # test can prove the policy reached the beacon.
+                    self.policy = {
+                        "sleep": batch.get("sleep"),
+                        "jitter": batch.get("jitter"),
+                        "obf": batch.get("obf"),
+                    }
                     break
                 return
             if not batch:

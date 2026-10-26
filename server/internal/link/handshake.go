@@ -150,7 +150,7 @@ func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAdd
 		"suite": info.Suite,
 		"auth":  ackAuth,
 		"name":  "umbra-server",
-		"cfg":   upk.Map{"sleep": sleep, "jitter": jitter},
+		"cfg":   upk.Map{"sleep": sleep, "jitter": jitter, "obf": true},
 		"meta":  upk.Map{"ver": hub.Version},
 	}
 	body := append([]byte{wire.MarkerHelloAck}, mustEncode(ack)...)

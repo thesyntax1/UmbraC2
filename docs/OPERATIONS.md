@@ -89,11 +89,63 @@ umbra --server 127.0.0.1:4002 --operator alice result t-1a2b3c4d
 
 `--token` shows up in the process list; prefer `--token-file` or the environment.
 
+## 3a. Working on groups of agents
+
+An engagement is rarely about a single machine.  The console therefore speaks
+one filter language everywhere, and every command that acts on more than one
+agent takes the same selection.
+
+```bash
+# what is out there?
+umbra agents
+umbra agents --state online --os windows
+umbra agents --tag finance --transport http
+
+# label the hosts, so the next command can find them
+umbra tag web-01 finance dc-01
+umbra tag web-01 legacy --remove
+umbra tag web-01 prod staging --set
+
+# act on the group
+umbra task --agents web-01,web-02 --kind shell --args '{"cmd":"whoami"}'
+umbra task --filter state=online,tag=finance --kind sysinfo
+```
+
+The filter keys are `state`, `transport`, `os`, `arch`, `tag` and `user`; the
+same keys work in the RPC (`agents.list`) and in the interactive console
+(`agents state=online tag=finance`).
+
+**A selection is always explicit.**  `task.bulk`, `agents.tag` and
+`agents.policy` refuse to run without either a list of agent ids or a filter:
+a command that quietly applies to every agent in the inventory is not
+recoverable once it is sent, so the server asks for a target instead of
+guessing one.
+
+The interactive console understands the same verbs:
+
+```
+umbra[-]> agents state=online
+umbra[-]> tag web-01 finance
+umbra[-]> policy web-01 sleep=120 jitter=45
+```
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)
-and can change it per agent with `agents.sleep`; the implant applies it
-immediately on the next check-in and keeps it until it is told otherwise.
+and can change it per agent with `agents.policy` (or the older
+`agents.sleep`); the implant applies it immediately on the next check-in and
+keeps it until it is told otherwise.
+
+```bash
+umbra policy web-01 --sleep 120 --jitter 45
+umbra policy --all --state online --sleep 300 --jitter 50
+umbra policy web-01 --no-obfuscate     # a fixed interval, no jitter nap
+```
+
+The cadence belongs to the operator: a beacon that has not applied a pushed
+policy yet still reports its old interval, and that report never overwrites
+the policy.  The obfuscation flag travels with the policy (the default is on,
+so an agent keeps hiding its check-in pattern unless it is told otherwise).
 
 | Environment | sleep | jitter |
 |---|---|---|

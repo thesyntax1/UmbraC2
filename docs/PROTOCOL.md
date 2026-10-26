@@ -407,17 +407,20 @@ Operator RPC commands, with the minimum role each requires:
 | `ping` | viewer | liveness |
 | `whoami` | viewer | identity, role, peer, allowed commands |
 | `server.stats` | viewer | counters, including `events_dropped` |
-| `agents.list` | viewer | inventory |
+| `agents.list` | viewer | inventory; optional filters: `state`, `transport`, `os`, `arch`, `tag`, `user` |
 | `agents.info` | viewer | one agent and its recent tasks |
 | `operators.list` | viewer | connected consoles: focus agent, idle time, queue depth |
 | `task.get` | viewer | one task |
-| `task.list` | viewer | tasks for an agent |
+| `task.list` | viewer | tasks; optional filters: `id` (agent), `kind`, `state` |
 | `audit.tail` | viewer | recent operator actions |
 | `chat.history` | viewer | recent chat |
 | `schedule.list` | viewer | recurring tasks |
 | `task.submit` | operator | queue a task |
+| `task.bulk` | operator | queue one task on many agents: `agents` (list) and/or `filter` |
 | `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
 | `agents.sleep` | operator | change beacon cadence |
+| `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
+| `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
 | `agents.kill` | operator | queue the exit task |
 | `agents.exit` | operator | alias of `agents.kill` |
 | `chat.send` | operator | team message; `to` addresses one operator |
@@ -441,6 +444,44 @@ Operator RPC commands, with the minimum role each requires:
 | `alias.run` | operator | run a named template on an agent |
 | `team.sync` | viewer | full state snapshot for a console that joins late |
 | `stager.generate` | admin | build a stage-0 one-liner (it carries the agent PSK) |
+
+### 7.2a Selecting agents
+
+The bulk operations (`task.bulk`, `agents.policy`, `agents.tag`) take their
+targets in one of two ways, and both can be combined:
+
+* `agents` — an explicit list of agent ids (`["web-01", "web-02"]`; a comma
+  separated string is accepted as well);
+* `filter` — a description of the agents to select: `state` (`online` /
+  `offline`), `transport`, `os`, `arch`, `tag`, `user`.
+
+An operation with neither is refused. A bulk task that hits every agent in the
+inventory because a filter was forgotten is not recoverable, so the server
+makes the operator say what it means.
+
+The filter is the same in `agents.list`, which makes the console's views
+consistent: what an operator filters by to *find* an agent is what an
+operator filters by to *act* on it.
+
+The `state` of an agent describes its **check-in**, not its socket. The beacon
+opens one connection per cycle and closes it again, so an agent stays `online`
+while it keeps checking in and turns `offline` once it has been quiet for
+longer than the grace period (90 s, or three of its own intervals —
+whichever is longer).
+
+### 7.2b The beacon policy
+
+The server pushes the cadence with every check-in, and the policy RPC changes
+what it pushes:
+
+```json
+{"cmd": "agents.policy", "args": {"filter": {"state": "online"}, "sleep": 60, "jitter": 35, "obfuscate": true}}
+```
+
+* `sleep` (1–86400 s) and `jitter` (0–90 %) are the interval and the jitter;
+* `obfuscate` decides whether the beacon hides its check-in pattern. It is on
+  by default and travels with the cadence in the `TASK_BATCH` body (`obf`),
+  so the operator decides, not the environment of the implant.
 
 Roles are `viewer` < `operator` < `admin`. Identities come from
 `operator_token_env` entries formatted `name:token` (role defaults to

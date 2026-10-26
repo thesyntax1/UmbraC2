@@ -227,8 +227,15 @@ class OperatorClient:
         self._closing.set()
 
     # -- convenience wrappers -------------------------------------------
-    def agents(self) -> List[Dict[str, Any]]:
-        res = self.rpc("agents.list")
+    def agents(self, **filters: Any) -> List[Dict[str, Any]]:
+        """The inventory, optionally narrowed by a filter.
+
+        The filters are the ones the server understands: `state`, `transport`,
+        `os`, `arch`, `tag` and `user`.  An empty filter is the whole
+        inventory, so the call reads the same either way.
+        """
+        args = {key: value for key, value in filters.items() if value}
+        res = self.rpc("agents.list", args)
         if not res.ok:
             raise OperatorError(res.error)
         return list(res.data.get("agents", []))
@@ -317,8 +324,17 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data
 
-    def tasks(self, agent_id: str, limit: int = 25) -> List[Dict[str, Any]]:
-        res = self.rpc("task.list", {"id": agent_id, "limit": limit})
+    def tasks(self, agent_id: str = "", limit: int = 25,
+              kind: str = "", state: str = "") -> List[Dict[str, Any]]:
+        """The task history, narrowed by agent, kind and state."""
+        args: Dict[str, Any] = {"limit": limit}
+        if agent_id:
+            args["id"] = agent_id
+        if kind:
+            args["kind"] = kind
+        if state:
+            args["state"] = state
+        res = self.rpc("task.list", args)
         if not res.ok:
             raise OperatorError(res.error)
         return list(res.data.get("tasks", []))
@@ -356,6 +372,54 @@ class OperatorClient:
         res = self.rpc("agents.sleep", {"id": agent_id, "sleep": sleep, "jitter": jitter})
         if not res.ok:
             raise OperatorError(res.error)
+
+    # -- bulk operations ------------------------------------------------
+    def tag_agents(self, tags: List[str], mode: str = "add",
+                   agents: Optional[List[str]] = None,
+                   **filters: Any) -> Dict[str, Any]:
+        """Label agents: `add`, `remove` or `set`."""
+        args: Dict[str, Any] = {"tags": list(tags), "mode": mode}
+        if agents:
+            args["agents"] = list(agents)
+        for key, value in filters.items():
+            if value:
+                args[key] = value
+        res = self.rpc("agents.tag", args)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def set_policy(self, sleep: int, jitter: int, obfuscate: Optional[bool] = None,
+                   agents: Optional[List[str]] = None,
+                   **filters: Any) -> Dict[str, Any]:
+        """Push the cadence (and the sleep obfuscation) to one or many agents."""
+        args: Dict[str, Any] = {"sleep": sleep, "jitter": jitter}
+        if obfuscate is not None:
+            args["obfuscate"] = obfuscate
+        if agents:
+            args["agents"] = list(agents)
+        for key, value in filters.items():
+            if value:
+                args[key] = value
+        res = self.rpc("agents.policy", args)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def submit_bulk(self, kind: str, args: Optional[Dict[str, Any]] = None,
+                    agents: Optional[List[str]] = None,
+                    **filters: Any) -> List[Dict[str, Any]]:
+        """Queue one task on many agents and return one row per agent."""
+        payload: Dict[str, Any] = {"kind": kind, "args": args or {}}
+        if agents:
+            payload["agents"] = list(agents)
+        for key, value in filters.items():
+            if value:
+                payload[key] = value
+        res = self.rpc("task.bulk", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("tasks", []))
 
     # -- pivoting -------------------------------------------------------
     def pivot_list(self) -> List[Dict[str, Any]]:

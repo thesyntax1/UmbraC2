@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,6 +24,29 @@ const (
 	StateOnline  = "online"
 	StateOffline = "offline"
 )
+
+// OfflineGrace is how long an agent counts as online after its last check-in.
+//
+// The beacon opens one connection per cycle and closes it again, so a dropped
+// link does not mean a dead agent: it means the agent is sleeping.  An agent
+// is online while it keeps checking in, and offline once it has been silent
+// for longer than this grace period (or three of its own intervals, whichever
+// is longer).
+const OfflineGrace = 90 * time.Second
+
+// agentOnline decides whether an agent counts as online.
+func agentOnline(a *Agent, now time.Time) bool {
+	if a.State != StateOnline {
+		return false
+	}
+	grace := OfflineGrace
+	if a.Sleep > 0 {
+		if longer := time.Duration(a.Sleep*3) * time.Second; longer > grace {
+			grace = longer
+		}
+	}
+	return now.Sub(a.LastSeen) <= grace
+}
 
 // Store-level errors callers may match instead of parsing messages.
 var (
@@ -93,14 +117,31 @@ type Agent struct {
 	Addr      string    `json:"addr"`
 	Sleep     int       `json:"sleep"`
 	Jitter    int       `json:"jitter"`
-	FirstSeen time.Time `json:"first_seen"`
-	LastSeen  time.Time `json:"last_seen"`
-	State     string    `json:"state"`
-	Checkins  uint64    `json:"checkins"`
+	// What the beacon last reported, kept apart from the cadence the
+	// operator controls.  A beacon that has not applied a pushed policy yet
+	// still reports its old interval; the report must not undo the policy.
+	ReportedSleep  int `json:"reported_sleep,omitempty"`
+	ReportedJitter int `json:"reported_jitter,omitempty"`
+	// Tags are the operator's own labels for this host ("finance", "dc-01",
+	// "cobalt").  They are never derived from the target: the server only
+	// stores what an operator typed, and the console filters on them.
+	Tags []string `json:"tags,omitempty"`
+	// NoObfuscate switches the sleep obfuscation off for this agent.  The
+	// zero value keeps the obfuscation on, so an agent that was registered
+	// before the flag existed keeps the behaviour it had.
+	NoObfuscate bool      `json:"no_obfuscate,omitempty"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	State       string    `json:"state"`
+	Checkins    uint64    `json:"checkins"`
 }
 
 // Clone returns a copy safe to hand to other goroutines.
-func (a *Agent) Clone() *Agent { c := *a; return &c }
+func (a *Agent) Clone() *Agent {
+	c := *a
+	c.Tags = append([]string(nil), a.Tags...)
+	return &c
+}
 
 // Task is one queued or completed command.
 type Task struct {
@@ -317,7 +358,10 @@ func (s *Store) UpsertAgent(in *Agent) *Agent {
 	cur.Host, cur.OS, cur.Arch = in.Host, in.OS, in.Arch
 	cur.User, cur.PID, cur.Version = in.User, in.PID, in.Version
 	cur.Transport, cur.Addr, cur.Integrity = in.Transport, in.Addr, in.Integrity
-	if in.Sleep > 0 {
+	// The cadence belongs to the operator: a beacon that still reports its
+	// old interval does not overwrite the policy that was pushed to it.
+	cur.ReportedSleep, cur.ReportedJitter = in.Sleep, in.Jitter
+	if in.Sleep > 0 && cur.Sleep == 0 {
 		cur.Sleep, cur.Jitter = in.Sleep, in.Jitter
 	}
 	cur.LastSeen = now
@@ -326,17 +370,37 @@ func (s *Store) UpsertAgent(in *Agent) *Agent {
 	return cur.Clone()
 }
 
-// MarkOffline flips an agent to offline (called when its connection ends).
-func (s *Store) MarkOffline(id string) {
+// MarkOffline flips an agent to offline when it has been silent for longer
+// than the grace period.
+//
+// It reports whether the agent really went offline: a link that ends while
+// the agent is still within its check-in interval is a sleeping agent, not a
+// dead one.
+func (s *Store) MarkOffline(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if a, ok := s.agents[id]; ok {
-		a.State = StateOffline
+	a, ok := s.agents[id]
+	if !ok {
+		return false
 	}
+	if agentOnline(a, time.Now().UTC()) {
+		return false
+	}
+	a.State = StateOffline
+	return true
 }
 
 // SetPolicy updates the beacon cadence for one agent.
 func (s *Store) SetPolicy(id string, sleep, jitter int) bool {
+	return s.SetPolicyFull(id, sleep, jitter, nil)
+}
+
+// SetPolicyFull updates the beacon cadence and, when obfuscate is not nil,
+// the sleep obfuscation flag of one agent.
+//
+// A nil obfuscate leaves the flag alone: a caller that only wants to change
+// the interval must not silently switch the obfuscation off.
+func (s *Store) SetPolicyFull(id string, sleep, jitter int, obfuscate *bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.agents[id]
@@ -344,7 +408,78 @@ func (s *Store) SetPolicy(id string, sleep, jitter int) bool {
 		return false
 	}
 	a.Sleep, a.Jitter = sleep, jitter
+	if obfuscate != nil {
+		a.NoObfuscate = !*obfuscate
+	}
 	return true
+}
+
+// Tag modes for SetTags.
+const (
+	// TagAdd adds the listed tags.
+	TagAdd = "add"
+	// TagRemove removes the listed tags.
+	TagRemove = "remove"
+	// TagSet replaces the whole set.
+	TagSet = "set"
+)
+
+// SetTags changes the tags of one agent.
+//
+// The mode decides what happens to the tags that are not mentioned:
+// "add" keeps them, "remove" drops the listed ones, "set" replaces the whole
+// set.  Tags are compared case-insensitively and stored in lower case, so
+// "DC-01" and "dc-01" are the same tag.
+func (s *Store) SetTags(id string, tags []string, mode string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[id]
+	if !ok {
+		return false
+	}
+	wanted := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		wanted = append(wanted, t)
+	}
+	switch mode {
+	case TagSet:
+		a.Tags = wanted
+	case TagRemove:
+		kept := make([]string, 0, len(a.Tags))
+		for _, have := range a.Tags {
+			if !containsString(wanted, have) {
+				kept = append(kept, have)
+			}
+		}
+		a.Tags = kept
+	default: // TagAdd
+		for _, t := range wanted {
+			if !containsString(a.Tags, t) {
+				a.Tags = append(a.Tags, t)
+			}
+		}
+		sort.Strings(a.Tags)
+	}
+	return true
+}
+
+// containsString reports whether the list holds the value.
+func containsString(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+// HasTag reports whether the agent carries the tag.
+func (a *Agent) HasTag(tag string) bool {
+	return containsString(a.Tags, strings.ToLower(strings.TrimSpace(tag)))
 }
 
 // Agent returns a copy of one agent record.
@@ -359,12 +494,23 @@ func (s *Store) Agent(id string) (*Agent, bool) {
 }
 
 // Agents returns all agents, most recently seen first.
+//
+// The state is refreshed on the way out: an agent that has not checked in
+// for longer than the grace period is offline, whatever its connection
+// looked like when it was last open.
 func (s *Store) Agents() []*Agent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	now := time.Now().UTC()
 	out := make([]*Agent, 0, len(s.agents))
 	for _, a := range s.agents {
-		out = append(out, a.Clone())
+		clone := a.Clone()
+		if agentOnline(a, now) {
+			clone.State = StateOnline
+		} else {
+			clone.State = StateOffline
+		}
+		out = append(out, clone)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
 	return out
@@ -527,12 +673,30 @@ func (s *Store) Task(id string) (*Task, bool) {
 
 // AgentTasks returns the newest tasks of one agent (limit <= 0 means all).
 func (s *Store) AgentTasks(agentID string, limit int) []*Task {
+	return s.FilteredTasks(agentID, "", "", limit)
+}
+
+// FilteredTasks returns the newest tasks that match the filters.
+//
+// An empty filter matches everything, so the call degrades into "the task
+// history" when an operator does not narrow it down.  The tasks come back
+// newest first, which is the order an operator reads them in.
+func (s *Store) FilteredTasks(agentID, kind, state string, limit int) []*Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Task, 0, 16)
 	for i := len(s.order) - 1; i >= 0; i-- {
 		t := s.tasks[s.order[i]]
-		if t == nil || t.AgentID != agentID {
+		if t == nil {
+			continue
+		}
+		if agentID != "" && t.AgentID != agentID {
+			continue
+		}
+		if kind != "" && t.Kind != kind {
+			continue
+		}
+		if state != "" && t.State != state {
 			continue
 		}
 		out = append(out, t.Clone())
@@ -548,8 +712,9 @@ func (s *Store) Stats() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	online, queued, done := 0, 0, 0
+	now := time.Now().UTC()
 	for _, a := range s.agents {
-		if a.State == StateOnline {
+		if agentOnline(a, now) {
 			online++
 		}
 	}

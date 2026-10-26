@@ -74,11 +74,17 @@ var requirements = map[string]string{
 	// ---- state-changing on a host -------------------------------------
 	"task.submit":  Operator,
 	"task.cancel":  Operator,
-	"agents.kill":  Operator,
-	"agents.exit":  Operator,
-	"agents.sleep": Operator,
-	"chat.send":    Operator,
-	"schedule.add": Operator,
+	// A bulk task reaches every agent the filter selects, so it is an
+	// operator action like a single task: the difference is the reach, not
+	// the privilege.
+	"task.bulk":     Operator,
+	"agents.kill":   Operator,
+	"agents.exit":   Operator,
+	"agents.sleep":  Operator,
+	"agents.policy": Operator,
+	"agents.tag":    Operator,
+	"chat.send":     Operator,
+	"schedule.add":  Operator,
 
 	// ---- coordinating a shared engagement -----------------------------
 	// A claim orders human work; it never touches a host, so a junior

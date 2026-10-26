@@ -427,12 +427,72 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return reply(upk.Map{"operators": out, "count": int64(len(out))})
 
 	case "agents.list":
-		agents := s.Hub.Agents()
+		filter := agentFilter(args)
+		agents := s.Hub.SelectAgents(filter)
 		out := make([]any, 0, len(agents))
 		for _, a := range agents {
-			out = append(out, toUpkMap(a))
+			out = append(out, toUpkMap(agentDataMap(a)))
 		}
-		return reply(upk.Map{"agents": out})
+		return reply(upk.Map{"agents": out, "count": len(out)})
+
+	case "agents.tag":
+		tags := stringList(args["tags"])
+		if len(tags) == 0 {
+			if tag, ok := args["tag"].(string); ok && tag != "" {
+				tags = []string{tag}
+			}
+		}
+		if len(tags) == 0 {
+			return fail("agents.tag needs at least one tag")
+		}
+		mode := "add"
+		if m, ok := args["mode"].(string); ok && m != "" {
+			mode = m
+		}
+		if mode != "add" && mode != "remove" && mode != "set" {
+			return fail("agents.tag: mode must be add, remove or set")
+		}
+		targets, err := s.selectTargets(args)
+		if err != nil {
+			return fail("agents.tag: %v", err)
+		}
+		updated := make([]any, 0, len(targets))
+		for _, a := range targets {
+			if err := s.Hub.SetTags(a.ID, tags, mode); err != nil {
+				continue
+			}
+			updated = append(updated, a.ID)
+		}
+		return reply(upk.Map{"updated": updated, "tags": tags, "mode": mode})
+
+	case "agents.policy":
+		sleep, ok1 := asInt64(args["sleep"])
+		jitter, ok2 := asInt64(args["jitter"])
+		if !ok1 || !ok2 {
+			return fail("agents.policy needs numeric sleep and jitter")
+		}
+		// The obfuscation flag is optional: a caller that only wants to
+		// change the interval must not switch the obfuscation off.
+		var obfuscate *bool
+		if v, ok := args["obfuscate"].(bool); ok {
+			obfuscate = &v
+		}
+		targets, err := s.selectTargets(args)
+		if err != nil {
+			return fail("agents.policy: %v", err)
+		}
+		updated := make([]any, 0, len(targets))
+		for _, a := range targets {
+			if err := s.Hub.SetPolicyFull(a.ID, int(sleep), int(jitter), obfuscate); err != nil {
+				continue
+			}
+			updated = append(updated, a.ID)
+		}
+		out := upk.Map{"updated": updated, "sleep": sleep, "jitter": jitter}
+		if obfuscate != nil {
+			out["obfuscate"] = *obfuscate
+		}
+		return reply(out)
 
 	case "agents.info":
 		id, _ := args["id"].(string)
@@ -496,16 +556,41 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 
 	case "task.list":
 		id, _ := args["id"].(string)
+		kind, _ := args["kind"].(string)
+		state, _ := args["state"].(string)
 		limit, ok := asInt64(args["limit"])
 		if !ok || limit <= 0 {
 			limit = 50
 		}
-		hist := s.Hub.Store().AgentTasks(id, int(limit))
+		hist := s.Hub.Store().FilteredTasks(id, kind, state, int(limit))
 		tasks := make([]any, 0, len(hist))
 		for _, t := range hist {
 			tasks = append(tasks, taskMap(t))
 		}
-		return reply(upk.Map{"tasks": tasks})
+		return reply(upk.Map{"tasks": tasks, "count": len(tasks)})
+
+	case "task.bulk":
+		kind, _ := args["kind"].(string)
+		if kind == "" {
+			return fail("task.bulk needs a task kind")
+		}
+		taskArgs, _ := args["args"].(map[string]any)
+		targets, err := s.selectTargets(args)
+		if err != nil {
+			return fail("task.bulk: %v", err)
+		}
+		rows := make([]any, 0, len(targets))
+		for _, a := range targets {
+			t, err := s.Hub.SubmitTask(a.ID, kind, taskArgs)
+			if err != nil {
+				rows = append(rows, upk.Map{"agent_id": a.ID, "error": err.Error()})
+				continue
+			}
+			rows = append(rows, upk.Map{
+				"agent_id": a.ID, "task_id": t.ID, "state": t.State,
+			})
+		}
+		return reply(upk.Map{"tasks": rows, "count": len(rows)})
 
 	case "task.get":
 		taskID, _ := args["task_id"].(string)
@@ -970,9 +1055,96 @@ func agentDataMap(a *store.Agent) map[string]any {
 		"jitter":     a.Jitter,
 		"state":      a.State,
 		"checkins":   a.Checkins,
+		"tags":       a.Tags,
 		"first_seen": a.FirstSeen.Format(time.RFC3339),
 		"last_seen":  a.LastSeen.Format(time.RFC3339),
 	}
+}
+
+// stringList reads a list of strings from an RPC argument.
+//
+// A single comma separated string is accepted as well: an operator types
+// "a,b,c" far more often than a script builds a list.
+func stringList(v any) []string {
+	switch items := v.(type) {
+	case []any:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return items
+	case string:
+		parts := strings.Split(items, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// agentFilter reads the filter of an RPC argument.
+//
+// The filter may sit in a nested "filter" map or as flat arguments, so both
+// `{"filter":{"state":"online"}}` and `{"state":"online"}` work.
+func agentFilter(args map[string]any) hub.AgentFilter {
+	f := hub.AgentFilter{}
+	read := func(m map[string]any) {
+		if v, ok := m["state"].(string); ok && v != "" {
+			f.State = v
+		}
+		if v, ok := m["transport"].(string); ok && v != "" {
+			f.Transport = v
+		}
+		if v, ok := m["os"].(string); ok && v != "" {
+			f.OS = v
+		}
+		if v, ok := m["arch"].(string); ok && v != "" {
+			f.Arch = v
+		}
+		if v, ok := m["tag"].(string); ok && v != "" {
+			f.Tag = v
+		}
+		if v, ok := m["user"].(string); ok && v != "" {
+			f.User = v
+		}
+		if ids := stringList(m["agents"]); len(ids) > 0 {
+			f.IDs = ids
+		}
+	}
+	if raw, ok := args["filter"].(map[string]any); ok {
+		read(raw)
+	}
+	read(args)
+	return f
+}
+
+// selectTargets resolves the agents an operation applies to.
+//
+// The operator either names the agents or describes them with a filter.  An
+// operation without either is refused: a bulk task that hits every agent in
+// the inventory because a filter was forgotten is not recoverable.
+func (s *Server) selectTargets(args map[string]any) ([]*store.Agent, error) {
+	filter := agentFilter(args)
+	if ids := stringList(args["agents"]); len(ids) > 0 {
+		filter.IDs = ids
+	} else if ids := stringList(args["ids"]); len(ids) > 0 {
+		filter.IDs = ids
+	}
+	empty := len(filter.IDs) == 0 && filter.State == "" && filter.Transport == "" &&
+		filter.OS == "" && filter.Arch == "" && filter.Tag == "" && filter.User == ""
+	if empty {
+		return nil, errors.New("no targets: name the agents or describe them with a filter")
+	}
+	return s.Hub.SelectAgents(filter), nil
 }
 
 // toUpkMap converts arbitrary maps into upk-encodable maps, dropping values the
@@ -989,6 +1161,12 @@ func upkValue(v any) any {
 	switch x := v.(type) {
 	case nil, bool, string, []byte, int, int64, uint64, float64, []any:
 		return x
+	case []string:
+		out := make([]any, 0, len(x))
+		for _, item := range x {
+			out = append(out, item)
+		}
+		return out
 	case int32:
 		return int64(x)
 	case uint32:

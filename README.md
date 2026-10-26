@@ -46,6 +46,7 @@ Added on top of that core:
 | Reconnaissance | Host facts, BloodHound-style domain edges, and awareness of debuggers and sandboxes | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#reconnaissance) |
 | Operator state | The console keeps its own SQLite notebook: the tasks it ran, their results and the notes it left | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-operators-notebook) |
 | Traffic hygiene | Sleep obfuscation on top of the jitter, and module images wiped from memory once they have run | [docs/SECURITY.md](docs/SECURITY.md) |
+| Inventory and group work | The agent list is filtered by state, transport, OS, architecture, tag and user, hosts carry operator-owned tags, and one task or one policy reaches a whole group | [docs/OPERATIONS.md](docs/OPERATIONS.md#3a-working-on-groups-of-agents) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,
