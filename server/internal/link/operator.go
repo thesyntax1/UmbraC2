@@ -905,6 +905,23 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name, "kind": kind})
 
 	// ---- team synchronisation ----------------------------------------
+	case "events.list":
+		// The journal of the recent events.  A console that was not
+		// watching asks for the events after the last one it saw.
+		after, _ := asInt64(args["after"])
+		limit, ok := asInt64(args["limit"])
+		if !ok || limit <= 0 {
+			limit = 100
+		}
+		events := s.Hub.Journal(uint64(after), int(limit))
+		rows := make([]any, 0, len(events))
+		var last uint64
+		for _, ev := range events {
+			rows = append(rows, eventMap(ev))
+			last = ev.Seq
+		}
+		return reply(upk.Map{"events": rows, "count": len(rows), "seq": int64(last)})
+
 	case "team.sync":
 		agents := s.Hub.Agents()
 		agentRows := make([]any, 0, len(agents))
@@ -1028,6 +1045,7 @@ func eventMap(ev hub.Event) upk.Map {
 	m := upk.Map{
 		"kind": ev.Kind,
 		"at":   ev.At.Unix(),
+		"seq":  int64(ev.Seq),
 	}
 	if ev.AgentID != "" {
 		m["agent_id"] = ev.AgentID

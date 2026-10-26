@@ -128,6 +128,10 @@ type Hub struct {
 	// alertCool remembers when a rule last fired, so a noisy event does not
 	// turn into a flood of alerts.
 	alertCool map[string]time.Time
+
+	// journal keeps the recent events, so a console that was not watching
+	// can still ask what it missed.
+	journal *journal
 }
 
 // ChainStage is one step of a multi-stage task.
@@ -857,6 +861,14 @@ func (h *Hub) Emit(ev Event) {
 	// The alert rules run outside the lock: they read the store and may emit
 	// an event of their own.
 	h.checkAlerts(ev)
+}
+
+// Journal returns the recent events, oldest first.
+//
+// The events after the given sequence number are returned, so a console
+// that reconnects asks for the ones it missed.
+func (h *Hub) Journal(after uint64, limit int) []Event {
+	return h.journal.after(after, limit)
 }
 
 // checkAlerts fires the configured alert rules.

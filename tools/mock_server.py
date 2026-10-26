@@ -278,7 +278,10 @@ class MockServer:
         # the server watches the event stream with.
         self.chains: Dict[str, Dict[str, Any]] = {}
         self.alerts: List[Dict[str, Any]] = list(alerts or [])
+        # The journal of the recent events: a console that was not
+        # watching asks for the ones it missed.
         self.events: List[Dict[str, Any]] = []
+        self._event_seq = 0
         # Mirrors the Go server's audit trail: one entry per operator RPC.
         self.audit_entries: List[Dict[str, Any]] = []
         self.chat: List[Dict[str, Any]] = []
@@ -1007,6 +1010,7 @@ class MockServer:
         "task.submit": "operator",
         "task.cancel": "operator",
         "task.retry": "operator",
+        "events.list": "viewer",
         "task.bulk": "operator",
         "task.chain": "operator",
         "alerts.list": "viewer",
@@ -1492,6 +1496,16 @@ class MockServer:
             self.emit("task.cancelled", agent_id, task_id=task_id, data={"was": previous})
             return ok({"task_id": task_id, "state": "cancelled"})
 
+        if cmd == "events.list":
+            after = int(args.get("after", 0) or 0)
+            limit = int(args.get("limit", 100) or 100)
+            with self._lock:
+                rows = [dict(e) for e in self.events if int(e.get("seq", 0)) > after]
+            if limit > 0 and len(rows) > limit:
+                rows = rows[-limit:]
+            last = int(rows[-1].get("seq", 0)) if rows else after
+            return ok({"events": rows, "count": len(rows), "seq": last})
+
         if cmd == "task.retry":
             task_id = str(args.get("task_id", ""))
             with self._lock:
@@ -1821,7 +1835,11 @@ class MockServer:
         if to:
             ev["to"] = to
         with self._lock:
+            self._event_seq += 1
+            ev["seq"] = self._event_seq
             self.events.append(ev)
+            if len(self.events) > 2000:
+                del self.events[:len(self.events) - 2000]
             subs = list(self.subscribers)
         for name, q in subs:
             if to and name not in (to, sender):
@@ -2169,6 +2187,10 @@ class FakeAgent(threading.Thread):
                     break
             report = f"scanned files, {len(hits)} hits\n" + "\n".join(hits)
             return 0, report.encode(), "", {}
+        if kind == "proc.kill":
+            pid = int(args.get("pid", 0) or 0)
+            name = str(args.get("name", ""))
+            return 0, f"mock agent: the process {pid or name} would be terminated\n".encode(), "", {}
         if kind == "persist":
             return 0, b"mock agent: the implant would be installed\n", "", {}
         if kind == "update":

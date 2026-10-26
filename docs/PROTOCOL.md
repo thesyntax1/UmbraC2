@@ -334,7 +334,7 @@ Task kinds understood by the reference implants:
 | `ls` | `path` | directory listing |
 | `download` | `path`, optional `offset`, `limit` | file bytes (≤ 900 KiB per task) + transfer metadata (§7.1) |
 | `upload` | `path`, `data` (bin), optional `offset`, `eof` | confirmation text + transfer metadata (§7.1) |
-| `ps` | — | process listing |
+| `ps` | — | the process table of the host: the pid, the parent, the user, the start time and the command line |
 | `sleep` | `sleep`, `jitter` | confirmation; beacon applies it (with sleep obfuscation, §7.5) |
 | `exit` | — | beacon sends result, then BYE and terminates |
 | `ping` | — | `pong` |
@@ -356,6 +356,7 @@ Task kinds understood by the reference implants:
 | `triage` | `path` | the size, the digest, the format and the entropy of a file |
 | `find` | `path`, `name` (glob or substring), `content`, `max` | the files that match |
 | `netinfo` | — | the interfaces, the routes, the neighbours and the resolvers |
+| `proc.kill` | `pid` or `name` | terminates a process of the host |
 | `persist` | optional `method` | installs the implant so it survives a reboot |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
@@ -432,6 +433,7 @@ Operator RPC commands, with the minimum role each requires:
 | `alerts.list` | viewer | the alert rules the server watches the event stream with |
 | `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
 | `task.retry` | operator | run a finished task again as a new task |
+| `events.list` | viewer | the recent events of the journal (`after`, `limit`) |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |

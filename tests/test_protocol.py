@@ -3157,3 +3157,44 @@ def test_the_console_writes_a_report_about_an_agent():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_the_journal_keeps_what_a_console_missed():
+    """The live stream is for the watchers; the journal is for the rest."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-journal-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-journal", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        client.submit("agent-journal", "sysinfo", {})
+        time.sleep(0.6)
+
+        res = client.events(0, 200)
+        rows = res.get("events") or []
+        assert rows, "the journal is empty"
+        kinds = {row.get("kind") for row in rows}
+        assert "agent.new" in kinds
+        assert "task.queued" in kinds
+        # The events are numbered, so a console knows what it has seen.
+        seqs = [int(row.get("seq", 0)) for row in rows]
+        assert seqs == sorted(seqs)
+        assert res["seq"] == seqs[-1]
+
+        # A console that reconnects asks for what it missed.
+        last = seqs[-1]
+        again = client.events(last, 200)
+        assert (again.get("events") or []) == []
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

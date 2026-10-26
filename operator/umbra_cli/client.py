@@ -368,6 +368,18 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    def events(self, after: int = 0, limit: int = 100) -> Dict[str, Any]:
+        """The recent events of the server's journal.
+
+        The live stream is for the consoles that are watching; the journal
+        is for the ones that were not.  Every event carries a number, so a
+        console that reconnects asks for the ones after the last it saw.
+        """
+        res = self.rpc("events.list", {"after": after, "limit": limit})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def audit(self, limit: int = 50) -> Dict[str, Any]:
         """Recent operator actions, newest first.
 

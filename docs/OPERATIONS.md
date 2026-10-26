@@ -210,6 +210,19 @@ When the first address is down, the beacon tries the next one, so a server
 that moves does not take the implant with it.  `UMBRA_PROXY` routes the
 connection through a SOCKS5 proxy, for a network that only lets a proxy out.
 
+### The processes
+
+```bash
+umbra proc web-01
+umbra proc-kill web-01 4321
+umbra proc-kill web-01 whoami
+```
+
+The table is the operating system's own: the pid, the parent, the user, the
+moment the process started and the exact command line.  A shell tool hides
+most of that, and it is exactly what an operator asks about when a host
+behaves strangely.
+
 ### The command namespace
 
 The server ships with a small namespace of saved commands, so a team says
