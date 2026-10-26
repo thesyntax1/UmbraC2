@@ -318,7 +318,7 @@ class MockServer:
             "agent_id": str((req.get("args") or {}).get("id", "")),
             "task_id": str((req.get("args") or {}).get("task_id", "")
                            or (resp.get("data") or {}).get("task_id", "")),
-            "detail": str(req.get("args") or ""),
+            "detail": " ".join(f"{k}={v}" for k, v in sorted((req.get("args") or {}).items())),
             "ms": int((time.monotonic() - started) * 1000),
         }
         with self._lock:

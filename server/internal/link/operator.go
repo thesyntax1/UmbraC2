@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -144,9 +145,20 @@ func (s *Server) record(op *hub.Operator, cmd string, args map[string]any, ok bo
 	if s.audit == nil {
 		return
 	}
+	// Sorted key=value rather than %v of a map: the audit log is diffed and
+	// grepped, and Go randomises map iteration order.
 	detail := ""
 	if len(args) > 0 {
-		detail = audit.Clip(fmt.Sprintf("%v", args))
+		keys := make([]string, 0, len(args))
+		for k := range args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%v", k, args[k]))
+		}
+		detail = audit.Clip(strings.Join(parts, " "))
 	}
 	name := ""
 	peer, transport := "", ""
