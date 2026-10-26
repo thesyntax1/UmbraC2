@@ -47,6 +47,10 @@ Added on top of that core:
 | Operator state | The console keeps its own SQLite notebook: the tasks it ran, their results and the notes it left | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-operators-notebook) |
 | Traffic hygiene | Sleep obfuscation on top of the jitter, and module images wiped from memory once they have run | [docs/SECURITY.md](docs/SECURITY.md) |
 | Inventory and group work | The agent list is filtered by state, transport, OS, architecture, tag and user, hosts carry operator-owned tags, and one task or one policy reaches a whole group | [docs/OPERATIONS.md](docs/OPERATIONS.md#3a-working-on-groups-of-agents) |
+| Interactive sessions | A real shell on the target: the operator types, the beacon streams, and the session survives a re-connect | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
+| Task chains | Several tasks in a row, where the output of one becomes the input of the next | [docs/PROTOCOL.md](docs/PROTOCOL.md#72d-multi-stage-tasks) |
+| Alerts | The server watches its own event stream and raises an alert when a rule matches | [docs/PROTOCOL.md](docs/PROTOCOL.md#72e-alert-rules) |
+| Host triage | Hashes, entropy and file type of a file on the target, a search by name or content, and the network configuration | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

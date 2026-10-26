@@ -54,6 +54,10 @@ pub const COMPILED_WS_HOST_HEADER: &str = match option_env!("UMBRA_WS_HOST_HEADE
     Some(v) => v,
     None => "",
 };
+pub const COMPILED_PROXY: &str = match option_env!("UMBRA_PROXY") {
+    Some(v) => v,
+    None => "",
+};
 pub const COMPILED_HTTP_PAD: &str = match option_env!("UMBRA_HTTP_PAD") {
     Some(v) => v,
     None => "0",
@@ -97,6 +101,8 @@ pub struct Config {
     pub http_host_header: String,
     /// The bucket size the HTTP request bodies are padded to (0 = off).
     pub http_pad: u32,
+    /// The SOCKS5 proxy the beacon dials through (empty = direct).
+    pub proxy: String,
     /// Whether the beacon obfuscates its sleep interval (on by default).
     pub sleep_obfuscate: bool,
 }
@@ -194,6 +200,7 @@ impl Config {
             http_pad: pick("UMBRA_HTTP_PAD", COMPILED_HTTP_PAD)
                 .parse::<u32>()
                 .map_err(|_| "UMBRA_HTTP_PAD must be an integer".to_string())?,
+            proxy: pick("UMBRA_PROXY", COMPILED_PROXY),
             sleep_obfuscate: env::var("UMBRA_SLEEP_OBFUSCATE")
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),

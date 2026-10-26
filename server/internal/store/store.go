@@ -162,6 +162,10 @@ type Task struct {
 	// duplicate work on the same target.
 	ClaimedBy string    `json:"claimed_by,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// ChainID links this task to the multi-stage task it belongs to, and
+	// Stage is its position in that chain (0 is the first stage).
+	ChainID string `json:"chain_id,omitempty"`
+	Stage   int    `json:"stage,omitempty"`
 	Created   time.Time `json:"created"`
 	Delivered time.Time      `json:"delivered,omitempty"`
 	Completed time.Time      `json:"completed,omitempty"`
@@ -480,6 +484,49 @@ func containsString(list []string, value string) bool {
 // HasTag reports whether the agent carries the tag.
 func (a *Agent) HasTag(tag string) bool {
 	return containsString(a.Tags, strings.ToLower(strings.TrimSpace(tag)))
+}
+
+// MaxStreamOutput bounds the output a streaming task may accumulate.
+//
+// A streaming task (an interactive session) delivers its output in pieces.
+// The pieces are kept in order, but a session that never ends must not grow
+// the state file without a limit.
+const MaxStreamOutput = 1024 * 1024
+
+// AppendOutput appends a streamed chunk to the output of a task.
+//
+// The task stays in its current state: a chunk is not the end of the task.
+// The operator reads the whole stream from task.get, the consoles see every
+// chunk as it arrives.
+func (s *Store) AppendOutput(taskID string, chunk []byte) (*Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return nil, false
+	}
+	if len(t.Output) >= MaxStreamOutput {
+		return t.Clone(), true
+	}
+	room := MaxStreamOutput - len(t.Output)
+	if len(chunk) > room {
+		chunk = chunk[:room]
+	}
+	t.Output = append(t.Output, chunk...)
+	return t.Clone(), true
+}
+
+// SetChain records that a task is a stage of a multi-stage task.
+func (s *Store) SetChain(taskID, chainID string, stage int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return false
+	}
+	t.ChainID = chainID
+	t.Stage = stage
+	return true
 }
 
 // Agent returns a copy of one agent record.

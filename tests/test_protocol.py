@@ -2805,3 +2805,216 @@ def test_the_console_renders_the_bulk_views():
     finally:
         agent.stop()
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Interactive sessions, multi-stage tasks and alert rules
+# ---------------------------------------------------------------------------
+def test_a_session_streams_its_output():
+    """An interactive session: the output arrives while the task is open."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-session-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-session")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.agents():
+                break
+            time.sleep(0.05)
+
+        opened = client.open_session("agent-session", "")
+        task_id = opened["task_id"]
+        assert task_id
+
+        # The session id travels with the first chunk.
+        session_id = ""
+        chunks = []
+        deadline = time.time() + 10
+        while time.time() < deadline and not session_id:
+            event = client.next_event(timeout=1.0)
+            if event is None:
+                continue
+            if event.get("kind") == "task.output" and event.get("task_id") == task_id:
+                meta = event.get("data", {}).get("meta", {}) or {}
+                session_id = str(meta.get("session", ""))
+        assert session_id, "the session id never arrived"
+
+        # Writing to the session echoes back as a chunk of the same stream.
+        client.session_input("agent-session", session_id, b"whoami\n")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            event = client.next_event(timeout=1.0)
+            if event is None:
+                continue
+            if event.get("kind") == "task.output" and event.get("task_id") == task_id:
+                text = event.get("data", {}).get("output", "")
+                if text:
+                    chunks.append(text)
+                    break
+        assert any("whoami" in c for c in chunks), chunks
+
+        # The task is still open: a session has no result until it ends.
+        assert client.task(task_id)["state"] == "delivered"
+
+        # Closing the session ends the task.
+        client.close_session("agent-session", session_id)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if client.task(task_id)["state"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert client.task(task_id)["state"] == "done"
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_chain_runs_the_stages_one_after_the_other():
+    """The output of a stage becomes the input of the next one."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-chain-012345"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-chain")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.agents():
+                break
+            time.sleep(0.05)
+
+        data = client.submit_chain("agent-chain", [
+            {"kind": "shell", "args": {"cmd": "echo marker-42"}},
+            {"kind": "shell", "args": {"cmd": "cat {{output}}"}},
+        ])
+        assert data["chain_id"]
+        assert data["stages"] == 2
+
+        # The second stage sees the output of the first one.
+        deadline = time.time() + 15
+        seen = ""
+        while time.time() < deadline:
+            tasks = client.tasks(agent_id="agent-chain", limit=10)
+            done = [t for t in tasks if t["state"] in ("done", "failed")]
+            if len(done) >= 2:
+                texts = []
+                for task in done:
+                    raw = task.get("out", "")
+                    if isinstance(raw, str):
+                        raw = raw.encode()
+                    texts.append(bytes(raw).decode("utf-8", "replace"))
+                joined = " ".join(texts)
+                if "marker-42" in joined:
+                    seen = joined
+                    break
+            time.sleep(0.1)
+        assert "marker-42" in seen, seen
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_alert_rules_are_visible():
+    """The rules the server watches the event stream with."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-alerts-01234"
+    rules = [{"name": "agent-offline", "event": "agent.offline", "cooldown_s": 300}]
+    server = MockServer(AGENT_PSK, {"alice": token}, alerts=rules)
+    server.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        listed = client.alerts()
+        assert len(listed) == 1
+        assert listed[0]["name"] == "agent-offline"
+        assert listed[0]["cooldown_s"] == 300
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_screen_capture_is_turned_into_a_png():
+    """The implant captures a BMP; the console saves a PNG."""
+    from umbra_cli import image
+
+    width, height = 2, 2
+    stride = ((width * 3 + 3) // 4) * 4
+    rows = [bytes([0, 0, 255, 0, 255, 0]) + b"\x00" * (stride - 6),
+            bytes([255, 0, 0, 0, 0, 255]) + b"\x00" * (stride - 6)]
+    pixels = b"".join(rows)
+    header = (b"BM" + (54 + len(pixels)).to_bytes(4, "little") + b"\x00" * 4
+              + (54).to_bytes(4, "little")
+              + (40).to_bytes(4, "little") + width.to_bytes(4, "little")
+              + height.to_bytes(4, "little") + (1).to_bytes(2, "little")
+              + (24).to_bytes(2, "little") + b"\x00" * 24)
+    png = image.bmp_to_png(header + pixels)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert image.png_size(png) == (width, height)
+    # The pixels are swapped from BGR to RGB.
+    import zlib
+    start = png.index(b"IDAT") + 4
+    length = int.from_bytes(png[start - 8:start - 4], "big")
+    raw = zlib.decompress(png[start:start + length])
+    assert raw[1:4] == b"\xff\x00\x00", raw[:8]
+
+
+def test_the_console_queues_a_chain_and_lists_the_alerts():
+    """The console speaks the new commands."""
+    import subprocess
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-chaincli-0123"
+    server = MockServer(AGENT_PSK, {"alice": token},
+                        alerts=[{"name": "offline", "event": "agent.offline",
+                                 "cooldown_s": 60}])
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-chaincli")
+    agent.start()
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    base = [sys.executable, "-m", "umbra_cli", "--server", server.address,
+            "-o", "alice", "-k", token.decode(), "--json"]
+
+    def run(*argv: str) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(base + list(argv), capture_output=True, text=True,
+                              env=env, timeout=60)
+
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if json.loads(run("agents").stdout):
+                break
+            time.sleep(0.05)
+
+        rules = json.loads(run("alerts").stdout)
+        assert rules[0]["name"] == "offline"
+
+        queued = json.loads(run("chain", "agent-chaincli", "--stages",
+                                '[{"kind":"shell","args":{"cmd":"id"}}]').stdout)
+        assert queued["chain_id"]
+        assert queued["stages"] == 1
+    finally:
+        agent.stop()
+        server.stop()

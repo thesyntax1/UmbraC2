@@ -421,6 +421,55 @@ class OperatorClient:
             raise OperatorError(res.error)
         return list(res.data.get("tasks", []))
 
+    # -- interactive sessions and chains -------------------------------
+    def open_session(self, agent_id: str, cmd: str = "") -> Dict[str, Any]:
+        """Open an interactive session on an agent.
+
+        The session is a process the operator writes to and reads from.  The
+        task stays open while the session lives: the output arrives as
+        `task.output` events, and the result is the exit status.
+        """
+        res = self.rpc("task.submit", {"id": agent_id, "kind": "session.open",
+                                       "args": {"cmd": cmd}})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def session_input(self, agent_id: str, session: str, data: bytes) -> Dict[str, Any]:
+        """Write to an open session."""
+        res = self.rpc("task.submit", {"id": agent_id, "kind": "session.input",
+                                       "args": {"session": session, "data": data}})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def close_session(self, agent_id: str, session: str) -> Dict[str, Any]:
+        """Close an open session."""
+        res = self.rpc("task.submit", {"id": agent_id, "kind": "session.close",
+                                       "args": {"session": session}})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def submit_chain(self, agent_id: str, stages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Queue a multi-stage task.
+
+        The stages run one after the other on the same agent, and the output
+        of a stage is substituted into the `{{output}}` placeholder of the
+        arguments of the next one.
+        """
+        res = self.rpc("task.chain", {"id": agent_id, "stages": stages})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def alerts(self) -> List[Dict[str, Any]]:
+        """The alert rules the server watches the event stream with."""
+        res = self.rpc("alerts.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("alerts", []))
+
     # -- pivoting -------------------------------------------------------
     def pivot_list(self) -> List[Dict[str, Any]]:
         """Every open pivot tunnel and the number of live callback sessions."""

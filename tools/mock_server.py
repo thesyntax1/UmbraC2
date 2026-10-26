@@ -36,6 +36,22 @@ from umbra_cli import crypto, handshake, netio, session, upk, wire, ws  # noqa: 
 OFFLINE_GRACE = 90
 
 
+def _substitute_output(args: Dict[str, Any], output: bytes) -> Dict[str, Any]:
+    """Replace the {{output}} placeholder in the arguments of a stage."""
+    text = output.decode("utf-8", "replace")[:65536]
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace("{{output}}", text)
+        if isinstance(value, dict):
+            return {k: walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        return value
+
+    return {k: walk(v) for k, v in args.items()}
+
+
 def _now() -> int:
     return int(time.time())
 
@@ -231,6 +247,7 @@ class MockServer:
         tls_key: str = "",
         tls_client_ca: str = "",
         websocket: bool = False,
+        alerts: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self.agent_psk = agent_psk
         self.operators = dict(operators)
@@ -257,6 +274,10 @@ class MockServer:
         self._lock = threading.Lock()
         self.agents: Dict[str, Dict[str, Any]] = {}
         self.tasks: Dict[str, Dict[str, Any]] = {}
+        # The multi-stage tasks that are still running, and the alert rules
+        # the server watches the event stream with.
+        self.chains: Dict[str, Dict[str, Any]] = {}
+        self.alerts: List[Dict[str, Any]] = list(alerts or [])
         self.events: List[Dict[str, Any]] = []
         # Mirrors the Go server's audit trail: one entry per operator RPC.
         self.audit_entries: List[Dict[str, Any]] = []
@@ -711,11 +732,102 @@ class MockServer:
             self.emit("task.delivered", agent_id, task_id=t["id"])
         return out
 
+    def _queue_task(self, agent_id: str, kind: str,
+                    task_args: Dict[str, Any]) -> Dict[str, Any]:
+        """Queue a task and announce it."""
+        task = {
+            "id": new_id("t"),
+            "agent_id": agent_id,
+            "kind": kind,
+            "args": task_args,
+            "state": "queued",
+            "code": 0,
+            "out": b"",
+            "err": "",
+            "created": _now(),
+        }
+        with self._lock:
+            self.tasks[task["id"]] = task
+        self.emit("task.queued", agent_id, task_id=task["id"], data={"kind": kind})
+        return task
+
+    def _advance_chain(self, task_id: str, output: bytes) -> None:
+        """Hand the output of a finished stage to the next one."""
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if task is None:
+                return
+            chain_id = task.get("chain_id")
+            if not chain_id:
+                return
+            chain = self.chains.get(chain_id)
+            if chain is None:
+                return
+            chain["stage"] += 1
+            stage = chain["stage"]
+            stages = chain["stages"]
+            agent_id = chain["agent_id"]
+            if stage >= len(stages):
+                self.chains.pop(chain_id, None)
+                finished = True
+                next_task = None
+                next_kind = ""
+            else:
+                finished = False
+                nxt = stages[stage]
+                args = _substitute_output(nxt.get("args") or {}, output)
+                next_kind = str(nxt.get("kind", ""))
+                next_task = None
+        if not finished and next_task is None:
+            # The lock is released before the task is queued: the queue
+            # helper takes it itself.
+            next_task = self._queue_task(agent_id, next_kind, args)
+            with self._lock:
+                next_task["chain_id"] = chain_id
+                next_task["stage"] = stage
+        if finished:
+            self.emit("chain.done", task.get("agent_id", ""), task_id=task_id,
+                      data={"chain": chain_id, "stages": stage})
+        elif next_task is not None:
+            self.emit("chain.stage", next_task["agent_id"], task_id=next_task["id"],
+                      data={"chain": chain_id, "stage": stage,
+                            "kind": next_task["kind"]})
+
     def _complete_task(self, msg: Dict[str, Any]) -> None:
         task_id = str(msg.get("id", ""))
         out = msg.get("out", b"")
         if isinstance(out, (bytes, bytearray)):
             out = bytes(out)
+        if bool(msg.get("partial", False)):
+            # A streamed chunk: the task is still running, so the chunk is
+            # appended and the consoles are told about it.
+            with self._lock:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    return
+                previous = task.get("out", b"")
+                if not isinstance(previous, (bytes, bytearray)):
+                    previous = str(previous).encode()
+                task["out"] = bytes(previous) + out
+                meta = {
+                    k: v
+                    for k, v in msg.items()
+                    if k not in ("id", "code", "out", "err", "partial")
+                    and isinstance(v, (str, bool, int, float))
+                }
+                if meta:
+                    task["meta"] = meta
+                size = len(task["out"])
+            data: Dict[str, Any] = {"size": size}
+            if meta:
+                data["meta"] = meta
+            if out:
+                try:
+                    data["output"] = out.decode()
+                except UnicodeDecodeError:
+                    data["binary"] = True
+            self.emit("task.output", task_id=task_id, data=data)
+            return
         with self._lock:
             task = self.tasks.get(task_id)
             if task is None:
@@ -757,6 +869,8 @@ class MockServer:
         if snapshot.get("meta"):
             data["meta"] = snapshot["meta"]
         self.emit("task.result", snapshot["agent_id"], task_id=task_id, data=data)
+        # A stage of a multi-stage task hands its output to the next stage.
+        self._advance_chain(task_id, raw)
 
     # -- operators -------------------------------------------------------
     def _operator_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
@@ -834,6 +948,8 @@ class MockServer:
         "task.submit": "operator",
         "task.cancel": "operator",
         "task.bulk": "operator",
+        "task.chain": "operator",
+        "alerts.list": "viewer",
         "agents.kill": "operator",
         "agents.exit": "operator",
         "agents.sleep": "operator",
@@ -1214,6 +1330,37 @@ class MockServer:
                 self.emit("task.queued", row["agent_id"],
                           task_id=row["task_id"], data={"kind": kind})
             return ok({"tasks": rows, "count": len(rows)})
+
+        if cmd == "task.chain":
+            agent_id = str(args.get("id", "") or "")
+            stages = args.get("stages") or []
+            if not isinstance(stages, list) or not stages:
+                return fail("task.chain: a chain needs at least one stage")
+            with self._lock:
+                if agent_id not in self.agents:
+                    return fail(f"unknown agent {agent_id!r}")
+                chain_id = new_id("chain")
+                self.chains[chain_id] = {
+                    "id": chain_id,
+                    "agent_id": agent_id,
+                    "stages": [dict(stage) for stage in stages],
+                    "stage": 0,
+                }
+            first = stages[0]
+            task = self._queue_task(agent_id, str(first.get("kind", "")),
+                                    first.get("args") or {})
+            with self._lock:
+                task["chain_id"] = chain_id
+                task["stage"] = 0
+            self.emit("chain.started", agent_id, task_id=task["id"],
+                      data={"chain": chain_id, "stages": len(stages)})
+            return ok({"chain_id": chain_id, "task_id": task["id"],
+                       "agent_id": agent_id, "stages": len(stages),
+                       "state": task["state"]})
+
+        if cmd == "alerts.list":
+            rules = self.alerts
+            return ok({"alerts": rules, "count": len(rules)})
 
         if cmd in ("task.claim", "task.release"):
             task_id = str(args.get("task_id", ""))
@@ -1734,6 +1881,8 @@ class FakeAgent(threading.Thread):
         self.cancels_received: List[str] = []
         # The last policy the server pushed (sleep, jitter, obfuscation).
         self.policy: Dict[str, Any] = {}
+        # The interactive sessions the agent has open.
+        self.sessions: Dict[str, Dict[str, Any]] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -1797,6 +1946,13 @@ class FakeAgent(threading.Thread):
             if not batch:
                 return
             for task in batch.get("tasks", []):
+                kind = str(task.get("kind", ""))
+                if kind in ("session.open", "session.input", "session.close"):
+                    # The interactive session: the id travels with the first
+                    # chunk, the input is echoed back as a chunk of the
+                    # session, and closing the session ends the open task.
+                    self._session_task(kind, task, sess, stream)
+                    continue
                 if str(task.get("id", "")) in cancelled:
                     # The command is still reported so the server can show that
                     # it was cancelled and that nothing ran.
@@ -1818,6 +1974,51 @@ class FakeAgent(threading.Thread):
             self.sent_bye = True
         finally:
             stream.close()
+
+    def _session_task(self, kind: str, task: Dict[str, Any], sess: Any,
+                      stream: Any) -> None:
+        """Run one of the interactive session tasks."""
+        task_id = str(task.get("id", ""))
+        args = task.get("args") or {}
+        if kind == "session.open":
+            sid = new_id("s")
+            self.sessions[sid] = {"task_id": task_id, "buffer": b""}
+            body = {
+                "id": task_id, "code": 0, "out": b"", "err": "",
+                "partial": True, "session": sid,
+            }
+            stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
+            return
+        sid = str(args.get("session", ""))
+        session = self.sessions.get(sid)
+        if session is None:
+            body = {"id": task_id, "code": 1, "out": b"",
+                    "err": f"unknown session {sid}"}
+            stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
+            return
+        if kind == "session.input":
+            data = args.get("data", b"")
+            if isinstance(data, str):
+                data = data.encode()
+            session["buffer"] += bytes(data)
+            # The echo belongs to the session, not to the input task: the
+            # operator reads one stream.
+            body = {
+                "id": session["task_id"], "code": 0, "out": bytes(data),
+                "err": "", "partial": True, "session": sid,
+            }
+            stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
+            body = {"id": task_id, "code": 0, "out": b"", "err": "", "session": sid}
+            stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
+            return
+        # session.close
+        buffer = session["buffer"]
+        self.sessions.pop(sid, None)
+        body = {"id": session["task_id"], "code": 0, "out": buffer, "err": "",
+                "session": sid}
+        stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
+        body = {"id": task_id, "code": 0, "out": b"", "err": "", "session": sid}
+        stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
 
     def _execute(self, task: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """Run one task, returning (code, stdout, stderr, meta).
@@ -1867,6 +2068,35 @@ class FakeAgent(threading.Thread):
             data = args.get("data") or b""
             name = str(args.get("name", "module"))
             return 0, f"module {name} ran in memory ({len(bytes(data))} bytes)\n".encode(), "", {}
+        if kind == "triage":
+            path = str(args.get("path", ""))
+            try:
+                data = open(path, "rb").read()
+            except OSError as exc:
+                return 1, b"", f"triage {path}: {exc}", {}
+            digest = hashlib.sha256(data).hexdigest()
+            magic = "PE" if data[:2] == b"MZ" else (
+                "ELF" if data[:4] == b"\x7fELF" else "unknown")
+            report = (f"path: {path}\nsize: {len(data)}\nsha256: {digest}\n"
+                      f"magic: {magic}\n")
+            return 0, report.encode(), "", {}
+        if kind == "find":
+            root = str(args.get("path", "."))
+            name = str(args.get("name", "")).lower()
+            hits = []
+            for base, _dirs, files in os.walk(root):
+                for entry in files:
+                    if not name or name in entry.lower():
+                        hits.append(os.path.join(base, entry))
+                    if len(hits) >= 50:
+                        break
+                if len(hits) >= 50:
+                    break
+            report = f"scanned files, {len(hits)} hits\n" + "\n".join(hits)
+            return 0, report.encode(), "", {}
+        if kind == "netinfo":
+            report = "source: mock\ninterfaces:\n  lo 127.0.0.1\n"
+            return 0, report.encode(), "", {}
         if kind in ("vpn", "p2p"):
             return 0, f"the mock agent cannot run {kind!r}\n".encode(), "", {}
         return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}

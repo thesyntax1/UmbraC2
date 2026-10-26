@@ -121,6 +121,25 @@ name its targets: an explicit list of ids, a filter, or both.  A bulk
 operation without either is refused, because "I forgot the filter and now it
 runs on two hundred machines" is not a mistake an operator can take back.
 
+### Long running work
+
+Two things in the framework do not finish when the task is queued.
+
+**A session** is a process the operator types into.  The beacon starts it
+with its input and output piped and streams the output as *partial results*:
+a RESULT body with `partial: true` is appended to the task instead of
+completing it, so the task stays in `delivered` state while the session
+lives and the console sees the output as it happens.  The session lives in the
+implant, not in the connection, and the beacon holds the connection open
+while a session is live — otherwise an interactive shell with a one-minute
+check-in interval would feel like a mailbox.
+
+**A chain** is several tasks in a row.  The chain state lives in the hub
+(the stages themselves are ordinary tasks, so the history still shows them),
+and the output of a finished stage is substituted into the `{{output}}`
+placeholder of the arguments of the next one.  The substitution only touches
+strings: the output of a stage is data, never code.
+
 ### Concurrency and safety
 
 * one goroutine per connection, no shared mutable message state;

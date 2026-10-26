@@ -29,6 +29,19 @@
   "audit_file": "data/audit.jsonl",
   "audit_max_mb": 8,
   "log_level": "debug",
+  "alerts": [
+    {
+      "name": "agent-offline",
+      "event": "agent.offline",
+      "cooldown_s": 300
+    },
+    {
+      "name": "task-failed",
+      "event": "task.result",
+      "task_kind": "",
+      "cooldown_s": 0
+    }
+  ],
   "beacon": {
     "sleep": 5,
     "jitter": 20

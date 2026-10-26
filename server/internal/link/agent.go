@@ -185,6 +185,12 @@ func (l *AgentLink) onResult(msg map[string]any) ([][]byte, error) {
 	}
 	output, _ := msg["out"].([]byte)
 	errMsg, _ := msg["err"].(string)
+	if partial, _ := msg["partial"].(bool); partial {
+		// A streamed chunk: the task is still running (an interactive
+		// session), so the chunk is appended instead of completing it.
+		l.Hub.AppendTaskOutput(l.AgentID, taskID, output, resultMeta(msg))
+		return nil, nil
+	}
 	l.Hub.CompleteTask(l.AgentID, taskID, code, output, errMsg, resultMeta(msg))
 	return nil, nil
 }
@@ -199,7 +205,7 @@ func resultMeta(msg map[string]any) map[string]any {
 	meta := make(map[string]any, len(msg)-4)
 	for k, v := range msg {
 		switch k {
-		case "id", "code", "out", "err":
+		case "id", "code", "out", "err", "partial":
 			continue
 		}
 		switch v.(type) {

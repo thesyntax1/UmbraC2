@@ -29,6 +29,19 @@
   "audit_file": "/var/lib/umbra/audit.jsonl",
   "audit_max_mb": 32,
   "log_level": "info",
+  "alerts": [
+    {
+      "name": "agent-offline",
+      "event": "agent.offline",
+      "cooldown_s": 300
+    },
+    {
+      "name": "task-failed",
+      "event": "task.result",
+      "task_kind": "",
+      "cooldown_s": 0
+    }
+  ],
   "beacon": {
     "sleep": 60,
     "jitter": 35

@@ -347,6 +347,15 @@ Task kinds understood by the reference implants:
 | `token` | optional `pid` | duplicated access token of another user or service |
 | `privesc` | `mode` | local privilege escalation attempt |
 | `vpn` | `action` (`start`/`stop`), optional `addr` | layer-3 tunnel endpoint state |
+| `session.open` | `cmd` (empty starts the platform shell) | an interactive session; the output streams as partial results (§7.2c) |
+| `session.input` | `session`, `data` (text or bin) | writes to an open session |
+| `session.close` | `session` | closes a session and ends its task |
+| `keylog` | `seconds` | the pressed keys, streamed as partial results (Windows) |
+| `screenshot` | — | the screen as a BMP file (Windows) |
+| `clipboard` | — | the text on the clipboard (Windows) |
+| `triage` | `path` | the size, the digest, the format and the entropy of a file |
+| `find` | `path`, `name` (glob or substring), `content`, `max` | the files that match |
+| `netinfo` | — | the interfaces, the routes, the neighbours and the resolvers |
 
 ### 7.1 Result metadata and chunked transfer
 
@@ -417,6 +426,8 @@ Operator RPC commands, with the minimum role each requires:
 | `schedule.list` | viewer | recurring tasks |
 | `task.submit` | operator | queue a task |
 | `task.bulk` | operator | queue one task on many agents: `agents` (list) and/or `filter` |
+| `task.chain` | operator | queue a multi-stage task: `stages` is a list of `{kind, args}` |
+| `alerts.list` | viewer | the alert rules the server watches the event stream with |
 | `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
@@ -491,6 +502,62 @@ Roles are `viewer` < `operator` < `admin`. Identities come from
 
 Responses keep the `rid` of the request; events are asynchronous and can arrive
 at any time.
+
+### 7.2c Streaming output and interactive sessions
+
+A RESULT body may carry `partial: true`.  The server then **appends** the
+chunk to the output of the task instead of completing it, and pushes a
+`task.output` event with the chunk.  The task stays in the `delivered` state
+until the final RESULT arrives, so a task that streams is visible as running.
+
+That is what an interactive session is built on:
+
+```json
+{"kind": "session.open", "args": {"cmd": ""}}
+```
+
+The beacon starts the process with its input and output piped, answers with a
+partial result that carries the session id (`session` in the result metadata)
+and then streams the output of the process as partial results.  The operator
+writes with `session.input` and ends the session with `session.close`, which
+completes the task with the exit status of the process.
+
+The session lives in the implant, not in the connection: a session survives a
+re-connect, and the beacon keeps the connection open while a session is live,
+so the operator types into a shell instead of queueing a line for the next
+check-in.
+
+### 7.2d Multi-stage tasks
+
+A chain is a sequence of tasks where the output of a stage becomes the input
+of the next one:
+
+```json
+{"cmd": "task.chain", "args": {"id": "web-01", "stages": [
+  {"kind": "shell", "args": {"cmd": "ls /etc/umbra"}},
+  {"kind": "shell", "args": {"cmd": "cat {{output}}"}}
+]}}
+```
+
+`{{output}}` is replaced with the output of the previous stage in the string
+values of the arguments.  The substitution only touches text: the output of a
+stage is data, never code.  The chain lives in the server's memory, the
+stages are ordinary tasks, and the events `chain.started`, `chain.stage` and
+`chain.done` tell the consoles what is happening.
+
+### 7.2e Alert rules
+
+The server can watch its own event stream:
+
+```json
+{"alerts": [{"name": "dc-offline", "event": "agent.offline", "tag": "dc", "cooldown_s": 300}]}
+```
+
+A rule matches on the event kind, on a tag of the agent, on the beginning of
+the agent id and on the kind of the task.  When a rule matches, the server
+logs the event loudly and pushes an `alert` event of its own, so a console
+that watches the alerts sees it even when the original event is noise.  The
+cooldown keeps a noisy agent from producing an alert on every check-in.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

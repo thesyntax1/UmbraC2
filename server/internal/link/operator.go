@@ -494,6 +494,18 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(out)
 
+	case "alerts.list":
+		rules := s.Hub.Config().Server.Alerts
+		out := make([]any, 0, len(rules))
+		for _, rule := range rules {
+			out = append(out, upk.Map{
+				"name": rule.Name, "event": rule.Event, "tag": rule.Tag,
+				"agent": rule.Agent, "task_kind": rule.TaskKind,
+				"cooldown_s": int64(rule.CooldownSec),
+			})
+		}
+		return reply(upk.Map{"alerts": out, "count": len(out)})
+
 	case "agents.info":
 		id, _ := args["id"].(string)
 		a, ok := s.Hub.Store().Agent(id)
@@ -527,6 +539,21 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			return fail("task.submit: %v", err)
 		}
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "state": t.State})
+
+	case "task.chain":
+		id, _ := args["id"].(string)
+		stages, err := chainStages(args["stages"])
+		if err != nil {
+			return fail("task.chain: %v", err)
+		}
+		task, chain, err := s.Hub.SubmitChain(id, op.Name, stages)
+		if err != nil {
+			return fail("task.chain: %v", err)
+		}
+		return reply(upk.Map{
+			"chain_id": chain.ID, "task_id": task.ID, "agent_id": chain.AgentID,
+			"stages": len(chain.Stages), "state": task.State,
+		})
 
 	case "task.claim":
 		taskID, _ := args["task_id"].(string)
@@ -1037,6 +1064,10 @@ func taskMap(t *store.Task) upk.Map {
 		m["claimed_by"] = t.ClaimedBy
 		m["claimed_at"] = t.ClaimedAt.Unix()
 	}
+	if t.ChainID != "" {
+		m["chain_id"] = t.ChainID
+		m["stage"] = int64(t.Stage)
+	}
 	return m
 }
 
@@ -1059,6 +1090,36 @@ func agentDataMap(a *store.Agent) map[string]any {
 		"first_seen": a.FirstSeen.Format(time.RFC3339),
 		"last_seen":  a.LastSeen.Format(time.RFC3339),
 	}
+}
+
+// chainStages reads the stages of a multi-stage task.
+//
+// A stage is a map with a "kind" and optional "args". The stages arrive as
+// a list of maps, which is what the upk encoding produces.
+func chainStages(v any) ([]hub.ChainStage, error) {
+	items, ok := v.([]any)
+	if !ok {
+		return nil, errors.New("a chain needs a list of stages")
+	}
+	out := make([]hub.ChainStage, 0, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("stage %d is not a map", i)
+		}
+		kind, _ := m["kind"].(string)
+		if kind == "" {
+			return nil, fmt.Errorf("stage %d has no kind", i)
+		}
+		stage := hub.ChainStage{Kind: kind}
+		if raw, ok := m["args"].(map[string]any); ok {
+			stage.Args = raw
+		} else {
+			stage.Args = map[string]any{}
+		}
+		out = append(out, stage)
+	}
+	return out, nil
 }
 
 // stringList reads a list of strings from an RPC argument.

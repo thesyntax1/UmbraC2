@@ -175,8 +175,8 @@ def compare_table(
 # server queues but the implant silently reports as "unknown" is a support
 # incident waiting to happen. The doc table is the spec; the code must cover it.
 TASK_KIND_SPECS = {
-    "rust": r'^\s*"([a-z]+)"\s*(?:\||\|)?=>',  # inside task::run's match
-    "kotlin": r'^\s*"([a-z]+)"\s*(?:, "[a-z]+")*\s*->',  # inside TaskRunner.run
+    "rust": r'^\s*"([a-z][a-z0-9.]*)"\s*(?:\||\|)?=>',  # inside task::run's match
+    "kotlin": r'^\s*"([a-z][a-z0-9.]*)"\s*(?:, "[a-z][a-z0-9.]*")*\s*->',  # TaskRunner.run
 }
 
 RPC_SPECS = {
@@ -207,7 +207,7 @@ def doc_task_kinds() -> set[str]:
     # first column is also a backticked lowercase word.
     for marker in ("Operator RPC commands", "\n### "):
         section = section.split(marker, 1)[0]
-    return set(re.findall(r"^\| `([a-z]+)` \|", section, re.M))
+    return set(re.findall(r"^\| `([a-z][a-z0-9.]*)` \|", section, re.M))
 
 
 def doc_rpc_commands() -> set[str]:
@@ -218,7 +218,17 @@ def doc_rpc_commands() -> set[str]:
     section = section.split("\n## ", 1)[0]
     table = set(re.findall(r"^\| `([a-z]+\.[a-z]+)` \|", section, re.M))
     prose = set(re.findall(r"`([a-z]+\.[a-z]+)`", section))
+    # The prose also names the event kinds and the task kinds, and those are
+    # not RPC commands: an event the server emits and a task a beacon runs.
+    prose -= go_event_kinds()
+    prose -= doc_task_kinds()
     return table | prose
+
+
+def go_event_kinds() -> set[str]:
+    """The event kinds the Go server emits."""
+    text = read("server/internal/hub/hub.go")
+    return set(re.findall(r'Kind:\s*"([a-z]+\.[a-z]+)"', text))
 
 
 def doc_rpc_roles() -> dict[str, str]:
@@ -279,14 +289,14 @@ def config_keys() -> set[str]:
     text = read("server/internal/config/config.go")
     start = text.index("type Server struct {")
     body = text[start:text.index("\n}", start)]
-    return set(re.findall(r'json:"([a-z0-9_]+)"', body))
+    return set(re.findall(r'json:"([a-z0-9_]+)(?:,[^"]*)?"', body))
 
 
 def nested_config_keys(struct_name: str) -> set[str]:
     text = read("server/internal/config/config.go")
     start = text.index(f"type {struct_name} struct {{")
     body = text[start:text.index("\n}", start)]
-    return set(re.findall(r'json:"([a-z0-9_]+)"', body))
+    return set(re.findall(r'json:"([a-z0-9_]+)(?:,[^"]*)?"', body))
 
 
 def check_deploy_configs() -> int:
@@ -408,7 +418,8 @@ def kind_set(spec: str, rel: str) -> set[str]:
         stripped = line.strip()
         if not (stripped.startswith('"') and ("->" in stripped or "=>" in stripped)):
             continue
-        found.update(re.findall(r'"([a-z]+)"', stripped.split("->")[0].split("=>")[0]))
+        found.update(re.findall(r'"([a-z][a-z0-9.]*)"',
+                                stripped.split("->")[0].split("=>")[0]))
     return found
 
 

@@ -119,6 +119,40 @@ type Hub struct {
 	// to a beacon. The next check-in carries a TASK_CANCEL frame for each, so a
 	// task still sitting in the beacon's batch is not executed.
 	cancels map[string][]string
+
+	// chains holds the multi-stage tasks that are still running, and
+	// chainTasks maps a task id to the chain it belongs to.
+	chains     map[string]*Chain
+	chainTasks map[string]string
+
+	// alertCool remembers when a rule last fired, so a noisy event does not
+	// turn into a flood of alerts.
+	alertCool map[string]time.Time
+}
+
+// ChainStage is one step of a multi-stage task.
+type ChainStage struct {
+	// Kind is the task kind of the stage.
+	Kind string `json:"kind"`
+	// Args are the task arguments. The string values may contain the
+	// placeholder {{output}}, which is replaced with the output of the
+	// previous stage.
+	Args map[string]any `json:"args,omitempty"`
+}
+
+// Chain is a sequence of tasks where the output of a stage becomes the input
+// of the next one.
+//
+// The chain lives in memory only: it is a running operation, not state that
+// has to survive a restart. The tasks themselves are stored as usual, so the
+// history of a chain is still visible after the fact.
+type Chain struct {
+	ID      string       `json:"id"`
+	AgentID string       `json:"agent_id"`
+	Owner   string       `json:"owner,omitempty"`
+	Stages  []ChainStage `json:"stages"`
+	Stage   int          `json:"stage"`
+	Created time.Time    `json:"created"`
 }
 
 // MaxPendingCancels bounds the cancel queue per agent; a cycle carries at most
@@ -180,8 +214,11 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Hub {
 		log:     log,
 		live:    make(map[string]*Live),
 		subs:    make(map[int64]*Operator),
-		cancels: make(map[string][]string),
-		started: time.Now().UTC(),
+		cancels:    make(map[string][]string),
+		chains:     make(map[string]*Chain),
+		chainTasks: make(map[string]string),
+		alertCool:  make(map[string]time.Time),
+		started:    time.Now().UTC(),
 	}
 }
 
@@ -318,6 +355,140 @@ func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task
 	return t, nil
 }
 
+// SubmitChain queues the first stage of a multi-stage task.
+//
+// A chain is a sequence of tasks where the output of a stage becomes the
+// input of the next one: find the file, hash it, upload it. The stages run
+// one after the other, each on the result of the previous one.
+func (h *Hub) SubmitChain(agentID, owner string, stages []ChainStage) (*store.Task, *Chain, error) {
+	if _, ok := h.store.Agent(agentID); !ok {
+		return nil, nil, ErrNoSuchAgent
+	}
+	if len(stages) == 0 {
+		return nil, nil, errors.New("a chain needs at least one stage")
+	}
+	for i, stage := range stages {
+		if stage.Kind == "" {
+			return nil, nil, fmt.Errorf("stage %d has no kind", i)
+		}
+	}
+	chain := &Chain{
+		ID:      store.NewID("chain"),
+		AgentID: agentID,
+		Owner:   owner,
+		Stages:  stages,
+		Created: time.Now().UTC(),
+	}
+	task, err := h.SubmitTask(agentID, stages[0].Kind, stages[0].Args)
+	if err != nil {
+		return nil, nil, err
+	}
+	h.mu.Lock()
+	h.chains[chain.ID] = chain
+	h.chainTasks[task.ID] = chain.ID
+	h.mu.Unlock()
+	h.store.SetChain(task.ID, chain.ID, 0)
+	h.Emit(Event{Kind: "chain.started", AgentID: agentID, TaskID: task.ID,
+		Data: map[string]any{"chain": chain.ID, "stages": len(stages), "kind": stages[0].Kind}})
+	return task, chain, nil
+}
+
+// Chains returns the multi-stage tasks that are still running.
+func (h *Hub) Chains() []*Chain {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*Chain, 0, len(h.chains))
+	for _, chain := range h.chains {
+		out = append(out, chain)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
+	return out
+}
+
+// advanceChain moves a chain to its next stage.
+//
+// The output of the stage that just finished is substituted into the
+// arguments of the next one, so a stage can act on what the previous stage
+// found.
+func (h *Hub) advanceChain(agentID, taskID string, done *store.Task) {
+	h.mu.Lock()
+	chainID, ok := h.chainTasks[taskID]
+	if !ok {
+		h.mu.Unlock()
+		return
+	}
+	chain, ok := h.chains[chainID]
+	if !ok {
+		delete(h.chainTasks, taskID)
+		h.mu.Unlock()
+		return
+	}
+	chain.Stage++
+	if chain.Stage >= len(chain.Stages) {
+		delete(h.chains, chainID)
+		delete(h.chainTasks, taskID)
+		h.mu.Unlock()
+		h.Emit(Event{Kind: "chain.done", AgentID: agentID, TaskID: taskID,
+			Data: map[string]any{"chain": chainID, "stages": chain.Stage}})
+		return
+	}
+	next := chain.Stages[chain.Stage]
+	h.mu.Unlock()
+
+	args := substituteOutput(next.Args, done.Output)
+	task, err := h.SubmitTask(agentID, next.Kind, args)
+	if err != nil {
+		h.Emit(Event{Kind: "chain.failed", AgentID: agentID, TaskID: taskID,
+			Data: map[string]any{"chain": chainID, "err": err.Error()}})
+		return
+	}
+	h.mu.Lock()
+	h.chainTasks[task.ID] = chainID
+	h.mu.Unlock()
+	h.store.SetChain(task.ID, chainID, chain.Stage)
+	h.Emit(Event{Kind: "chain.stage", AgentID: agentID, TaskID: task.ID,
+		Data: map[string]any{"chain": chainID, "stage": chain.Stage, "kind": next.Kind}})
+}
+
+// substituteOutput replaces the {{output}} placeholder in the arguments of the
+// next stage with the output of the previous one.
+//
+// Only string values are substituted, and only their text: the output of a
+// stage is data, not code, so it is never executed.
+func substituteOutput(args map[string]any, output []byte) map[string]any {
+	text := string(output)
+	if len(text) > 64*1024 {
+		text = text[:64*1024]
+	}
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		out[key] = substituteValue(value, text)
+	}
+	return out
+}
+
+// substituteValue walks an argument value and substitutes the placeholder.
+func substituteValue(value any, text string) any {
+	switch v := value.(type) {
+	case string:
+		return strings.ReplaceAll(v, "{{output}}", text)
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = substituteValue(item, text)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, substituteValue(item, text))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
 // NextTasks marks and returns the tasks to ship in the current beacon cycle.
 func (h *Hub) NextTasks(agentID string, max int) []*store.Task {
 	tasks := h.store.Pending(agentID, max)
@@ -330,6 +501,36 @@ func (h *Hub) NextTasks(agentID string, max int) []*store.Task {
 // maxEventOutput bounds the output preview carried by a task.result event.
 const maxEventOutput = 4096
 
+// AppendTaskOutput stores a streamed chunk of output and notifies operators.
+//
+// A streaming task (an interactive session) delivers its output in pieces:
+// the pieces are kept in order and pushed to the consoles as they arrive, so
+// an operator sees the session while it is running.
+func (h *Hub) AppendTaskOutput(agentID, taskID string, chunk []byte, meta map[string]any) {
+	t, ok := h.store.AppendOutput(taskID, chunk)
+	if !ok {
+		h.log.Warn("output for unknown task", "agent", agentID, "task", taskID)
+		return
+	}
+	data := map[string]any{"size": len(t.Output)}
+	if len(chunk) > 0 {
+		text := chunk
+		if len(text) > maxEventOutput {
+			text = text[:maxEventOutput]
+			data["truncated"] = true
+		}
+		if utf8.Valid(chunk) {
+			data["output"] = string(text)
+		} else {
+			data["binary"] = true
+		}
+	}
+	if len(meta) > 0 {
+		data["meta"] = meta
+	}
+	h.Emit(Event{Kind: "task.output", AgentID: agentID, TaskID: taskID, Data: data})
+}
+
 // CompleteTask stores a result and notifies operators.
 func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, errMsg string, meta map[string]any) {
 	t, ok := h.store.Complete(taskID, code, output, errMsg, meta)
@@ -339,7 +540,7 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	}
 	data := map[string]any{
 		"code": t.Code, "state": t.State, "err": t.Err,
-		"size": len(t.Output),
+		"size": len(t.Output), "kind": t.Kind,
 	}
 	// Events carry a bounded preview, not the payload: a file chunk would
 	// otherwise be re-sent to every watching console (and re-encoded) while the
@@ -361,6 +562,8 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	}
 	h.Emit(Event{Kind: "task.result", AgentID: agentID, TaskID: taskID, Data: data})
 	h.store.SaveAsync()
+	// A stage of a multi-stage task hands its output to the next stage.
+	h.advanceChain(agentID, taskID, t)
 }
 
 // ClaimTask records that an operator took ownership of a task, so a team does
@@ -639,7 +842,6 @@ func (h *Hub) Emit(ev Event) {
 		ev.At = time.Now().UTC()
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	for _, op := range h.subs {
 		if !ev.forOperator(op.Name) {
 			continue
@@ -651,6 +853,84 @@ func (h *Hub) Emit(ev Event) {
 			h.log.Warn("operator event queue full, dropping event", "operator", op.Name, "kind", ev.Kind)
 		}
 	}
+	h.mu.Unlock()
+	// The alert rules run outside the lock: they read the store and may emit
+	// an event of their own.
+	h.checkAlerts(ev)
+}
+
+// checkAlerts fires the configured alert rules.
+//
+// A rule is a filter on the event stream. When it matches, the server logs
+// the event loudly and pushes an "alert" event of its own, so a console that
+// is watching the alerts sees it even when the original event is noise.
+func (h *Hub) checkAlerts(ev Event) {
+	if ev.Kind == "alert" {
+		// An alert never triggers another alert.
+		return
+	}
+	rules := h.cfg.Server.Alerts
+	if len(rules) == 0 {
+		return
+	}
+	for _, rule := range rules {
+		if !h.ruleMatches(rule, ev) {
+			continue
+		}
+		if !h.allowAlert(rule) {
+			continue
+		}
+		h.log.Warn("alert", "rule", rule.Name, "event", ev.Kind,
+			"agent", ev.AgentID, "task", ev.TaskID)
+		h.Emit(Event{Kind: "alert", AgentID: ev.AgentID, TaskID: ev.TaskID,
+			Data: map[string]any{
+				"rule":   rule.Name,
+				"event":  ev.Kind,
+				"detail": ev.Data,
+			}})
+	}
+}
+
+// ruleMatches decides whether an event trips a rule.
+func (h *Hub) ruleMatches(rule config.AlertRule, ev Event) bool {
+	if rule.Event != "" && rule.Event != ev.Kind {
+		return false
+	}
+	if rule.Agent != "" && !strings.HasPrefix(ev.AgentID, rule.Agent) {
+		return false
+	}
+	if rule.TaskKind != "" {
+		kind, _ := ev.Data["kind"].(string)
+		if kind != rule.TaskKind {
+			return false
+		}
+	}
+	if rule.Tag != "" {
+		agent, ok := h.store.Agent(ev.AgentID)
+		if !ok || !agent.HasTag(rule.Tag) {
+			return false
+		}
+	}
+	return true
+}
+
+// allowAlert applies the cooldown of a rule.
+//
+// An agent that checks in and out every minute would otherwise produce an
+// alert every minute; the cooldown turns that into one alert per window.
+func (h *Hub) allowAlert(rule config.AlertRule) bool {
+	if rule.CooldownSec <= 0 {
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now().UTC()
+	if last, ok := h.alertCool[rule.Name]; ok &&
+		now.Sub(last) < time.Duration(rule.CooldownSec)*time.Second {
+		return false
+	}
+	h.alertCool[rule.Name] = now
+	return true
 }
 
 // Operators lists the connected consoles, sorted by name.
