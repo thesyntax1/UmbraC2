@@ -144,10 +144,21 @@ func (t *Task) Clone() *Task {
 }
 
 type snapshot struct {
+	// Version guards against a downgrade: a file written by a newer build may
+	// contain fields this one would silently drop on the next save.
+	Version   int         `json:"version"`
+	SavedAt   time.Time   `json:"saved_at"`
 	Agents    []*Agent    `json:"agents"`
 	Tasks     []*Task     `json:"tasks"`
 	Schedules []*Schedule `json:"schedules,omitempty"`
 }
+
+// snapshotVersion is the layout this build writes and understands.
+const snapshotVersion = 2
+
+// backupPath is the previous generation: the snapshot that was current before
+// the last successful save.
+func backupPath(path string) string { return path + ".bak" }
 
 // Store is the concurrency-safe data store.
 type Store struct {
@@ -169,6 +180,17 @@ type Store struct {
 	again   bool
 	done    chan struct{}
 	onError func(error)
+	// recovered is set when Open had to fall back to the previous generation.
+	// A caller should say so loudly: the newest few seconds of state are gone.
+	recovered bool
+}
+
+// Recovered reports whether this store was loaded from the backup generation
+// because the primary snapshot was missing or unreadable.
+func (s *Store) Recovered() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.recovered
 }
 
 // SetSaveErrorHandler registers a callback for background save failures.
@@ -177,6 +199,55 @@ func (s *Store) SetSaveErrorHandler(fn func(error)) {
 	s.asyncMu.Lock()
 	s.onError = fn
 	s.asyncMu.Unlock()
+}
+
+// loadSnapshot reads the current generation, falling back to the previous one.
+//
+// The save path rotates `state.json` to `state.json.bak` before installing the
+// new file, so a crash can leave the primary missing while the backup is still
+// complete. A torn or unparsable primary is handled the same way instead of
+// refusing to start: losing the last few seconds of state beats losing the
+// engagement history.
+func loadSnapshot(path string) (*snapshot, string, error) {
+	var firstErr error
+	for _, candidate := range []string{path, backupPath(path)} {
+		raw, err := os.ReadFile(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("store: read %s: %w", candidate, err)
+			}
+			continue
+		}
+		var snap snapshot
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("store: parse %s: %w", candidate, err)
+			}
+			continue
+		}
+		if snap.Agents == nil && snap.Tasks == nil && snap.Schedules == nil && snap.Version == 0 {
+			// Structurally valid JSON but not one of our snapshots (a truncated
+			// `{}` from a bad restore, say). Treat it like a parse failure.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("store: %s is not an UmbraC2 snapshot", candidate)
+			}
+			continue
+		}
+		return &snap, candidate, nil
+	}
+	// Neither generation was usable. If nothing exists at all, that is a fresh
+	// deployment, not a failure.
+	if firstErr == nil {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(backupPath(path)); errors.Is(err, os.ErrNotExist) {
+				return &snapshot{}, "", nil
+			}
+		}
+	}
+	return nil, "", firstErr
 }
 
 // Open loads (or initialises) the store at path.
@@ -190,16 +261,19 @@ func Open(path string) (*Store, error) {
 	if path == "" {
 		return s, nil
 	}
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
+	snap, from, err := loadSnapshot(path)
 	if err != nil {
-		return nil, fmt.Errorf("store: read %s: %w", path, err)
+		return nil, err
 	}
-	var snap snapshot
-	if err := json.Unmarshal(raw, &snap); err != nil {
-		return nil, fmt.Errorf("store: parse %s: %w", path, err)
+	if from == "" {
+		return s, nil // fresh deployment
+	}
+	if from == backupPath(path) {
+		s.recovered = true
+	}
+	if snap.Version > snapshotVersion {
+		return nil, fmt.Errorf("store: %s was written by a newer server (schema %d, this build reads %d)",
+			from, snap.Version, snapshotVersion)
 	}
 	for _, a := range snap.Agents {
 		a.State = StateOffline // nothing is online until it checks in again
@@ -510,6 +584,8 @@ func (s *Store) Save() error {
 
 	s.mu.RLock()
 	snap := snapshot{
+		Version:   snapshotVersion,
+		SavedAt:   time.Now().UTC(),
 		Agents:    make([]*Agent, 0, len(s.agents)),
 		Tasks:     make([]*Task, 0, len(s.order)),
 		Schedules: make([]*Schedule, 0, len(s.schedIDs)),
@@ -558,6 +634,15 @@ func (s *Store) Save() error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	// Keep the generation we are about to replace. If the machine dies between
+	// this rename and the next one, Open falls back to the backup instead of
+	// starting empty.
+	if _, statErr := os.Stat(s.path); statErr == nil {
+		if err := os.Rename(s.path, backupPath(s.path)); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)
 		return err
@@ -568,6 +653,9 @@ func (s *Store) Save() error {
 		_ = d.Sync()
 		_ = d.Close()
 	}
+	s.mu.Lock()
+	s.recovered = false
+	s.mu.Unlock()
 	return nil
 }
 

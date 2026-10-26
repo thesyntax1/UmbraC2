@@ -94,6 +94,13 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
   Each write goes to a fresh `*.tmp` in the same directory, is fsynced, and is
   renamed over the target, so the file on disk is always a complete snapshot
   (concurrent saves are serialised; a reader never sees a half-written file).
+* Two generations on disk: before the new file is renamed into place, the
+  current one becomes `data_file.bak`. A crash inside that window leaves no
+  primary at all, so startup falls back to the backup and logs
+  `state recovered from the backup generation` — the last few seconds of state
+  are gone, the engagement is not. A torn or non-snapshot primary is treated the
+  same way. `{}` or a file from a newer schema is refused instead of being
+  loaded (and then overwritten) as an empty engagement.
 * Anything that was `delivered` when the server stopped is re-queued on start, so
   a crash cannot lose a task — at the cost of possibly executing it twice. Task
   kinds are not idempotent by default, so check `task.list` after a restart.

@@ -84,6 +84,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if st.Recovered() {
+		// Falling back to the previous generation means the last few seconds of
+		// state are gone; say so instead of pretending the load was clean.
+		logger.Warn("state recovered from the backup generation",
+			"path", cfg.Server.DataFile+".bak",
+			"note", "recent tasks or claims may be missing")
+	}
 	// Background saves must not fail silently: losing the queue is invisible
 	// to operators until they restart.
 	st.SetSaveErrorHandler(func(err error) {

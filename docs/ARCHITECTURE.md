@@ -173,7 +173,7 @@ a test double, not a production server.
 | AES-256-GCM as the mandatory suite | in every stdlib we target (Go, JVM, RustCrypto) | no ChaCha fallback on the reference server |
 | Cleartext length in the prelude | framing without keys, cheap DoS bounds | leaks message sizes (mitigation: padding, on the roadmap) |
 | Pull-based beaconing | implants are stateless clients; simple retry semantics | worst-case latency = sleep interval |
-| JSON state file instead of a database | zero dependencies, easy to inspect and back up | not suitable beyond ~10⁴ agents/tasks |
+| JSON state file instead of a database | zero dependencies, easy to inspect and back up | not suitable beyond ~10⁴ agents/tasks (two generations on disk: `state.json` + `.bak`, schema version checked on load) |
 | Python reference implementation | generates the vectors, drives e2e tests, teaches the protocol | must be kept in lockstep with Go/Rust |
 
 ## 7. Roadmap
@@ -181,7 +181,8 @@ a test double, not a production server.
 Short term: message padding, `CONFIG` as a first-class policy push, per-agent
 authorisation profiles.
 
-Done: shared-work coordination (operator focus/presence in `operators.list`,
+Done: crash-safe state generations (`state.json` + `.bak`, schema version,
+fallback load with a loud warning); shared-work coordination (operator focus/presence in `operators.list`,
 advisory `task.claim`/`task.release` so a team does not duplicate work, directed
 `chat.send`); HTTP transport keep-alive (length-delimited replies, a socket pooled for
 the whole beacon cycle, one reconnect-and-retry on a stale pooled socket);

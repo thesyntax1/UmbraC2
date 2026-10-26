@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -321,5 +322,128 @@ func TestTaskClaimLifecycle(t *testing.T) {
 	}
 	if _, err := st.Claim("t-missing", "alice"); err == nil {
 		t.Fatal("claiming a missing task succeeded")
+	}
+}
+
+// A crash between the two renames of a save leaves no primary file at all.
+// Open must fall back to the previous generation instead of starting empty.
+func TestOpenFallsBackToTheBackupGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	first, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.UpsertAgent(&store.Agent{ID: "a1", Host: "lab"})
+	if err := first.Save(); err != nil {
+		t.Fatal(err)
+	}
+	// Second save rotates a1 into the backup and installs the new state.
+	first.UpsertAgent(&store.Agent{ID: "a2", Host: "lab-2"})
+	if err := first.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".bak"); err != nil {
+		t.Fatalf("backup generation missing: %v", err)
+	}
+
+	// Simulate the crash window: primary gone, backup intact.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open after a lost primary: %v", err)
+	}
+	if !reopened.Recovered() {
+		t.Fatal("recovery was not reported")
+	}
+	if _, ok := reopened.Agent("a1"); !ok {
+		t.Fatal("the backup generation was not loaded")
+	}
+	// Saving again reinstalls the primary and clears the flag.
+	if err := reopened.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Recovered() {
+		t.Fatal("recovery flag survived a successful save")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("primary not restored: %v", err)
+	}
+}
+
+// A torn primary (valid JSON, wrong shape; or half a document) must not cost
+// the engagement: the previous generation is still good.
+func TestOpenIgnoresATornSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "a1", Host: "lab"})
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+	task := st.AddTask(&store.Task{AgentID: "a1", Kind: "ping"})
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Truncate the primary the way a failing disk would.
+	if err := os.WriteFile(path, []byte(`{"version":2,"agents":[{"id":"a1"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open with a torn primary: %v", err)
+	}
+	if !reopened.Recovered() {
+		t.Fatal("torn primary was not reported as a recovery")
+	}
+	if _, ok := reopened.Agent("a1"); !ok {
+		t.Fatal("the backup generation was not loaded")
+	}
+	// The torn save is older than the task, so that task is expected to be
+	// absent; what matters is that the file is coherent and usable.
+	_, ok := reopened.Task(task.ID)
+	if ok {
+		t.Log("backup contained the newest task; both outcomes are valid")
+	}
+	if _, err := os.Stat(path + ".bak"); err != nil {
+		t.Fatalf("backup consumed: %v", err)
+	}
+}
+
+// `{}` is valid JSON but not a snapshot; treating it as an empty engagement
+// would silently wipe the state file on the next save.
+func TestEmptyJSONIsNotASnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Open(path); err == nil {
+		t.Fatal("Open accepted an empty JSON document as state")
+	}
+}
+
+// A file from a newer build must be refused, not silently downgraded.
+func TestSnapshotVersionIsEnforced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	raw := `{"version":999,"saved_at":"2030-01-01T00:00:00Z","agents":[],"tasks":[]}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.Open(path)
+	if err == nil {
+		t.Fatal("Open accepted a snapshot from a newer schema")
+	}
+	if !strings.Contains(err.Error(), "newer server") {
+		t.Fatalf("unhelpful error: %v", err)
 	}
 }
