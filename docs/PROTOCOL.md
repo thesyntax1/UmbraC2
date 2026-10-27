@@ -343,9 +343,15 @@ Task kinds understood by the reference implants:
 | `bof` | `name`, `data` (bin, COFF object), `args` (list) | in-memory COFF execution: output + exit code |
 | `ext` | `name`, `data` (bin, module), `args` (map) | in-memory extension execution |
 | `inject` | `pid`, `mode` (`inject`/`migrate`/`reflect`), optional `data` (bin, PE) | process injection / migration / reflective load |
-| `creds` | `mode` (`vault`/`dpapi`/`lsass`) | credential material found on the host |
-| `token` | optional `pid` | duplicated access token of another user or service |
-| `privesc` | `mode` | local privilege escalation attempt |
+| `creds` | `mode` (`vault`/`dpapi`/`lsass`/`local`/`all`), optional `raw` | the credential material of the host, one record per piece of material (§7.2i) |
+| `token` | `mode` (`list`/`impersonate`/`become`/`restore`), optional `pid`, optional `session` | the tokens of the host, or the identity the implant became (§7.2i) |
+| `privesc` | `mode` (`privileges`/`token`) | the privilege escalation attempts, one record per technique (§7.2i) |
+| `wmi.exec` | `target`, `command`, optional `user`, `timeout` | the command runs on the remote host through the pivot (§7.2i) |
+| `smb.exec` | `target`, `command`, optional `timeout` | the command runs through the service control manager of the remote host |
+| `winrm.exec` | `target`, `command`, optional `user` | the command runs in the remote shell of the remote host |
+| `dcom.exec` | `target`, `command`, optional `user` | the command runs as a remote scheduled task of the remote host |
+| `ldap.query` | `target`, `command` (the query) | the directory query of the remote host |
+| `ssh.exec` | `target`, `command`, optional `user` | the command runs in the secure shell of the remote host |
 | `vpn` | `action` (`start`/`stop`), optional `addr` | layer-3 tunnel endpoint state |
 | `session.open` | `cmd` (empty starts the platform shell) | an interactive session; the output streams as partial results (§7.2c) |
 | `session.input` | `session`, `data` (text or bin) | writes to an open session |
@@ -488,6 +494,9 @@ Operator RPC commands, with the minimum role each requires:
 | `artifact.put` | operator | write a chunk into the store: `name`, `data` (bin), `offset`, `eof` |
 | `artifact.remove` | operator | delete an artifact from the store |
 | `artifact.push` | operator | push a stored artifact to an agent: `name`, `agent`, optional `path` |
+| `creds.list` | viewer | the credential vault: the shape of the material, without the value |
+| `creds.search` | viewer | the records of the vault that match a `query` |
+| `creds.export` | operator | the material with its value; the server needs a vault key |
 
 ### 7.2a Selecting agents
 
@@ -764,6 +773,86 @@ result (`posture`, `posture_sleep_factor`, `posture_silent` in the result
 metadata). The server stores the last report with the agent, shows it in
 `agents.list` and `agents.info`, and raises `posture.updated` and
 `killswitch.armed` on the event stream.
+
+### 7.2i Identity, credentials and remote execution
+
+The framework treats an identity as a record, not as a wall of text.  Every
+piece of material the implant finds has a kind, a source, an account, a
+target and a confidence, and the value itself only travels when the operator
+asked for it.
+
+**The collection.**  `creds` answers with the records in the `creds` metadata
+field, one map per record:
+
+| key | meaning |
+|---|---|
+| `kind` | `password`, `hash`, `ticket`, `token` or `key` |
+| `source` | where it was found (`vault`, `dpapi`, `lsass`, `kerberos`, `ssh`, `file`) |
+| `account` | the account it belongs to |
+| `target` | the service or the host it belongs to |
+| `confidence` | how sure the implant is, from 0 to 100 |
+| `secret` | the material itself; the implant sends it only when the task carried `raw: true`, and the server takes it out of the record before it stores it |
+| `length` | the length of the material, so the shape is known even when the value is not |
+| `redacted` | true when the value was left out |
+| `note` | how it was found |
+
+The counters travel next to it: `creds_total` and `creds_counts`, a map of
+the kinds and how many of them there are.
+
+**The vault.**  The server keeps the records of every host in one vault.  The
+value is encrypted at rest with the key of `vault_key` (or of the environment
+variable `vault_key_env`, `UMBRA_VAULT_KEY` by default); without a key the
+server keeps the digest and the shape and drops the value, because a secret
+on the disk in the clear is worse than no secret at all.  The digest is
+always kept, so two hosts that share a credential can be seen to share it
+without the key.
+
+The value never reaches the task record and never reaches the event stream:
+the server takes the value out of the result before it stores the task, the
+`task.result` event and the task record keep the redacted form, and the
+`creds.collected` event says how many records were collected and how many
+were dropped.  The value travels exactly one way -- from the implant to the
+vault -- and it comes out of the vault only through `creds.export`.
+
+| RPC | role | what it answers |
+|---|---|---|
+| `creds.list` | viewer | the records of the vault; optional `agent`, `kind`, `query`, `limit` |
+| `creds.search` | viewer | the records that match a `query` over the account, the target and the note |
+| `creds.export` | operator | the same records with the value, decrypted with the vault key |
+
+**The token work.**  `token` has four modes:
+
+| mode | what it does |
+|---|---|
+| `list` | the tokens of the host: the pid, the process, the account and the session; optional `session` narrows the list to one session |
+| `impersonate` | become the account of `pid` for the next task; the implant gives the account back when the task is done |
+| `become` | become the account of `pid` until the operator sends `restore` |
+| `restore` | go back to the identity the implant started with |
+
+The identity travels with the check-in (`impersonation` and
+`impersonation_session`), so the inventory shows the truth.  The server
+drops it when the session of the agent ends.
+
+**The escalation.**  `privesc` reports every attempt on its own, with the
+technique, the outcome (`worked`, `failed`, `unavailable`), the detail and
+the side effects it caused.  The records travel in `escalations`, with
+`escalations_total` next to them.
+
+**The remote execution.**  The command runs on a remote host, driven from
+the agent that holds the network path to it; the output comes back through
+that same agent.  The task names the target and the protocol:
+
+| kind | the protocol | how it runs there |
+|---|---|---|
+| `winrm.exec` | the remote shell of Windows | `winrs` |
+| `wmi.exec` | the management instrumentation | `wmic /node:` writes the output to the administrative share, the pivot reads it back |
+| `dcom.exec` | the scheduler over DCOM | a remote task is created, started and deleted |
+| `smb.exec` | the service control manager over SMB | a remote service is created, started and deleted |
+| `ldap.query` | the directory services client | `dsquery` against the controller the operator named |
+| `ssh.exec` | the secure shell | `ssh` with the keys of the account the implant runs as |
+
+Every one of them cleans up after itself: the remote file, the remote task
+and the remote service are removed when the output has been read.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

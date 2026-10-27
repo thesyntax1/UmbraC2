@@ -98,6 +98,13 @@ type Server struct {
 	AgentPSK      string   `json:"agent_psk_env"`      // env var that holds the agent PSK
 	OperatorToken []string `json:"operator_token_env"` // env vars holding "name:token" pairs
 
+	// VaultKey encrypts the credential vault at rest.  It is the key of
+	// the vault, nothing else: without it the server keeps the digest of
+	// the material and drops the value, and with it the value comes back
+	// only to the operators the role table allows.
+	VaultKey    string `json:"vault_key"`
+	VaultKeyEnv string `json:"vault_key_env"`
+
 	DataFile string `json:"data_file"`
 	// AuditFile receives one JSON line per operator command. Empty disables
 	// auditing; keep it enabled anywhere a human can type.
@@ -180,6 +187,7 @@ func Default() *Config {
 		PSKFile:         "secrets/agent.psk",
 		AgentPSK:        "UMBRA_AGENT_PSK",
 		OperatorToken:   []string{"UMBRA_OPERATOR_TOKENS"},
+		VaultKeyEnv:     "UMBRA_VAULT_KEY",
 		DataFile:        "data/state.json",
 		AuditFile:       "data/audit.jsonl",
 		AuditMaxSizeMB:  8,
@@ -227,6 +235,14 @@ func (c *Config) loadKeys() error {
 	}
 	if agentPSK != "" {
 		c.Keyring.AgentPSK = []byte(agentPSK)
+	}
+
+	// The vault key: from the file, from the environment or from the
+	// configuration itself.  It is the only key of the server that is not
+	// part of the keyring, because it protects the material the keyring
+	// collected.
+	if c.Server.VaultKey == "" && c.Server.VaultKeyEnv != "" {
+		c.Server.VaultKey = strings.TrimSpace(os.Getenv(c.Server.VaultKeyEnv))
 	}
 
 	for _, envName := range c.Server.OperatorToken {

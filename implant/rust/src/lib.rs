@@ -12,6 +12,8 @@
 //!   ws       the WebSocket transport
 //!   bof      in-memory COFF loader
 //!   post     in-memory post-exploitation helpers
+//!   creds    the credential collection with a structured result
+//!   remote   the remote execution through the pivots
 //!   domain   active directory reconnaissance
 //!   evade    the posture engine: the environment, the schedule and the
 //!            kill switch
@@ -30,6 +32,7 @@
 pub mod beacon;
 pub mod bof;
 pub mod config;
+pub mod creds;
 pub mod crypto;
 pub mod dns;
 pub mod domain;
@@ -42,6 +45,7 @@ pub mod persist;
 pub mod post;
 pub mod proc;
 pub mod registry;
+pub mod remote;
 pub mod session;
 pub mod sessions;
 pub mod sysinfo;

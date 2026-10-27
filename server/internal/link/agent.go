@@ -98,6 +98,11 @@ func (l *AgentLink) maxTasksPerCycle() int {
 }
 
 func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
+	// The implant says in its check-in who it is running as: an operator
+	// who made it become somebody else has to see that in the inventory.
+	if account, ok := msg["impersonation"].(string); ok {
+		l.Hub.SetImpersonation(l.AgentID, account)
+	}
 	tasks := l.Hub.NextTasks(l.AgentID, l.maxTasksPerCycle())
 	sleep, jitter, obfuscate := l.Hub.PolicyFull(l.AgentID)
 

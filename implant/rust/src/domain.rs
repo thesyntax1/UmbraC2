@@ -61,6 +61,138 @@ const DOMAIN_RIDS: [(&str, u32); 7] = [
     ("Read-only Domain Controllers", 561),
 ];
 
+/// The trusts of the domain.
+///
+/// The output of `nltest /domain_trusts` lists the trusted domains with
+/// their netbios name and the direction of the trust.  The direction is
+/// what tells an operator whether the domain may walk into the other one
+/// or only the other way.
+pub fn parse_trusts(text: &str) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        let rest = line
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start_matches(':')
+            .trim();
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() < 2 {
+            continue;
+        }
+        let netbios = tokens[0].to_string();
+        let name = tokens[1].to_string();
+        let direction = tokens
+            .get(2)
+            .map(|token| token.trim_matches(|c| c == '(' || c == ')').to_string())
+            .unwrap_or_default();
+        let direction = direction
+            .split('/')
+            .next_back()
+            .unwrap_or("")
+            .trim_matches(|c| c == '(' || c == ')')
+            .to_string();
+        out.push((name, netbios, direction));
+    }
+    out
+}
+
+/// The accounts that may delegate, and the service they may delegate to.
+///
+/// The output of `dsquery` with the delegation attribute lists the
+/// distinguished name of the account and the service it may delegate to.
+/// The wildcard means that the account may delegate to anything.
+pub fn parse_delegation(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut account = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(dn) = line.strip_prefix("dn:") {
+            account = dn.split(',').next().unwrap_or("").trim().to_string();
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("msDS-AllowedToDelegateTo:") {
+            let value = value.trim();
+            if !account.is_empty() && !value.is_empty() {
+                out.push((account.clone(), value.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The permissions of an object.
+///
+/// The output of `dsacls` lists the principal and the rights in brackets.
+/// The rights that matter for movement are named: the full control, the
+/// right to write the permissions, the right to take the ownership and
+/// the rights that replicate the directory.
+pub fn parse_acl(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let at = match line.rfind(':') {
+            Some(i) => i,
+            None => continue,
+        };
+        let principal = line[..at].trim().to_string();
+        let rest = &line[at + 1..];
+        if !rest.contains('(') || principal.is_empty() {
+            continue;
+        }
+        let mut rights: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0usize;
+        for ch in rest.chars() {
+            match ch {
+                '(' => {
+                    depth += 1;
+                    if depth == 1 {
+                        current.clear();
+                    }
+                }
+                ')' => {
+                    if depth == 1 {
+                        rights.push(current.clone());
+                    }
+                    current.clear();
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {
+                    if depth >= 1 {
+                        current.push(ch);
+                    }
+                }
+            }
+        }
+        for right in rights {
+            if let Some(edge) = right_to_edge(&right) {
+                out.push((principal.clone(), edge.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The edge a right of an access list means.
+fn right_to_edge(right: &str) -> Option<&'static str> {
+    match right {
+        "F" | "M" | "GA" | "G" | "GP" => Some("GenericAll"),
+        "C" => Some("WriteDacl"),
+        "O" | "WD" | "WO" => Some("WriteOwner"),
+        "RP" | "GCDC" | "CDC" => Some("DCSync"),
+        "GW" => Some("GenericWrite"),
+        "GR" => Some("GenericRead"),
+        "GE" => Some("GenericExecute"),
+        _ => None,
+    }
+}
+
 /// The well known local relative identifiers.
 const LOCAL_RIDS: [(&str, u32); 3] = [
     ("Administrators", 544),
@@ -216,6 +348,65 @@ fn collect_windows(domain: &mut Domain) {
             domain
                 .edges
                 .push(Edge::new("DomainController", domain.name.clone(), controller));
+        }
+
+        // The trusts of the domain: where the domain may go, and which way
+        // the trust points.
+        for (trusted, _netbios, direction) in parse_trusts(&capture("nltest /domain_trusts")) {
+            let kind = match direction.as_str() {
+                "In" => "TrustsIn",
+                "Bidirectional" => "TrustsBoth",
+                _ => "TrustsOut",
+            };
+            domain
+                .edges
+                .push(Edge::new(kind, domain.name.clone(), trusted));
+        }
+
+        // The accounts that may delegate to a service: the paths that reach
+        // the domain controller without the password of it.
+        let delegation = capture(
+            "dsquery user -attr msDS-AllowedToDelegateTo -filter \"(msDS-AllowedToDelegateTo=*)\"",
+        );
+        for (account, target) in parse_delegation(&delegation) {
+            let kind = if target == "*" {
+                "AllowedToDelegateAny"
+            } else {
+                "AllowedToDelegate"
+            };
+            domain.edges.push(Edge::new(kind, account, target));
+        }
+
+        // The groups of the domain and their members: the edges that say
+        // who is a member of what.
+        for group in [
+            "Domain Admins",
+            "Domain Controllers",
+            "Enterprise Admins",
+            "Domain Computers",
+            "Domain Users",
+        ] {
+            let listing = capture(&format!("net group \"{group}\" /domain"));
+            for member in parse_group_members(&listing) {
+                domain.edges.push(Edge::new(
+                    "MemberOf",
+                    member,
+                    format!("{group}@{}", domain.name),
+                ));
+            }
+        }
+
+        // The permissions on the objects that matter: a principal that may
+        // write the permissions of the domain, or replicate it, is a path
+        // to everything.
+        let mut objects: Vec<String> = vec![format!("\\{}", domain.name)];
+        if !domain.controller.is_empty() {
+            objects.push(format!("\\{}", domain.controller));
+        }
+        for object in objects {
+            for (principal, right) in parse_acl(&capture(&format!("dsacls {object}"))) {
+                domain.edges.push(Edge::new(right, principal, object.clone()));
+            }
         }
     }
 }
@@ -519,6 +710,61 @@ CORP\\bob              \\\\dc01                       4 GB
 
 The command completed successfully.
 ";
+
+    const TRUSTS: &str = "\
+List of Domain Trusts:
+    0: CORP CORP.example.com (Direct/Out) (For: Out)
+       Trust Attributes: Transitive,Cross Organization, within forest
+    1: PARTNER partner.example.com (Direct/Bidirectional) (For: Out)
+
+Trusted Domains:
+    0: FOREST forest.example.com (Indirect/Out) (For: Out)
+";
+
+    const DELEGATION: &str = "\
+dn:CN=alice,DC=corp,DC=example,DC=com
+msDS-AllowedToDelegateTo: WEB01.corp.example.com
+
+dn:CN=bob,DC=corp,DC=example,DC=com
+msDS-AllowedToDelegateTo: *
+";
+
+    const ACLS: &str = "\
+C:\\Windows
+NT AUTHORITY\\SYSTEM:(F)
+    CREATOR OWNER:(I)(S)
+CORP\\alice:(F)(W)(D)
+CORP\\bob:(C)(RP)
+";
+
+    #[test]
+    fn the_trusts_are_parsed() {
+        let trusts = parse_trusts(TRUSTS);
+        assert_eq!(trusts.len(), 3);
+        assert_eq!(trusts[0].0, "CORP.example.com");
+        assert_eq!(trusts[0].2, "Out");
+        assert_eq!(trusts[1].2, "Bidirectional");
+        assert_eq!(trusts[2].0, "forest.example.com");
+    }
+
+    #[test]
+    fn the_delegation_is_parsed() {
+        let delegation = parse_delegation(DELEGATION);
+        assert_eq!(delegation.len(), 2);
+        assert_eq!(delegation[0].0, "alice");
+        assert_eq!(delegation[0].1, "WEB01.corp.example.com");
+        assert_eq!(delegation[1].1, "*");
+    }
+
+    #[test]
+    fn the_access_lists_are_parsed() {
+        let acls = parse_acl(ACLS);
+        assert!(acls.contains(&("CORP\\alice".to_string(), "GenericAll".to_string())));
+        assert!(acls.contains(&("CORP\\bob".to_string(), "WriteDacl".to_string())));
+        assert!(acls.contains(&("CORP\\bob".to_string(), "DCSync".to_string())));
+        // The owner rights are not a movement edge on their own.
+        assert!(!acls.iter().any(|(_, right)| right == "GenericRead"));
+    }
 
     #[test]
     fn the_group_table_is_parsed() {

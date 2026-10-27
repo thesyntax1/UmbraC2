@@ -295,6 +295,46 @@ class OperatorClient:
             })
         return rows
 
+    def creds_list(self, agent: str = "", kind: str = "",
+                   query: str = "", limit: int = 0) -> List[Dict[str, Any]]:
+        """The vault of the engagement, without the values.
+
+        The material the implants collected is kept on the server.  The
+        console shows the shape of it by default -- the kind, the account,
+        the source and the confidence -- and the value comes out of the
+        vault only when the operator asks for it with creds_export.
+        """
+        res = self.rpc("creds.list", {
+            "agent": agent, "kind": kind, "query": query, "limit": limit,
+        })
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list((res.data or {}).get("credentials", []))
+
+    def creds_search(self, query: str, kind: str = "",
+                     agent: str = "") -> List[Dict[str, Any]]:
+        """The records of the vault that match a search."""
+        res = self.rpc("creds.search", {
+            "query": query, "kind": kind, "agent": agent,
+        })
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list((res.data or {}).get("credentials", []))
+
+    def creds_export(self, agent: str = "", kind: str = "",
+                     query: str = "") -> List[Dict[str, Any]]:
+        """The material with its value.
+
+        This is the moment the secrets leave the framework, so the server
+        checks its role table and its key before it answers.
+        """
+        res = self.rpc("creds.export", {
+            "agent": agent, "kind": kind, "query": query,
+        })
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list((res.data or {}).get("credentials", []))
+
     def agent(self, agent_id: str) -> Dict[str, Any]:
         """One agent, with everything the server knows about it."""
         res = self.rpc("agents.info", {"id": agent_id})

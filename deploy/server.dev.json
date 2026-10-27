@@ -27,6 +27,8 @@
   "operator_token_env": [
     "UMBRA_OPERATOR_TOKENS"
   ],
+  "vault_key": "",
+  "vault_key_env": "UMBRA_VAULT_KEY",
   "data_file": "data/state.json",
   "audit_file": "data/audit.jsonl",
   "audit_max_mb": 8,

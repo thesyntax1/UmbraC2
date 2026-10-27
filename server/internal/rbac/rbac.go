@@ -104,6 +104,14 @@ var requirements = map[string]string{
 	"artifact.remove": Operator,
 	"artifact.push":   Operator,
 
+	// ---- the credential vault -------------------------------------------
+	// Reading the shape of the material is harmless; taking the value out
+	// of the vault is an operator action, because that is the moment the
+	// material leaves the framework.
+	"creds.list":   Viewer,
+	"creds.search": Viewer,
+	"creds.export": Operator,
+
 	// ---- burning an engagement ------------------------------------------
 	// A panic tells every selected beacon to exit and stops the server
 	// from feeding it any more work.  It is the end of an engagement, so

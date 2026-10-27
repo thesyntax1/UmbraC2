@@ -12,6 +12,7 @@ uses 0x1A" class of bug before it reaches a build.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import sys
 
@@ -221,10 +222,17 @@ def doc_rpc_commands() -> set[str]:
     # The prose also names the event kinds, the task kinds and the
     # persistence techniques, and those are not RPC commands: an event the
     # server emits, a task a beacon runs, and an entry the persistence
-    # manager installs.
-    prose -= go_event_kinds()
-    prose -= doc_task_kinds()
-    prose -= rust_persist_techniques()
+    # manager installs.  A table of a later section may hold the same
+    # names, so the subtraction covers the tables as well.
+    events = go_event_kinds()
+    tasks = doc_task_kinds()
+    techniques = rust_persist_techniques()
+    prose -= events
+    prose -= tasks
+    prose -= techniques
+    table -= events
+    table -= tasks
+    table -= techniques
     return table | prose
 
 
@@ -235,9 +243,17 @@ def rust_persist_techniques() -> set[str]:
 
 
 def go_event_kinds() -> set[str]:
-    """The event kinds the Go server emits."""
-    text = read("server/internal/hub/hub.go")
-    return set(re.findall(r'Kind:\s*"([a-z]+\.[a-z]+)"', text))
+    """The event kinds the Go server emits.
+
+    The whole hub package is read, not only the broker file: the vault and
+    the other helpers emit their own events.
+    """
+    kinds: set[str] = set()
+    for path in sorted(pathlib.Path("server/internal/hub").glob("*.go")):
+        if path.name.endswith("_test.go"):
+            continue
+        kinds |= set(re.findall(r'Kind:\s*"([a-z]+\.[a-z]+)"', path.read_text()))
+    return kinds
 
 
 def doc_rpc_roles() -> dict[str, str]:

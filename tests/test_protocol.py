@@ -4360,3 +4360,272 @@ def test_the_exit_takes_the_persistence_with_it():
         client.close()
         agent.stop()
         server.stop()
+
+
+def _vault_client(name):
+    """A mock server with one agent, and a console attached to it."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = (name + "-token-0123456789ab").encode()
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-vault", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    client.connect()
+    deadline = time.time() + 5
+    while time.time() < deadline and not client.agents():
+        time.sleep(0.05)
+    return server, agent, client
+
+
+def test_the_credential_records_are_categorised():
+    """Every piece of material is a record with a kind and a source."""
+    server, agent, client = _vault_client("creds-kind")
+    try:
+        task = client.wait_for_result(
+            client.submit("agent-vault", "creds", {"mode": "all"}), timeout=10)
+        assert task["state"] == "done", task
+        meta = task.get("meta") or {}
+        records = meta.get("creds") or []
+        assert records, task
+        for record in records:
+            assert record["kind"] in ("password", "hash", "ticket", "token", "key")
+            assert record["source"]
+            assert "confidence" in record
+            assert "redacted" in record
+        kinds = {record["kind"] for record in records}
+        assert "password" in kinds
+        assert "hash" in kinds
+        assert meta.get("creds_total") == len(records)
+        assert meta.get("creds_counts")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_value_of_a_credential_is_left_out_by_default():
+    """The material itself does not travel unless it is asked for."""
+    server, agent, client = _vault_client("creds-redact")
+    try:
+        loud = client.wait_for_result(
+            client.submit("agent-vault", "creds", {"mode": "all", "raw": True}),
+            timeout=10)
+        meta = loud.get("meta") or {}
+        records = meta.get("creds") or []
+        assert records, "the implant reported the material it found"
+        for record in records:
+            # The task record keeps the shape of the material and loses the
+            # value, even when the collection asked for the value: the
+            # record is not the place a secret travels through.
+            assert record["secret"] == ""
+            assert record["redacted"] is True
+
+        # The value is in the vault, and the vault is the only place it is.
+        listed = client.creds_list()
+        assert listed, "the vault is empty"
+        for record in listed:
+            assert record["secret"] == ""
+
+        exported = client.creds_export()
+        assert any(r.get("secret") for r in exported), exported
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_vault_keeps_the_material_of_every_host():
+    """The server keeps the records, and the console finds them."""
+    server, agent, client = _vault_client("creds-vault")
+    try:
+        client.wait_for_result(
+            client.submit("agent-vault", "creds", {"mode": "all", "raw": True}),
+            timeout=10)
+
+        rows = client.creds_list()
+        assert rows, "the vault is empty"
+        for row in rows:
+            assert row["kind"]
+            assert row["agent_id"] == "agent-vault"
+            assert row["digest"]
+            # The list never carries the value.
+            assert "secret" not in row or not row.get("secret")
+
+        found = client.creds_search("alice")
+        assert found, "the search found nothing"
+        assert any(row["account"] == "CORP\\alice" for row in found)
+
+        exported = client.creds_export()
+        assert exported, "the export is empty"
+        assert any(row.get("secret") for row in exported)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_event_stream_never_carries_a_secret():
+    """The shape of the material travels; the value stays in the vault."""
+    server, agent, client = _vault_client("creds-event")
+    try:
+        client.wait_for_result(
+            client.submit("agent-vault", "creds", {"mode": "all", "raw": True}),
+            timeout=10)
+        deadline = time.time() + 5
+        events = []
+        while time.time() < deadline:
+            events = (client.events(limit=200) or {}).get("events") or []
+            if any(ev.get("kind") == "creds.collected" for ev in events):
+                break
+            time.sleep(0.05)
+        collected = [ev for ev in events if ev.get("kind") == "creds.collected"]
+        assert collected, events
+        blob = repr(collected)
+        assert "correct-horse-battery-staple" not in blob
+        # The task result itself is redacted too.
+        task = client.wait_for_result(
+            client.submit("agent-vault", "creds", {"mode": "all", "raw": True}),
+            timeout=10)
+        for record in (task.get("meta") or {}).get("creds") or []:
+            assert record["secret"] == ""
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_token_work_lists_the_tokens_of_the_host():
+    """Whose session is this."""
+    server, agent, client = _vault_client("token-list")
+    try:
+        task = client.wait_for_result(
+            client.submit("agent-vault", "token", {"mode": "list"}), timeout=10)
+        assert task["state"] == "done", task
+        meta = task.get("meta") or {}
+        tokens = meta.get("tokens") or []
+        assert tokens, task
+        for token in tokens:
+            assert "pid" in token
+            assert "account" in token
+            assert "session" in token
+        assert meta.get("tokens_total") == len(tokens)
+
+        # The list can be narrowed to one session.
+        one = client.wait_for_result(
+            client.submit("agent-vault", "token", {"mode": "list", "session": 1}),
+            timeout=10)
+        sessions = {t["session"] for t in (one.get("meta") or {}).get("tokens") or []}
+        assert sessions == {1}, one
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_impersonation_is_visible_in_the_inventory():
+    """The identity of the implant travels with the check-in."""
+    server, agent, client = _vault_client("token-become")
+    try:
+        client.wait_for_result(
+            client.submit("agent-vault", "token", {"mode": "become", "pid": 1180}),
+            timeout=10)
+        deadline = time.time() + 5
+        identity = ""
+        while time.time() < deadline:
+            rows = client.agents()
+            identity = str((rows[0] if rows else {}).get("impersonation") or "")
+            if identity:
+                break
+            time.sleep(0.05)
+        assert identity == "CORP\\alice", client.agents()
+
+        # And the operator can give the identity back.
+        client.wait_for_result(
+            client.submit("agent-vault", "token", {"mode": "restore"}), timeout=10)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            rows = client.agents()
+            if not (rows[0] if rows else {}).get("impersonation"):
+                break
+            time.sleep(0.05)
+        rows = client.agents()
+        assert not (rows[0] if rows else {}).get("impersonation"), rows
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_escalation_reports_every_attempt():
+    """The technique, the outcome and what it changed."""
+    server, agent, client = _vault_client("privesc")
+    try:
+        task = client.wait_for_result(
+            client.submit("agent-vault", "privesc", {"mode": "privileges"}), timeout=10)
+        assert task["state"] == "done", task
+        meta = task.get("meta") or {}
+        attempts = meta.get("escalations") or []
+        assert attempts, task
+        for attempt in attempts:
+            assert attempt["technique"]
+            assert attempt["outcome"] in ("worked", "failed", "unavailable")
+            assert "side_effects" in attempt
+        assert meta.get("escalations_total") == len(attempts)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_remote_execution_runs_on_the_far_host():
+    """The command runs there, and the output comes back."""
+    server, agent, client = _vault_client("remote-exec")
+    try:
+        task = client.wait_for_result(
+            client.submit("agent-vault", "winrm.exec",
+                          {"target": "dc01", "command": "whoami"}), timeout=10)
+        assert task["state"] == "done", task
+        meta = task.get("meta") or {}
+        assert meta.get("remote_protocol") == "winrm"
+        assert meta.get("remote_target") == "dc01"
+        assert "dc01" in (task.get("out") or b"").decode()
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_remote_execution_needs_a_target():
+    """A command without a target is refused, not guessed."""
+    server, agent, client = _vault_client("remote-empty")
+    try:
+        task = client.wait_for_result(
+            client.submit("agent-vault", "ssh.exec", {"command": "id"}), timeout=10)
+        assert task["state"] == "failed", task
+        assert "target" in (task.get("err") or "")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_domain_edges_carry_the_movement():
+    """The trusts, the delegation and the permissions are parsed."""
+    rust = read_text("implant/rust/src/domain.rs")
+    for marker in ("parse_trusts", "parse_delegation", "parse_acl",
+                   "AllowedToDelegate", "DCSync", "TrustsOut", "WriteDacl"):
+        assert marker in rust, marker
+
+
+def test_the_credential_vault_is_encrypted_at_rest():
+    """The server never writes a secret in the clear."""
+    vault = read_text("server/internal/hub/vault.go")
+    assert "vaultSeal" in vault
+    assert "vaultOpen" in vault
+    assert "crypt.Seal" in vault
+    store = read_text("server/internal/store/store.go")
+    assert "Digest" in store

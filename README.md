@@ -68,6 +68,9 @@ Added on top of that core:
 | The end of it, on the target | One command tells the beacons to exit and stops the server from feeding them any more work | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
 | Staying installed | A manager around a catalogue of start-up techniques: it picks the quietest one the host can carry, verifies it, migrates between them and takes them all away again | [docs/OPERATIONS.md](docs/OPERATIONS.md#keeping-the-implant-alive) |
 | Knowing the host | A posture engine that says what the machine is, adjusts the schedule and the traffic to it, and stops the implant when the operator says so | [docs/OPERATIONS.md](docs/OPERATIONS.md#knowing-the-host) |
+| The credential vault | Every piece of material is a record with a kind, a source and a confidence; the value is redacted by default, encrypted at rest and only handed out when the operator asks for it | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-material-and-the-vault) |
+| The token work | The tokens of a host, an impersonation that lasts one task or until the operator takes it back, and the identity in the inventory | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-material-and-the-vault) |
+| The remote execution | A command that runs on a far host over WinRM, WMI, DCOM, SMB, LDAP or SSH, driven from the agent that holds the path to it | [docs/OPERATIONS.md](docs/OPERATIONS.md#running-a-command-on-a-far-host) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

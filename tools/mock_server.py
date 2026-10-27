@@ -57,7 +57,8 @@ AGENT_CAPS = [
     "session.open", "session.input", "session.close", "vpn", "scan",
     "resolve", "env", "touch", "evade.report", "evade.posture",
     "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
-    "hygiene.process",
+    "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
+    "ldap.query", "ssh.exec",
 ]
 
 
@@ -392,6 +393,10 @@ class MockServer:
         self.artifact_uploads: Dict[str, bytearray] = {}
         # The command namespace: saved commands the team shares.
         self.aliases: Dict[str, Dict[str, Any]] = {}
+        # The credential vault of the engagement.  The Go server keeps the
+        # values encrypted when a key is configured; the test double keeps
+        # them in the clear, because the tests need to see them.
+        self.credentials: List[Dict[str, Any]] = []
         self._install_default_armory()
         self._install_default_aliases()
         self.sleep = 5
@@ -775,11 +780,17 @@ class MockServer:
                 raw = stream.recv_frame()
                 msg_type, msg = sess.decrypt_message(raw)
                 if msg_type == wire.MsgType.CHECKIN:
+                    # The implant says who it is running as: the inventory
+                    # has to show the truth, not the account it started with.
+                    identity = ""
+                    if isinstance(msg.get("impersonation"), str):
+                        identity = str(msg.get("impersonation") or "")
                     with self._lock:
                         record = self.agents.get(agent_id)
                         if record is not None:
                             record["last_seen"] = _now()
                             record["state"] = "online"
+                            record["impersonation"] = identity
                     batch = self._take_tasks(agent_id)
                     # The cadence the server pushes is the one the operator
                     # configured for this agent.
@@ -878,6 +889,72 @@ class MockServer:
         if broken:
             self.emit("persist.broken", agent_id, task_id=task_id,
                       data={"broken": broken, "total": len(entries)})
+
+    def _redact_credentials(self, meta: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        """Take the value out of the material of a result.
+
+        The task record and the event stream keep the shape of the
+        material and lose the value: the vault is the place for the value,
+        and the vault is the place the operator asked for it.  The entries
+        that carried a value are returned, so they can go into the vault.
+        """
+        entries = meta.get("creds")
+        if not isinstance(entries, list):
+            return None
+        collected: List[Dict[str, Any]] = []
+        redacted: List[Dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            copy = dict(entry)
+            secret = str(copy.get("secret", "") or "")
+            if secret:
+                # A copy of its own: the record that goes into the vault
+                # keeps the value, the record that stays in the task does
+                # not.
+                collected.append(dict(entry))
+            copy["secret"] = ""
+            copy["redacted"] = True
+            redacted.append(copy)
+        meta["creds"] = redacted
+        return collected
+
+    def _creds_result(self, task: Dict[str, Any], task_id: str,
+                      entries: List[Dict[str, Any]]) -> None:
+        """Keep the material of an agent in the vault.
+
+        The value never reaches the event stream: the vault is the place
+        for it, and the console asks for it there.
+        """
+        if str(task.get("kind", "")) != "creds":
+            return
+        agent_id = str(task.get("agent_id", ""))
+        collected = 0
+        with self._lock:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                secret = str(entry.get("secret", "") or "")
+                if not secret:
+                    continue
+                record = {
+                    "id": f"cred-{len(self.credentials) + 1}",
+                    "agent_id": agent_id,
+                    "source": str(entry.get("source", "")),
+                    "account": str(entry.get("account", "")),
+                    "target": str(entry.get("target", "")),
+                    "kind": str(entry.get("kind", "")),
+                    "secret": secret,
+                    "digest": hashlib.sha256(secret.encode()).hexdigest(),
+                    "confidence": int(entry.get("confidence", 0) or 0),
+                    "note": str(entry.get("note", "")),
+                    "collected": _now(),
+                }
+                self.credentials.append(record)
+                collected += 1
+        # The event carries the shape of the material and never the value.
+        self.emit("creds.collected", agent_id, task_id=task_id,
+                  data={"collected": collected, "dropped": 0})
 
     EVADE_KINDS = (
         "evade.report", "evade.posture", "evade.profile", "evade.shape",
@@ -1104,6 +1181,9 @@ class MockServer:
             }
             if meta:
                 task["meta"] = meta
+            # The value of a credential never reaches the task record or
+            # the event stream: it goes to the vault.
+            creds = self._redact_credentials(meta)
             task["completed"] = _now()
             snapshot = dict(task)
         raw = snapshot["out"]
@@ -1137,6 +1217,9 @@ class MockServer:
         # keeps the last posture, so the operator does not have to run a
         # task to know what a machine is.
         self._posture_result(snapshot, task_id)
+        # A credential task hands its material to the vault.
+        if creds is not None:
+            self._creds_result(snapshot, task_id, creds)
         # A stage of a multi-stage task hands its output to the next stage.
         self._advance_chain(task_id, raw)
 
@@ -1486,6 +1569,34 @@ class MockServer:
                 rows = [dict(a) for a in self.agents.values()
                         if _agent_matches(a, args)]
             return ok({"agents": rows, "count": len(rows)})
+
+        if cmd in ("creds.list", "creds.search", "creds.export"):
+            agent = str(args.get("agent", "") or "")
+            kind = str(args.get("kind", "") or "")
+            query = str(args.get("query", "") or "")
+            if cmd == "creds.search" and not query.strip():
+                return fail("creds.search needs a query")
+            needle = query.strip().lower()
+            with self._lock:
+                rows = []
+                for record in self.credentials:
+                    if agent and record["agent_id"] != agent:
+                        continue
+                    if kind and record["kind"] != kind:
+                        continue
+                    if needle:
+                        hay = " ".join([
+                            record["account"], record["target"], record["source"],
+                            record["kind"], record["note"], record["agent_id"],
+                        ]).lower()
+                        if needle not in hay:
+                            continue
+                    row = dict(record)
+                    if cmd != "creds.export":
+                        row["secret"] = ""
+                    rows.append(row)
+            return ok({"credentials": rows, "count": len(rows),
+                       "encrypted": True})
 
         if cmd == "agents.tag":
             tags = _string_list(args.get("tags") or args.get("tag"))
@@ -2398,6 +2509,10 @@ class FakeAgent(threading.Thread):
         # engine: the schedule, the shaping and the kill switch.
         self.posture_name = "workstation"
         self.evade: Dict[str, Any] = {}
+        # The account the fake implant is running as, when the operator made
+        # it become somebody else.  It travels with the check-in, exactly
+        # like the real implant does.
+        self.impersonation: str = ""
 
     def stop(self) -> None:
         self._stop.set()
@@ -2428,7 +2543,11 @@ class FakeAgent(threading.Thread):
                 meta=self.meta,
             )
             sess = result.session
-            stream.send_frame(sess.encrypt(wire.MsgType.CHECKIN, {"ts": _now(), "n": 0}))
+            checkin: Dict[str, Any] = {"ts": _now(), "n": 0}
+            if self.impersonation:
+                checkin["impersonation"] = self.impersonation
+                checkin["impersonation_session"] = 1
+            stream.send_frame(sess.encrypt(wire.MsgType.CHECKIN, checkin))
             # A REKEY frame may precede the batch; it is sealed with the old key
             # set, so apply it and keep reading until TASK_BATCH arrives.
             batch: Dict[str, Any] = {}
@@ -2548,6 +2667,133 @@ class FakeAgent(threading.Thread):
         "launchd.agent": ("LaunchAgent", "logon"),
         "startup": ("Startup folder", "logon"),
     }
+
+    # The material the fake host pretends to have found.  The shape is the
+    # shape of the real thing: a kind, a source, an account, a target and
+    # a confidence, and the value only when the operator asked for it.
+    CRED_CATALOGUE = [
+        {"kind": "password", "source": "vault", "account": "CORP\\alice",
+         "target": "\\\\fileserver\\finance", "confidence": 85,
+         "secret": "correct-horse-battery-staple"},
+        {"kind": "hash", "source": "lsass", "account": "CORP\\bob",
+         "target": "ntlm", "confidence": 45, "secret": "aad3b435b51404eeaad3b435b51404ee"},
+        {"kind": "ticket", "source": "kerberos", "account": "CORP\\alice",
+         "target": "krbtgt/CORP.LOCAL", "confidence": 50,
+         "secret": "ticket-material"},
+        {"kind": "key", "source": "ssh", "account": "ubuntu",
+         "target": "/home/ubuntu/.ssh/id_ed25519", "confidence": 95,
+         "secret": "-----BEGIN OPENSSH PRIVATE KEY-----"},
+        {"kind": "token", "source": "file", "account": "ubuntu",
+         "target": "/home/ubuntu/.aws/credentials", "confidence": 70,
+         "secret": "AKIAIOSFODNN7EXAMPLE"},
+    ]
+
+    def _creds(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The credential collection of the fake host."""
+        mode = str(args.get("mode", "vault") or "vault")
+        raw = bool(args.get("raw", False))
+        wanted = [e for e in self.CRED_CATALOGUE
+                  if mode in ("all", "") or e["source"] == mode
+                  or (mode == "local" and e["source"] in ("file", "ssh", "kerberos"))]
+        entries = []
+        for entry in wanted:
+            record = dict(entry)
+            if not raw:
+                record["secret"] = ""
+            record["redacted"] = not raw
+            record["length"] = len(str(entry.get("secret", "")))
+            record["note"] = f"found by the {entry['source']} collector"
+            entries.append(record)
+        lines = [f"{'KIND':<10} {'SOURCE':<10} {'ACCOUNT':<20} {'TARGET':<28} LENGTH"]
+        for entry in entries:
+            lines.append(
+                f"{entry['kind']:<10} {entry['source']:<10} {entry['account']:<20} "
+                f"{entry['target']:<28} {entry['length']}"
+            )
+        if not raw:
+            lines.append("the material itself was left out: ask for it with raw=true")
+        counts: Dict[str, int] = {}
+        for entry in entries:
+            counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
+        meta = {
+            "creds": entries,
+            "creds_total": len(entries),
+            "creds_counts": counts,
+        }
+        return 0, ("\n".join(lines) + "\n").encode(), "", meta
+
+    def _tokens(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The token list of the fake host."""
+        wanted = args.get("session")
+        tokens = [
+            {"pid": 4, "process": "System", "account": "NT AUTHORITY\\SYSTEM", "session": 0},
+            {"pid": 612, "process": "winlogon.exe", "account": "NT AUTHORITY\\SYSTEM", "session": 1},
+            {"pid": 1180, "process": "explorer.exe", "account": "CORP\\alice", "session": 1},
+            {"pid": 2244, "process": "svchost.exe", "account": "NT AUTHORITY\\LOCAL SERVICE", "session": 0},
+        ]
+        if wanted is not None:
+            session = int(wanted)
+            tokens = [t for t in tokens if t["session"] == session]
+        lines = [f"{'PID':<8} {'PROCESS':<20} {'ACCOUNT':<32} SESSION"]
+        for token in tokens:
+            lines.append(f"{token['pid']:<8} {token['process']:<20} "
+                         f"{token['account']:<32} {token['session']}")
+        return 0, ("\n".join(lines) + "\n").encode(), "", {
+            "tokens": tokens,
+            "tokens_total": len(tokens),
+        }
+
+    def _escalate(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The privilege escalation of the fake host."""
+        mode = str(args.get("mode", "privileges") or "privileges")
+        if mode in ("token", "system"):
+            attempts = [{
+                "technique": "token.system",
+                "outcome": "worked",
+                "detail": "the implant runs as NT AUTHORITY\\SYSTEM",
+                "side_effects": ["the implant is SYSTEM on this host"],
+            }]
+            report = "token.system          worked (NT AUTHORITY\\SYSTEM)\n"
+        else:
+            attempts = [
+                {"technique": "privilege.SeDebugPrivilege",
+                 "outcome": "worked",
+                 "detail": "SeDebugPrivilege (read the memory of other processes)",
+                 "side_effects": ["the implant token carries SeDebugPrivilege"]},
+                {"technique": "privilege.SeImpersonatePrivilege",
+                 "outcome": "worked",
+                 "detail": "SeImpersonatePrivilege (impersonate the tokens of other accounts)",
+                 "side_effects": ["the implant token carries SeImpersonatePrivilege"]},
+                {"technique": "privilege.SeTakeOwnershipPrivilege",
+                 "outcome": "unavailable",
+                 "detail": "the host does not know this privilege",
+                 "side_effects": []},
+            ]
+            report = "SeDebugPrivilege            enabled\n"
+            report += "SeImpersonatePrivilege      enabled\n"
+            report += "SeTakeOwnershipPrivilege    unavailable\n"
+        return 0, report.encode(), "", {
+            "escalations": attempts,
+            "escalations_total": len(attempts),
+        }
+
+    def _remote(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The remote execution through the pivot."""
+        protocol = str(args.get("protocol", "") or kind.split(".")[0])
+        target = str(args.get("target", "") or "")
+        command = str(args.get("command", "") or args.get("query", "") or "")
+        if not target:
+            return 1, b"", "remote: the target is required", {}
+        lines = [
+            f"protocol : {protocol} (target {target})",
+            f"step     : the pivot ran the command on {target}",
+            f"output   :",
+            f"{protocol} on {target}: {command}",
+        ]
+        return 0, ("\n".join(lines) + "\n").encode(), "", {
+            "remote_protocol": protocol,
+            "remote_target": target,
+        }
 
     def _persist_auto(self) -> str:
         """The technique the mock picks when the operator said "auto"."""
@@ -2849,6 +3095,34 @@ class FakeAgent(threading.Thread):
         """
         kind = str(task.get("kind", ""))
         args = task.get("args") or {}
+        if kind == "creds":
+            return self._creds(args)
+        if kind == "token":
+            mode = str(args.get("mode", "list") or "list")
+            if mode == "list":
+                return self._tokens(args)
+            if mode in ("impersonate", "become"):
+                pid = int(args.get("pid", 0) or 0)
+                if not pid:
+                    return 1, b"", "token: the mode needs the pid of the process", {}
+                account = "CORP\\alice" if pid == 1180 else "NT AUTHORITY\\SYSTEM"
+                # "become" keeps the identity until the operator restores
+                # it; a one-shot impersonation ends with the next task.
+                self.impersonation = "" if mode == "impersonate" else account
+                return 0, f"the implant is now {account}\n".encode(), "", {
+                    "identity": account,
+                    "identity_session": 1,
+                    "identity_one_shot": mode == "impersonate",
+                }
+            if mode == "restore":
+                self.impersonation = ""
+                return 0, b"the implant is itself again\n", "", {"identity": ""}
+            return 1, b"", f"token: unknown mode {mode}", {}
+        if kind == "privesc":
+            return self._escalate(args)
+        if kind in ("wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
+                    "ldap.query", "ssh.exec"):
+            return self._remote(kind, args)
         if kind == "shell" and self.execute_shell:
             cmd = str(args.get("cmd", ""))
             try:

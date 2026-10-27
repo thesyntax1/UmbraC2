@@ -48,7 +48,7 @@ main: load config → build keyring → open store → start listeners
 | `crypt` | X25519, HKDF, AEAD, transcript MACs | stdlib only; suites are pluggable |
 | `session` | direction state, nonce check, rekey | exact-nonce matching = replay/reorder detection |
 | `config` | JSON config + keyring | secrets come from env or `0600` files, never from the config file |
-| `store` | agents, tasks | in-memory + atomic snapshot (`tmp` + `rename`), bounded history |
+| `store` | agents, tasks, the credential vault | in-memory + atomic snapshot (`tmp` + `rename`), bounded history; the secrets of the vault are encrypted before they reach the disk |
 | `hub` | broker | all state transitions in one place; transports never mutate state |
 | `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP/WebSocket/DNS; per-operator RPC rate limit |
 | `audit` | operator audit trail | JSON Lines, `fsync` per entry, size rotation, nil-safe |
@@ -201,9 +201,13 @@ main → Config (compile-time defaults + env/flags) → Beacon::run
 | `vpn` | the layer-3 tunnel client (TUN device on Linux) |
 | `dns` | the DNS transport: TXT records carry the frames |
 | `bof` | in-memory COFF loader |
-| `post` | reflective loading, injection, token and credential helpers |
+| `post` | reflective loading, injection, token work and privilege escalation |
+| `creds` | the credential collection: one record per piece of material, with a kind, a source and a confidence |
+| `remote` | the remote execution through the pivots: wmi, smb, winrm, dcom, ldap and ssh |
 | `domain` | active directory reconnaissance, BloodHound-style edges |
-| `evade` | debugger and sandbox awareness |
+| `evade` | the posture engine: the environment, the schedule and the kill switch |
+| `hygiene` | the memory and the process hygiene |
+| `persist` | the persistence manager and its technique catalogue |
 
 Choices worth knowing:
 
@@ -223,6 +227,35 @@ Choices worth knowing:
 * **process execution** — `std::process::Command` with piped stdio: commands are
   never staged on disk (no temp scripts, no dropped helper binaries). The
   implant itself never writes to disk except for explicit `upload` tasks.
+
+### The identity and the vault
+
+An identity is a record, not a wall of text.  The implant collects material
+and answers with one record per piece: the kind (`password`, `hash`,
+`ticket`, `token`, `key`), the source it came from, the account it belongs
+to, the target and the confidence the implant has.  The value itself is
+only sent when the operator asked for it, because the value of a credential
+is the one thing in this framework that must never end up in a log.
+
+The server keeps those records in one vault per engagement.  The value is
+encrypted with a key that comes from the configuration, and the digest is
+always kept: an operator who wants to know whether two hosts share a
+credential can find out without the key, and an operator who wants the value
+has to ask for it explicitly (`creds.export`, an operator action).  The
+event stream never carries the value: the task record keeps the redacted
+form, and the vault keeps the rest.
+
+The token work follows the same rule.  The implant can borrow the account of
+a process for one task (`impersonate`) or until the operator takes it back
+(`become`); the identity travels with the check-in, so the inventory shows
+the truth, and the server drops it when the session ends.
+
+The remote execution does not need a new tunnel: the agent that holds the
+network path runs the command on the far host, with its own credentials and
+its own reach, and the output comes back through that agent.  The protocols
+are the ones a Windows domain speaks every day — WinRM, WMI, DCOM through
+the scheduler, SMB through the service control manager, LDAP and SSH — and
+each of them cleans up after itself.
 
 ## 4. Android implant
 
