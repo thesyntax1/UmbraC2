@@ -358,6 +358,7 @@ Task kinds understood by the reference implants:
 | `netinfo` | — | the interfaces, the routes, the neighbours and the resolvers |
 | `proc.kill` | `pid` or `name` | terminates a process of the host |
 | `keylog.file` | `path`, optional `seconds` | the key logger writes into a file, to be fetched later |
+| `registry` | `hive`, `key`, optional `value` | the Windows registry: a key, its values and its subkeys |
 | `tail` | `path`, optional `lines` | the last lines of a file |
 | `hash` | `path` | the SHA-256 of a file |
 | `persist` | optional `method` | installs the implant so it survives a reboot |

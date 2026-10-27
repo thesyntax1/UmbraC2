@@ -479,6 +479,10 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         },
 
         // ---- the operator's own desktop ---------------------------------
+        "registry" => match crate::registry::read(&args) {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
         "screenshot" => match crate::desktop::screen() {
             Ok(data) => Outcome::ok(data).with("format", upk::s("bmp")),
             Err(e) => Outcome::err(1, e),

@@ -1475,6 +1475,14 @@ def build_parser() -> argparse.ArgumentParser:
     hash_cmd.add_argument("--wait", action="store_true")
     hash_cmd.add_argument("--timeout", type=float, default=120.0)
 
+    reg = sub.add_parser("registry", help="the Windows registry of an agent")
+    reg.add_argument("agent")
+    reg.add_argument("key", help="the key, for example SOFTWARE\\Microsoft")
+    reg.add_argument("--hive", default="HKLM", help="HKLM, HKCU, HKCR or HKU")
+    reg.add_argument("--value", default="", help="read one value instead of the whole key")
+    reg.add_argument("--wait", action="store_true")
+    reg.add_argument("--timeout", type=float, default=120.0)
+
     procs = sub.add_parser("proc", help="the process table of an agent")
     procs.add_argument("agent")
     procs.add_argument("--wait", action="store_true")
@@ -2072,6 +2080,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "hash":
             run_task_and_wait(client, console, args.agent, "hash",
                               {"path": args.path},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "registry":
+            run_task_and_wait(client, console, args.agent, "registry",
+                              {"hive": args.hive, "key": args.key, "value": args.value},
                               args.wait, args.timeout, args.json)
         elif args.cmd == "proc":
             run_task_and_wait(client, console, args.agent, "ps", {},

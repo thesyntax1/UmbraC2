@@ -2117,7 +2117,7 @@ def _write_certificates(tmp_path):
 
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import NameOID
 
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -2126,7 +2126,9 @@ def _write_certificates(tmp_path):
     def name(common_name):
         return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
 
-    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    # An elliptic curve key: the generation is instant, and the test
+    # suite writes a lot of certificates.
+    ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_cert = (
         x509.CertificateBuilder()
         .subject_name(name("umbra-test-ca"))
@@ -2140,7 +2142,7 @@ def _write_certificates(tmp_path):
     )
 
     def leaf(common_name, san):
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        key = ec.generate_private_key(ec.SECP256R1())
         cert = (
             x509.CertificateBuilder()
             .subject_name(name(common_name))

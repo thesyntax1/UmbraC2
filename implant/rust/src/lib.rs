@@ -21,6 +21,7 @@
 //!   desktop the screen, the clipboard and the keyboard
 //!   install installing the implant and replacing it
 //!   proc    the process table of the host
+//!   registry the Windows registry
 //!   beacon   the actual loop
 
 pub mod beacon;
@@ -35,6 +36,7 @@ pub mod link;
 pub mod netinfo;
 pub mod post;
 pub mod proc;
+pub mod registry;
 pub mod session;
 pub mod sessions;
 pub mod sysinfo;
