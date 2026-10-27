@@ -5,7 +5,7 @@
 //! back into the process, and nothing is staged on disk (no temp scripts, no
 //! dropped binaries). File transfer tasks only touch paths the operator names.
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;

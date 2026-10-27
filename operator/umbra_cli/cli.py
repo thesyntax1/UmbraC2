@@ -1361,6 +1361,7 @@ def build_parser() -> argparse.ArgumentParser:
     events_cmd.add_argument("--limit", type=int, default=50)
     events_cmd.add_argument("--after", type=int, default=0)
     events_cmd.add_argument("--kind", default="")
+    events_cmd.add_argument("--agent", default="", help="only the events of one agent")
     watch.add_argument("--limit", type=int, default=0, help="stop after N events (0 = forever)")
 
     sleep = sub.add_parser("sleep", help="change beacon interval")
@@ -1839,6 +1840,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             rows = res.get("events") or []
             if args.kind:
                 rows = [e for e in rows if e.get("kind") == args.kind]
+            if args.agent:
+                rows = [e for e in rows if e.get("agent_id") == args.agent]
             if args.json:
                 emit(rows)
             else:
