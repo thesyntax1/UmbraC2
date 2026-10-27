@@ -1449,6 +1449,13 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--wait", action="store_true")
     update.add_argument("--timeout", type=float, default=120.0)
 
+    keylog_cmd = sub.add_parser("keylog-file", help="write the keys into a file on an agent")
+    keylog_cmd.add_argument("agent")
+    keylog_cmd.add_argument("path", nargs="?", default="umbra-keys.log")
+    keylog_cmd.add_argument("--seconds", type=int, default=300)
+    keylog_cmd.add_argument("--wait", action="store_true")
+    keylog_cmd.add_argument("--timeout", type=float, default=120.0)
+
     tail_cmd = sub.add_parser("tail", help="the last lines of a file on an agent")
     tail_cmd.add_argument("agent")
     tail_cmd.add_argument("path")
@@ -2043,6 +2050,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "update":
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "keylog-file":
+            run_task_and_wait(client, console, args.agent, "keylog.file",
+                              {"path": args.path, "seconds": args.seconds},
                               args.wait, args.timeout, args.json)
         elif args.cmd == "tail":
             run_task_and_wait(client, console, args.agent, "tail",

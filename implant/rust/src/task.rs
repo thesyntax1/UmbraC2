@@ -486,6 +486,9 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         // The key logger is started by the beacon itself: it streams the
         // keys while it runs, exactly like an interactive session does.
         "keylog" => Outcome::err(2, "the key logger is started by the beacon itself"),
+        "keylog.file" => {
+            Outcome::err(2, "the key logger is started by the beacon itself")
+        }
 
         // ---- files and the network --------------------------------------
         "triage" => {

