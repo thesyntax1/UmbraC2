@@ -1442,6 +1442,12 @@ def build_parser() -> argparse.ArgumentParser:
     persist.add_argument("--wait", action="store_true")
     persist.add_argument("--timeout", type=float, default=120.0)
 
+    unpersist = sub.add_parser("unpersist", help="remove the start-up entries of the implant")
+    unpersist.add_argument("agent")
+    unpersist.add_argument("--method", default="auto")
+    unpersist.add_argument("--wait", action="store_true")
+    unpersist.add_argument("--timeout", type=float, default=120.0)
+
     update = sub.add_parser("update", help="replace the running implant")
     update.add_argument("agent")
     update.add_argument("path", help="the new binary on the target")
@@ -2047,6 +2053,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "persist":
             run_task_and_wait(client, console, args.agent, "persist",
                               {"method": args.method}, args.wait, args.timeout, args.json)
+        elif args.cmd == "unpersist":
+            run_task_and_wait(client, console, args.agent, "unpersist",
+                              {"method": args.method},
+                              args.wait, args.timeout, args.json)
         elif args.cmd == "update":
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},

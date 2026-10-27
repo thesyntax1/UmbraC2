@@ -193,12 +193,15 @@ check-in.  `umbra alerts` lists the rules the server is using.
 ```bash
 umbra persist web-01                     # install it so it survives a reboot
 umbra persist web-01 --method systemd    # a specific method
+umbra unpersist web-01                   # take the start-up entries away again
 umbra update web-01 /tmp/umbra-beacon --sha256 <digest>
 ```
 
 The persistence is the one the platform offers: a scheduled task and a
 registry key on Windows, a systemd user unit and a cron entry on Linux, a
-launch agent on macOS.  The report says what was done, so it can be undone.
+launch agent on macOS.  The report says what was done, and `unpersist`
+takes it away again: an operator who installed the implant has to be able
+to remove it.
 
 The update replaces the running binary: the new one is pushed to the host
 first (the `upload` task), the digest is checked, and only then is the old

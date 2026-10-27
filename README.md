@@ -51,7 +51,7 @@ Added on top of that core:
 | Task chains | Several tasks in a row, where the output of one becomes the input of the next | [docs/PROTOCOL.md](docs/PROTOCOL.md#72d-multi-stage-tasks) |
 | Alerts | The server watches its own event stream and raises an alert when a rule matches | [docs/PROTOCOL.md](docs/PROTOCOL.md#72e-alert-rules) |
 | Host triage | Hashes, entropy and file type of a file on the target, a search by name or content, and the network configuration | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
-| Staying alive | The implant installs itself so it survives a reboot, replaces itself with a verified new build, and dials a list of servers through a proxy | [docs/OPERATIONS.md](docs/OPERATIONS.md#keeping-the-implant-alive) |
+| Staying alive | The implant installs itself so it survives a reboot, takes the start-up entries away again, replaces itself with a verified new build, and dials a list of servers through a proxy | [docs/OPERATIONS.md](docs/OPERATIONS.md#keeping-the-implant-alive) |
 | Reliability | A task that is never answered fails instead of hanging forever, and the server sweeps the queue every 30 s | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
 | The way a team works | A command namespace of saved commands, a failed task that can be run again, and a report of an agent for the handover | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The journal | Every event is numbered and kept, so a console that was not watching can still ask what it missed | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |

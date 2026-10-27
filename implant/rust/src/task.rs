@@ -469,6 +469,10 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             Ok(report) => Outcome::ok(report.into_bytes()),
             Err(e) => Outcome::err(1, e),
         },
+        "unpersist" => match crate::install::unpersist(&args) {
+            Ok(report) => Outcome::ok(report.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
         "update" => match crate::install::update(&args) {
             Ok(report) => Outcome::ok(report.into_bytes()),
             Err(e) => Outcome::err(1, e),

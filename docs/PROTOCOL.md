@@ -361,6 +361,7 @@ Task kinds understood by the reference implants:
 | `tail` | `path`, optional `lines` | the last lines of a file |
 | `hash` | `path` | the SHA-256 of a file |
 | `persist` | optional `method` | installs the implant so it survives a reboot |
+| `unpersist` | optional `method` | removes the start-up entries that `persist` added |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer

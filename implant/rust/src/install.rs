@@ -84,6 +84,74 @@ pub fn persist(args: &Value) -> Result<String, String> {
     Ok(steps.join("\n"))
 }
 
+/// Remove the implant's own start-up entries.
+///
+/// Whatever `persist` added is removed again: the scheduled task, the
+/// registry key, the systemd unit, the cron entry or the launch agent.
+/// An operator who installed the implant has to be able to take it away
+/// again, and the report says what was removed.
+pub fn unpersist(args: &Value) -> Result<String, String> {
+    let method = args.str_or("method", "auto");
+    let mut steps: Vec<String> = Vec::new();
+
+    #[cfg(windows)]
+    {
+        if method == "auto" || method == "schtasks" {
+            steps.push(format!(
+                "schtasks: {}",
+                run("schtasks /Delete /TN \"Umbra Beacon\" /F")
+            ));
+        }
+        if method == "auto" || method == "registry" {
+            let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+            steps.push(format!(
+                "registry: {}",
+                run(&format!("reg delete \"{key}\" /v Umbra /f"))
+            ));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if method == "auto" || method == "systemd" {
+            steps.push(format!(
+                "systemd: {}",
+                run("systemctl --user disable --now umbra.service")
+            ));
+            let path = home().join(".config/systemd/user/umbra.service");
+            if path.exists() {
+                let _ = fs::remove_file(&path);
+                steps.push(format!("systemd: removed {}", path.display()));
+            }
+        }
+        if method == "auto" || method == "cron" {
+            // The cron entry is the line that mentions the implant.
+            let command = "(crontab -l 2>/dev/null | grep -v 'umbra') | crontab -";
+            steps.push(format!("cron: {}", run(command)));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if method == "auto" || method == "launchd" {
+            steps.push(format!(
+                "launchd: {}",
+                run("launchctl unload -w ~/Library/LaunchAgents/io.umbra.beacon.plist")
+            ));
+            let path = home().join("Library/LaunchAgents/io.umbra.beacon.plist");
+            if path.exists() {
+                let _ = fs::remove_file(&path);
+                steps.push(format!("launchd: removed {}", path.display()));
+            }
+        }
+    }
+
+    if steps.is_empty() {
+        return Err("unpersist: no method for this platform".to_string());
+    }
+    Ok(steps.join("\n"))
+}
+
 /// Replace the running implant with a new one.
 ///
 /// The new binary is pushed to the host first (the `upload` task), and the

@@ -2230,6 +2230,8 @@ class FakeAgent(threading.Thread):
                     break
             report = f"scanned files, {len(hits)} hits\n" + "\n".join(hits)
             return 0, report.encode(), "", {}
+        if kind == "unpersist":
+            return 0, b"mock agent: the start-up entries would be removed\n", "", {}
         if kind == "keylog.file":
             path = str(args.get("path", ""))
             return 0, f"mock agent: the key logger writes to {path}\n".encode(), "", {}
