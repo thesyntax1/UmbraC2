@@ -332,6 +332,20 @@ undo, the self-update with a verified digest, the key logger that
 streams or writes into a file, and the list of servers the beacon falls
 back to.
 
+Done (the persistence engine): the start-up entries are a manager around a
+catalogue of techniques instead of one scheduled task
+(`implant/rust/src/persist.rs`): fourteen Windows techniques, thirteen on
+Linux, five on macOS and three on the phone, each of which knows how to
+install itself, how to read itself back and how to take itself away.  The
+manager picks the quietest technique the host can carry, installs it
+idempotently, verifies it, and keeps its own record in the canonical `upk`
+encoding, so the operator can ask what is on a host weeks later.  The
+lifecycle travels over the wire (`persist`, `unpersist`, `persist.list`,
+`persist.verify`, `persist.migrate`, `persist.health`), the server keeps the
+entries with the agent (`store.Agent.Persist`), the inventory filters on
+them (`persisted=yes`), a broken entry raises `persist.broken` on the event
+stream, and the console has the fleet report (`umbra persist-report`).
+
 Done (capabilities, the file store and the end of an engagement): every
 beacon says in its handshake which task kinds it implements, and the server
 refuses to queue anything else (`store.Agent.Caps`, `hub.SubmitTask`); the

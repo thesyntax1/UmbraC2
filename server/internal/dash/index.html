@@ -65,7 +65,8 @@
       <table id="agents">
         <thead><tr>
           <th>id</th><th>host</th><th>os</th><th>user</th><th>transport</th>
-          <th>sleep</th><th>state</th><th>tags</th><th>last seen</th>
+          <th>sleep</th><th>state</th><th>tags</th><th>persistence</th>
+          <th>last seen</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -139,6 +140,18 @@
     return isNaN(d.getTime()) ? stamp : d.toLocaleString();
   }
 
+  // The persistence of a host: what is installed on it.
+  function persistence(a) {
+    var entries = a.persist || [];
+    if (!entries.length) { return "-"; }
+    return entries.map(function (e) { return e.technique; }).join(", ");
+  }
+
+  // Whether one of the entries is broken.
+  function persistenceBroken(a) {
+    return (a.persist || []).some(function (e) { return e.state === "broken"; });
+  }
+
   function refreshAgents() {
     return api("/api/agents").then(function (data) {
       var body = document.querySelector("#agents tbody");
@@ -149,11 +162,15 @@
       (data.agents || []).forEach(function (a) {
         var row = el("tr", null, "click");
         [a.id, a.host, a.os, a.user, a.transport,
-         a.sleep ? a.sleep + "s" : "-", a.state, (a.tags || []).join(","), when(a.last_seen)]
+         a.sleep ? a.sleep + "s" : "-", a.state, (a.tags || []).join(","),
+         persistence(a), when(a.last_seen)]
           .forEach(function (value, index) {
             var cell = el("td", value);
             if (index === 6) { cell.className = a.state === "online" ? "on" : "off"; }
-            if (index === 8) { cell.className = "dim"; }
+            // The persistence column: the techniques on the host, in red
+            // when one of them is broken.
+            if (index === 8) { cell.className = persistenceBroken(a) ? "off" : "dim"; }
+            if (index === 9) { cell.className = "dim"; }
             row.appendChild(cell);
           });
         row.addEventListener("click", function () { picker.value = a.id; });

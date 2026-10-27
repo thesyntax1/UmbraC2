@@ -66,6 +66,7 @@ Added on top of that core:
 | The server's file store | A file goes onto the server once and is pushed to every host that needs it, in verified chunks | [docs/OPERATIONS.md](docs/OPERATIONS.md#3d-the-artifact-store) |
 | The network reach | A port scan of a range, a name resolution and the environment of the host, straight from the target | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The end of it, on the target | One command tells the beacons to exit and stops the server from feeding them any more work | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
+| Staying installed | A manager around a catalogue of start-up techniques: it picks the quietest one the host can carry, verifies it, migrates between them and takes them all away again | [docs/OPERATIONS.md](docs/OPERATIONS.md#keeping-the-implant-alive) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

@@ -192,16 +192,56 @@ check-in.  `umbra alerts` lists the rules the server is using.
 
 ```bash
 umbra persist web-01                     # install it so it survives a reboot
-umbra persist web-01 --method systemd    # a specific method
-umbra unpersist web-01                   # take the start-up entries away again
+umbra persist web-01 --method registry.run   # a specific technique
+umbra persist web-01 --name "Update Service" # a label that says nothing
+umbra unpersist web-01                   # take every start-up entry away again
 umbra update web-01 /tmp/umbra-beacon --sha256 <digest>
 ```
 
-The persistence is the one the platform offers: a scheduled task and a
-registry key on Windows, a systemd user unit and a cron entry on Linux, a
-launch agent on macOS.  The report says what was done, and `unpersist`
-takes it away again: an operator who installed the implant has to be able
-to remove it.
+The persistence is a manager around a catalogue of techniques, not one
+scheduled task.  `--method auto` lets the manager pick the quietest one the
+host can carry without administrator rights; naming a technique asks for
+that one:
+
+| Platform | Techniques |
+|---|---|
+| Windows | `registry.run`, `registry.runonce`, `registry.explorer_run`, `registry.winlogon`, `registry.ifeo`, `registry.appinit`, `registry.com`, `registry.printmonitor`, `registry.shell_ext`, `schtasks`, `taskxml`, `service`, `startup`, `bcdedit` |
+| Linux | `systemd.user`, `systemd.system`, `systemd.timer`, `cron.user`, `cron.d`, `rc.local`, `init.d`, `profile`, `ld_preload`, `xdg_autostart`, `at` |
+| macOS | `launchd.agent`, `launchd.daemon`, `loginitem`, `shell_rc`, `cron.user` |
+| Android | `boot_receiver`, `foreground_service`, `alarm` |
+
+Three things make the difference between a start-up entry and a persistence
+engine:
+
+* **It is verified.**  The manager reads the entry back after installing it
+  (the registry value, the unit file, the crontab line, the scheduled task)
+  and reports the truth.  An entry that cannot be read is a failure, not a
+  success.
+* **It is idempotent.**  Installing twice leaves exactly one entry, and the
+  manager keeps its own record of what it installed, so it knows what to
+  check and what to remove weeks later.
+* **It is quiet.**  The implant copies itself into a plausible location and
+  the entry points at that copy; the label becomes the value name, the
+  service display name and the task name.  The install prints nothing on the
+  target unless `--verbose` is asked for.
+
+The lifecycle is visible to the operator:
+
+```bash
+umbra persist-list web-01                # what is installed on the host
+umbra persist-verify web-01              # read every entry back
+umbra persist-health web-01              # covered, degraded or broken
+umbra persist-migrate web-01 --from registry.run --to schtasks
+umbra persist-report                     # the whole fleet
+```
+
+`persist-migrate` installs the new technique and verifies it *before* the
+old one is removed, so the coverage never has a gap.  `persist-report` is
+the handover artefact: it lists the hosts that carry an entry, the entries
+that are broken and the techniques that have to be removed when the
+engagement ends.  `engagement.wipe` clears the record of the engagement on
+the server; it deliberately does not touch the hosts, because somebody has
+to remove what was installed there.
 
 The update replaces the running binary: the new one is pushed to the host
 first (the `upload` task), the digest is checked, and only then is the old

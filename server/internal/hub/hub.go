@@ -703,6 +703,31 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 		data["meta"] = t.Meta
 	}
 	h.Emit(Event{Kind: "task.result", AgentID: agentID, TaskID: taskID, Data: data})
+	// A persistence task reports what is installed on the host: the server
+	// keeps the record, so the operator can see the coverage of the fleet
+	// and hear about an entry that was removed behind their back.
+	if entries, ok := persistEntries(t.Kind, t.Meta); ok {
+		h.store.SetPersistence(agentID, entries)
+		broken := 0
+		for _, entry := range entries {
+			if entry.State == "broken" {
+				broken++
+			}
+		}
+		h.Emit(Event{Kind: "persist.updated", AgentID: agentID, TaskID: taskID,
+			Data: map[string]any{
+				"entries": len(entries),
+				"broken":  broken,
+				"methods": persistMethods(entries),
+			}})
+		if broken > 0 {
+			h.Emit(Event{Kind: "persist.broken", AgentID: agentID, TaskID: taskID,
+				Data: map[string]any{
+					"broken": broken,
+					"total":  len(entries),
+				}})
+		}
+	}
 	h.store.SaveAsync()
 	// A stage of a multi-stage task hands its output to the next stage.
 	h.advanceChain(agentID, taskID, t)
@@ -854,6 +879,9 @@ type AgentFilter struct {
 	Tag string
 	// User matches the account the beacon runs as.
 	User string
+	// Persisted selects the agents by their persistence state: "yes" for
+	// the hosts that carry an entry, "no" for the ones that carry none.
+	Persisted string
 }
 
 // SelectAgents returns the agents that match the filter, newest first.
@@ -882,9 +910,79 @@ func (h *Hub) SelectAgents(f AgentFilter) []*store.Agent {
 		if f.Tag != "" && !a.HasTag(f.Tag) {
 			continue
 		}
+		if f.Persisted != "" {
+			covered := len(a.Persist) > 0
+			switch strings.ToLower(f.Persisted) {
+			case "1", "yes", "true":
+				if !covered {
+					continue
+				}
+			case "0", "no", "false":
+				if covered {
+					continue
+				}
+			}
+		}
 		out = append(out, a)
 	}
 	return out
+}
+
+// persistEntries reads the persistence entries a beacon attached to a
+// result.
+//
+// Only the persistence tasks carry them, and the entries are only taken
+// when the beacon really sent them: a task that failed must not wipe the
+// record of what is on the host.
+func persistEntries(kind string, meta map[string]any) ([]store.PersistEntry, bool) {
+	switch kind {
+	case "persist", "unpersist", "persist.list", "persist.verify", "persist.migrate", "persist.health":
+	default:
+		return nil, false
+	}
+	raw, ok := meta["persist"].([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]store.PersistEntry, 0, len(raw))
+	for _, item := range raw {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, store.PersistEntry{
+			Technique:   metaString(fields["technique"]),
+			Name:        metaString(fields["name"]),
+			Trigger:     metaString(fields["trigger"]),
+			Location:    metaString(fields["location"]),
+			Detail:      metaString(fields["detail"]),
+			Binary:      metaString(fields["binary"]),
+			State:       metaString(fields["state"]),
+			InstalledAt: metaString(fields["installed_at"]),
+		})
+	}
+	return out, true
+}
+
+// persistMethods lists the techniques of the entries.
+func persistMethods(entries []store.PersistEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.Technique)
+	}
+	return out
+}
+
+// metaString reads a string out of a decoded result field.
+func metaString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return ""
+	}
 }
 
 // containsString reports whether the list holds the value.
@@ -1326,5 +1424,8 @@ func agentData(a *store.Agent) map[string]any {
 		// a task is queued; an empty list means "it never said".
 		"caps":     a.Caps,
 		"panicked": a.Panicked,
+		// The persistence entries the beacon reported: what is installed on
+		// the host and whether it is still there.
+		"persist": a.Persist,
 	}
 }

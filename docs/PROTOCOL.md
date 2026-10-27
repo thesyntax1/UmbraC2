@@ -365,8 +365,12 @@ Task kinds understood by the reference implants:
 | `registry` | `hive`, `key`, optional `value` | the Windows registry: a key, its values and its subkeys |
 | `tail` | `path`, optional `lines` | the last lines of a file |
 | `hash` | `path` | the SHA-256 of a file |
-| `persist` | optional `method` | installs the implant so it survives a reboot |
-| `unpersist` | optional `method` | removes the start-up entries that `persist` added |
+| `persist` | optional `method`, `name`, `silent`, `verify` | installs the implant so it survives a reboot, with a technique the manager picks |
+| `unpersist` | optional `method` (`all` removes every entry) | removes the start-up entries that `persist` added |
+| `persist.list` | — | the persistence entries of the host |
+| `persist.verify` | — | reads every entry back and says whether it is still there |
+| `persist.migrate` | `from`, `to` | moves from one technique to another without a gap |
+| `persist.health` | — | one verdict for the host: covered, degraded or broken |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -635,6 +639,57 @@ because a burned agent refuses every task.
 
 The console asks for the word "panic" before it does any of this, exactly
 like `wipe` asks for "wipe".
+
+### 7.2g The persistence manager
+
+`persist` is not one scheduled task: it is a manager around a catalogue of
+techniques, and the whole lifecycle travels over the wire.
+
+**The catalogue.** Every technique has an id, a platform, a trigger
+(`logon`, `boot`, `schedule`), a flag for whether it needs administrator
+rights and a score for how quiet it is. The desktop beacon knows fifteen
+Windows techniques (the `Run` keys, `Winlogon`, `AppInit_DLLs`, the Image
+File Execution Options, a COM hijack, a print monitor, a shell extension, a
+scheduled task, a task from an XML definition, a service, the startup
+folder, a boot execute entry), thirteen on Linux (a systemd system unit, a
+systemd user unit, a systemd timer, a user crontab, an `/etc/cron.d` entry,
+`rc.local`, an init script, a shell profile hook, the `ld_preload`
+technique, an XDG autostart entry, an `at` job) and five on macOS (a launch agent, a launch
+daemon, a login item, a shell rc hook, a crontab). The phone has three: the
+boot receiver, the sticky foreground service and the alarm.
+
+**The selection.** `method: "auto"` lets the manager pick: the quietest
+technique that needs no administrator rights, and one that is already
+installed before one that is not. A technique that needs administrator rights
+is only offered when the implant actually has them.
+
+**Idempotence.** Installing twice leaves exactly one entry. The manager
+records what it installed in a state file next to the implant's own
+configuration, in the canonical `upk` encoding, so the record survives a
+restart of the implant and the operator can ask what is on the host weeks
+later.
+
+**Verification.** An entry that cannot be read back is not an entry. The
+manager reads the registry value, the unit file, the crontab line or the
+scheduled task again and reports the truth; `verify` is the default after an
+install, and `persist.verify` does it for every entry at once.
+
+**Migration.** `persist.migrate` installs the new technique and verifies it
+*before* the old one is removed, so the coverage never has a gap.
+
+**Stealth.** The implant copies itself into a plausible location and points
+the entry at that copy, because an entry that points at a temporary
+directory is worthless. The label the operator gives becomes the value name,
+the service display name and the task name, so nothing in the host says
+"umbra". The install is silent by default: the report says what was done,
+not what the platform tool printed.
+
+**What the server keeps.** Every persistence task reports the entries with
+the result (`persist`, `persist_total`, `persist_broken` in the result
+metadata). The server stores them with the agent, shows them in
+`agents.list` and `agents.info`, filters the inventory with
+`persisted=yes`, and raises `persist.updated` and `persist.broken` on the
+event stream when an entry was removed behind the operator's back.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

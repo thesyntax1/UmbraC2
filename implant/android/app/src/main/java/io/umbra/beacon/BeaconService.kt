@@ -73,7 +73,7 @@ class BeaconService : Service(), Beacon.Listener {
     }
 
     private fun startBeacon() {
-        val cfg = RemoteConfig.load()
+        val cfg = RemoteConfig.load(this)
         if (cfg == null) {
             notify("configuration missing (UMBRA_PSK)")
             stopBeacon()

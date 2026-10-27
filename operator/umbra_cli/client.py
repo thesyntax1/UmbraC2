@@ -244,6 +244,38 @@ class OperatorClient:
             raise OperatorError(res.error)
         return list(res.data.get("agents", []))
 
+    def persistence_report(self, agent_id: str = "") -> List[Dict[str, Any]]:
+        """The persistence of every host, as the operator needs it.
+
+        The server keeps the entries the beacon reported, so the coverage of
+        the fleet is a question the console can answer without touching a
+        single host: which machines carry an entry, which entry is broken,
+        and which technique is used where.  That last one is what somebody
+        has to clean up at the end of an engagement.
+        """
+        agents = self.agents() if not agent_id else [self.agent(agent_id)]
+        rows: List[Dict[str, Any]] = []
+        for agent in agents:
+            entries = agent.get("persist") or []
+            broken = [e for e in entries if e.get("state") == "broken"]
+            rows.append({
+                "agent": agent.get("id", ""),
+                "host": agent.get("host", ""),
+                "entries": len(entries),
+                "broken": len(broken),
+                "methods": sorted({str(e.get("technique", "")) for e in entries}),
+                "state": "broken" if broken else ("covered" if entries else "none"),
+                "detail": entries,
+            })
+        return rows
+
+    def agent(self, agent_id: str) -> Dict[str, Any]:
+        """One agent, with everything the server knows about it."""
+        res = self.rpc("agents.info", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data.get("agent", res.data))
+
     def whoami(self) -> Dict[str, Any]:
         res = self.rpc("whoami")
         if not res.ok:

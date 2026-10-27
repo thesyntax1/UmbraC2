@@ -145,6 +145,35 @@ type Agent struct {
 	// and it refuses every further task, so a half-sent engagement cannot
 	// grow new work.
 	Panicked bool `json:"panicked,omitempty"`
+	// Persist is what the operator installed on this host.
+	//
+	// The beacon reports the entries with every persistence task, and the
+	// server keeps them: an operator who has forgotten three start-up
+	// entries on one machine has a problem at the end of the engagement.
+	Persist []PersistEntry `json:"persist,omitempty"`
+}
+
+// PersistEntry is one persistence technique on a host.
+//
+// The record is what an operator acts on: which entry was installed, where
+// it lives, and whether it is still there.
+type PersistEntry struct {
+	// Technique is the id of the technique ("registry.run", "systemd.user").
+	Technique string `json:"technique"`
+	// Name is the label the operator gave the entry.
+	Name string `json:"name,omitempty"`
+	// Trigger is what starts it ("logon", "boot", "schedule").
+	Trigger string `json:"trigger,omitempty"`
+	// Location is where the entry lives on the host.
+	Location string `json:"location,omitempty"`
+	// Detail is what was written.
+	Detail string `json:"detail,omitempty"`
+	// Binary is the copy of the implant the entry points at.
+	Binary string `json:"binary,omitempty"`
+	// State is "installed" or "broken".
+	State string `json:"state,omitempty"`
+	// InstalledAt is when the entry was created (unix seconds).
+	InstalledAt string `json:"installed_at,omitempty"`
 }
 
 // Clone returns a copy safe to hand to other goroutines.
@@ -152,6 +181,7 @@ func (a *Agent) Clone() *Agent {
 	c := *a
 	c.Tags = append([]string(nil), a.Tags...)
 	c.Caps = append([]string(nil), a.Caps...)
+	c.Persist = append([]PersistEntry(nil), a.Persist...)
 	return &c
 }
 
@@ -774,6 +804,38 @@ func (s *Store) SetPanicked(agentID string, panicked bool) bool {
 	}
 	a.Panicked = panicked
 	return true
+}
+
+// SetPersistence replaces the persistence record of an agent.
+//
+// The record comes from the beacon: it is the only side that knows what is
+// really on the machine.  The operator may add notes to the entries later,
+// so the entries are merged instead of replaced when they carry the same
+// technique.
+func (s *Store) SetPersistence(agentID string, entries []PersistEntry) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	merged := make([]PersistEntry, 0, len(entries))
+	for _, entry := range entries {
+		merged = append(merged, entry)
+	}
+	a.Persist = merged
+	return true
+}
+
+// Persistence returns the persistence record of an agent.
+func (s *Store) Persistence(agentID string) []PersistEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return nil
+	}
+	return append([]PersistEntry(nil), a.Persist...)
 }
 
 // Complete records a task result.

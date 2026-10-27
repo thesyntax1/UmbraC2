@@ -1373,6 +1373,8 @@ func agentDataMap(a *store.Agent) map[string]any {
 		// operator knows the host's reach before a task is queued.
 		"caps":     a.Caps,
 		"panicked": a.Panicked,
+		// What is installed on the host, and whether it is still there.
+		"persist": a.Persist,
 	}
 }
 
@@ -1461,6 +1463,9 @@ func agentFilter(args map[string]any) hub.AgentFilter {
 		if v, ok := m["user"].(string); ok && v != "" {
 			f.User = v
 		}
+		if v, ok := m["persisted"].(string); ok && v != "" {
+			f.Persisted = v
+		}
 		if ids := stringList(m["agents"]); len(ids) > 0 {
 			f.IDs = ids
 		}
@@ -1485,7 +1490,8 @@ func (s *Server) selectTargets(args map[string]any) ([]*store.Agent, error) {
 		filter.IDs = ids
 	}
 	empty := len(filter.IDs) == 0 && filter.State == "" && filter.Transport == "" &&
-		filter.OS == "" && filter.Arch == "" && filter.Tag == "" && filter.User == ""
+		filter.OS == "" && filter.Arch == "" && filter.Tag == "" && filter.User == "" &&
+		filter.Persisted == ""
 	if empty {
 		return nil, errors.New("no targets: name the agents or describe them with a filter")
 	}
@@ -1530,6 +1536,23 @@ func upkValue(v any) any {
 		out := make([]any, 0, len(x))
 		for _, item := range x {
 			out = append(out, toUpkMap(item))
+		}
+		return out
+	case []store.PersistEntry:
+		// The persistence entries of an agent: the operator has to see
+		// what is installed on the host and whether it is still there.
+		out := make([]any, 0, len(x))
+		for _, item := range x {
+			out = append(out, upk.Map{
+				"technique":    item.Technique,
+				"name":         item.Name,
+				"trigger":      item.Trigger,
+				"location":     item.Location,
+				"detail":       item.Detail,
+				"binary":       item.Binary,
+				"state":        item.State,
+				"installed_at": item.InstalledAt,
+			})
 		}
 		return out
 	case []string:

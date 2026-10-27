@@ -218,11 +218,20 @@ def doc_rpc_commands() -> set[str]:
     section = section.split("\n## ", 1)[0]
     table = set(re.findall(r"^\| `([a-z]+\.[a-z]+)` \|", section, re.M))
     prose = set(re.findall(r"`([a-z]+\.[a-z]+)`", section))
-    # The prose also names the event kinds and the task kinds, and those are
-    # not RPC commands: an event the server emits and a task a beacon runs.
+    # The prose also names the event kinds, the task kinds and the
+    # persistence techniques, and those are not RPC commands: an event the
+    # server emits, a task a beacon runs, and an entry the persistence
+    # manager installs.
     prose -= go_event_kinds()
     prose -= doc_task_kinds()
+    prose -= rust_persist_techniques()
     return table | prose
+
+
+def rust_persist_techniques() -> set[str]:
+    """The persistence technique ids in the beacon's catalogue."""
+    text = read("implant/rust/src/persist.rs")
+    return set(re.findall(r'Technique\s*\{\s*id:\s*"([a-z][a-z0-9.]*)"', text))
 
 
 def go_event_kinds() -> set[str]:

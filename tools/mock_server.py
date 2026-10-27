@@ -51,7 +51,8 @@ AGENT_CAPS = [
     "shell", "exec", "sysinfo", "recon", "pwd", "cwd", "ls", "tail", "hash",
     "download", "cat", "upload", "ps", "proc.kill", "sleep", "exit", "kill",
     "ping", "tunnel", "p2p", "bof", "ext", "inject", "creds", "token",
-    "privesc", "persist", "unpersist", "update", "registry", "screenshot",
+    "privesc", "persist", "unpersist", "persist.list", "persist.verify",
+    "persist.migrate", "persist.health", "update", "registry", "screenshot",
     "clipboard", "keylog", "keylog.file", "triage", "find", "netinfo",
     "session.open", "session.input", "session.close", "vpn", "scan",
     "resolve", "env", "touch",
@@ -842,6 +843,38 @@ class MockServer:
                 self.emit("agent.offline", agent_id)
             stream.close()
 
+    PERSIST_KINDS = (
+        "persist", "unpersist", "persist.list", "persist.verify",
+        "persist.migrate", "persist.health",
+    )
+
+    def _persistence_result(self, task: Dict[str, Any], task_id: str) -> None:
+        """Keep the persistence record of an agent, from what it reported.
+
+        The beacon is the only side that knows what is really on the
+        machine, so its report is the record.  A task that failed keeps the
+        old record: a failed verification must not wipe the truth.
+        """
+        if str(task.get("kind", "")) not in self.PERSIST_KINDS:
+            return
+        meta = task.get("meta") or {}
+        entries = meta.get("persist")
+        if not isinstance(entries, list):
+            return
+        agent_id = str(task.get("agent_id", ""))
+        with self._lock:
+            record = self.agents.get(agent_id)
+            if record is None:
+                return
+            record["persist"] = [dict(entry) for entry in entries]
+        broken = len([e for e in entries if isinstance(e, dict) and e.get("state") == "broken"])
+        methods = sorted({str(e.get("technique", "")) for e in entries if isinstance(e, dict)})
+        self.emit("persist.updated", agent_id, task_id=task_id,
+                  data={"entries": len(entries), "broken": broken, "methods": methods})
+        if broken:
+            self.emit("persist.broken", agent_id, task_id=task_id,
+                      data={"broken": broken, "total": len(entries)})
+
     def _take_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         with self._lock:
@@ -1026,7 +1059,8 @@ class MockServer:
             meta = {
                 k: v
                 for k, v in msg.items()
-                if k not in ("id", "code", "out", "err") and isinstance(v, (str, bool, int, float))
+                if k not in ("id", "code", "out", "err")
+                and isinstance(v, (str, bool, int, float, list, dict))
             }
             if meta:
                 task["meta"] = meta
@@ -1055,6 +1089,10 @@ class MockServer:
         if snapshot.get("meta"):
             data["meta"] = snapshot["meta"]
         self.emit("task.result", snapshot["agent_id"], task_id=task_id, data=data)
+        # A persistence task reports what is installed on the host: the
+        # server keeps the record, so the operator sees the coverage of the
+        # fleet and hears about an entry that was removed behind their back.
+        self._persistence_result(snapshot, task_id)
         # A stage of a multi-stage task hands its output to the next stage.
         self._advance_chain(task_id, raw)
 
@@ -2189,14 +2227,14 @@ def _string_list(value: Any) -> List[str]:
 def _filter_of(args: Dict[str, Any]) -> Dict[str, Any]:
     """The filter of an RPC: a nested map or the flat arguments."""
     raw = args.get("filter")
+    keys = ("state", "transport", "os", "arch", "tag", "user", "persisted")
     if isinstance(raw, dict):
         merged = dict(raw)
-        for key in ("state", "transport", "os", "arch", "tag", "user"):
+        for key in keys:
             if key not in merged and key in args:
                 merged[key] = args[key]
         return merged
-    return {key: args[key] for key in ("state", "transport", "os", "arch", "tag", "user")
-            if key in args}
+    return {key: args[key] for key in keys if key in args}
 
 
 def _agent_matches(agent: Dict[str, Any], args: Dict[str, Any]) -> bool:
@@ -2212,6 +2250,14 @@ def _agent_matches(agent: Dict[str, Any], args: Dict[str, Any]) -> bool:
     if tag:
         tags = [str(t).lower() for t in agent.get("tags", [])]
         if str(tag).lower() not in tags:
+            return False
+    persisted = filt.get("persisted")
+    if persisted not in (None, ""):
+        covered = len(agent.get("persist") or []) > 0
+        want = str(persisted).lower()
+        if want in ("1", "yes", "true") and not covered:
+            return False
+        if want in ("0", "no", "false") and covered:
             return False
     return True
 
@@ -2300,6 +2346,10 @@ class FakeAgent(threading.Thread):
         self.policy: Dict[str, Any] = {}
         # The interactive sessions the agent has open.
         self.sessions: Dict[str, Dict[str, Any]] = {}
+        # What the operator installed on this host.  The desktop beacon
+        # keeps it in a state file; the mock keeps it in memory, with the
+        # same shape so the server sees one thing.
+        self.persist: List[Dict[str, Any]] = []
 
     def stop(self) -> None:
         self._stop.set()
@@ -2437,6 +2487,119 @@ class FakeAgent(threading.Thread):
         body = {"id": task_id, "code": 0, "out": b"", "err": "", "session": sid}
         stream.send_frame(sess.encrypt(wire.MsgType.RESULT, body))
 
+    # ---- persistence ---------------------------------------------------
+    #
+    # The catalogue the mock pretends to have.  It is a small one: the
+    # point of the mock is that the server, the console and the tests see
+    # the same shape, not that the fake host is a real Windows machine.
+    PERSIST_CATALOGUE = {
+        "registry.run": ("HKCU Run key", "logon"),
+        "schtasks": ("Scheduled task", "schedule"),
+        "systemd.user": ("systemd user unit", "boot"),
+        "cron.user": ("User crontab", "schedule"),
+        "launchd.agent": ("LaunchAgent", "logon"),
+        "startup": ("Startup folder", "logon"),
+    }
+
+    def _persist_auto(self) -> str:
+        """The technique the mock picks when the operator said "auto"."""
+        platform = sys.platform
+        if platform.startswith("win"):
+            return "registry.run"
+        if platform == "darwin":
+            return "launchd.agent"
+        return "systemd.user"
+
+    def _persist_meta(self) -> Dict[str, Any]:
+        """The metadata of a persistence result.
+
+        The entries travel with the result, exactly like the beacon sends
+        them, so the server keeps the record of what is installed.
+        """
+        broken = len([e for e in self.persist if e.get("state") == "broken"])
+        return {
+            "persist": [dict(entry) for entry in self.persist],
+            "persist_total": len(self.persist),
+            "persist_broken": broken,
+        }
+
+    def _persist_report(self, title: str) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        lines = [title]
+        for entry in self.persist:
+            lines.append(
+                f"{entry.get('technique', '?'):<24} {entry.get('state', '?'):<10} "
+                f"{entry.get('location', '')}"
+            )
+        if not self.persist:
+            lines.append("nothing is installed on this host")
+        return 0, ("\n".join(lines) + "\n").encode(), "", self._persist_meta()
+
+    def _persistence(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The persistence lifecycle of the fake host."""
+        if kind == "persist":
+            method = str(args.get("method", "auto") or "auto")
+            if method == "auto":
+                method = self._persist_auto()
+            label, trigger = self.PERSIST_CATALOGUE.get(method, ("Entry", "logon"))
+            name = str(args.get("name", "") or "update-service")
+            # One entry per technique: installing twice does not pile up.
+            self.persist = [e for e in self.persist if e.get("technique") != method]
+            self.persist.append({
+                "technique": method,
+                "name": name,
+                "trigger": trigger,
+                "location": f"/mock/{method}",
+                "detail": f"{label} installed",
+                "state": "installed",
+                "installed_at": str(_now()),
+            })
+            return self._persist_report(f"{label}: installed")
+        if kind == "unpersist":
+            method = str(args.get("method", "all") or "all")
+            if method == "all":
+                self.persist = []
+            else:
+                self.persist = [e for e in self.persist if e.get("technique") != method]
+            return self._persist_report("the entries were removed")
+        if kind == "persist.list":
+            return self._persist_report("the persistence of this host")
+        if kind == "persist.verify":
+            # The mock cannot really read a registry key back, so it checks
+            # the one thing it knows: the entries are still in its state.
+            #
+            # The one extra argument is "break": it names an entry that was
+            # removed behind the operator's back, so the alert path can be
+            # exercised without a real host.
+            broken = str(args.get("break", "") or "")
+            for entry in self.persist:
+                entry["state"] = "broken" if entry.get("technique") == broken else "installed"
+            return self._persist_report("the entries were checked")
+        if kind == "persist.migrate":
+            source = str(args.get("from", "") or "")
+            target = str(args.get("to", "") or "")
+            if not source or not target:
+                return 1, b"", "persist.migrate needs args.from and args.to", {}
+            if not [e for e in self.persist if e.get("technique") == source]:
+                return 1, b"", f"persist.migrate: {source} is not installed", {}
+            code, out, err, meta = self._persistence("persist", {"method": target})
+            if code != 0:
+                return code, out, err, meta
+            code, out, err, meta = self._persistence("unpersist", {"method": source})
+            return code, out, err, meta
+        if kind == "persist.health":
+            broken = len([e for e in self.persist if e.get("state") == "broken"])
+            if not self.persist:
+                verdict = "broken"
+            elif broken == 0:
+                verdict = "covered"
+            elif broken == len(self.persist):
+                verdict = "broken"
+            else:
+                verdict = "degraded"
+            code, out, err, meta = self._persist_report("the persistence of this host")
+            return code, b"persistence: " + verdict.encode() + b"\n" + out, err, meta
+        return 2, b"", f"unsupported persistence task {kind}", {}
+
     def _execute(self, task: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """Run one task, returning (code, stdout, stderr, meta).
 
@@ -2544,8 +2707,9 @@ class FakeAgent(threading.Thread):
             pid = int(args.get("pid", 0) or 0)
             name = str(args.get("name", ""))
             return 0, f"mock agent: the process {pid or name} would be terminated\n".encode(), "", {}
-        if kind == "persist":
-            return 0, b"mock agent: the implant would be installed\n", "", {}
+        if kind in ("persist", "unpersist", "persist.list", "persist.verify",
+                    "persist.migrate", "persist.health"):
+            return self._persistence(kind, args)
         if kind == "update":
             path = str(args.get("path", ""))
             return 0, f"mock agent: the implant would be replaced with {path}\n".encode(), "", {}

