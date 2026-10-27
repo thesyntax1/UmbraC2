@@ -316,6 +316,22 @@ the jitter (`UMBRA_SLEEP_OBFUSCATE`), module images wiped from memory once
 they have run (`crypto::zeroize`), and the console's local SQLite notebook
 (`operator/umbra_cli/db.py`, `umbra db`).
 
+Done (the operator's side): the inventory and the group work (tags,
+filters, one task or one policy for a whole group), the interactive
+sessions with partial results, the multi-stage task chains, the alert
+rules on the event stream, the journal of the recent events with its
+sequence numbers, the open sessions, the web dashboard (`internal/dash`),
+the sweep that fails the tasks nobody answered, the command namespace with
+its built-in templates, the reports for the handover, and the end of an
+engagement with one command.
+
+Done (the implant's side): the host triage (digest, entropy, file type),
+the file search, the network configuration, the process table read from
+the operating system, the Windows registry, the persistence and its
+undo, the self-update with a verified digest, the key logger that
+streams or writes into a file, and the list of servers the beacon falls
+back to.
+
 Medium term: S3 and SMTP transports, named-pipe pivots, a Go implant,
 per-operator ACLs on the chat, and a sandbox for task modules that are not
 plain memory.
