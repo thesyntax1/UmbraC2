@@ -368,6 +368,18 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    def wipe(self) -> Dict[str, Any]:
+        """Clear the record of the engagement.
+
+        The end of an engagement: the agents, the tasks and the schedules
+        stop existing on the server.  The implants are not touched: they
+        are still out there.
+        """
+        res = self.rpc("engagement.wipe")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def sessions(self) -> List[Dict[str, Any]]:
         """The interactive sessions that are open, per agent.
 

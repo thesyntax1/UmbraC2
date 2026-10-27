@@ -76,6 +76,7 @@ var requirements = map[string]string{
 	// ---- state-changing on a host -------------------------------------
 	"task.submit":  Operator,
 	"events.list":  Viewer,
+	"engagement.wipe": Admin,
 	"sessions.list": Viewer,
 	"task.cancel":  Operator,
 	"task.retry":   Operator,

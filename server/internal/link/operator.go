@@ -904,7 +904,18 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name, "kind": kind})
 
-	// ---- team synchronisation ----------------------------------------
+	case "engagement.wipe":
+		// The end of an engagement: the record of the machines that were
+		// touched stops existing on the server.  The implants are not
+		// touched: they are still out there.
+		agents, tasks, schedules := s.Hub.WipeEngagement()
+		return reply(upk.Map{
+			"agents":    int64(agents),
+			"tasks":     int64(tasks),
+			"schedules": int64(schedules),
+		})
+
+	// ---- the journal and the open sessions ----------------------------
 	case "sessions.list":
 		// The interactive sessions that are open, per agent.
 		sessions := s.Hub.Sessions()
@@ -938,6 +949,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"events": rows, "count": len(rows), "seq": int64(last)})
 
+	// ---- team synchronisation ----------------------------------------
 	case "team.sync":
 		agents := s.Hub.Agents()
 		agentRows := make([]any, 0, len(agents))

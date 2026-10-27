@@ -3285,3 +3285,36 @@ def test_the_open_sessions_are_listed():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_the_engagement_can_be_wiped_at_the_end():
+    """The record of the engagement stops existing when the operator says so."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-wipe-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-wipe")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        client.submit("agent-wipe", "sysinfo", {})
+        time.sleep(0.4)
+        assert client.agents()
+        assert client.tasks("agent-wipe", 10)
+
+        res = client.wipe()
+        assert res["agents"] >= 1
+        assert res["tasks"] >= 1
+        assert client.agents() == []
+        assert client.tasks("agent-wipe", 10) == []
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

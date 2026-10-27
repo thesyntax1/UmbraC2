@@ -953,6 +953,7 @@ def print_help() -> None:
   browse [path]             list the files under a path
   report [agent]            write a report about an agent
   sessions                  the interactive sessions that are open
+  wipe                      clear the record of the engagement (asks twice)
   events [limit]            the recent events of the server's journal
   watch [on|off]            toggle automatic result printing
   sleep <secs> [jitter%]    change the beacon interval
@@ -1353,6 +1354,8 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("task_id")
 
     watch = sub.add_parser("watch", help="stream events until interrupted")
+    wipe = sub.add_parser("wipe", help="clear the record of the engagement")
+    wipe.add_argument("--yes", action="store_true", help="do not ask")
     sessions_cmd = sub.add_parser("sessions", help="the interactive sessions that are open")
     events_cmd = sub.add_parser("events", help="the recent events of the server's journal")
     events_cmd.add_argument("--limit", type=int, default=50)
@@ -1794,6 +1797,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 emit({"task_id": args.task_id, "state": "cancelled"})
             else:
                 print(f"cancelled {args.task_id}")
+        elif args.cmd == "wipe":
+            # The end of an engagement.  The implants are not touched, so
+            # the operator is asked twice.
+            if not args.yes:
+                print("this clears the agents, the tasks and the schedules "
+                      "of the server.")
+                print("the implants keep running; remove them first.")
+                answer = input("type 'wipe' to continue: ").strip()
+                if answer != "wipe":
+                    print("nothing was changed")
+                    return 0
+            res = client.wipe()
+            if args.json:
+                emit(res)
+            else:
+                print(f"removed {res.get('agents', 0)} agents, "
+                      f"{res.get('tasks', 0)} tasks and "
+                      f"{res.get('schedules', 0)} schedules")
         elif args.cmd == "sessions":
             rows = client.sessions()
             if args.json:

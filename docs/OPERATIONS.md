@@ -376,9 +376,12 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
   `task.timeout` event.  The task is **not** queued again: a task that may
   have run must not run a second time, so the operator decides what happens
   next.
-* To reset an engagement: stop the server, delete `data_file`, **and rotate the
-  agent PSK and operator tokens** (delete the implants or they will simply
-  re-register).
+* To reset an engagement: `umbra wipe` clears the agents, the tasks and the
+  schedules on the server, and the audit trail keeps the numbers.  The
+  implants are **not** touched: they are still out there, so remove them
+  first.  A full reset (the file, the keys, everything) means: stop the
+  server, delete `data_file`, **and rotate the agent PSK and operator
+  tokens** (delete the implants or they will simply re-register).
 
 ## 5a. The operator's notebook
 

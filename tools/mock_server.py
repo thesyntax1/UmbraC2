@@ -1031,6 +1031,7 @@ class MockServer:
         "task.cancel": "operator",
         "task.retry": "operator",
         "events.list": "viewer",
+        "engagement.wipe": "admin",
         "sessions.list": "viewer",
         "task.bulk": "operator",
         "task.chain": "operator",
@@ -1516,6 +1517,21 @@ class MockServer:
                         queue.append(task_id)
             self.emit("task.cancelled", agent_id, task_id=task_id, data={"was": previous})
             return ok({"task_id": task_id, "state": "cancelled"})
+
+        if cmd == "engagement.wipe":
+            # The end of an engagement: the record of the machines that
+            # were touched stops existing on the server.
+            with self._lock:
+                agents = len(self.agents)
+                tasks = len(self.tasks)
+                schedules = len(self.schedules)
+                self.agents.clear()
+                self.tasks.clear()
+                self.schedules.clear()
+                self.open_sessions.clear()
+            self.emit("engagement.wiped", data={"agents": agents, "tasks": tasks,
+                                                "schedules": schedules})
+            return ok({"agents": agents, "tasks": tasks, "schedules": schedules})
 
         if cmd == "sessions.list":
             with self._lock:

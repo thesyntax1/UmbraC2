@@ -1000,6 +1000,26 @@ func (h *Hub) closeSession(agentID, session string) {
 	}
 }
 
+// WipeEngagement clears the record of the engagement.
+//
+// The agents, the tasks, the schedules and the open sessions are gone.
+// The implants are not: they are still out there, and the operator has
+// to deal with them separately.  The event says what was removed, so
+// the audit trail has the numbers.
+func (h *Hub) WipeEngagement() (agents, tasks, schedules int) {
+	h.mu.Lock()
+	h.sessions = make(map[string]map[string]*Session)
+	h.mu.Unlock()
+	agents, tasks, schedules = h.store.Wipe()
+	h.store.SaveAsync()
+	h.Emit(Event{Kind: "engagement.wiped", Data: map[string]any{
+		"agents":    int64(agents),
+		"tasks":     int64(tasks),
+		"schedules": int64(schedules),
+	}})
+	return
+}
+
 // Journal returns the recent events, oldest first.
 //
 // The events after the given sequence number are returned, so a console

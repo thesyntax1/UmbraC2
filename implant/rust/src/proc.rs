@@ -154,7 +154,13 @@ fn collect() -> Result<Vec<Process>, String> {
             Some(i) if i > open => i,
             _ => continue,
         };
-        let comm = stat[open + 1..close].to_string();
+        // The name may hold a character that is not one byte, so the slice
+        // is taken safely: a process with an exotic name must not take the
+        // beacon down with it.
+        let comm = match stat.get(open + 1..close) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
         let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
         let ppid = rest.first().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
         let ticks = rest.get(19).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
@@ -222,7 +228,7 @@ fn terminate(pid: u32) -> Result<bool, String> {
 
 #[cfg(windows)]
 mod sys {
-    use std::os::raw::{c_int, c_void};
+    use std::os::raw::c_void;
 
     pub type HANDLE = *mut c_void;
     pub type BOOL = i32;

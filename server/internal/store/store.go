@@ -970,6 +970,26 @@ func (s *Store) Flush() error {
 	return s.Save()
 }
 
+// Wipe clears the engagement: the agents, the tasks and the schedules.
+//
+// The end of an engagement is the moment when the record of the machines
+// that were touched should stop existing on the server.  The server
+// forgets them; the implants do not, so the operator still has to deal
+// with those separately.
+func (s *Store) Wipe() (agents, tasks, schedules int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agents = len(s.agents)
+	tasks = len(s.tasks)
+	schedules = len(s.schedules)
+	s.agents = make(map[string]*Agent)
+	s.tasks = make(map[string]*Task)
+	s.order = nil
+	s.schedules = make(map[string]*Schedule)
+	s.schedIDs = nil
+	return
+}
+
 // AddSchedule stores a schedule and returns a copy.
 func (s *Store) AddSchedule(sc *Schedule) (*Schedule, error) {
 	if sc.AgentID == "" || sc.Kind == "" {
