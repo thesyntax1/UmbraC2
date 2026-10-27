@@ -49,6 +49,16 @@ pub fn list() -> Result<String, String> {
     Ok(out)
 }
 
+/// Every process of the host.
+///
+/// The callers that need the raw table use this: the posture engine looks
+/// for the analyst's tools in it, and the process hygiene reads the parent
+/// of the beacon out of it.  `list` is the same table, formatted for the
+/// operator.
+pub fn processes() -> Result<Vec<Process>, String> {
+    collect()
+}
+
 /// Find the processes whose name or command line matches a pattern.
 ///
 /// The pattern is matched case-insensitively as a substring, which is what

@@ -55,7 +55,9 @@ AGENT_CAPS = [
     "persist.migrate", "persist.health", "update", "registry", "screenshot",
     "clipboard", "keylog", "keylog.file", "triage", "find", "netinfo",
     "session.open", "session.input", "session.close", "vpn", "scan",
-    "resolve", "env", "touch",
+    "resolve", "env", "touch", "evade.report", "evade.posture",
+    "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
+    "hygiene.process",
 ]
 
 
@@ -846,6 +848,8 @@ class MockServer:
     PERSIST_KINDS = (
         "persist", "unpersist", "persist.list", "persist.verify",
         "persist.migrate", "persist.health",
+        # The exit takes the entries with it.
+        "exit", "kill",
     )
 
     def _persistence_result(self, task: Dict[str, Any], task_id: str) -> None:
@@ -874,6 +878,42 @@ class MockServer:
         if broken:
             self.emit("persist.broken", agent_id, task_id=task_id,
                       data={"broken": broken, "total": len(entries)})
+
+    EVADE_KINDS = (
+        "evade.report", "evade.posture", "evade.profile", "evade.shape",
+        "evade.killswitch", "hygiene.memory", "hygiene.process",
+    )
+
+    def _posture_result(self, task: Dict[str, Any], task_id: str) -> None:
+        """Keep the posture of an agent, from what it reported.
+
+        The beacon is the only side that knows what the host looks like, so
+        its report is the record.  A task that says nothing about the
+        posture leaves the record alone.
+        """
+        if str(task.get("kind", "")) not in self.EVADE_KINDS:
+            return
+        meta = task.get("meta") or {}
+        posture = meta.get("posture")
+        if not isinstance(posture, dict):
+            return
+        agent_id = str(task.get("agent_id", ""))
+        with self._lock:
+            record = self.agents.get(agent_id)
+            if record is None:
+                return
+            record["posture"] = dict(posture)
+        self.emit("posture.updated", agent_id, task_id=task_id, data={
+            "label": posture.get("label", ""),
+            "virtual": bool(posture.get("virtual")),
+            "lab": bool(posture.get("lab")),
+            "sandbox": bool(posture.get("sandbox")),
+            "confidence": int(posture.get("confidence", 0) or 0),
+            "silent": bool(meta.get("posture_silent")),
+        })
+        switch = meta.get("killswitch")
+        if isinstance(switch, dict) and switch.get("armed"):
+            self.emit("killswitch.armed", agent_id, task_id=task_id, data={"armed": True})
 
     def _take_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -1093,6 +1133,10 @@ class MockServer:
         # server keeps the record, so the operator sees the coverage of the
         # fleet and hears about an entry that was removed behind their back.
         self._persistence_result(snapshot, task_id)
+        # An evasion task reports how the implant sees the host: the server
+        # keeps the last posture, so the operator does not have to run a
+        # task to know what a machine is.
+        self._posture_result(snapshot, task_id)
         # A stage of a multi-stage task hands its output to the next stage.
         self._advance_chain(task_id, raw)
 
@@ -2350,6 +2394,10 @@ class FakeAgent(threading.Thread):
         # keeps it in a state file; the mock keeps it in memory, with the
         # same shape so the server sees one thing.
         self.persist: List[Dict[str, Any]] = []
+        # The posture of the fake host and the settings of the evasion
+        # engine: the schedule, the shaping and the kill switch.
+        self.posture_name = "workstation"
+        self.evade: Dict[str, Any] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -2600,6 +2648,199 @@ class FakeAgent(threading.Thread):
             return code, b"persistence: " + verdict.encode() + b"\n" + out, err, meta
         return 2, b"", f"unsupported persistence task {kind}", {}
 
+    # ---- the posture engine (mirrors implant/rust/src/evade.rs) ---------
+    #
+    # The postures the fake host can be in.  The point of the mock is the
+    # shape, not the truth: the server, the console and the tests have to
+    # see the same fields the real beacon sends.
+    POSTURE_CATALOGUE = {
+        "workstation": {
+            "label": "workstation", "virtual": False, "workstation": True,
+            "developer": False, "lab": False, "sandbox": False,
+            "confidence": 70, "severity": 0,
+        },
+        "server": {
+            "label": "server", "virtual": False, "workstation": False,
+            "developer": False, "lab": False, "sandbox": False,
+            "confidence": 60, "severity": 0,
+        },
+        "developer": {
+            "label": "developer box", "virtual": False, "workstation": True,
+            "developer": True, "lab": False, "sandbox": False,
+            "confidence": 80, "severity": 0,
+        },
+        "lab": {
+            "label": "lab machine virtual", "virtual": True, "workstation": True,
+            "developer": False, "lab": True, "sandbox": False,
+            "confidence": 75, "severity": 15,
+        },
+        "sandbox": {
+            "label": "analyst sandbox virtual", "virtual": True,
+            "workstation": True, "developer": False, "lab": True,
+            "sandbox": True, "confidence": 95, "severity": 95,
+        },
+    }
+
+    def _posture(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """The posture of the fake host.
+
+        The operator may name the posture, so the tests can exercise the
+        behaviour of a sandbox without a real analysis machine.
+        """
+        name = str(args.get("posture", "") or self.posture_name)
+        posture = dict(self.POSTURE_CATALOGUE.get(name, self.POSTURE_CATALOGUE["workstation"]))
+        posture["artefacts"] = []
+        if posture.get("sandbox"):
+            posture["artefacts"] = [
+                {"name": "sbiedll", "class": "sandbox", "severity": 95,
+                 "confidence": 95, "detail": "the module SbieDll.dll is loaded"},
+            ]
+        elif posture.get("virtual"):
+            posture["artefacts"] = [
+                {"name": "vmwaretools", "class": "virtualisation", "severity": 15,
+                 "confidence": 80, "detail": "the process VMwareTools.exe is running"},
+            ]
+        return posture
+
+    def _posture_factor(self, posture: Dict[str, Any]) -> int:
+        """The factor the sleep interval is multiplied with."""
+        settings = self.evade.get("settings") or {}
+        factor = 100
+        if posture.get("virtual"):
+            factor = factor * int(settings.get("virtual_factor", 125)) // 100
+        if posture.get("lab"):
+            factor = factor * int(settings.get("lab_factor", 100)) // 100
+        if posture.get("developer"):
+            factor = factor * int(settings.get("developer_factor", 100)) // 100
+        if posture.get("sandbox") and settings.get("slow_on_sandbox", True):
+            factor = factor * int(settings.get("sandbox_factor", 200)) // 100
+        return factor
+
+    def _posture_meta(self, posture: Dict[str, Any]) -> Dict[str, Any]:
+        """The metadata of a posture result."""
+        settings = self.evade.get("settings") or {}
+        silent = bool(posture.get("sandbox")) and bool(settings.get("silence_on_sandbox", False))
+        return {
+            "posture": dict(posture),
+            "posture_sleep_factor": self._posture_factor(posture),
+            "posture_silent": silent,
+        }
+
+    def _posture_report(self, posture: Dict[str, Any]) -> str:
+        """The posture as a report for the operator."""
+        lines = [
+            f"posture: {posture.get('label', '?')}",
+            f"posture: confidence {posture.get('confidence', 0)}%, "
+            f"severity {posture.get('severity', 0)}%",
+            "posture: virtual={} workstation={} developer={} lab={} sandbox={}".format(
+                posture.get("virtual"), posture.get("workstation"),
+                posture.get("developer"), posture.get("lab"),
+                posture.get("sandbox"),
+            ),
+        ]
+        for artefact in posture.get("artefacts") or []:
+            lines.append(
+                "posture: artefact {} [{}] severity {} confidence {}: {}".format(
+                    artefact.get("name"), artefact.get("class"),
+                    artefact.get("severity"), artefact.get("confidence"),
+                    artefact.get("detail"),
+                )
+            )
+        return "\n".join(lines) + "\n"
+
+    def _evasion(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The posture engine of the fake host."""
+        if kind == "evade.report":
+            posture = self._posture(args)
+            text = self._posture_report(posture)
+            return 0, text.encode(), "", self._posture_meta(posture)
+        if kind == "evade.posture":
+            settings = self.evade.setdefault("settings", {})
+            for name in ("silence_on_sandbox", "slow_on_sandbox"):
+                if name in args:
+                    settings[name] = bool(args[name])
+            for name in ("virtual_factor", "sandbox_factor", "lab_factor",
+                         "developer_factor", "jitter_bonus"):
+                if name in args:
+                    settings[name] = int(args[name])
+            posture = self._posture(args)
+            lines = ["posture: the settings were applied"]
+            lines.append("posture: silence on a sandbox: {}".format(
+                bool(settings.get("silence_on_sandbox", False))))
+            lines.append("posture: slow on a sandbox: {}".format(
+                bool(settings.get("slow_on_sandbox", True))))
+            lines.append("posture: the sleep on this host is multiplied with {}%".format(
+                self._posture_factor(posture)))
+            return 0, ("\n".join(lines) + "\n").encode(), "", self._posture_meta(posture)
+        if kind == "evade.profile":
+            profile = self.evade.setdefault("profile", {})
+            for name in ("base", "busy_start", "busy_end", "busy_factor",
+                         "night_factor", "weekend_factor"):
+                if name in args:
+                    profile[name] = int(args[name])
+            text = ("schedule: base {}s, busy {}-{}, busy {}%, night {}%, weekend {}%\n".format(
+                profile.get("base", 60), profile.get("busy_start", 8),
+                profile.get("busy_end", 18), profile.get("busy_factor", 60),
+                profile.get("night_factor", 180), profile.get("weekend_factor", 150)))
+            return 0, text.encode(), "", {"schedule": dict(profile), "schedule_factor": 60}
+        if kind == "evade.shape":
+            shaping = self.evade.setdefault("shaping", {})
+            if args.get("mode"):
+                shaping["mode"] = str(args["mode"])
+            for name in ("size", "pad_every"):
+                if name in args:
+                    shaping[name] = int(args[name])
+            if "reorder" in args:
+                shaping["reorder"] = bool(args["reorder"])
+            text = "shaping: mode {}, size {}, a padding frame every {}, reorder {}\n".format(
+                shaping.get("mode", "off"), shaping.get("size", 1024),
+                shaping.get("pad_every", 0), shaping.get("reorder", False))
+            return 0, text.encode(), "", {"shaping": dict(shaping)}
+        if kind == "evade.killswitch":
+            switch = self.evade.setdefault("killswitch", {})
+            if args.get("clear"):
+                switch.clear()
+                switch["armed"] = False
+                switch["triggers"] = []
+                text = "killswitch: it is disarmed\n"
+            else:
+                triggers = []
+                for name in ("file", "registry", "at", "uptime", "marker"):
+                    if args.get(name):
+                        triggers.append({"kind": name, "value": args[name]})
+                if not triggers:
+                    return 1, b"", ("evade.killswitch needs one of args.file, args.registry, "
+                                    "args.at, args.uptime or args.marker"), {}
+                switch["armed"] = True
+                switch["triggers"] = triggers
+                switch["note"] = str(args.get("note", "") or "")
+                text = "killswitch: it is armed\n"
+                for trigger in triggers:
+                    text += "killswitch: it fires when the {} {} appears\n".format(
+                        trigger["kind"], trigger["value"])
+            return 0, text.encode(), "", {"killswitch": dict(switch)}
+        if kind == "hygiene.memory":
+            text = ("memory: the key material lives in guards that wipe themselves\n"
+                    "memory: the pre-shared key and the session keys\n"
+                    "memory: the output of a task is wiped after it was sent\n")
+            return 0, text.encode(), "", {"hygiene_wiped": 3, "hygiene_bytes": 4096}
+        if kind == "hygiene.process":
+            lines = []
+            if args.get("copy"):
+                lines.append("the implant was copied to {}".format(args["copy"]))
+            if args.get("name"):
+                lines.append("the process reports the name {}".format(args["name"]))
+            if args.get("cwd"):
+                lines.append("the working directory is now {}".format(args["cwd"]))
+            if args.get("clean_env"):
+                lines.append("the environment lost 1 variable that named the tool")
+            if args.get("ppid"):
+                lines.append("the process claims the parent {} now".format(args["ppid"]))
+            if not lines:
+                lines.append("nothing was changed: the task named no step")
+            return 0, ("\n".join(lines) + "\n").encode(), "", {"hygiene_process": True}
+        return 2, b"", f"unsupported evasion task {kind}", {}
+
     def _execute(self, task: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """Run one task, returning (code, stdout, stderr, meta).
 
@@ -2636,8 +2877,13 @@ class FakeAgent(threading.Thread):
             ]
             return 0, ("\n".join(lines) + "\n").encode(), "", {}
         if kind in ("exit", "kill"):
+            # The exit takes the persistence entries with it: the last word
+            # of the operator leaves the target the way it was found, and
+            # the empty record travels with the result so the server does
+            # not keep a lie.
+            self.persist = []
             self._stop.set()
-            return 0, b"bye\n", "", {}
+            return 0, b"bye\n", "", {"persist": [], "persist_total": 0, "persist_broken": 0}
         if kind in ("download", "cat"):
             return self._download(args)
         if kind == "upload":
@@ -2786,6 +3032,9 @@ class FakeAgent(threading.Thread):
                        f"({len(hosts)} hosts x {len(ports)} ports)\n")
             return 0, report.encode(), "", {"open": len(open_ports),
                                             "probes": probes}
+        if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
+                    "evade.killswitch", "hygiene.memory", "hygiene.process"):
+            return self._evasion(kind, args)
         if kind in ("vpn", "p2p"):
             return 0, f"the mock agent cannot run {kind!r}\n".encode(), "", {}
         return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}

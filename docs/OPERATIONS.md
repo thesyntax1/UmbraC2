@@ -248,6 +248,71 @@ first (the `upload` task), the digest is checked, and only then is the old
 binary swapped out.  An implant that installs a file nobody verified is an
 implant that installs whatever the network sent it.
 
+### Knowing the host
+
+The implant knows what the host looks like, and the operator should know it
+too.  The posture engine answers four questions — virtual or real, a
+workstation or a server, a developer's box or a plain machine, a lab
+machine or a production one — and says how sure it is:
+
+```bash
+umbra evade-report                      # the posture of the whole fleet
+umbra evade-report web-01              # the posture of one host, from the host
+umbra evade-posture web-01 --no-silence --sandbox-factor 300
+umbra evade-profile web-01 --base 90 --busy-start 8 --busy-end 18
+umbra evade-shape web-01 --mode fixed --size 2048 --reorder
+umbra evade-killswitch web-01 --file /tmp/stop-the-implant
+umbra evade-killswitch web-01 --uptime 72
+umbra evade-killswitch web-01 --clear
+```
+
+`evade-report` without an agent reads the record the server keeps, so the
+whole fleet is one command and no host is touched.
+
+**The artefacts are not a blacklist.**  Every artefact the engine finds
+carries a class, a severity and a confidence: a virtual machine is a hint
+(most companies run them), a sandbox that injects itself into every process
+is nearly a proof, and an analyst's debugger is a proof.  The engine
+reports; the operator decides.
+
+**What the posture changes.**  The sleep interval is multiplied with the
+factor of the posture, the jitter is raised, and — only when the operator
+armed it — the implant stops answering on a host that looks like an
+analyst's sandbox.  The defaults are conservative: the implant adapts to
+its environment, but it never falls silent on its own.
+
+**The day.**  `evade-profile` replaces the flat interval with a schedule:
+busy while the office is open, quiet at night, lazier at the weekend.  The
+factors are percentages of the base interval.
+
+**The shape of the traffic.**  `evade-shape` chooses the size bucket of
+the frames (`off`, `random`, `fixed`) and may shuffle the order of the
+operations inside a cycle.
+
+**The kill switch.**  The blast radius is the operator's decision:
+`--file`, `--registry`, `--at`, `--uptime` and `--marker` are the
+triggers.  When the trigger fires, the implant removes its own persistence
+entries, wipes its state and stops — the machine is left the way it was
+found.  The panic task of the server is the sixth trigger, and it needs no
+arming: `agents.panic` and the ordinary `exit` task take the persistence
+entries with them, so the last word of the operator always leaves the
+target clean.
+
+**The hygiene.**
+
+```bash
+umbra hygiene web-01 --memory            # what holds a secret, and what was wiped
+umbra hygiene web-01 --copy /opt/app/update-agent --cwd /opt/app
+umbra hygiene web-01 --name updater --clean-env
+```
+
+The memory of the implant is cleaned on the way out: the key material, the
+keystrokes, the credentials and the module images live in guards that wipe
+themselves, including on the path where the work failed.  The process is
+cleaned as well: the implant can run under a copied name, in a plausible
+directory, with an environment that says nothing about the tool, and — on
+Windows — with the parent it claims to have.
+
 ### Keeping the implant reachable
 
 The beacon can know more than one address of the team server:

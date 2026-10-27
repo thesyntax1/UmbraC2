@@ -371,6 +371,13 @@ Task kinds understood by the reference implants:
 | `persist.verify` | — | reads every entry back and says whether it is still there |
 | `persist.migrate` | `from`, `to` | moves from one technique to another without a gap |
 | `persist.health` | — | one verdict for the host: covered, degraded or broken |
+| `evade.report` | — | the posture of the host: what the implant thinks it is |
+| `evade.posture` | optional `silence_on_sandbox`, `slow_on_sandbox`, `virtual_factor`, `sandbox_factor`, `lab_factor`, `developer_factor`, `jitter_bonus` | how the environment changes the behaviour of the implant |
+| `evade.profile` | optional `base`, `busy_start`, `busy_end`, `busy_factor`, `night_factor`, `weekend_factor` | the schedule the beacon sleeps by |
+| `evade.shape` | optional `mode` (`off`, `random`, `fixed`), `size`, `pad_every`, `reorder` | the shape of the traffic |
+| `evade.killswitch` | one of `file`, `registry`, `at`, `uptime`, `marker`; `clear` disarms it | the moment the implant stops existing |
+| `hygiene.memory` | — | the memory hygiene: what holds a secret and what was wiped |
+| `hygiene.process` | optional `copy`, `name`, `cwd`, `clean_env`, `ppid` | the process hygiene: the name, the directory, the environment and the parent |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -691,6 +698,73 @@ metadata). The server stores them with the agent, shows them in
 `persisted=yes`, and raises `persist.updated` and `persist.broken` on the
 event stream when an entry was removed behind the operator's back.
 
+### 7.2h The posture engine
+
+`evade.report` is not a check for a debugger: it is a classification of the
+host the implant runs on, and the classification changes the behaviour of
+the implant.
+
+**The four axes.** The engine states four independent things about the
+host: whether it runs on virtual hardware, whether a person can sit in
+front of it, whether it carries the tools of a developer, and whether it is
+a lab machine, a production machine or an analyst's sandbox. It also says
+how sure it is (a confidence from 0 to 100) and why it thinks so (one line
+per signal). The report never says "this is a sandbox" and stops there: it
+says what it saw.
+
+**The artefacts.** The classic names (`VMwareTools`, `VBoxService`,
+`SbieDll`, `wireshark`, `procmon`, `x64dbg`, `ollydbg`) are not a
+blacklist. Every artefact carries a class (`virtualisation`, `sandbox`,
+`analyst-tool`, `capture`, `instrumentation`), a severity and a
+confidence, and the operator decides what the sum of them means. A virtual
+machine is a hint; a sandbox that injects itself into every process is
+nearly a proof.
+
+**What the posture changes.** The sleep interval is multiplied with the
+factor the posture implies, the jitter is raised, the sleep stays
+obfuscated, and — when the operator armed it — the implant stops answering
+altogether on a host that looks like an analyst's sandbox. The defaults are
+conservative: the implant adapts, but it never falls silent on its own.
+`evade.posture` is where the operator arms the behaviour.
+
+**The schedule.** `evade.profile` replaces the flat interval with a
+profile of the day: busy while the office is open (a short interval,
+because that is when the operator is waiting for an answer), quiet at
+night, lazier at the weekend. The factors are percentages, and the engine
+multiplies them with the factor of the posture.
+
+**The shape of the traffic.** `evade.shape` chooses how the frames are
+padded: `off` (the transport decides), `random` (the bucket drifts with
+the traffic) or `fixed` (every request is a multiple of the same number).
+It also shuffles the order of the operations inside a cycle, because a
+host that always runs the tasks in the order the server sent them has a
+signature of its own.
+
+**The kill switch.** `evade.killswitch` arms the moment the implant stops
+existing. The trigger is a file that appears, a registry value that
+appears, a date and time, a number of hours of uptime, or a marker the
+operator sends in a task. When the trigger fires, the implant takes its
+persistence entries with it, wipes its own state and stops: the machine is
+left the way it was found. The panic task of the server is the sixth
+trigger, and it needs no arming: the `exit` task takes the persistence
+entries with it as well, so the last word of the operator always leaves
+the target clean.
+
+**The hygiene.** `hygiene.memory` reports what holds a secret (the
+pre-shared key, the session keys, the keystrokes, the credentials, the
+module images) and how many buffers were wiped; the buffers live in guards
+that wipe themselves, including on the path where the work failed.
+`hygiene.process` is the other half: it copies the implant under a
+plausible name, sets the name the process reports, moves the working
+directory, removes the tool from the environment, and — on Windows —
+rewrites the parent the process claims to have.
+
+**What the server keeps.** Every evasion task reports the posture with the
+result (`posture`, `posture_sleep_factor`, `posture_silent` in the result
+metadata). The server stores the last report with the agent, shows it in
+`agents.list` and `agents.info`, and raises `posture.updated` and
+`killswitch.armed` on the event stream.
+
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 
 Pivoting is built on one rule: **the agent always dials out**. A beacon that
@@ -757,6 +831,11 @@ receiver. It exists so a transport can pad its bodies to a coarse size bucket
 stays hidden behind the bucket, and the padding is part of the AEAD, so it
 cannot be forged.
 
+The `evade.shape` task takes this further: it chooses the bucket
+(`off`, `random` or `fixed`) and may shuffle the order of the operations
+inside a cycle, so the traffic of one host does not have a machine
+signature of its own.
+
 The body of a padding frame is a binary upk value. Its size is chosen so the
 *whole* body reaches the bucket: the frame overhead is the prelude, the
 nonce, the upk tag of the body, the length prefix of the body and the
@@ -773,6 +852,16 @@ an occasional long nap (roughly one check-in in four sleeps 1.5 to 3.5 times
 longer).  A uniform distribution is a signature of its own: a beacon that
 checks in every 60.4 seconds on average is easier to find than one that
 sometimes sleeps for three minutes.
+
+The window the interval is drawn from is chosen once per cycle and moves
+from cycle to cycle, so the gaps arrive in clusters instead of spreading
+evenly over the whole range; the value inside the window is stable for the
+whole cycle, so two timers in the same cycle do not drift apart.
+
+On top of that the `evade.profile` task replaces the flat interval with a
+profile of the day (busy during the working hours, quiet at night, lazier
+at the weekend), and the posture of the host stretches the result: a
+virtual machine or a lab machine sleeps longer than a production server.
 
 The obfuscation can be switched off with `UMBRA_SLEEP_OBFUSCATE=0` when a
 fixed interval matters more than the traffic pattern (a lab test that needs

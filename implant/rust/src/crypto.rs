@@ -108,6 +108,117 @@ pub fn zeroize(buf: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
+/// A buffer that wipes itself when it goes out of scope.
+///
+/// The trait is implemented for the two shapes the implant actually holds
+/// secrets in: a slice and a vector.  The vector implementation also wipes
+/// the spare capacity, because a `Vec` that was shrunk still holds the tail
+/// of the secret in the allocator.
+pub trait Zeroize {
+    /// Wipe the buffer.
+    fn zeroize(&mut self);
+}
+
+impl Zeroize for [u8] {
+    fn zeroize(&mut self) {
+        zeroize(self);
+    }
+}
+
+impl Zeroize for Vec<u8> {
+    fn zeroize(&mut self) {
+        zeroize(self.as_mut_slice());
+        // The tail of the allocation is not part of the slice any more, but
+        // it still holds whatever was written there before the vector was
+        // shrunk.
+        let len = self.len();
+        let capacity = self.capacity();
+        if capacity > len {
+            unsafe {
+                std::ptr::write_bytes(self.as_mut_ptr().add(len), 0, capacity - len);
+            }
+        }
+    }
+}
+
+impl<const N: usize> Zeroize for [u8; N] {
+    fn zeroize(&mut self) {
+        zeroize(self.as_mut_slice());
+    }
+}
+
+impl Zeroize for String {
+    fn zeroize(&mut self) {
+        // The bytes are wiped before the string is emptied: the length of a
+        // secret is not a secret, its contents are.
+        let bytes = unsafe { self.as_mut_vec() };
+        bytes.zeroize();
+        self.clear();
+    }
+}
+
+/// A guard that wipes its contents when it is dropped.
+///
+/// The point of the guard is the error path: a buffer that is wiped by hand
+/// is only wiped when the code reaches the line that wipes it, and a `?` in
+/// between skips it.  A guard is wiped on every path out of the scope,
+/// including the panicking one.
+///
+/// ```ignore
+/// let secret = Zeroizing::new(key.to_vec());
+/// // the key is gone when `secret` goes out of scope, whatever happened
+/// ```
+pub struct Zeroizing<T: Zeroize> {
+    inner: T,
+}
+
+impl<T: Zeroize> Zeroizing<T> {
+    /// Wrap a value.
+    pub fn new(inner: T) -> Self {
+        Zeroizing { inner }
+    }
+    /// Take the value back.  The caller becomes responsible for the wipe.
+    pub fn into_inner(mut self) -> T
+    where
+        T: Default,
+    {
+        std::mem::take(&mut self.inner)
+    }
+}
+
+impl<T: Zeroize> Drop for Zeroizing<T> {
+    fn drop(&mut self) {
+        self.inner.zeroize();
+    }
+}
+
+impl<T: Zeroize> std::ops::Deref for Zeroizing<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T: Zeroize> std::ops::DerefMut for Zeroizing<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+}
+
+impl<T: Zeroize> From<T> for Zeroizing<T> {
+    fn from(inner: T) -> Self {
+        Zeroizing::new(inner)
+    }
+}
+
+impl<T: Zeroize> std::fmt::Debug for Zeroizing<T> {
+    /// The contents are never printed: a debug log of a key is a key in a
+    /// log file.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Zeroizing(..)")
+    }
+}
+
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     OsRng.fill_bytes(&mut b);

@@ -151,6 +151,45 @@ type Agent struct {
 	// server keeps them: an operator who has forgotten three start-up
 	// entries on one machine has a problem at the end of the engagement.
 	Persist []PersistEntry `json:"persist,omitempty"`
+	// Posture is what the implant thinks of the host it runs on.
+	//
+	// The beacon reports its posture with the evasion tasks, and the
+	// server keeps the last one: an operator who wants to know whether a
+	// machine is a virtual machine, a lab machine or a production server
+	// does not have to run a task for it.
+	Posture *PostureEntry `json:"posture,omitempty"`
+}
+
+// PostureEntry is the last posture an agent reported.
+//
+// The record is what the operator acts on: the machine is virtual or it
+// is not, an analyst may be watching it or nobody is, and the implant
+// answers on it or it keeps quiet.
+type PostureEntry struct {
+	// Label is the one-line name of the posture ("lab machine virtual").
+	Label string `json:"label,omitempty"`
+	// Virtual is true when the host runs on virtual hardware.
+	Virtual bool `json:"virtual,omitempty"`
+	// Workstation is true when a person can sit in front of the machine.
+	Workstation bool `json:"workstation,omitempty"`
+	// Developer is true when the machine carries the tools of a developer.
+	Developer bool `json:"developer,omitempty"`
+	// Lab is true when the machine looks like a lab machine.
+	Lab bool `json:"lab,omitempty"`
+	// Sandbox is true when the machine looks like an analyst's sandbox.
+	Sandbox bool `json:"sandbox,omitempty"`
+	// Confidence is how sure the implant is, from 0 to 100.
+	Confidence int `json:"confidence,omitempty"`
+	// Severity is how much the artefacts on the machine matter, 0 to 100.
+	Severity int `json:"severity,omitempty"`
+	// SleepFactor is the factor the sleep interval is multiplied with.
+	SleepFactor int `json:"sleep_factor,omitempty"`
+	// Silent is true when the implant does not answer on this host.
+	Silent bool `json:"silent,omitempty"`
+	// KillSwitch is true when the kill switch is armed on the host.
+	KillSwitch bool `json:"killswitch,omitempty"`
+	// UpdatedAt is when the posture was reported (unix seconds).
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
 // PersistEntry is one persistence technique on a host.
@@ -182,6 +221,10 @@ func (a *Agent) Clone() *Agent {
 	c.Tags = append([]string(nil), a.Tags...)
 	c.Caps = append([]string(nil), a.Caps...)
 	c.Persist = append([]PersistEntry(nil), a.Persist...)
+	if a.Posture != nil {
+		posture := *a.Posture
+		c.Posture = &posture
+	}
 	return &c
 }
 
@@ -825,6 +868,39 @@ func (s *Store) SetPersistence(agentID string, entries []PersistEntry) bool {
 	}
 	a.Persist = merged
 	return true
+}
+
+// SetPosture replaces the posture record of an agent.
+//
+// The record is the last one the beacon reported: a posture that is not
+// reported any more is not deleted, because the machine did not change,
+// the implant simply stopped looking.
+func (s *Store) SetPosture(agentID string, entry *PostureEntry) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	if entry == nil {
+		a.Posture = nil
+		return true
+	}
+	posture := *entry
+	a.Posture = &posture
+	return true
+}
+
+// Posture returns the posture record of an agent.
+func (s *Store) Posture(agentID string) *PostureEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.agents[agentID]
+	if !ok || a.Posture == nil {
+		return nil
+	}
+	posture := *a.Posture
+	return &posture
 }
 
 // Persistence returns the persistence record of an agent.

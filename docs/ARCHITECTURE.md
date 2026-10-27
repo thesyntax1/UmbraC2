@@ -346,6 +346,30 @@ entries with the agent (`store.Agent.Persist`), the inventory filters on
 them (`persisted=yes`), a broken entry raises `persist.broken` on the event
 stream, and the console has the fleet report (`umbra persist-report`).
 
+Done (the posture engine): the implant knows what the host looks like
+(`implant/rust/src/evade.rs`) and says so, instead of only answering "is
+a debugger attached".  The engine classifies the host on four axes (virtual
+or real, a workstation or a server, a developer's box or a plain machine, a
+lab machine or a production one), states how sure it is and why, and
+classifies the artefacts it finds instead of blacklisting them: a virtual
+machine is a hint, a sandbox that injects itself into every process is
+nearly a proof.  The posture then changes the behaviour: the sleep is
+multiplied with the factor of the host, the jitter is raised, and the
+implant only falls silent when the operator armed it.  The schedule of the
+day (busy in the working hours, quiet at night, lazier at the weekend), the
+scheduled jitter whose window is drawn once per cycle, the traffic shaping
+(the size of the frames, the order of the operations) and the kill switch
+(the file, the registry value, the date, the uptime, the marker) are the
+same engine.  The memory of the implant is cleaned on the way out
+(`crypto::Zeroizing`, `implant/rust/src/hygiene.rs`), and the process can
+run under a copied name, in a plausible directory, with a clean environment
+and a rewritten parent.  The lifecycle travels over the wire
+(`evade.report`, `evade.posture`, `evade.profile`, `evade.shape`,
+`evade.killswitch`, `hygiene.memory`, `hygiene.process`), the server keeps
+the last posture with the agent (`store.Agent.Posture`), the event stream
+raises `posture.updated` and `killswitch.armed`, and the console has the
+fleet report (`umbra evade-report`).
+
 Done (capabilities, the file store and the end of an engagement): every
 beacon says in its handshake which task kinds it implements, and the server
 refuses to queue anything else (`store.Agent.Caps`, `hub.SubmitTask`); the

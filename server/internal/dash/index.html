@@ -66,6 +66,7 @@
         <thead><tr>
           <th>id</th><th>host</th><th>os</th><th>user</th><th>transport</th>
           <th>sleep</th><th>state</th><th>tags</th><th>persistence</th>
+          <th>posture</th>
           <th>last seen</th>
         </tr></thead>
         <tbody></tbody>
@@ -152,6 +153,21 @@
     return (a.persist || []).some(function (e) { return e.state === "broken"; });
   }
 
+  // The posture of a host: what the implant thinks it is.
+  function posture(a) {
+    var p = a.posture || null;
+    if (!p) { return "-"; }
+    var label = p.label || "unknown";
+    if (p.confidence) { label += " (" + p.confidence + "%)"; }
+    return label;
+  }
+
+  // Whether the host looks like an analyst's sandbox.
+  function postureSandbox(a) {
+    var p = a.posture || null;
+    return !!(p && p.sandbox);
+  }
+
   function refreshAgents() {
     return api("/api/agents").then(function (data) {
       var body = document.querySelector("#agents tbody");
@@ -163,14 +179,17 @@
         var row = el("tr", null, "click");
         [a.id, a.host, a.os, a.user, a.transport,
          a.sleep ? a.sleep + "s" : "-", a.state, (a.tags || []).join(","),
-         persistence(a), when(a.last_seen)]
+         persistence(a), posture(a), when(a.last_seen)]
           .forEach(function (value, index) {
             var cell = el("td", value);
             if (index === 6) { cell.className = a.state === "online" ? "on" : "off"; }
             // The persistence column: the techniques on the host, in red
             // when one of them is broken.
             if (index === 8) { cell.className = persistenceBroken(a) ? "off" : "dim"; }
-            if (index === 9) { cell.className = "dim"; }
+            // The posture column: a host that looks like an analyst's
+            // sandbox is worth a second look.
+            if (index === 9) { cell.className = postureSandbox(a) ? "off" : "dim"; }
+            if (index === 10) { cell.className = "dim"; }
             row.appendChild(cell);
           });
         row.addEventListener("click", function () { picker.value = a.id; });

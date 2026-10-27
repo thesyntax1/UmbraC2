@@ -269,6 +269,32 @@ class OperatorClient:
             })
         return rows
 
+    def posture_report(self, agent_id: str = "") -> List[Dict[str, Any]]:
+        """The posture of every host, as the operator needs it.
+
+        The implant reports what it thinks the host is -- a virtual
+        machine, a lab machine, an analyst's sandbox -- and the server keeps
+        the last report.  The console shows the whole fleet without
+        touching a single host, which is exactly what an operator wants
+        before the first task of the day.
+        """
+        agents = self.agents() if not agent_id else [self.agent(agent_id)]
+        rows: List[Dict[str, Any]] = []
+        for agent in agents:
+            posture = agent.get("posture") or {}
+            rows.append({
+                "agent": agent.get("id", ""),
+                "host": agent.get("host", ""),
+                "label": posture.get("label", ""),
+                "virtual": bool(posture.get("virtual")),
+                "lab": bool(posture.get("lab")),
+                "sandbox": bool(posture.get("sandbox")),
+                "confidence": int(posture.get("confidence", 0) or 0),
+                "silent": bool(posture.get("silent")),
+                "killswitch": bool(posture.get("killswitch")),
+            })
+        return rows
+
     def agent(self, agent_id: str) -> Dict[str, Any]:
         """One agent, with everything the server knows about it."""
         res = self.rpc("agents.info", {"id": agent_id})

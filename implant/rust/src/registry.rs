@@ -214,6 +214,49 @@ pub fn read(_args: &Value) -> Result<String, String> {
     Err("the registry is a Windows capability".to_string())
 }
 
+/// Does the registry value exist?
+///
+/// The kill switch watches for a value that appears: the operator writes
+/// it on a machine they no longer want the implant on, and the next
+/// check-in of the implant is its last one.
+#[cfg(windows)]
+pub fn exists(hive_name: &str, key_path: &str, value_name: &str) -> bool {
+    let hive = match hive_of(hive_name) {
+        Some(hive) => hive,
+        None => return false,
+    };
+    let mut handle: sys::HKEY = std::ptr::null_mut();
+    let subkey: Vec<u16> = key_path.encode_utf16().chain(std::iter::once(0)).collect();
+    let status = unsafe {
+        sys::RegOpenKeyExW(hive, subkey.as_ptr(), 0, sys::KEY_READ, &mut handle)
+    };
+    if status != 0 {
+        return false;
+    }
+    let name: Vec<u16> = value_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut kind: u32 = 0;
+    let mut size: u32 = 0;
+    // The first call only asks whether the value is there.
+    let found = unsafe {
+        sys::RegQueryValueExW(
+            handle,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut kind,
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    unsafe { sys::RegCloseKey(handle) };
+    found == 0
+}
+
+/// The registry is a Windows capability.
+#[cfg(not(windows))]
+pub fn exists(_hive_name: &str, _key_path: &str, _value_name: &str) -> bool {
+    false
+}
+
 #[cfg(windows)]
 mod sys {
     use std::os::raw::c_void;

