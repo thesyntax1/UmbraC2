@@ -3377,3 +3377,35 @@ def test_the_console_tails_and_hashes_a_file_on_an_agent():
         agent.stop()
         server.stop()
         os.unlink("/tmp/umbra-tail.log")
+
+
+def test_the_console_writes_the_report_of_the_whole_engagement():
+    """The handover document: every host, every task, one file."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+    from umbra_cli.cli import build_engagement_report  # noqa: WPS433
+
+    token = b"operator-token-engagement-01"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-engagement", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        client.submit("agent-engagement", "sysinfo", {})
+        time.sleep(0.6)
+        text = build_engagement_report(client, 20)
+        assert text.startswith("# The engagement")
+        assert "## The hosts" in text
+        assert "## The tasks" in text
+        assert "agent-engagement" in text
+        assert "sysinfo" in text
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

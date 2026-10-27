@@ -250,6 +250,7 @@ The server ships with a small namespace of saved commands, so a team says
 umbra alias list
 umbra alias run web-01 whoami
 umbra alias run web-01 triage --args '{"path":"/etc/passwd"}'
+umbra alias run web-01 find --arg name="*.kdbx" --arg path=/home
 ```
 
 An alias may also point at an armory extension instead of a task kind, which
@@ -276,11 +277,18 @@ At the end of an engagement somebody has to write down what was done and
 what was found.  The console writes it:
 
 ```bash
-umbra report web-01 --out web-01.md
+umbra report web-01 --out web-01.md     # one host
+umbra report --all --out engagement.md   # the whole engagement
 ```
 
 The report holds the host's record, the tasks that were run on it and the
-notes of the local notebook, as one Markdown document.
+notes of the local notebook, as one Markdown document.  The engagement
+report holds every host and every task, which is the document that goes
+with the handover.
+
+The output of a task is often a file — a digest list, a dump, a log — so
+`umbra result <task-id> --out out.bin` writes it whole instead of printing
+it.
 
 ### Finding things on the target
 

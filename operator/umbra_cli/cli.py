@@ -280,6 +280,66 @@ def build_report(client: OperatorClient, agent_id: str, limit: int,
     return "\n".join(lines) + "\n"
 
 
+def build_engagement_report(client: OperatorClient, limit: int,
+                             state: Optional["db.StateStore"] = None) -> str:
+    """Write the report of the whole engagement as a Markdown document.
+
+    It is the document that goes with the handover: every host that was
+    touched, and every task that was run.
+    """
+    agents = client.agents()
+    lines: List[str] = []
+    lines.append("# The engagement")
+    lines.append("")
+    lines.append(f"_{len(agents)} hosts_")
+    lines.append("")
+
+    lines.append("## The hosts")
+    lines.append("")
+    lines.append("| agent | host | os | user | transport | state | tags |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for agent in agents:
+        tags = ", ".join(str(t) for t in (agent.get("tags") or []))
+        lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+            agent.get("id", ""), agent.get("host", ""), agent.get("os", ""),
+            agent.get("user", ""), agent.get("transport", ""),
+            agent.get("state", ""), tags))
+    lines.append("")
+
+    lines.append("## The tasks")
+    lines.append("")
+    tasks = client.tasks("", limit)
+    if not tasks:
+        lines.append("_no task was run_")
+    else:
+        lines.append("| when | agent | kind | state | note |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for task in tasks[:limit]:
+            when = task.get("completed") or task.get("created") or ""
+            when = str(when)[:19].replace("T", " ")
+            err = str(task.get("err", "") or "")
+            lines.append("| {} | {} | {} | {} | {} |".format(
+                when, task.get("agent_id", ""), task.get("kind", ""),
+                task.get("state", ""), err[:80]))
+    lines.append("")
+
+    if state is not None:
+        try:
+            notes = state.notes("", limit)
+        except Exception:  # noqa: BLE001 - the notebook is a convenience
+            notes = []
+        if notes:
+            lines.append("## The notes")
+            lines.append("")
+            for note in notes:
+                when = str(note.get("at", ""))[:19].replace("T", " ")
+                lines.append("- **{}** {} ({})".format(
+                    when, note.get("text", ""), note.get("agent", "")))
+            lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def run_task_and_wait(client: OperatorClient, console: Console, agent_id: str,
                       kind: str, task_args: Dict[str, Any], wait: bool,
                       timeout: float, as_json: bool) -> None:
@@ -1347,6 +1407,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     result = sub.add_parser("result", help="print a task result")
     result.add_argument("task_id")
+    result.add_argument("--out", default="", help="write the output to this file")
 
     cancel = sub.add_parser("cancel", help="cancel a queued task")
     retry = sub.add_parser("retry", help="run a finished task again")
@@ -1402,6 +1463,8 @@ def build_parser() -> argparse.ArgumentParser:
     alias.add_argument("name", nargs="?", default="", help="alias name")
     alias.add_argument("agent", nargs="?", default="", help="agent id (run)")
     alias.add_argument("--args", default="{}", help="task arguments as JSON (run)")
+    alias.add_argument("--arg", action="append", default=[],
+                       help="one argument as key=value (run), repeatable")
 
     sub.add_parser("team-sync", help="one snapshot of the team (agents, operators, chat)")
 
@@ -1495,7 +1558,8 @@ def build_parser() -> argparse.ArgumentParser:
     prockill.add_argument("--timeout", type=float, default=120.0)
 
     report = sub.add_parser("report", help="write a report about one agent")
-    report.add_argument("agent")
+    report.add_argument("agent", nargs="?", default="")
+    report.add_argument("--all", action="store_true", help="the whole engagement")
     report.add_argument("--limit", type=int, default=50)
     report.add_argument("--out", default="", help="write the report to this file")
 
@@ -1681,6 +1745,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 except json.JSONDecodeError as exc:
                     print(f"invalid --args json: {exc}", file=sys.stderr)
                     return 2
+                if not isinstance(task_args, dict):
+                    print("--args must be a JSON object", file=sys.stderr)
+                    return 2
+                # The key=value form is for the arguments an operator types
+                # every time; the JSON form is for the rest.
+                for pair in args.arg:
+                    if "=" not in pair:
+                        print(f"invalid --arg {pair!r}: use key=value", file=sys.stderr)
+                        return 2
+                    key, _, value = pair.partition("=")
+                    task_args.setdefault(key.strip(), value.strip())
                 data = client.add_schedule(args.target, args.kind, args.every, task_args)
                 emit(data) if args.json else print(
                     f"scheduled {data['schedule_id']} ({args.kind} every {args.every}s on {args.target})"
@@ -1813,6 +1888,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             # Collecting the output is part of the history: it belongs in the
             # notebook as much as the submission does.
             console.note_result(args.task_id, task)
+            if args.out:
+                # The output of a task is often a file: a digest list, a
+                # dump, a log.  Writing it to a file keeps it whole.
+                out = task.get("out", b"")
+                if isinstance(out, str):
+                    out = out.encode()
+                with open(args.out, "wb") as fh:
+                    fh.write(out)
+                if args.json:
+                    emit({"task_id": args.task_id, "file": args.out,
+                          "bytes": len(out)})
+                else:
+                    print(f"wrote {args.out} ({len(out)} bytes)")
+                return 0 if task.get("state") == "done" and not task.get("code") else 1
             if args.json:
                 emit(task)
                 # A failed task must fail the shell too, so scripts can branch
@@ -2098,7 +2187,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_task_and_wait(client, console, args.agent, "proc.kill", task_args,
                               args.wait, args.timeout, args.json)
         elif args.cmd == "report":
-            text = build_report(client, args.agent, args.limit, console.store)
+            if args.all:
+                text = build_engagement_report(client, args.limit, console.store)
+            elif args.agent:
+                text = build_report(client, args.agent, args.limit, console.store)
+            else:
+                print("usage: umbra report <agent> | umbra report --all",
+                      file=sys.stderr)
+                return 2
             if args.out:
                 with open(args.out, "w", encoding="utf-8") as fh:
                     fh.write(text)
