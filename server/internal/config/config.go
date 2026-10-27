@@ -120,7 +120,27 @@ type Server struct {
 	Limits         Limits `json:"limits"`
 	MaxClockSkewS  int    `json:"max_clock_skew_s"`
 	SessionTimeout int    `json:"session_timeout_s"`
+	// MaxTaskBatch is how many tasks one beacon cycle may carry.
+	//
+	// A beacon opens one connection per cycle, so this is also how much
+	// work the server can hand out between two check-ins.  The default
+	// keeps a cycle small enough for the frame budget.
+	MaxTaskBatch int `json:"max_task_batch"`
+	// MaxQueuedTasks is how many tasks may wait for one agent.
+	//
+	// A backlog is a symptom: an agent that is offline, or an operator
+	// that queued a thousand commands, would otherwise pile up work that
+	// is stale by the time it is delivered.
+	MaxQueuedTasks int `json:"max_queued_tasks"`
 }
+
+// Defaults for the queue limits.
+const (
+	// DefaultMaxTaskBatch mirrors the beacon's own cycle budget.
+	DefaultMaxTaskBatch = 64
+	// DefaultMaxQueuedTasks is the backlog an agent may carry.
+	DefaultMaxQueuedTasks = 256
+)
 
 // Keyring is the set of pre-shared keys the server accepts.
 type Keyring struct {
@@ -170,6 +190,8 @@ func Default() *Config {
 		Beacon:          Beacon{Sleep: 5, Jitter: 20},
 		Limits:          Limits{MaxAgents: 512, MaxOperators: 16, HandshakeTimeoutSec: 15, IdleTimeoutSec: 120, MaxFrameBytesPerConn: 64 << 20},
 		TaskTimeoutSec:  300,
+		MaxTaskBatch:    DefaultMaxTaskBatch,
+		MaxQueuedTasks:  DefaultMaxQueuedTasks,
 		MaxClockSkewS:   300,
 		SessionTimeout:  300,
 	}}
@@ -353,4 +375,24 @@ func (c *Config) TaskTimeout() time.Duration {
 
 func (c *Config) MaxSkew() time.Duration {
 	return time.Duration(c.Server.MaxClockSkewS) * time.Second
+}
+
+// MaxTaskBatch is how many tasks one beacon cycle may carry.
+//
+// A configuration that leaves the value at zero (or below) falls back to the
+// default: the limit exists to protect the frame budget, and "unlimited"
+// is not a value an operator should be able to set by accident.
+func (c *Config) MaxTaskBatch() int {
+	if c.Server.MaxTaskBatch <= 0 {
+		return DefaultMaxTaskBatch
+	}
+	return c.Server.MaxTaskBatch
+}
+
+// MaxQueuedTasks is how many tasks may wait for one agent.
+func (c *Config) MaxQueuedTasks() int {
+	if c.Server.MaxQueuedTasks <= 0 {
+		return DefaultMaxQueuedTasks
+	}
+	return c.Server.MaxQueuedTasks
 }

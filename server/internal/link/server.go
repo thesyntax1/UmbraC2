@@ -15,6 +15,7 @@ import (
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
+	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
@@ -42,6 +43,9 @@ type Server struct {
 	VPN *vpn.Server
 	// Armory is the signed extension registry. Optional.
 	Armory *armory.Registry
+	// Artifacts is the server-side file store. Optional: a server without
+	// one refuses the artifact commands instead of pretending to have them.
+	Artifacts *artifact.Store
 	// Aliases is the runtime command namespace. Optional.
 	Aliases *alias.Registry
 	// DNS is the DNS tunnel endpoint. Optional: without it the server does
@@ -90,6 +94,9 @@ func (s *Server) SetVPN(v *vpn.Server) { s.VPN = v }
 
 // SetArmory attaches the extension registry.
 func (s *Server) SetArmory(a *armory.Registry) { s.Armory = a }
+
+// SetArtifact attaches the server-side file store.
+func (s *Server) SetArtifact(a *artifact.Store) { s.Artifacts = a }
 
 // SetAliases attaches the runtime command namespace.
 func (s *Server) SetAliases(a *alias.Registry) { s.Aliases = a }

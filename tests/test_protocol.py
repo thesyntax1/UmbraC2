@@ -3409,3 +3409,304 @@ def test_the_console_writes_the_report_of_the_whole_engagement():
         client.close()
         agent.stop()
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# capabilities, the artifact store and burning an engagement
+# ---------------------------------------------------------------------------
+def test_the_agent_advertises_its_capabilities():
+    """A beacon says what it can do, and the server refuses the rest."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    token = b"caps-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-caps", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        rows = client.agents()
+        assert rows, "agent never registered"
+        caps = rows[0].get("caps") or []
+        assert "shell" in caps and "upload" in caps
+        # The aliases are listed too, so a console that writes "cat" is not
+        # told that the host cannot read a file.
+        assert "cat" in caps and "exec" in caps
+
+        # A kind the agent never said it can run is refused, and the refusal
+        # names the kind instead of failing later on the target.
+        with pytest.raises(OperatorError) as excinfo:
+            client.submit("agent-caps", "not-a-real-kind", {})
+        assert "not-a-real-kind" in str(excinfo.value)
+
+        # A kind it did say it can run still works.
+        task_id = client.submit("agent-caps", "ping", {})
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            task = client.task(task_id)
+            if task.get("state") in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert task["state"] == "done", task
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_agents_panic_burns_the_agent():
+    """A panic queues the exit and stops the server from feeding the agent."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    token = b"panic-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-panic", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        # The selection rule still applies: no targets, no panic.
+        with pytest.raises(OperatorError):
+            client.panic()
+
+        res = client.panic(["agent-panic"])
+        assert res["count"] == 1
+        assert res["panicked"] == ["agent-panic"]
+
+        # The exit task is queued, and the agent is marked as burned.
+        kinds = [t["kind"] for t in client.tasks("agent-panic")]
+        assert "exit" in kinds
+
+        # A burned agent takes no further work.
+        with pytest.raises(OperatorError) as excinfo:
+            client.submit("agent-panic", "ping", {})
+        assert "panic" in str(excinfo.value).lower()
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_agents_panic_needs_the_admin_role():
+    """Burning an engagement is the one thing a viewer may not do."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    token = b"panic-role-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token}, roles={"alice": "viewer"})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        with pytest.raises(OperatorError) as excinfo:
+            client.panic(all_agents=True)
+        assert "permission denied" in str(excinfo.value)
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_artifact_store_round_trip(tmp_path):
+    """A file goes into the store, comes back out and can be removed."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    token = b"artifact-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    blob = os.urandom(1024)
+    source = tmp_path / "payload.bin"
+    source.write_bytes(blob)
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        info = client.artifact_upload("payload.bin", str(source))
+        assert info["size"] == len(blob)
+        assert info["sha256"] == hashlib.sha256(blob).hexdigest()
+
+        rows = client.artifact_list()
+        assert [r["name"] for r in rows] == ["payload.bin"]
+        assert rows[0]["sha256"] == hashlib.sha256(blob).hexdigest()
+
+        target = tmp_path / "pulled.bin"
+        pulled = client.artifact_download("payload.bin", str(target))
+        assert pulled["bytes"] == len(blob)
+        assert target.read_bytes() == blob
+        # The interrupted transfer never leaves a plausible-looking file.
+        assert not (tmp_path / "pulled.bin.part").exists()
+
+        assert client.artifact_remove("payload.bin")["removed"] is True
+        assert client.artifact_list() == []
+        with pytest.raises(OperatorError):
+            client.artifact_remove("payload.bin")
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_an_artifact_is_pushed_as_a_chain_of_uploads(tmp_path):
+    """The push is a chain of ordinary upload tasks, not a new command."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"push-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-push", interval=0.2)
+    agent.start()
+
+    blob = os.urandom(4096)
+    source = tmp_path / "tool.bin"
+    source.write_bytes(blob)
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        client.artifact_upload("tool.bin", str(source))
+        res = client.artifact_push("tool.bin", "agent-push", path="/tmp/tool.bin")
+        assert res["stages"] == 1
+        assert res["sha256"] == hashlib.sha256(blob).hexdigest()
+        assert res["path"] == "/tmp/tool.bin"
+
+        # The chain runs the upload and the task ends up done.
+        deadline = time.time() + 10
+        task = {}
+        while time.time() < deadline:
+            task = client.task(res["task_id"])
+            if task.get("state") in ("done", "failed"):
+                break
+            time.sleep(0.1)
+        assert task.get("state") == "done", task
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_new_task_kinds_run_on_the_agent(tmp_path):
+    """scan, resolve, env and touch are real work, not stubs."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"kinds-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-kinds", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        def run(kind, args):
+            task_id = client.submit("agent-kinds", kind, args)
+            deadline = time.time() + 10
+            task = {}
+            while time.time() < deadline:
+                task = client.task(task_id)
+                if task.get("state") in ("done", "failed"):
+                    break
+                time.sleep(0.1)
+            assert task.get("state") == "done", (kind, task)
+            out = task.get("out", b"")
+            return out.decode() if isinstance(out, bytes) else str(out)
+
+        # The environment of the agent, filtered.
+        text = run("env", {"filter": "PATH"})
+        assert "PATH=" in text
+
+        # A name that always resolves.
+        text = run("resolve", {"host": "localhost"})
+        assert "127.0.0.1" in text or "::1" in text
+
+        # A file that is created and stamped.
+        target = tmp_path / "stamped.txt"
+        text = run("touch", {"path": str(target)})
+        assert "created" in text
+        assert target.exists()
+
+        # A scan of a port nothing listens on: the answer is the report.
+        text = run("scan", {"host": "127.0.0.1", "ports": "1", "timeout_ms": 200})
+        assert "probes" in text
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_knows_the_new_commands():
+    """The parser and the client wrapper exist for every new command."""
+    from umbra_cli import cli, client
+
+    parser = cli.build_parser()
+    for argv in (["artifact", "list"], ["scan", "a", "10.0.0.0/30"],
+                 ["resolve", "a", "example.com"], ["env", "a"],
+                 ["touch", "a", "/tmp/x"], ["panic", "a"]):
+        args = parser.parse_args(argv)
+        assert args.cmd == argv[0]
+
+    # The client wrappers call the RPCs the server implements.
+    captured = []
+
+    class Stub:
+        def rpc(self, cmd, args=None):
+            captured.append(cmd)
+
+            class R:
+                ok = True
+                data = {"count": 1, "panicked": ["a"], "artifacts": []}
+
+            return R()
+
+    stub = Stub()
+    client.OperatorClient.panic(stub, ["a"])
+    client.OperatorClient.artifact_list(stub)
+    assert captured == ["agents.panic", "artifact.list"]
+
+
+def test_the_state_file_keeps_binary_task_arguments():
+    """A queued upload must survive a restart with the bytes it was given.
+
+    encoding/json turns a byte slice into a base64 string, so the store
+    marks the bytes before it writes the snapshot and restores them when it
+    reads it back.  The marker is the only thing that keeps the two apart.
+    """
+    store = open(os.path.join(ROOT, "server", "internal", "store", "store.go"),
+                 encoding="utf-8").read()
+    assert "binMarker" in store
+    assert '"__bin__"' in store
+    # The marker is written on the way out and read on the way in.
+    assert "encodeArgs" in store and "decodeArgs" in store
+    assert "c.Args = encodeArgs(c.Args)" in store
+    assert "t.Args = decodeArgs(t.Args)" in store

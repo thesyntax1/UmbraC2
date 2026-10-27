@@ -62,6 +62,10 @@ Added on top of that core:
 | The files | A directory with its permissions and timestamps, the end of a log, the digest of a file | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The Windows registry | A key with its values and its subkeys, read through the platform's own API | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The keyboard | The keys as they are pressed, streamed or written into a file to be fetched later | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
+| What a host can do | Every beacon says which task kinds it implements, the server refuses the rest, and the operator sees the list in the inventory | [docs/PROTOCOL.md](docs/PROTOCOL.md#72f-capabilities-the-artifact-store-and-burning-an-engagement) |
+| The server's file store | A file goes onto the server once and is pushed to every host that needs it, in verified chunks | [docs/OPERATIONS.md](docs/OPERATIONS.md#3d-the-artifact-store) |
+| The network reach | A port scan of a range, a name resolution and the environment of the host, straight from the target | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
+| The end of it, on the target | One command tells the beacons to exit and stops the server from feeding them any more work | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

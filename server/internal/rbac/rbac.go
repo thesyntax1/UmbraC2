@@ -95,6 +95,21 @@ var requirements = map[string]string{
 	"chat.send":     Operator,
 	"schedule.add":  Operator,
 
+	// ---- the server-side file store -------------------------------------
+	// Reading the store is harmless; filling it and pushing its contents
+	// to a host is an operator action.
+	"artifact.list":   Viewer,
+	"artifact.get":    Viewer,
+	"artifact.put":    Operator,
+	"artifact.remove": Operator,
+	"artifact.push":   Operator,
+
+	// ---- burning an engagement ------------------------------------------
+	// A panic tells every selected beacon to exit and stops the server
+	// from feeding it any more work.  It is the end of an engagement, so
+	// it belongs to the person who owns it.
+	"agents.panic": Admin,
+
 	// ---- coordinating a shared engagement -----------------------------
 	// A claim orders human work; it never touches a host, so a junior
 	// operator may take and drop one.

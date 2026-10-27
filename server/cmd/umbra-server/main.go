@@ -28,6 +28,7 @@ import (
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
+	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/dash"
@@ -126,6 +127,17 @@ func run() error {
 	if armoryReg.PublicKey() == nil {
 		logger.Warn("armory signature checking is disabled: no armory_key configured")
 	}
+
+	// The server-side file store: the operator drops a file here once and
+	// pushes it to every host that needs it.  It lives next to the state
+	// file, so a deployment that already gives the server a writable data
+	// directory needs no extra setup.
+	artifactStore, err := artifact.Open(artifactDir(cfg.Server.DataFile))
+	if err != nil {
+		return err
+	}
+	srv.SetArtifact(artifactStore)
+	logger.Info("artifact store ready", "dir", artifactStore.Dir())
 
 	// The runtime command namespace: named task templates.  The built-in
 	// ones are the one-liners everybody types; the team can replace them.
@@ -308,6 +320,18 @@ func operatorKeys(cfg *config.Config) [][]byte {
 		}
 	}
 	return out
+}
+
+// artifactDir is where the server-side file store lives.
+//
+// The store sits next to the state file: a deployment already gives the
+// server a writable data directory for the queue, and the artifacts belong
+// to the same engagement record.
+func artifactDir(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "artifacts")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "artifacts")
 }
 
 // keepSocksOpen maintains the configured persistent SOCKS5 proxy.

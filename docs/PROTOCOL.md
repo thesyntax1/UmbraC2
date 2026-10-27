@@ -356,6 +356,10 @@ Task kinds understood by the reference implants:
 | `triage` | `path` | the size, the digest, the format and the entropy of a file |
 | `find` | `path`, `name` (glob or substring), `content`, `max` | the files that match |
 | `netinfo` | — | the interfaces, the routes, the neighbours and the resolvers |
+| `scan` | `host` (an address or a CIDR block), `ports`, optional `timeout_ms` | the hosts that answered: one line per open port, plus the number of probes |
+| `resolve` | `host`, optional `port` | the addresses a name points at |
+| `env` | optional `filter` | the environment of the implant, one `KEY=VALUE` per line |
+| `touch` | `path` | creates the file if it is missing and stamps it with the current time |
 | `proc.kill` | `pid` or `name` | terminates a process of the host |
 | `keylog.file` | `path`, optional `seconds` | the key logger writes into a file, to be fetched later |
 | `registry` | `hive`, `key`, optional `value` | the Windows registry: a key, its values and its subkeys |
@@ -446,6 +450,7 @@ Operator RPC commands, with the minimum role each requires:
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
 | `agents.kill` | operator | queue the exit task |
 | `agents.exit` | operator | alias of `agents.kill` |
+| `agents.panic` | admin | tell the selected beacons to exit and stop the server from feeding them: `agents` (list) and/or `filter`, or `all: true` |
 | `chat.send` | operator | team message; `to` addresses one operator |
 | `schedule.add` | operator | recurring task (5–86400 s) |
 | `task.claim` | operator | take ownership of a task |
@@ -467,6 +472,11 @@ Operator RPC commands, with the minimum role each requires:
 | `alias.run` | operator | run a named template on an agent |
 | `team.sync` | viewer | full state snapshot for a console that joins late |
 | `stager.generate` | admin | build a stage-0 one-liner (it carries the agent PSK) |
+| `artifact.list` | viewer | the artifacts the server holds: name, size, digest |
+| `artifact.get` | viewer | read a chunk of a stored artifact: `offset`, `limit` |
+| `artifact.put` | operator | write a chunk into the store: `name`, `data` (bin), `offset`, `eof` |
+| `artifact.remove` | operator | delete an artifact from the store |
+| `artifact.push` | operator | push a stored artifact to an agent: `name`, `agent`, optional `path` |
 
 ### 7.2a Selecting agents
 
@@ -570,6 +580,61 @@ the agent id and on the kind of the task.  When a rule matches, the server
 logs the event loudly and pushes an `alert` event of its own, so a console
 that watches the alerts sees it even when the original event is noise.  The
 cooldown keeps a noisy agent from producing an alert on every check-in.
+
+### 7.2f Capabilities, the artifact store and burning an engagement
+
+Three things belong together, because they are all about what the server is
+allowed to do with an agent.
+
+**Capabilities.** A beacon says in its HELLO metadata which task kinds it
+implements:
+
+```
+meta: {host, os, arch, user, pid, integ, ver, family, caps: ["shell", "ls", …]}
+```
+
+The server stores the list with the agent, shows it in `agents.list` and
+`agents.info`, and refuses to queue a task the agent did not say it can run.
+The operator learns that a host is out of scope *before* the task fails, and
+the answer is the same everywhere: the exact kind that was asked for has to
+be in the list. Aliases are listed too (`exec`, `cat`, `kill`), so a console
+that writes "cat" is not told that the host cannot read a file.
+
+An agent that says nothing — a beacon from before this extension — is asked
+for everything. The server fails open for old implants and closed for new
+ones, so an upgrade never breaks an engagement that is already running.
+
+**The artifact store.** The team server keeps files: a payload, a
+configuration, a tool. The operator drops a file into the store once
+(`artifact.put`, in chunks, because the frames are bounded) and pushes it to
+every host that needs it (`artifact.push`). The store is content addressed:
+the blob is written under the SHA-256 of its contents, so two uploads of the
+same file share one copy, and the digest travels with the entry so a console
+can prove what it is holding.
+
+`artifact.push` does not invent a new beacon command. It builds a chain of
+ordinary `upload` tasks, one per chunk, and lets the chain machinery run
+them: the beacon writes the chunks one after the other, and the last one
+(`eof: true`) closes the file and answers with the SHA-256 of the whole
+file. A push is therefore verifiable in exactly the same way as a manual
+upload is, and a chunk that fails stops the chain instead of leaving a hole
+in the file.
+
+**Burning an engagement.** `agents.panic` is the end of an operation on the
+target side. It queues the exit task for every selected agent and marks them
+as burned, so the server refuses every further task for them: work that was
+queued while the operator is still cleaning up never reaches the machine.
+
+The targets follow the usual selection rule — `agents` and/or `filter` — with
+one deliberate override: `all: true` reaches every agent the server knows,
+including the ones that are asleep. The exit command is delivered on their
+next check-in, so a beacon that sleeps for an hour still dies. The server
+cannot push a frame to an agent that is not connected, so the exit travels as
+a task; that is also why the exit is queued *before* the agent is marked,
+because a burned agent refuses every task.
+
+The console asks for the word "panic" before it does any of this, exactly
+like `wipe` asks for "wipe".
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

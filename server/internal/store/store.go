@@ -7,6 +7,7 @@ package store
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -134,12 +135,23 @@ type Agent struct {
 	LastSeen    time.Time `json:"last_seen"`
 	State       string    `json:"state"`
 	Checkins    uint64    `json:"checkins"`
+	// Caps are the task kinds the beacon said it can run.  The server
+	// refuses work an agent cannot do, so an operator learns that a host is
+	// out of scope before the task is queued instead of after it fails.
+	// An empty list means "unknown": an agent that predates the handshake
+	// extension is allowed to try everything.
+	Caps []string `json:"caps,omitempty"`
+	// Panicked marks an agent the operator has burned: it was told to exit
+	// and it refuses every further task, so a half-sent engagement cannot
+	// grow new work.
+	Panicked bool `json:"panicked,omitempty"`
 }
 
 // Clone returns a copy safe to hand to other goroutines.
 func (a *Agent) Clone() *Agent {
 	c := *a
 	c.Tags = append([]string(nil), a.Tags...)
+	c.Caps = append([]string(nil), a.Caps...)
 	return &c
 }
 
@@ -196,6 +208,86 @@ type snapshot struct {
 	Agents    []*Agent    `json:"agents"`
 	Tasks     []*Task     `json:"tasks"`
 	Schedules []*Schedule `json:"schedules,omitempty"`
+}
+
+// binMarker is the key a binary argument is wrapped in on its way to disk.
+//
+// encoding/json turns a []byte into a base64 *string*, and reading the
+// snapshot back would hand the beacon a string where it expects bytes: an
+// "upload" task would write the base64 text into the target file instead of
+// the file's contents. The marker keeps the two apart, so a queued task
+// survives a server restart with the payload it was given.
+const binMarker = "__bin__"
+
+// encodeArgs copies a task's arguments, replacing raw bytes with a marked
+// object so that they survive the JSON round trip.
+func encodeArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = encodeValue(v)
+	}
+	return out
+}
+
+// encodeValue walks a task argument and marks every byte slice it finds.
+func encodeValue(v any) any {
+	switch x := v.(type) {
+	case []byte:
+		return map[string]any{binMarker: base64.StdEncoding.EncodeToString(x)}
+	case map[string]any:
+		return encodeArgs(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = encodeValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// decodeArgs is the inverse of encodeArgs: it turns the marked objects back
+// into byte slices.
+func decodeArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = decodeValue(v)
+	}
+	return out
+}
+
+// decodeValue restores the byte slices encodeValue marked.
+//
+// The marker is only honoured for an object that carries nothing else: a
+// task argument that happens to have a "__bin__" key of its own is a plain
+// map and stays one.
+func decodeValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		if len(x) == 1 {
+			if raw, ok := x[binMarker].(string); ok {
+				if data, err := base64.StdEncoding.DecodeString(raw); err == nil {
+					return data
+				}
+			}
+		}
+		return decodeArgs(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = decodeValue(item)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // snapshotVersion is the layout this build writes and understands.
@@ -325,6 +417,9 @@ func Open(path string) (*Store, error) {
 		s.agents[a.ID] = a
 	}
 	for _, t := range snap.Tasks {
+		// A task that carried bytes comes back as the marked object the
+		// snapshot wrote, so it is turned back into bytes here.
+		t.Args = decodeArgs(t.Args)
 		s.tasks[t.ID] = t
 		s.order = append(s.order, t.ID)
 		if t.State == TaskDelivered {
@@ -362,6 +457,9 @@ func (s *Store) UpsertAgent(in *Agent) *Agent {
 	cur.Host, cur.OS, cur.Arch = in.Host, in.OS, in.Arch
 	cur.User, cur.PID, cur.Version = in.User, in.PID, in.Version
 	cur.Transport, cur.Addr, cur.Integrity = in.Transport, in.Addr, in.Integrity
+	// The capability list is what the beacon says it can run.  The panic
+	// flag is not copied: it belongs to the operator, not to the target.
+	cur.Caps = append([]string(nil), in.Caps...)
 	// The cadence belongs to the operator: a beacon that still reports its
 	// old interval does not overwrite the policy that was pushed to it.
 	cur.ReportedSleep, cur.ReportedJitter = in.Sleep, in.Jitter
@@ -645,6 +743,39 @@ func (s *Store) Pending(agentID string, max int) []*Task {
 	return out
 }
 
+// QueuedCount returns how many tasks are still waiting for an agent.
+//
+// It is the backlog an agent carries, not the history: the count is what a
+// new task would add to, and it is what the per-agent queue cap is checked
+// against.
+func (s *Store) QueuedCount(agentID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, id := range s.order {
+		if t := s.tasks[id]; t != nil && t.AgentID == agentID && t.State == TaskQueued {
+			n++
+		}
+	}
+	return n
+}
+
+// SetPanicked marks (or unmarks) an agent as burned.
+//
+// A panicked agent refuses every new task: the operator said the engagement
+// is over, and a beacon that wakes up later must not pick up work that was
+// queued in the meantime.
+func (s *Store) SetPanicked(agentID string, panicked bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	a.Panicked = panicked
+	return true
+}
+
 // Complete records a task result.
 //
 // A result that arrives after the task was cancelled keeps the cancelled state:
@@ -849,7 +980,11 @@ func (s *Store) Save() error {
 	}
 	for _, id := range s.order {
 		if t := s.tasks[id]; t != nil {
-			snap.Tasks = append(snap.Tasks, t.Clone())
+			c := t.Clone()
+			// Bytes are marked on the way out, so the snapshot holds
+			// something JSON can carry and the task comes back unchanged.
+			c.Args = encodeArgs(c.Args)
+			snap.Tasks = append(snap.Tasks, c)
 		}
 	}
 	for _, id := range s.schedIDs {

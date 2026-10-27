@@ -55,6 +55,8 @@
     "idle_timeout_s": 120,
     "max_frame_bytes_per_conn": 67108864
   },
+  "max_task_batch": 64,
+  "max_queued_tasks": 256,
   "max_clock_skew_s": 300,
   "session_timeout_s": 300,
   "task_timeout_s": 300

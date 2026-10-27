@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import queue
@@ -35,6 +36,27 @@ from umbra_cli import crypto, handshake, netio, session, upk, wire, ws  # noqa: 
 # store.OfflineGrace in the Go server.
 OFFLINE_GRACE = 90
 
+# The size of one upload task when an artifact is pushed to an agent.  A
+# chunk travels inside a task batch, and the batch travels inside one frame,
+# so the chunk stays well below the frame budget.
+ARTIFACT_CHUNK = 256 * 1024
+
+# The task kinds the reference agent can run.
+#
+# The agent advertises this list in its handshake, exactly like the Rust
+# beacon does, so the server's capability check has something to work with:
+# a task kind that is not in the list is refused the same way it would be
+# refused against the real implant.
+AGENT_CAPS = [
+    "shell", "exec", "sysinfo", "recon", "pwd", "cwd", "ls", "tail", "hash",
+    "download", "cat", "upload", "ps", "proc.kill", "sleep", "exit", "kill",
+    "ping", "tunnel", "p2p", "bof", "ext", "inject", "creds", "token",
+    "privesc", "persist", "unpersist", "update", "registry", "screenshot",
+    "clipboard", "keylog", "keylog.file", "triage", "find", "netinfo",
+    "session.open", "session.input", "session.close", "vpn", "scan",
+    "resolve", "env", "touch",
+]
+
 
 def _substitute_output(args: Dict[str, Any], output: bytes) -> Dict[str, Any]:
     """Replace the {{output}} placeholder in the arguments of a stage."""
@@ -54,6 +76,58 @@ def _substitute_output(args: Dict[str, Any], output: bytes) -> Dict[str, Any]:
 
 def _now() -> int:
     return int(time.time())
+
+
+def _expand_scan_target(target: str, cap: int) -> List[str]:
+    """Expand a scan target into the addresses the scan walks.
+
+    The target is one IPv4 address or a CIDR block.  The expansion is done
+    by hand and the number of addresses is capped, so a /8 cannot turn into
+    sixteen million connect attempts.
+    """
+    try:
+        if "/" in target:
+            base, _, bits = target.partition("/")
+            network = ipaddress.ip_network(f"{base}/{bits}", strict=False)
+        else:
+            network = ipaddress.ip_network(f"{target}/32", strict=False)
+    except ValueError:
+        return []
+    start = int(network.network_address)
+    end = int(network.broadcast_address)
+    out: List[str] = []
+    for value in range(start, end + 1):
+        out.append(str(ipaddress.ip_address(value)))
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _parse_scan_ports(spec: str) -> List[int]:
+    """Parse a port list: "80", "80,443" or "8000-8100"."""
+    out: List[int] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            low, _, high = part.partition("-")
+            try:
+                first, last = int(low), int(high)
+            except ValueError:
+                continue
+            if last < first or last > 65535:
+                continue
+            out.extend(range(first, last + 1))
+        else:
+            try:
+                port = int(part)
+            except ValueError:
+                continue
+            if port > 65535:
+                continue
+            out.append(port)
+    return out[:256]
 
 
 def new_id(prefix: str) -> str:
@@ -308,6 +382,11 @@ class MockServer:
         # The extension store.  The test double keeps the blobs in memory; the
         # Go server keeps them on disk and verifies their signature.
         self.armory: Dict[str, Dict[str, Any]] = {}
+        # The server-side file store.  Like the armory, the test double keeps
+        # the blobs in memory; the Go server writes them under their digest.
+        self.artifacts: Dict[str, Dict[str, Any]] = {}
+        # The chunked uploads that have not been closed yet.
+        self.artifact_uploads: Dict[str, bytearray] = {}
         # The command namespace: saved commands the team shares.
         self.aliases: Dict[str, Dict[str, Any]] = {}
         self._install_default_armory()
@@ -673,6 +752,11 @@ class MockServer:
                     "transport": "tcp",
                     "addr": addr,
                     "state": "online",
+                    # The capability list is what the beacon said it can
+                    # do; the panic flag belongs to the operator, so it
+                    # survives a re-registration.
+                    "caps": list(meta.get("caps") or record.get("caps") or []),
+                    "panicked": bool(record.get("panicked", False)),
                     # The cadence the operator configured survives a
                     # re-registration: the beacon reconnects every cycle.
                     "sleep": record.get("sleep", self.sleep),
@@ -795,6 +879,26 @@ class MockServer:
         for task_id in failed:
             self.emit("task.timeout", task_id=task_id, data={})
         return failed
+
+    def _refusal(self, agent_id: str, kind: str) -> str:
+        """The reason a task must not be queued, or an empty string.
+
+        The checks live in one place, because every kind of task goes
+        through the same door: a burned agent refuses work, and an agent
+        that advertised its capabilities is never asked for anything else.
+        An agent that advertised nothing (an older beacon) may be asked for
+        everything, exactly as the Go server does.
+        """
+        with self._lock:
+            record = self.agents.get(agent_id)
+            if record is None:
+                return f"unknown agent {agent_id!r}"
+            if record.get("panicked"):
+                return f"agent {agent_id} was panicked and accepts no further work"
+            caps = list(record.get("caps") or [])
+        if caps and kind not in caps:
+            return f"agent {agent_id} does not support the task kind {kind!r}"
+        return ""
 
     def _queue_task(self, agent_id: str, kind: str,
                     task_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1048,6 +1152,15 @@ class MockServer:
         "operators.focus": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
+        # The server-side file store: reading it is harmless, filling it
+        # and pushing its contents to a host is an operator action.
+        "artifact.list": "viewer",
+        "artifact.get": "viewer",
+        "artifact.put": "operator",
+        "artifact.remove": "operator",
+        "artifact.push": "operator",
+        # A panic ends the engagement on the target side.
+        "agents.panic": "admin",
         "pivot.list": "viewer",
         "pivot.open": "operator",
         "pivot.close": "operator",
@@ -1085,6 +1198,14 @@ class MockServer:
             with self._lock:
                 agent = self.agents.get(sc["agent_id"])
                 if agent is None:
+                    continue
+                # A burned agent takes no new work, and an agent that
+                # advertised its capabilities is never asked for a kind it
+                # cannot run: the same rule the Go server applies.
+                if agent.get("panicked"):
+                    continue
+                caps = list(agent.get("caps") or [])
+                if caps and sc["kind"] not in caps:
                     continue
                 task = {
                     "id": new_id("t"),
@@ -1348,24 +1469,13 @@ class MockServer:
 
         if cmd == "task.submit":
             agent_id = str(args.get("id", ""))
-            with self._lock:
-                if agent_id not in self.agents:
-                    return fail("unknown agent")
-                task = {
-                    "id": new_id("t"),
-                    "agent_id": agent_id,
-                    "kind": str(args.get("kind", "")),
-                    "args": args.get("args") or {},
-                    "state": "queued",
-                    "code": 0,
-                    "out": b"",
-                    "err": "",
-                    "created": _now(),
-                }
-                self.tasks[task["id"]] = task
-                task_id, kind = task["id"], task["kind"]
-            self.emit("task.queued", agent_id, task_id=task_id, data={"kind": kind})
-            return ok({"task_id": task_id, "agent_id": agent_id, "state": "queued"})
+            kind = str(args.get("kind", ""))
+            problem = self._refusal(agent_id, kind)
+            if problem:
+                return fail(problem)
+            task = self._queue_task(agent_id, kind, args.get("args") or {})
+            return ok({"task_id": task["id"], "agent_id": agent_id,
+                       "state": task["state"]})
 
         if cmd == "task.get":
             with self._lock:
@@ -1396,32 +1506,29 @@ class MockServer:
                 return fail("task.bulk: no targets")
             targets = _select_agents(self.agents, args)
             rows = []
-            with self._lock:
-                for rec in targets:
-                    task = {
-                        "id": new_id("t"),
-                        "agent_id": rec["id"],
-                        "kind": kind,
-                        "args": task_args,
-                        "state": "queued",
-                        "code": 0,
-                        "out": b"",
-                        "err": "",
-                        "created": _now(),
-                    }
-                    self.tasks[task["id"]] = task
-                    rows.append({"agent_id": rec["id"], "task_id": task["id"],
-                                 "state": "queued"})
-            for row in rows:
-                self.emit("task.queued", row["agent_id"],
-                          task_id=row["task_id"], data={"kind": kind})
-            return ok({"tasks": rows, "count": len(rows)})
+            skipped = []
+            for rec in targets:
+                agent_id = rec["id"]
+                # A host that cannot run the kind (or that was burned) is
+                # reported instead of being queued a task it will refuse.
+                problem = self._refusal(agent_id, kind)
+                if problem:
+                    skipped.append({"agent_id": agent_id, "err": problem})
+                    continue
+                task = self._queue_task(agent_id, kind, task_args)
+                rows.append({"agent_id": agent_id, "task_id": task["id"],
+                             "state": "queued"})
+            return ok({"tasks": rows, "count": len(rows), "skipped": skipped})
 
         if cmd == "task.chain":
             agent_id = str(args.get("id", "") or "")
             stages = args.get("stages") or []
             if not isinstance(stages, list) or not stages:
                 return fail("task.chain: a chain needs at least one stage")
+            first = stages[0]
+            problem = self._refusal(agent_id, str(first.get("kind", "")))
+            if problem:
+                return fail(problem)
             with self._lock:
                 if agent_id not in self.agents:
                     return fail(f"unknown agent {agent_id!r}")
@@ -1432,7 +1539,6 @@ class MockServer:
                     "stages": [dict(stage) for stage in stages],
                     "stage": 0,
                 }
-            first = stages[0]
             task = self._queue_task(agent_id, str(first.get("kind", "")),
                                     first.get("args") or {})
             with self._lock:
@@ -1586,22 +1692,194 @@ class MockServer:
 
         if cmd in ("agents.kill", "agents.exit"):
             agent_id = str(args.get("id", ""))
+            problem = self._refusal(agent_id, "exit")
+            if problem:
+                return fail(problem)
+            task = self._queue_task(agent_id, "exit", {})
+            return ok({"task_id": task["id"], "agent_id": agent_id})
+
+        if cmd == "agents.panic":
+            # The end of an engagement on the target side: the beacon is
+            # told to exit and the agent refuses every further task.
+            #
+            # "all" is the deliberate override of the selection rule and it
+            # reaches the agents that are asleep as well: the exit command
+            # is delivered on their next check-in.
+            if bool(args.get("all")):
+                with self._lock:
+                    targets = [dict(rec) for rec in self.agents.values()]
+            else:
+                if not _has_targets(args):
+                    return fail("agents.panic: no targets")
+                targets = _select_agents(self.agents, args)
+            if not targets:
+                return fail("agents.panic: no agents matched")
+            panicked = []
+            skipped = []
+            for rec in targets:
+                agent_id = rec.get("id", "")
+                if rec.get("panicked"):
+                    skipped.append(agent_id)
+                    continue
+                problem = self._refusal(agent_id, "exit")
+                if problem:
+                    skipped.append(agent_id)
+                    continue
+                # The exit command goes first: a burned agent refuses every
+                # task, including the one that shuts it down.
+                self._queue_task(agent_id, "exit", {})
+                with self._lock:
+                    record = self.agents.get(agent_id)
+                    if record is not None:
+                        record["panicked"] = True
+                panicked.append(agent_id)
+            self.emit("agent.panic", data={"agents": panicked})
+            return ok({"panicked": panicked, "count": len(panicked),
+                       "skipped": skipped})
+
+        # ---- the server-side file store ----------------------------------
+        if cmd == "artifact.list":
+            with self._lock:
+                rows = [
+                    {
+                        "name": rec["name"],
+                        "sha256": rec["sha256"],
+                        "size": rec["size"],
+                        "created": rec["created"],
+                        "updated": rec["updated"],
+                    }
+                    for rec in sorted(self.artifacts.values(),
+                                      key=lambda r: r["name"])
+                ]
+            return ok({"artifacts": rows, "count": len(rows)})
+
+        if cmd == "artifact.put":
+            # The upload is chunked: the frames are bounded, so a file
+            # arrives as a series of appends at increasing offsets.  The last
+            # chunk carries "eof" and is the one that writes the blob.
+            name = str(args.get("name", ""))
+            if not name:
+                return fail("artifact.put needs a name")
+            data = args.get("data") or b""
+            if isinstance(data, str):
+                data = data.encode()
+            data = bytes(data)
+            offset = int(args.get("offset", 0) or 0)
+            eof = bool(args.get("eof", False))
+            with self._lock:
+                if offset == 0:
+                    # The first chunk starts a fresh upload and replaces
+                    # whatever was stored under the name before.
+                    self.artifact_uploads[name] = bytearray()
+                buf = self.artifact_uploads.get(name)
+                if buf is None:
+                    return fail("artifact.put: the upload does not start at offset 0")
+                if offset != len(buf):
+                    return fail("artifact.put: the chunk is out of order")
+                buf.extend(data)
+                received = len(buf)
+                if not eof:
+                    return ok({"name": name, "received": received, "eof": False})
+                blob = bytes(buf)
+                self.artifact_uploads.pop(name, None)
+                digest = hashlib.sha256(blob).hexdigest()
+                now = _now()
+                old = self.artifacts.get(name)
+                self.artifacts[name] = {
+                    "name": name,
+                    "sha256": digest,
+                    "size": len(blob),
+                    "created": old["created"] if old else now,
+                    "updated": now,
+                    "data": blob,
+                }
+            return ok({"name": name, "sha256": digest, "size": len(blob),
+                       "eof": True})
+
+        if cmd == "artifact.get":
+            name = str(args.get("name", ""))
+            offset = int(args.get("offset", 0) or 0)
+            limit = int(args.get("limit", 0) or 0)
+            with self._lock:
+                rec = self.artifacts.get(name)
+                if rec is None:
+                    return fail("artifact.get: no such artifact")
+                blob = rec["data"]
+                size = len(blob)
+                start = max(0, min(offset, size))
+                end = size if limit <= 0 else min(size, start + limit)
+                chunk = blob[start:end]
+                row = {
+                    "name": name,
+                    "sha256": rec["sha256"],
+                    "size": size,
+                    "offset": start,
+                    "eof": end >= size,
+                    "data": chunk,
+                }
+            return ok(row)
+
+        if cmd == "artifact.remove":
+            name = str(args.get("name", ""))
+            with self._lock:
+                if name not in self.artifacts:
+                    return fail("artifact.remove: no such artifact")
+                del self.artifacts[name]
+                self.artifact_uploads.pop(name, None)
+            return ok({"name": name, "removed": True})
+
+        if cmd == "artifact.push":
+            # The file travels to the agent as a chain of upload tasks, one
+            # per chunk: the beacon writes them one after the other and only
+            # the last one closes the file and reports its digest.
+            name = str(args.get("name", ""))
+            agent_id = str(args.get("agent", "") or args.get("id", "") or "")
+            if not name:
+                return fail("artifact.push needs a name")
+            if not agent_id:
+                return fail("artifact.push needs an agent")
+            with self._lock:
+                rec = self.artifacts.get(name)
+                if rec is None:
+                    return fail("artifact.push: no such artifact")
+                blob = rec["data"]
+                digest = rec["sha256"]
+                size = rec["size"]
+            problem = self._refusal(agent_id, "upload")
+            if problem:
+                return fail(problem)
+            path = str(args.get("path", "") or "") or f"/tmp/{name}"
+            stages = []
+            for off in range(0, max(len(blob), 1), ARTIFACT_CHUNK):
+                end = min(off + ARTIFACT_CHUNK, len(blob))
+                stages.append({
+                    "kind": "upload",
+                    "args": {
+                        "path": path,
+                        "offset": off,
+                        "data": blob[off:end],
+                        "eof": end >= len(blob),
+                    },
+                })
+            chain_id = new_id("chain")
             with self._lock:
                 if agent_id not in self.agents:
-                    return fail("unknown agent")
-                task = {
-                    "id": new_id("t"),
+                    return fail(f"unknown agent {agent_id!r}")
+                self.chains[chain_id] = {
+                    "id": chain_id,
                     "agent_id": agent_id,
-                    "kind": "exit",
-                    "args": {},
-                    "state": "queued",
-                    "code": 0,
-                    "out": b"",
-                    "err": "",
-                    "created": _now(),
+                    "stages": stages,
+                    "stage": 0,
                 }
-                self.tasks[task["id"]] = task
-            return ok({"task_id": task["id"], "agent_id": agent_id})
+            task = self._queue_task(agent_id, "upload", stages[0]["args"])
+            with self._lock:
+                task["chain_id"] = chain_id
+                task["stage"] = 0
+            self.emit("chain.started", agent_id, task_id=task["id"],
+                      data={"chain": chain_id, "stages": len(stages)})
+            return ok({"chain_id": chain_id, "task_id": task["id"],
+                       "agent_id": agent_id, "stages": len(stages),
+                       "size": size, "sha256": digest, "path": path})
 
         # ---- pivoting ---------------------------------------------------
         if cmd == "pivot.list":
@@ -2005,6 +2283,9 @@ class FakeAgent(threading.Thread):
             "pid": os.getpid(),
             "integ": "medium",
             "ver": "py-ref",
+            # The capability list travels in the handshake: the server
+            # refuses to queue a task the agent cannot run.
+            "caps": list(AGENT_CAPS),
         }
         self.execute_shell = execute_shell
         self.interval = interval
@@ -2271,6 +2552,76 @@ class FakeAgent(threading.Thread):
         if kind == "netinfo":
             report = "source: mock\ninterfaces:\n  lo 127.0.0.1\n"
             return 0, report.encode(), "", {}
+        if kind == "env":
+            # The environment of the implant: the paths and the credentials
+            # the operator is looking for.
+            needle = str(args.get("filter", "") or "").lower()
+            rows = []
+            for key, value in sorted(os.environ.items()):
+                if needle and needle not in key.lower():
+                    continue
+                rows.append(f"{key}={value}")
+            report = "\n".join(rows) + ("\n" if rows else "")
+            return 0, report.encode(), "", {"count": len(rows)}
+        if kind == "resolve":
+            host = str(args.get("host", ""))
+            if not host:
+                return 1, b"", "resolve requires args.host", {}
+            try:
+                infos = socket.getaddrinfo(host, None)
+            except OSError as exc:
+                return 1, b"", f"resolve {host}: {exc}", {}
+            seen: List[str] = []
+            for info in infos:
+                address = info[4][0]
+                if address not in seen:
+                    seen.append(address)
+            report = "\n".join(seen) + ("\n" if seen else "")
+            return 0, report.encode(), "", {"count": len(seen)}
+        if kind == "touch":
+            path = str(args.get("path", ""))
+            if not path:
+                return 1, b"", "touch requires args.path", {}
+            existed = os.path.exists(path)
+            try:
+                with open(path, "ab"):
+                    pass
+                os.utime(path, None)
+                size = os.path.getsize(path)
+            except OSError as exc:
+                return 1, b"", f"touch {path}: {exc}", {}
+            verb = "touched" if existed else "created"
+            return 0, f"{verb} {path} ({size} bytes)\n".encode(), "", {"size": size}
+        if kind == "scan":
+            # A plain TCP connect: the hosts that answer are reported.
+            target = str(args.get("host", ""))
+            if not target:
+                return 1, b"", "scan requires args.host", {}
+            timeout = float(args.get("timeout_ms", 800) or 800) / 1000.0
+            max_hosts = int(args.get("max_hosts", 256) or 256)
+            hosts = _expand_scan_target(target, max_hosts)
+            if not hosts:
+                return 1, b"", f"scan {target}: bad target", {}
+            ports = _parse_scan_ports(str(args.get("ports", "22,80,443") or ""))
+            if not ports:
+                return 1, b"", "scan: no ports", {}
+            open_ports: List[str] = []
+            probes = 0
+            for host in hosts:
+                for port in ports:
+                    probes += 1
+                    try:
+                        with socket.create_connection((host, port), timeout=timeout):
+                            open_ports.append(f"{host}:{port} open")
+                    except OSError:
+                        pass
+            report = "\n".join(open_ports)
+            if report:
+                report += "\n"
+            report += (f"{len(open_ports)} open of {probes} probes "
+                       f"({len(hosts)} hosts x {len(ports)} ports)\n")
+            return 0, report.encode(), "", {"open": len(open_ports),
+                                            "probes": probes}
         if kind in ("vpn", "p2p"):
             return 0, f"the mock agent cannot run {kind!r}\n".encode(), "", {}
         return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}

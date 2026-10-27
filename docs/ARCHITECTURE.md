@@ -332,6 +332,18 @@ undo, the self-update with a verified digest, the key logger that
 streams or writes into a file, and the list of servers the beacon falls
 back to.
 
+Done (capabilities, the file store and the end of an engagement): every
+beacon says in its handshake which task kinds it implements, and the server
+refuses to queue anything else (`store.Agent.Caps`, `hub.SubmitTask`); the
+team server keeps files in a content-addressed store
+(`server/internal/artifact`, `artifact.*`), and a push is a chain of
+ordinary `upload` tasks, so it is verifiable in the same way as a manual
+upload; `agents.panic` queues the exit and burns the agent, so a server
+that is being torn down cannot feed it more work; the per-agent queue is
+capped (`max_task_batch`, `max_queued_tasks`), so a backlog cannot grow
+without a bound; and the binary arguments of a queued task survive a
+restart of the team server instead of turning into a base64 string.
+
 Medium term: S3 and SMTP transports, named-pipe pivots, a Go implant,
 per-operator ACLs on the chat, and a sandbox for task modules that are not
 plain memory.

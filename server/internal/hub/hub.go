@@ -405,12 +405,32 @@ func (h *Hub) Agents() []map[string]any {
 }
 
 // SubmitTask queues a command for an agent.
+//
+// Three things are checked before a task is accepted:
+//
+//   - the agent must still be usable: a panicked agent refuses everything;
+//   - the agent must be able to run the kind: a beacon that advertised its
+//     capabilities is never asked for something it does not implement;
+//   - the agent's queue must have room: a backlog that keeps growing is
+//     work that is stale by the time it is delivered.
 func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task, error) {
-	if _, ok := h.store.Agent(agentID); !ok {
+	agent, ok := h.store.Agent(agentID)
+	if !ok {
 		return nil, ErrNoSuchAgent
 	}
 	if kind == "" {
 		return nil, errors.New("task kind required")
+	}
+	if agent.Panicked {
+		return nil, fmt.Errorf("agent %s was panicked and accepts no further work", agentID)
+	}
+	if !agentSupports(agent.Caps, kind) {
+		return nil, fmt.Errorf("agent %s does not support the task kind %q", agentID, kind)
+	}
+	if limit := h.maxQueuedTasks(); limit > 0 {
+		if queued := h.store.QueuedCount(agentID); queued >= limit {
+			return nil, fmt.Errorf("agent %s already has %d queued tasks (limit %d)", agentID, queued, limit)
+		}
 	}
 	t := h.store.AddTask(&store.Task{AgentID: agentID, Kind: kind, Args: args})
 	h.store.SaveAsync()
@@ -418,6 +438,53 @@ func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task
 		Data: map[string]any{"kind": t.Kind, "args": t.Args}})
 	h.log.Info("task queued", "agent", agentID, "task", t.ID, "kind", t.Kind)
 	return t, nil
+}
+
+// agentSupports reports whether an agent may be asked for a task kind.
+//
+// An empty capability list means the beacon never said: it predates the
+// handshake extension, and the server lets it try everything.
+func agentSupports(caps []string, kind string) bool {
+	if len(caps) == 0 {
+		return true
+	}
+	return containsString(caps, kind)
+}
+
+// maxQueuedTasks is the backlog one agent may carry.
+func (h *Hub) maxQueuedTasks() int {
+	if h.cfg == nil {
+		return config.DefaultMaxQueuedTasks
+	}
+	return h.cfg.MaxQueuedTasks()
+}
+
+// Panic marks an agent as burned.
+//
+// The agent was already told to exit; from here on it refuses every task,
+// so an engagement that is being torn down cannot grow new work while the
+// operator is still cleaning up.
+func (h *Hub) Panic(agentID string) bool {
+	if !h.store.SetPanicked(agentID, true) {
+		return false
+	}
+	h.store.SaveAsync()
+	h.Emit(Event{Kind: "agent.panic", AgentID: agentID, Data: map[string]any{"agent": agentID}})
+	h.log.Warn("agent panicked", "agent", agentID)
+	return true
+}
+
+// Unpanic gives a burned agent its queue back.
+//
+// The exit task that was queued for it is gone, so the operator has to
+// push work again; that is the price of a clean restart.
+func (h *Hub) Unpanic(agentID string) bool {
+	if !h.store.SetPanicked(agentID, false) {
+		return false
+	}
+	h.store.SaveAsync()
+	h.Emit(Event{Kind: "agent.unpanic", AgentID: agentID, Data: map[string]any{"agent": agentID}})
+	return true
 }
 
 // SubmitChain queues the first stage of a multi-stage task.
@@ -1255,5 +1322,9 @@ func agentData(a *store.Agent) map[string]any {
 		"tags":       a.Tags,
 		"first_seen": a.FirstSeen.Format(time.RFC3339),
 		"last_seen":  a.LastSeen.Format(time.RFC3339),
+		// The capabilities tell the operator what the host can do before
+		// a task is queued; an empty list means "it never said".
+		"caps":     a.Caps,
+		"panicked": a.Panicked,
 	}
 }

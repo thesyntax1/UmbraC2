@@ -42,6 +42,9 @@ object SysInfo {
         "integ" to Upk.str(if (uid() == 0) "system" else "app"),
         "ver" to Upk.str(version),
         "family" to Upk.str("android"),
+        // The capability list travels with the handshake: the server refuses
+        // to queue a task the phone cannot run.
+        "caps" to Upk.Arr(TaskRunner.CAPABILITIES.map { Upk.str(it) }),
     )
 
     /** Human readable report for the `sysinfo` task. */
