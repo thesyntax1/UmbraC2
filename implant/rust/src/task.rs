@@ -338,10 +338,13 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             Err(e) => Outcome::err(1, format!("cwd: {e}")),
         },
         "ls" => {
+            // The directory as the operator wants to see it: what it is,
+            // who may touch it, how big it is and when it changed.
             let path = args.str_or("path", ".");
             let mut out = String::new();
             match std::fs::read_dir(&path) {
                 Ok(entries) => {
+                    let mut rows: Vec<(String, u64, String, String, String)> = Vec::new();
                     for entry in entries.flatten() {
                         let meta = entry.metadata().ok();
                         let kind = match meta {
@@ -349,15 +352,70 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
                             _ => "-",
                         };
                         let size = meta.map(|m| m.len()).unwrap_or(0);
-                        out.push_str(&format!(
-                            "{kind} {:>12} {}\n",
+                        let modified = meta
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| crate::proc::format_ts(d.as_secs() as i64))
+                            .unwrap_or_else(|| "-".to_string());
+                        rows.push((
+                            kind.to_string(),
                             size,
-                            entry.path().display()
+                            modified,
+                            mode_of(&entry.path()),
+                            entry.path().display().to_string(),
+                        ));
+                    }
+                    rows.sort();
+                    for (kind, size, modified, mode, name) in rows {
+                        out.push_str(&format!(
+                            "{kind} {mode} {size:>12} {modified} {name}\n"
                         ));
                     }
                     Outcome::ok(out.into_bytes())
                 }
                 Err(e) => Outcome::err(1, format!("ls {path}: {e}")),
+            }
+        }
+        "tail" => {
+            // The last lines of a file: what a log says right now.
+            let path = args.str_or("path", "");
+            let lines = args.u64_or("lines", 20) as usize;
+            match std::fs::File::open(&path) {
+                Ok(file) => {
+                    let reader = std::io::BufReader::new(file);
+                    let mut kept: std::collections::VecDeque<String> =
+                        std::collections::VecDeque::new();
+                    for line in reader.lines() {
+                        let line = match line {
+                            Ok(l) => l,
+                            Err(_) => break,
+                        };
+                        if kept.len() >= lines {
+                            kept.pop_front();
+                        }
+                        kept.push_back(line);
+                    }
+                    let mut out = String::new();
+                    for line in kept {
+                        out.push_str(&line);
+                        out.push('\n');
+                    }
+                    Outcome::ok(out.into_bytes())
+                }
+                Err(e) => Outcome::err(1, format!("tail {path}: {e}")),
+            }
+        }
+        "hash" => {
+            // The digest of a file, so the operator can compare it with a
+            // published one.
+            let path = args.str_or("path", "");
+            match std::fs::read(&path) {
+                Ok(data) => {
+                    let digest = crate::config::hex_encode(&crate::crypto::sha256(&data));
+                    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    Outcome::ok(format!("sha256 {digest} {size} {path}\n").into_bytes())
+                }
+                Err(e) => Outcome::err(1, format!("hash {path}: {e}")),
             }
         }
         "download" | "cat" => {
@@ -488,6 +546,34 @@ fn recon_report() -> String {
     out.push_str(&crate::evade::report());
     out.push_str(&crate::domain::report());
     out
+}
+
+/// The permission bits of a path, the way `ls -l` shows them.
+#[cfg(unix)]
+fn mode_of(path: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return "---------".to_string(),
+    };
+    let mode = meta.permissions().mode();
+    // The nine bits of the mode, in the order `ls -l` shows them.
+    let bits = [
+        (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
+        (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),
+        (0o004, 'r'), (0o002, 'w'), (0o001, 'x'),
+    ];
+    let mut out = String::new();
+    for (bit, letter) in bits {
+        out.push(if mode & bit != 0 { letter } else { '-' });
+    }
+    out
+}
+
+/// The permission bits of a path, the way `ls -l` shows them.
+#[cfg(not(unix))]
+fn mode_of(_path: &std::path::Path) -> String {
+    "---------".to_string()
 }
 
 /// Open a pivot callback session.

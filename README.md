@@ -59,6 +59,7 @@ Added on top of that core:
 | The open sessions | The interactive sessions that are running, with the moment they last said something | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
 | The end of it | One command clears the record of the engagement: the agents, the tasks and the schedules | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
 | The process table | The pid, the parent, the user, the start time and the command line of every process, read from the operating system | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
+| The files | A directory with its permissions and timestamps, the end of a log, the digest of a file | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

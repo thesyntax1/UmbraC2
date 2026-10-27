@@ -3318,3 +3318,60 @@ def test_the_engagement_can_be_wiped_at_the_end():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_the_console_tails_and_hashes_a_file_on_an_agent():
+    """A log is read from its end, and a file is compared by its digest."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-tail-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-tail")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        with open("/tmp/umbra-tail.log", "w", encoding="utf-8") as fh:
+            fh.write("".join("line %d\n" % n for n in range(50)))
+
+        task_id = client.submit("agent-tail", "tail",
+                                {"path": "/tmp/umbra-tail.log", "lines": 3})
+        deadline = time.time() + 10
+        out = b""
+        while time.time() < deadline:
+            task = client.task(task_id)
+            if task.get("state") in ("done", "failed"):
+                out = task.get("out", b"")
+                break
+            time.sleep(0.1)
+        text = out.decode() if isinstance(out, bytes) else str(out)
+        assert "line 49" in text, text
+        assert "line 46" not in text, text
+
+        task_id = client.submit("agent-tail", "hash", {"path": "/tmp/umbra-tail.log"})
+        deadline = time.time() + 10
+        out = b""
+        while time.time() < deadline:
+            task = client.task(task_id)
+            if task.get("state") in ("done", "failed"):
+                out = task.get("out", b"")
+                break
+            time.sleep(0.1)
+        text = out.decode() if isinstance(out, bytes) else str(out)
+        assert text.startswith("sha256 "), text
+        import hashlib
+        with open("/tmp/umbra-tail.log", "rb") as fh:
+            want = hashlib.sha256(fh.read()).hexdigest()
+        assert want in text, text
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        os.unlink("/tmp/umbra-tail.log")

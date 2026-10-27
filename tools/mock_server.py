@@ -2230,6 +2230,26 @@ class FakeAgent(threading.Thread):
                     break
             report = f"scanned files, {len(hits)} hits\n" + "\n".join(hits)
             return 0, report.encode(), "", {}
+        if kind == "tail":
+            path = str(args.get("path", ""))
+            try:
+                with open(path, "r", errors="replace") as fh:
+                    lines = fh.read().splitlines()
+            except OSError as exc:
+                return 1, b"", f"tail {path}: {exc}", {}
+            count = int(args.get("lines", 20) or 20)
+            kept = lines[-count:] if count > 0 else []
+            return 0, ("\n".join(kept) + "\n").encode(), "", {}
+        if kind == "hash":
+            import hashlib
+            path = str(args.get("path", ""))
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+            except OSError as exc:
+                return 1, b"", f"hash {path}: {exc}", {}
+            digest = hashlib.sha256(data).hexdigest()
+            return 0, f"sha256 {digest} {len(data)} {path}\n".encode(), "", {}
         if kind == "proc.kill":
             pid = int(args.get("pid", 0) or 0)
             name = str(args.get("name", ""))

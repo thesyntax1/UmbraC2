@@ -1448,6 +1448,19 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--wait", action="store_true")
     update.add_argument("--timeout", type=float, default=120.0)
 
+    tail_cmd = sub.add_parser("tail", help="the last lines of a file on an agent")
+    tail_cmd.add_argument("agent")
+    tail_cmd.add_argument("path")
+    tail_cmd.add_argument("--lines", type=int, default=20)
+    tail_cmd.add_argument("--wait", action="store_true")
+    tail_cmd.add_argument("--timeout", type=float, default=120.0)
+
+    hash_cmd = sub.add_parser("hash", help="the SHA-256 of a file on an agent")
+    hash_cmd.add_argument("agent")
+    hash_cmd.add_argument("path")
+    hash_cmd.add_argument("--wait", action="store_true")
+    hash_cmd.add_argument("--timeout", type=float, default=120.0)
+
     procs = sub.add_parser("proc", help="the process table of an agent")
     procs.add_argument("agent")
     procs.add_argument("--wait", action="store_true")
@@ -2027,6 +2040,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "update":
             run_task_and_wait(client, console, args.agent, "update",
                               {"path": args.path, "sha256": args.sha256},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "tail":
+            run_task_and_wait(client, console, args.agent, "tail",
+                              {"path": args.path, "lines": args.lines},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "hash":
+            run_task_and_wait(client, console, args.agent, "hash",
+                              {"path": args.path},
                               args.wait, args.timeout, args.json)
         elif args.cmd == "proc":
             run_task_and_wait(client, console, args.agent, "ps", {},

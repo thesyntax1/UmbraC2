@@ -357,6 +357,8 @@ Task kinds understood by the reference implants:
 | `find` | `path`, `name` (glob or substring), `content`, `max` | the files that match |
 | `netinfo` | — | the interfaces, the routes, the neighbours and the resolvers |
 | `proc.kill` | `pid` or `name` | terminates a process of the host |
+| `tail` | `path`, optional `lines` | the last lines of a file |
+| `hash` | `path` | the SHA-256 of a file |
 | `persist` | optional `method` | installs the implant so it survives a reboot |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 

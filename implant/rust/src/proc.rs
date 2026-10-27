@@ -95,7 +95,7 @@ pub fn kill(args: &Value) -> Result<String, String> {
 }
 
 /// Format a Unix timestamp as a readable time.
-fn format_ts(ts: i64) -> String {
+pub fn format_ts(ts: i64) -> String {
     let days = ts.div_euclid(86400);
     let secs = ts.rem_euclid(86400);
     let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
