@@ -905,6 +905,22 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name, "kind": kind})
 
 	// ---- team synchronisation ----------------------------------------
+	case "sessions.list":
+		// The interactive sessions that are open, per agent.
+		sessions := s.Hub.Sessions()
+		rows := make([]any, 0, len(sessions))
+		for _, sess := range sessions {
+			rows = append(rows, upk.Map{
+				"id":       sess.ID,
+				"agent_id": sess.AgentID,
+				"task_id":  sess.TaskID,
+				"opened":   sess.Opened.Unix(),
+				"last":     sess.Last.Unix(),
+				"bytes":    int64(sess.Bytes),
+			})
+		}
+		return reply(upk.Map{"sessions": rows, "count": len(rows)})
+
 	case "events.list":
 		// The journal of the recent events.  A console that was not
 		// watching asks for the events after the last one it saw.

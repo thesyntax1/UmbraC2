@@ -282,6 +282,8 @@ class MockServer:
         # watching asks for the ones it missed.
         self.events: List[Dict[str, Any]] = []
         self._event_seq = 0
+        # The interactive sessions that are open, per agent.
+        self.open_sessions: Dict[str, Dict[str, Any]] = {}
         # Mirrors the Go server's audit trail: one entry per operator RPC.
         self.audit_entries: List[Dict[str, Any]] = []
         self.chat: List[Dict[str, Any]] = []
@@ -880,6 +882,19 @@ class MockServer:
                 if meta:
                     task["meta"] = meta
                 size = len(task["out"])
+                # A streamed chunk may carry the id of the session it
+                # belongs to: the server keeps the list of open sessions.
+                session_id = str(meta.get("session", "") or "")
+                if session_id:
+                    agent_id = str(task.get("agent_id", ""))
+                    entry = self.open_sessions.get(session_id)
+                    if entry is None:
+                        entry = {"id": session_id, "agent_id": agent_id,
+                                 "task_id": task_id, "opened": _now(),
+                                 "last": _now(), "bytes": 0}
+                        self.open_sessions[session_id] = entry
+                    entry["last"] = _now()
+                    entry["bytes"] = int(entry["bytes"]) + len(out)
             data: Dict[str, Any] = {"size": size}
             if meta:
                 data["meta"] = meta
@@ -898,6 +913,11 @@ class MockServer:
                 task["state"] = "done" if int(msg.get("code", 0)) == 0 else "failed"
             task["code"] = int(msg.get("code", 0))
             task["out"] = out
+            # A finished "session.close" means the session is gone.
+            if str(task.get("kind", "")) == "session.close":
+                session_id = str((task.get("args") or {}).get("session", "") or "")
+                if session_id:
+                    self.open_sessions.pop(session_id, None)
             task["err"] = str(msg.get("err", ""))
             meta = {
                 k: v
@@ -1011,6 +1031,7 @@ class MockServer:
         "task.cancel": "operator",
         "task.retry": "operator",
         "events.list": "viewer",
+        "sessions.list": "viewer",
         "task.bulk": "operator",
         "task.chain": "operator",
         "alerts.list": "viewer",
@@ -1495,6 +1516,12 @@ class MockServer:
                         queue.append(task_id)
             self.emit("task.cancelled", agent_id, task_id=task_id, data={"was": previous})
             return ok({"task_id": task_id, "state": "cancelled"})
+
+        if cmd == "sessions.list":
+            with self._lock:
+                rows = [dict(row) for row in self.open_sessions.values()]
+            rows.sort(key=lambda row: row.get("last", 0), reverse=True)
+            return ok({"sessions": rows, "count": len(rows)})
 
         if cmd == "events.list":
             after = int(args.get("after", 0) or 0)

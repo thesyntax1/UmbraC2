@@ -368,6 +368,17 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    def sessions(self) -> List[Dict[str, Any]]:
+        """The interactive sessions that are open, per agent.
+
+        The list is what an operator wants when a session went quiet:
+        which sessions are still there and when they last said something.
+        """
+        res = self.rpc("sessions.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list((res.data or {}).get("sessions", []))
+
     def events(self, after: int = 0, limit: int = 100) -> Dict[str, Any]:
         """The recent events of the server's journal.
 

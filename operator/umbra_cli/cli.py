@@ -445,6 +445,18 @@ def watch_events(client: OperatorClient, limit: int = 0, as_json: bool = False) 
         return 0
 
 
+def print_sessions(rows: List[Dict[str, Any]]) -> None:
+    """Print the interactive sessions that are open."""
+    if not rows:
+        print("no session is open")
+        return
+    print(table(
+        ["session", "agent", "task", "bytes", "last"],
+        [[row.get("id", ""), row.get("agent_id", ""), row.get("task_id", ""),
+          str(row.get("bytes", 0)), fmt_ts(row.get("last", 0))]
+         for row in rows]))
+
+
 def print_events(rows: List[Dict[str, Any]]) -> None:
     """Print a list of journal events, oldest first."""
     if not rows:
@@ -665,6 +677,8 @@ class Console:
                     return True
                 res = self.client.retry(rest[0])
                 print(f"queued {res.get('task_id')} (the task {rest[0]} is retried)")
+            elif cmd == "sessions":
+                print_sessions(self.client.sessions())
             elif cmd == "events":
                 limit = int(rest[0]) if rest else 50
                 print_events(self.client.events(0, limit).get("events") or [])
@@ -938,6 +952,7 @@ def print_help() -> None:
   update <path>             replace the running implant
   browse [path]             list the files under a path
   report [agent]            write a report about an agent
+  sessions                  the interactive sessions that are open
   events [limit]            the recent events of the server's journal
   watch [on|off]            toggle automatic result printing
   sleep <secs> [jitter%]    change the beacon interval
@@ -1338,6 +1353,7 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("task_id")
 
     watch = sub.add_parser("watch", help="stream events until interrupted")
+    sessions_cmd = sub.add_parser("sessions", help="the interactive sessions that are open")
     events_cmd = sub.add_parser("events", help="the recent events of the server's journal")
     events_cmd.add_argument("--limit", type=int, default=50)
     events_cmd.add_argument("--after", type=int, default=0)
@@ -1778,6 +1794,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 emit({"task_id": args.task_id, "state": "cancelled"})
             else:
                 print(f"cancelled {args.task_id}")
+        elif args.cmd == "sessions":
+            rows = client.sessions()
+            if args.json:
+                emit(rows)
+            else:
+                print_sessions(rows)
         elif args.cmd == "events":
             res = client.events(args.after, args.limit)
             rows = res.get("events") or []

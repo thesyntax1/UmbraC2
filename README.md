@@ -56,6 +56,7 @@ Added on top of that core:
 | The way a team works | A command namespace of saved commands, a failed task that can be run again, and a report of an agent for the handover | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The journal | Every event is numbered and kept, so a console that was not watching can still ask what it missed | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The dashboard | A web view of the inventory, the tasks and the event stream, on the same tokens as the console | [docs/OPERATIONS.md](docs/OPERATIONS.md#3c-the-dashboard) |
+| The open sessions | The interactive sessions that are running, with the moment they last said something | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
 | The process table | The pid, the parent, the user, the start time and the command line of every process, read from the operating system | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):

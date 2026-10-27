@@ -34,6 +34,10 @@ type Event struct {
 	TaskID  string         `json:"task_id,omitempty"`
 	Data    map[string]any `json:"data,omitempty"`
 	At      time.Time      `json:"at"`
+	// Seq is the number of the event in the server's journal.  A console
+	// that reconnects asks for the events after the last one it saw, and
+	// nothing that happened in between is lost.
+	Seq uint64 `json:"seq,omitempty"`
 	// From and To address an event to one console. An empty To broadcasts, as
 	// everything did before directed chat existed.
 	From string `json:"from,omitempty"`
@@ -95,6 +99,56 @@ type Live struct {
 	Since     time.Time
 }
 
+// journalSize is how many events the journal keeps.
+const journalSize = 2000
+
+// journal is the ring buffer of the recent events.
+//
+// The live stream is for the consoles that are watching; the journal is
+// for the ones that were not.  A console that was closed for a minute can
+// ask for what it missed instead of guessing.
+type journal struct {
+	mu     sync.Mutex
+	events []Event
+	seq    uint64
+}
+
+func newJournal(size int) *journal {
+	return &journal{events: make([]Event, 0, size)}
+}
+
+// append stores an event and gives it its number.
+func (j *journal) append(ev Event) Event {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.seq++
+	ev.Seq = j.seq
+	j.events = append(j.events, ev)
+	if len(j.events) > cap(j.events) {
+		// The oldest events fall off the front.
+		copy(j.events, j.events[len(j.events)-cap(j.events):])
+		j.events = j.events[:cap(j.events)]
+	}
+	return ev
+}
+
+// after returns the events with a number greater than the given one,
+// newest last, at most limit of them.
+func (j *journal) after(seq uint64, limit int) []Event {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]Event, 0, len(j.events))
+	for _, ev := range j.events {
+		if ev.Seq > seq {
+			out = append(out, ev)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
 // Hub owns all shared state.
 type Hub struct {
 	cfg   *config.Config
@@ -132,6 +186,11 @@ type Hub struct {
 	// journal keeps the recent events, so a console that was not watching
 	// can still ask what it missed.
 	journal *journal
+
+	// sessions holds the interactive sessions that are open, per agent.
+	// The beacon reports the id of a session with every chunk it streams,
+	// so the server always knows which sessions exist.
+	sessions map[string]map[string]*Session
 }
 
 // ChainStage is one step of a multi-stage task.
@@ -222,6 +281,8 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Hub {
 		chains:     make(map[string]*Chain),
 		chainTasks: make(map[string]string),
 		alertCool:  make(map[string]time.Time),
+		journal:    newJournal(journalSize),
+		sessions:   make(map[string]map[string]*Session),
 		started:    time.Now().UTC(),
 	}
 }
@@ -532,6 +593,10 @@ func (h *Hub) AppendTaskOutput(agentID, taskID string, chunk []byte, meta map[st
 	if len(meta) > 0 {
 		data["meta"] = meta
 	}
+	// A streamed chunk may carry the id of the session it belongs to.
+	if session, _ := meta["session"].(string); session != "" {
+		h.noteSession(agentID, taskID, session, len(chunk))
+	}
 	h.Emit(Event{Kind: "task.output", AgentID: agentID, TaskID: taskID, Data: data})
 }
 
@@ -545,6 +610,12 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	data := map[string]any{
 		"code": t.Code, "state": t.State, "err": t.Err,
 		"size": len(t.Output), "kind": t.Kind,
+	}
+	// A finished "session.close" means the session is gone.
+	if t.Kind == "session.close" {
+		if session, _ := t.Args["session"].(string); session != "" {
+			h.closeSession(agentID, session)
+		}
 	}
 	// Events carry a bounded preview, not the payload: a file chunk would
 	// otherwise be re-sent to every watching console (and re-encoded) while the
@@ -845,6 +916,8 @@ func (h *Hub) Emit(ev Event) {
 	if ev.At.IsZero() {
 		ev.At = time.Now().UTC()
 	}
+	// The journal keeps the event even when no console is watching.
+	ev = h.journal.append(ev)
 	h.mu.Lock()
 	for _, op := range h.subs {
 		if !ev.forOperator(op.Name) {
@@ -861,6 +934,70 @@ func (h *Hub) Emit(ev Event) {
 	// The alert rules run outside the lock: they read the store and may emit
 	// an event of their own.
 	h.checkAlerts(ev)
+}
+
+// Session is one interactive session of an agent.
+type Session struct {
+	ID      string    `json:"id"`
+	AgentID string    `json:"agent_id"`
+	TaskID  string    `json:"task_id"`
+	Opened  time.Time `json:"opened"`
+	Last    time.Time `json:"last"`
+	Bytes   int       `json:"bytes"`
+}
+
+// Sessions returns the open sessions of the agents.
+//
+// The list is what an operator wants when a session went quiet: which
+// sessions are still there, and when they last said something.
+func (h *Hub) Sessions() []Session {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Session, 0, len(h.sessions))
+	for _, sessions := range h.sessions {
+		for _, s := range sessions {
+			out = append(out, *s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })
+	return out
+}
+
+// noteSession remembers an open session of an agent.
+func (h *Hub) noteSession(agentID, taskID, session string, bytes int) {
+	if session == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sessions, ok := h.sessions[agentID]
+	if !ok {
+		sessions = make(map[string]*Session)
+		h.sessions[agentID] = sessions
+	}
+	now := time.Now().UTC()
+	entry, ok := sessions[session]
+	if !ok {
+		entry = &Session{ID: session, AgentID: agentID, TaskID: taskID, Opened: now}
+		sessions[session] = entry
+	}
+	entry.Last = now
+	entry.Bytes += bytes
+}
+
+// closeSession forgets a session that was closed.
+func (h *Hub) closeSession(agentID, session string) {
+	if session == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if sessions, ok := h.sessions[agentID]; ok {
+		delete(sessions, session)
+		if len(sessions) == 0 {
+			delete(h.sessions, agentID)
+		}
+	}
 }
 
 // Journal returns the recent events, oldest first.
@@ -1006,7 +1143,7 @@ func (h *Hub) StartScheduler(ctx context.Context) {
 			case now := <-ticker.C:
 				h.fireDueSchedules(now.UTC())
 			case <-sweep.C:
-				h.SweepTasks(h.cfg.Server.TaskTimeout())
+				h.SweepTasks(h.cfg.TaskTimeout())
 			}
 		}
 	}()

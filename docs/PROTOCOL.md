@@ -434,6 +434,7 @@ Operator RPC commands, with the minimum role each requires:
 | `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
 | `task.retry` | operator | run a finished task again as a new task |
 | `events.list` | viewer | the recent events of the journal (`after`, `limit`) |
+| `sessions.list` | viewer | the interactive sessions that are open, per agent |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |

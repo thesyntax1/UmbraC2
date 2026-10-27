@@ -3231,3 +3231,57 @@ def test_the_dashboard_serves_what_the_documentation_promises():
     # The token is the operator's, and it is compared in constant time.
     assert "equalSecret" in go
     assert "Authorization" in go
+
+
+def test_the_open_sessions_are_listed():
+    """The operator sees which sessions are open and when they last spoke."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"operator-token-sessions-01234"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-sessions")
+    agent.start()
+    client = OperatorClient(server.address, token, "alice", timeout=15.0)
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        assert client.sessions() == []
+
+        opened = client.open_session("agent-sessions", "")
+        task_id = opened["task_id"]
+        session_id = ""
+        deadline = time.time() + 10
+        while time.time() < deadline and not session_id:
+            event = client.next_event(timeout=1.0)
+            if event is None:
+                continue
+            if event.get("kind") == "task.output" and event.get("task_id") == task_id:
+                meta = event.get("data", {}).get("meta", {}) or {}
+                session_id = str(meta.get("session", ""))
+
+        rows = client.sessions()
+        assert rows, "the open session is not listed"
+        row = rows[0]
+        assert row["id"] == session_id
+        assert row["agent_id"] == "agent-sessions"
+        assert row["task_id"] == task_id
+        assert row["last"] >= row["opened"]
+
+        # Closing the session takes it off the list.
+        client.close_session("agent-sessions", session_id)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if all(r["id"] != session_id for r in client.sessions()):
+                break
+            time.sleep(0.1)
+        assert all(r["id"] != session_id for r in client.sessions())
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

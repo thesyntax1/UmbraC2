@@ -148,6 +148,13 @@ session survives a re-connect, so it keeps working when the check-in
 interval is a minute; the beacon holds the connection open while a session is
 live, so the output arrives as it happens instead of at the next check-in.
 
+The sessions that are open are listed on their own, so an operator who
+lost one can see that it is still there and when it last said something:
+
+```bash
+umbra sessions
+```
+
 ### A multi-stage task
 
 A chain runs several tasks one after the other, and the output of a stage
