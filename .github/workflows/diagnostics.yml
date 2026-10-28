@@ -26,10 +26,9 @@ jobs:
         working-directory: implant/rust
         run: |
           set +e
-          cargo test --all-targets 2>&1 | tee /tmp/rust.log
-          echo "----- diagnostics -----"
-          grep -E "^(error|error\[|warning: unused|test .* FAILED|failures:|test result:|thread)" /tmp/rust.log \
-            | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          cargo test --all-targets > /tmp/rust.log 2>&1
+          echo "exit: $?"
+          tail -120 /tmp/rust.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
   android:
@@ -55,10 +54,9 @@ jobs:
           UMBRA_AGENT_ID: ci-build
         run: |
           set +e
-          gradle --no-daemon assembleDebug 2>&1 | tee /tmp/android.log
-          echo "----- diagnostics -----"
-          grep -E "^(e: |.*error:|.*FAILURE:|.*What went wrong)" /tmp/android.log \
-            | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          gradle --no-daemon assembleDebug > /tmp/android.log 2>&1
+          echo "exit: $?"
+          tail -120 /tmp/android.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
   gofmt:
