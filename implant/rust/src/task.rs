@@ -1384,7 +1384,9 @@ fn run_module_as(args: &Value, forced: Option<&str>) -> Outcome {
             // module said about itself.
             let mut answer = Outcome::ok(outcome.material);
             if answer.out.is_empty() {
-                answer.out = outcome.report.into_bytes();
+                // The report is kept for the extra field below, so the
+                // bytes that become the output are a copy of it.
+                answer.out = outcome.report.clone().into_bytes();
             }
             answer.extra.push(("report", upk::s(&outcome.report)));
             answer.extra.push(("module", upk::s(&name)));
