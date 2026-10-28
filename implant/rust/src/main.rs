@@ -115,7 +115,7 @@ fn run() -> Result<(), String> {
             // The peer link is an extra road, not the only one: when it
             // cannot be established, the server carries the traffic.
             loop {
-                let target = format!("{host}:{port}");
+                let target = umbra_beacon::config::host_port(&host, port);
                 if let Err(e) = umbra_beacon::tunnel::connect_peer(
                     &host, port, &psk, &agent_id, verbose,
                 ) {

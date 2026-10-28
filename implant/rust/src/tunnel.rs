@@ -315,7 +315,7 @@ fn serve_stream(
     registry: Registry,
     verbose: bool,
 ) {
-    let target = match connect(&format!("{host}:{port}")) {
+    let target = match connect(&crate::config::host_port(&host, port)) {
         Ok(s) => s,
         Err(e) => {
             let value = upk::map(vec![
@@ -411,7 +411,7 @@ pub fn connect_peer(
     agent_id: &str,
     verbose: bool,
 ) -> Result<(), String> {
-    let mut stream = connect(&format!("{host}:{port}"))?;
+    let mut stream = connect(&crate::config::host_port(host, port))?;
     let (secret, pubkey) = crypto::x25519_keypair();
     let nonce = crypto::random_bytes(16);
     let hello = upk::map(vec![

@@ -189,6 +189,9 @@ def socks5_connect(conn: socket.socket, user: str = "", password: str = "") -> T
         atyp = request[3]
         if atyp == 0x01:
             host = socket.inet_ntoa(conn.recv(4))
+        elif atyp == 0x04:
+            # An IPv6 address: sixteen bytes, the way the protocol says.
+            host = socket.inet_ntop(socket.AF_INET6, conn.recv(16))
         elif atyp == 0x03:
             length = conn.recv(1)
             if not length:
@@ -208,10 +211,30 @@ def socks5_connect(conn: socket.socket, user: str = "", password: str = "") -> T
         return None, 0
 
 
+def _socks5_reply(rep: int, bind_host: str) -> bytes:
+    """The SOCKS5 answer: the code and the address of the listener.
+
+    The family of the listener is kept: a proxy that listens on the IPv6
+    loopback answers with an IPv6 address, so a client on an IPv6-only
+    network is not told about an address it cannot use.
+    """
+    try:
+        socket.inet_pton(socket.AF_INET6, bind_host)
+        return bytes([0x05, rep, 0x00, 0x04]) + socket.inet_pton(socket.AF_INET6, bind_host) + b"\x00\x00"
+    except OSError:
+        pass
+    return bytes([0x05, rep, 0x00, 0x01]) + b"\x00" * 4 + b"\x00\x00"
+
+
 def _is_ip(host: str) -> bool:
     """Whether a target is an address and not a name."""
     try:
         socket.inet_aton(host)
+        return True
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
         return True
     except OSError:
         return False
@@ -899,6 +922,13 @@ class MockServer:
         target_host, target_port = host, port
         counter = {"up": 0, "down": 0}
         state = "closed"
+        # The address of the listener: the SOCKS5 answer carries it, and
+        # its family is the family of the listener.
+        listen_host = ""
+        try:
+            listen_host = conn.getsockname()[0] if conn else ""
+        except OSError:
+            listen_host = ""
         try:
             if mode == "forward":
                 target_host, target_port = host, port
@@ -916,7 +946,7 @@ class MockServer:
                 if mode == "socks":
                     try:
                         # 0x02 is "not allowed by ruleset".
-                        conn.sendall(b"\x05\x02\x00\x01" + b"\x00" * 6)
+                        conn.sendall(_socks5_reply(0x02, listen_host))
                     except OSError:
                         pass
                 return
@@ -934,7 +964,7 @@ class MockServer:
                 self._pivot_note(client, target_host, target_port, 0, 0, "refused")
                 if mode == "socks":
                     try:
-                        conn.sendall(b"\x05\x01\x00\x01" + b"\x00" * 6)
+                        conn.sendall(_socks5_reply(0x01, listen_host))
                     except OSError:
                         pass
                 return
@@ -947,7 +977,7 @@ class MockServer:
             if mode == "socks":
                 # The target is reachable: the client may talk to it.
                 try:
-                    conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
+                    conn.sendall(_socks5_reply(0x00, listen_host))
                 except OSError:
                     return
 
@@ -2612,9 +2642,13 @@ class MockServer:
             # arrives, so a forward outlives the session it was opened
             # with.
             lhost, _, lport = listen.rpartition(":")
+            lhost = lhost.strip("[]")
             if loopback:
-                lhost = "127.0.0.1"
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                # The family of the listener is kept: an IPv6 listener
+                # stays on the IPv6 loopback.
+                lhost = "::1" if ":" in lhost else "127.0.0.1"
+            family = socket.AF_INET6 if ":" in lhost else socket.AF_INET
+            listener = socket.socket(family, socket.SOCK_STREAM)
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 listener.bind((lhost or "127.0.0.1", int(lport or 0)))
@@ -2623,7 +2657,12 @@ class MockServer:
                 return fail(f"pivot.open: listen {listen}: {exc}")
             listener.listen(16)
             bound = listener.getsockname()
-            address = f"{bound[0]}:{bound[1]}"
+            # An IPv6 address needs brackets, the way the Go server
+            # renders it: "host:port" is not enough for "::1".
+            if ":" in str(bound[0]):
+                address = f"[{bound[0]}]:{bound[1]}"
+            else:
+                address = f"{bound[0]}:{bound[1]}"
             tunnel_id = new_id("tun")
             with self._lock:
                 self.pivots[tunnel_id] = {

@@ -753,6 +753,33 @@ and listing the reach needs only a viewer.
 The permanent proxy and the pivots opened from the console share the same
 deny list and the same accounting.
 
+### IPv6
+
+A pivot may be opened on an IPv6 address, and a proxy may run on one:
+
+```
+umbra pivot open <agent> --mode socks --listen "[::1]:1080"
+```
+
+| What | IPv4 | IPv6 |
+|---|---|---|
+| a listener | `127.0.0.1:1080` | `[::1]:1080` |
+| a target | `10.0.0.5:443` | `[2001:db8::5]:443` |
+| a scan | `10.0.0.0/24` | `2001:db8::/120` |
+| the SOCKS5 answer | `ATYP 0x01`, 4 bytes | `ATYP 0x04`, 16 bytes |
+
+Three rules keep it working:
+
+* an IPv6 literal is written in brackets, so `host:port` is never ambiguous;
+* a listener that is forced onto the loopback keeps its family: an IPv6
+  listener moves to `::1`, not to `127.0.0.1`;
+* the answer of the SOCKS5 proxy carries the address of the listener, in the
+  family of the listener.
+
+The same rules hold in the implant: the transports dial an IPv6 literal
+(`[::1]:8443`), the scan expands an IPv6 block, and the peer link binds an
+IPv6 socket when it is asked for one.
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)

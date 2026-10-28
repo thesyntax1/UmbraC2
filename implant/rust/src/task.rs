@@ -812,7 +812,7 @@ fn scan(target: &str, ports: &str, timeout_ms: u64, max_hosts: usize) -> Outcome
         Ok(p) => p,
         Err(e) => return Outcome::err(1, e),
     };
-    let mut probes: Vec<(std::net::Ipv4Addr, u16)> =
+    let mut probes: Vec<(std::net::IpAddr, u16)> =
         Vec::with_capacity(hosts.len() * port_list.len());
     for host in &hosts {
         for port in &port_list {
@@ -822,7 +822,7 @@ fn scan(target: &str, ports: &str, timeout_ms: u64, max_hosts: usize) -> Outcome
     let total = probes.len();
     let timeout = Duration::from_millis(timeout_ms.max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let found: std::sync::Mutex<Vec<(std::net::Ipv4Addr, u16)>> = std::sync::Mutex::new(Vec::new());
+    let found: std::sync::Mutex<Vec<(std::net::IpAddr, u16)>> = std::sync::Mutex::new(Vec::new());
     // A scan is a fan-out: a handful of threads keeps it quick without
     // opening hundreds of connections from one host at the same time.
     let workers = std::cmp::min(16, std::cmp::max(1, total));
@@ -834,7 +834,7 @@ fn scan(target: &str, ports: &str, timeout_ms: u64, max_hosts: usize) -> Outcome
                     break;
                 }
                 let (ip, port) = probes[idx];
-                let addr = std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port);
+                let addr = std::net::SocketAddr::new(ip, port);
                 if std::net::TcpStream::connect_timeout(&addr, timeout).is_ok() {
                     if let Ok(mut guard) = found.lock() {
                         guard.push((ip, port));
@@ -850,7 +850,7 @@ fn scan(target: &str, ports: &str, timeout_ms: u64, max_hosts: usize) -> Outcome
     open.sort();
     let mut out = String::new();
     for (ip, port) in &open {
-        out.push_str(&format!("{ip}:{port} open\n"));
+        out.push_str(&format!("{} open\n", host_port(ip, *port)));
     }
     out.push_str(&format!(
         "{} open of {} probes ({} hosts x {} ports)\n",
@@ -864,16 +864,31 @@ fn scan(target: &str, ports: &str, timeout_ms: u64, max_hosts: usize) -> Outcome
         .with("probes", upk::u(total as u64))
 }
 
+/// The address of a host and a port.
+///
+/// An IPv6 literal needs brackets: "::1" and 80 become "[::1]:80".
+fn host_port(ip: &std::net::IpAddr, port: u16) -> String {
+    match ip {
+        std::net::IpAddr::V4(v4) => format!("{v4}:{port}"),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+    }
+}
+
 /// Expand a scan target into the addresses the scan walks.
 ///
-/// The target is one IPv4 address or a CIDR block.  The expansion is done by
-/// hand -- no dependency -- and the number of addresses is capped, so a /8
-/// cannot turn into sixteen million connect attempts.
-fn expand_target(target: &str, cap: usize) -> Result<Vec<std::net::Ipv4Addr>, String> {
+/// The target is one address or a CIDR block, in IPv4 or in IPv6.  The
+/// expansion is done by hand -- no dependency -- and the number of
+/// addresses is capped, so a /8 or a /64 cannot turn into millions of
+/// connect attempts.
+fn expand_target(target: &str, cap: usize) -> Result<Vec<std::net::IpAddr>, String> {
     let (addr_part, bits_part) = match target.split_once('/') {
         Some((a, b)) => (a, Some(b)),
         None => (target, None),
     };
+    // An IPv6 literal has colons in it: the block is walked in 128 bits.
+    if addr_part.contains(':') {
+        return expand_target_v6(addr_part, bits_part, target, cap);
+    }
     let base = match addr_part.parse::<std::net::Ipv4Addr>() {
         Ok(ip) => u32::from(ip),
         Err(e) => return Err(format!("scan {addr_part}: {e}")),
@@ -892,7 +907,44 @@ fn expand_target(target: &str, cap: usize) -> Result<Vec<std::net::Ipv4Addr>, St
     let count = std::cmp::min(total, std::cmp::max(1, cap) as u64) as usize;
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
-        out.push(std::net::Ipv4Addr::from(network.wrapping_add(i as u32)));
+        out.push(std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+            network.wrapping_add(i as u32),
+        )));
+    }
+    Ok(out)
+}
+
+/// Expand an IPv6 target into the addresses the scan walks.
+///
+/// The block is walked in 128 bits and the number of addresses is capped,
+/// so a /64 does not turn into eighteen quintillion connect attempts.
+fn expand_target_v6(
+    addr_part: &str,
+    bits_part: Option<&str>,
+    target: &str,
+    cap: usize,
+) -> Result<Vec<std::net::IpAddr>, String> {
+    let base = match addr_part.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => u128::from(ip),
+        Err(e) => return Err(format!("scan {addr_part}: {e}")),
+    };
+    let bits: u32 = match bits_part {
+        Some(b) => match b.parse::<u32>() {
+            Ok(v) if v <= 128 => v,
+            Ok(_) => return Err(format!("scan {target}: the prefix length is out of range")),
+            Err(e) => return Err(format!("scan {target}: {e}")),
+        },
+        None => 128,
+    };
+    let mask: u128 = if bits == 0 { 0 } else { u128::MAX << (128 - bits) };
+    let network = base & mask;
+    let total: u128 = 1u128 << (128 - bits);
+    let count = std::cmp::min(total, std::cmp::max(1, cap) as u128) as usize;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        out.push(std::net::IpAddr::V6(std::net::Ipv6Addr::from(
+            network.wrapping_add(i as u128),
+        )));
     }
     Ok(out)
 }
@@ -1099,7 +1151,7 @@ fn peer_link(ctx: &Context, args: &Value) -> Outcome {
             let bind = if host.is_empty() {
                 format!("0.0.0.0:{}", port)
             } else {
-                format!("{host}:{port}")
+                crate::config::host_port(&host, port as u16)
             };
             thread::spawn(move || {
                 if let Err(e) = crate::tunnel::listen_peer(
@@ -1244,6 +1296,29 @@ fn start_vpn(ctx: &Context, args: &Value) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scan_walks_an_ipv6_block() {
+        let hosts = expand_target("2001:db8::/126", 16).unwrap();
+        assert_eq!(hosts.len(), 4);
+        assert_eq!(hosts[0].to_string(), "2001:db8::");
+        assert_eq!(hosts[3].to_string(), "2001:db8::3");
+    }
+
+    #[test]
+    fn the_scan_walks_an_ipv4_block() {
+        let hosts = expand_target("10.0.0.0/30", 16).unwrap();
+        assert_eq!(hosts.len(), 4);
+        assert_eq!(hosts[3].to_string(), "10.0.0.3");
+    }
+
+    #[test]
+    fn an_ipv6_address_needs_brackets() {
+        let ip: std::net::IpAddr = "::1".parse().unwrap();
+        assert_eq!(host_port(&ip, 80), "[::1]:80");
+        let v4: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(host_port(&v4, 80), "10.0.0.1:80");
+    }
 
     #[test]
     fn shell_captures_output() {

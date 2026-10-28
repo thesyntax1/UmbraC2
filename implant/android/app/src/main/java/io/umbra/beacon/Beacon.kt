@@ -198,7 +198,7 @@ class Beacon(
                     "http" -> HttpChannel(config.httpBaseUrl, config.httpPath)
                     "tcp" -> TcpChannel(config.host, config.port).also {
                         it.connect()
-                        log("tcp connected ${config.host}:${config.port}")
+                        log("tcp connected ${Addr.hostPort(config.host, config.port)}")
                     }
                     else -> {
                         // A transport the phone cannot speak: the route

@@ -425,10 +425,33 @@ func (m *Manager) openChain(tun *tunnel, sess *tunnelSession, host string, port 
 	return opener.openStream(host, port)
 }
 
+// bindAddress returns the address of the listener of a tunnel.
+//
+// It is the address the SOCKS5 reply carries: a proxy that listens on the
+// IPv6 loopback answers with an IPv6 address.
+func bindAddress(tun *tunnel) string {
+	if tun == nil || tun.listener == nil {
+		return "0.0.0.0"
+	}
+	addr := tun.listener.Addr()
+	if addr == nil {
+		return "0.0.0.0"
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "0.0.0.0"
+	}
+	return host
+}
+
 // forceLoopback turns a bind address into one on the loopback.
 //
 // The port is kept, so a forward that was asked for a port keeps it; only
 // the address changes.  A bind address without a port gets a random one.
+//
+// The family is kept as well: a listener that was asked for an IPv6
+// address stays on the IPv6 loopback, because a server on an IPv6-only
+// network has no IPv4 at all.
 func forceLoopback(listen string) string {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -436,6 +459,9 @@ func forceLoopback(listen string) string {
 	}
 	if port == "" {
 		port = "0"
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return net.JoinHostPort("::1", port)
 	}
 	return net.JoinHostPort("127.0.0.1", port)
 }
@@ -651,7 +677,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 		m.log.Warn("pivot refused a denied target", "tunnel", tun.id,
 			"host", host, "port", port, "client", client)
 		if tun.mode == ModeSOCKS {
-			_ = socks5Reply(conn, socks5NotAllowed, "0.0.0.0", 0)
+			_ = socks5Reply(conn, socks5NotAllowed, bindAddress(tun), 0)
 		}
 		m.noteConnection(client, host, port, 0, 0, "denied")
 		m.hub.Emit(hub.Event{Kind: "pivot.denied", AgentID: tun.agentID,
@@ -670,7 +696,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 	if err != nil {
 		m.log.Warn("pivot has no session", "tunnel", tun.id, "err", err)
 		if tun.mode == ModeSOCKS {
-			_ = socks5Reply(conn, socks5GeneralFailure, "0.0.0.0", 0)
+			_ = socks5Reply(conn, socks5GeneralFailure, bindAddress(tun), 0)
 		}
 		m.noteConnection(client, host, port, 0, 0, "no session")
 		return
@@ -680,7 +706,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 	if err != nil {
 		m.log.Warn("pivot stream failed", "tunnel", tun.id, "host", host, "err", err)
 		if tun.mode == ModeSOCKS {
-			_ = socks5Reply(conn, 0x01, "0.0.0.0", 0)
+			_ = socks5Reply(conn, 0x01, bindAddress(tun), 0)
 		}
 		m.hub.Emit(hub.Event{Kind: "pivot.error", AgentID: tun.agentID, Data: map[string]any{
 			"tunnel": tun.id, "host": host, "port": int64(port), "err": err.Error(),
@@ -693,7 +719,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 	defer stream.Close()
 
 	if tun.mode == ModeSOCKS {
-		if err := socks5Reply(conn, 0x00, "0.0.0.0", 0); err != nil {
+		if err := socks5Reply(conn, 0x00, bindAddress(tun), 0); err != nil {
 			return
 		}
 	}

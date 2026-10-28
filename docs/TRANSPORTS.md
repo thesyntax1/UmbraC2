@@ -244,7 +244,27 @@ off.
 | the operator console may be remote | mutual TLS |
 | a lot of traffic through a middlebox | HTTP or WebSocket with padding |
 
-## 10. What is deliberately not here
+## 10. IPv6
+
+Every transport dials a host and a port, and the family of the host is
+carried by the address itself:
+
+| the beacon is configured with | it dials |
+|---|---|
+| `10.0.0.5` and `8443` | `10.0.0.5:8443` |
+| `2001:db8::5` and `8443` | `[2001:db8::5]:8443` |
+| `[2001:db8::5]` and `8443` | `[2001:db8::5]:8443` |
+
+The `Host:` header of the HTTP and the WebSocket transport carries the
+same shape, so a proxy on the path sees a legal request. The DNS
+transport is unaffected: a name is resolved by the resolver, and the
+resolver may answer with an AAAA record.
+
+A beacon that is told to listen (the peer link) binds an IPv6 socket when
+it is given an IPv6 address, and the address it reports to the server is
+bracketed, so the server can chain a pivot through it without guessing.
+
+## 11. What is deliberately not here
 
 * **No TLS in the beacon.** The Rust beacon carries no TLS stack: it would
   add a dependency and a few kilobytes to every implant. The operator

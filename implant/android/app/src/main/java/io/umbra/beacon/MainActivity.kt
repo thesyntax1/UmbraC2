@@ -44,7 +44,7 @@ class MainActivity : Activity() {
             text = if (cfg == null) {
                 "No configuration baked into this build (UMBRA_PSK missing)."
             } else {
-                "server   : ${cfg.host}:${cfg.port}\n" +
+                "server   : ${Addr.hostPort(cfg.host, cfg.port)}\n" +
                     "transport: ${cfg.transport}\n" +
                     "agent id : ${cfg.agentId}\n" +
                     "beacon   : ${cfg.sleepSec}s ± ${cfg.jitterPercent}%"

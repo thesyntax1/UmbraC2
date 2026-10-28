@@ -3011,6 +3011,115 @@ def test_the_websocket_transport_works_over_tls(tmp_path):
         server.stop()
 
 
+def _echo_server_v6() -> Tuple[socket.socket, threading.Thread, List[bytes]]:
+    """A tiny TCP echo server on the IPv6 loopback."""
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("::1", 0))
+    listener.listen(4)
+    seen: List[bytes] = []
+
+    def handle(conn: socket.socket) -> None:
+        """One connection at a time: the pivot opens a new one per stream."""
+        with conn:
+            while True:
+                try:
+                    data = conn.recv(4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                seen.append(data)
+                try:
+                    conn.sendall(data)
+                except OSError:
+                    break
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                break
+            handle(conn)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return listener, thread, seen
+
+
+def _socks5_connect_v6(proxy_host: str, proxy_port: int, host: str, port: int):
+    """Open a SOCKS5 tunnel to an IPv6 target.
+
+    The request carries the IPv6 address type, and the answer is read the
+    way the protocol says: the address type tells how many bytes follow.
+    """
+    conn = socket.create_connection((proxy_host, int(proxy_port)), timeout=10)
+    conn.sendall(b"\x05\x01\x00")
+    assert _recv_exact(conn, 2) == b"\x05\x00"
+    conn.sendall(b"\x05\x01\x00\x04" + socket.inet_pton(socket.AF_INET6, host)
+                 + int(port).to_bytes(2, "big"))
+    head = _recv_exact(conn, 4)
+    assert head[1] == 0x00, head
+    atyp = head[3]
+    if atyp == 0x01:
+        _recv_exact(conn, 4)
+    elif atyp == 0x04:
+        _recv_exact(conn, 16)
+    else:
+        _recv_exact(conn, 1)
+    _recv_exact(conn, 2)
+    return conn
+
+
+def test_the_pivot_reaches_an_ipv6_target():
+    """IPv6 everywhere: the proxy, the agent and the target all speak IPv6.
+
+    A network that has only IPv6 is a network the framework has to work
+    in: the SOCKS5 client asks for an IPv6 target, the answer carries the
+    family of the listener, and the bytes travel the whole way.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server_v6()
+    _, target_port = target.getsockname()[:2]
+
+    token = b"operator-token-ipv6-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-ipv6", interval=0.3)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        # The proxy listens on the IPv6 loopback: the address it reports
+        # is an IPv6 one.
+        tunnel = client.pivot_open("agent-ipv6", mode="socks", listen="[::1]:0")
+        assert tunnel["listen"].startswith("[::1]:"), tunnel["listen"]
+
+        listen = tunnel["listen"]
+        lhost, _, lport = listen.rpartition("]:")
+        conn = _socks5_connect_v6(lhost.lstrip("["), lport, "::1", target_port)
+        conn.sendall(b"ipv6")
+        assert conn.recv(64) == b"ipv6"
+        conn.close()
+        assert b"ipv6" in seen
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        target.close()
+
+
 def test_the_operator_can_tell_an_agent_which_transport_it_speaks():
     """The transport matrix: the operator knows the network of the target.
 

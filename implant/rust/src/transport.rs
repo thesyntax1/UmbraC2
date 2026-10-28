@@ -402,7 +402,7 @@ fn exchange(
     // The Host header is either the configured one (domain fronting) or
     // "host:port".
     let host = if host_header.is_empty() {
-        format!("{host}:{port}")
+        crate::config::host_port(host, port)
     } else {
         host_header.to_string()
     };

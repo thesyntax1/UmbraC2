@@ -152,6 +152,19 @@ pub struct Config {
     pub peer_listen: String,
 }
 
+/// The address of a host and a port.
+///
+/// An IPv6 literal needs brackets: "::1" and 80 become "[::1]:80".  The
+/// same shape is used in the Host header of the HTTP and the WebSocket
+/// transport, so a server on an IPv6-only network works the same way.
+pub fn host_port(host: &str, port: u16) -> String {
+    let host = host.trim();
+    if host.contains(':') && !host.starts_with('[') {
+        return format!("[{host}]:{port}");
+    }
+    format!("{host}:{port}")
+}
+
 fn pick(name: &str, compiled: &str) -> String {
     match env::var(name) {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),

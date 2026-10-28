@@ -84,7 +84,7 @@ class BeaconService : Service(), Beacon.Listener {
         val b = Beacon(cfg, this)
         beacon = b
         b.start()
-        notify("beacon running -> ${cfg.host}:${cfg.port}")
+        notify("beacon running -> ${Addr.hostPort(cfg.host, cfg.port)}")
     }
 
     private fun stopBeacon() {

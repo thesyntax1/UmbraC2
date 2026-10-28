@@ -1245,6 +1245,24 @@ to a common name); the umbra handshake still decides *what* the peer may do.
 The role in the HELLO picks the session: an agent gets a beacon session, an
 operator gets a control channel.  TLS 1.3 is the minimum.
 
+### 8.1 IPv6
+
+An address family is never guessed: the family of a peer, of a listener and
+of a target is carried by the address itself, and the implementations keep
+the two apart.
+
+| Place | Rule |
+|-------|------|
+| `host:port` | An IPv6 literal is bracketed: `[::1]:8443`. A host that contains a colon is an IPv6 literal, so `host:port` is split on the **last** colon and the left part is unwrapped from its brackets. |
+| `Host:` header | The value of the header is the address without the port for IPv6 (`[::1]`) and `host:port` for IPv4, exactly as RFC 7230 asks. |
+| SOCKS5 | The request carries the address type (`0x01` IPv4, `0x03` domain, `0x04` IPv6). The answer carries the address of the listener, in the family of the listener: a proxy on `[::1]` answers with `ATYP 0x04` and 16 bytes. |
+| Scan | A target is parsed as an address, not as a string: `10.0.0.0/24` and `2001:db8::/120` are both expanded, and the probe list is `[(address, port)]`. A block is capped by the caller's limit, and the expansion of a block is done in the 128-bit space. |
+| Listener | A listener that is asked for an IPv6 address binds an IPv6 socket and keeps the family when it is forced onto the loopback (`::1`, not `127.0.0.1`). |
+
+The transport, the pivot and the scan are the three places where an address
+travels from the operator to the host, and all three keep the family. A host
+on an IPv6-only network is reachable with the same commands.
+
 ## 9. Failure handling
 
 | Condition | Result |

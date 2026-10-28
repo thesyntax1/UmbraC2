@@ -173,7 +173,7 @@ object Peer {
             val session = Session(
                 Wire.SUITE_AES256_GCM, isServer = false, bootstrap = false, material = km, prk = prk,
             )
-            log("peer link open to $host:$port")
+            log("peer link open to ${Addr.hostPort(host, port)}")
             Tunnel.serveSession(session, input, output, log)
         } finally {
             try {
@@ -226,11 +226,12 @@ object Peer {
      */
     fun listenPeer(bind: String, psk: ByteArray, agentId: String, log: (String) -> Unit): String {
         val server = ServerSocket()
-        val parts = bind.split(":")
-        val port = if (parts.size > 1) parts[parts.size - 1].toIntOrNull() ?: 0 else 0
+        // The address may be an IPv6 literal in brackets: it is split
+        // apart by the same rule the other implementations use.
+        val (host, port) = Addr.splitHostPort(bind)
         server.reuseAddress = true
-        server.bind(InetSocketAddress(parts[0], port))
-        val address = server.localAddress.hostAddress + ":" + server.localPort
+        server.bind(InetSocketAddress(host, port))
+        val address = Addr.hostPort(server.localAddress.hostAddress, server.localPort)
         log("peer listener on $address")
         val thread = Thread({
             while (true) {

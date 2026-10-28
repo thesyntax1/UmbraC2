@@ -98,6 +98,29 @@ fn from_proc() -> Option<Network> {
             neighbours.push(format!("{} {}", parts[3], parts[0]));
         }
     }
+    // The IPv6 tables: a host on an IPv6-only network has its routes and
+    // its neighbours here, and nowhere else.
+    if let Ok(text) = fs::read_to_string("/proc/net/ipv6_route") {
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 10 {
+                continue;
+            }
+            routes.push(format!(
+                "ipv6 destination {} prefix {} gateway {}",
+                parts[0], parts[1], parts[4]
+            ));
+        }
+    }
+    if let Ok(text) = fs::read_to_string("/proc/net/ipv6_neigh") {
+        for line in text.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            neighbours.push(format!("{} {}", parts[4], parts[0]));
+        }
+    }
     let mut resolvers: Vec<String> = Vec::new();
     if let Ok(text) = fs::read_to_string("/etc/resolv.conf") {
         for line in text.lines() {

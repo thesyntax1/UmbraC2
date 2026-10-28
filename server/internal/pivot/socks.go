@@ -153,15 +153,25 @@ func socks5ReadTarget(conn net.Conn, atyp byte) (string, int, error) {
 	return host, port, nil
 }
 
-// socks5Reply writes a SOCKS5 reply with an IPv4 bind address.
+// socks5Reply writes a SOCKS5 reply with the bind address of the listener.
+//
+// The address family of the listener is kept: a proxy that listens on the
+// IPv6 loopback answers with an IPv6 address, so a client on an IPv6-only
+// network is not told about an address it cannot use.
 func socks5Reply(conn net.Conn, rep byte, bindAddr string, bindPort int) error {
 	ip := net.ParseIP(bindAddr)
-	if ip == nil || ip.To4() == nil {
-		ip = net.IPv4zero
+	buf := make([]byte, 0, 22)
+	if ip != nil && ip.To4() == nil {
+		// An IPv6 listener: the reply carries the 16 byte address.
+		buf = append(buf, socks5Version, rep, 0x00, socks5IPv6)
+		buf = append(buf, ip.To16()...)
+	} else {
+		if ip == nil {
+			ip = net.IPv4zero
+		}
+		buf = append(buf, socks5Version, rep, 0x00, socks5IPv4)
+		buf = append(buf, ip.To4()...)
 	}
-	buf := make([]byte, 0, 10)
-	buf = append(buf, socks5Version, rep, 0x00, socks5IPv4)
-	buf = append(buf, ip.To4()...)
 	var port [2]byte
 	binary.BigEndian.PutUint16(port[:], uint16(bindPort))
 	buf = append(buf, port[:]...)
