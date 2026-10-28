@@ -228,7 +228,7 @@ HELLO fields:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `v` | uint | protocol version, must be 1 |
+| `v` | uint | handshake version: 1 or 2 (see §5.1) |
 | `role` | uint | 1 = agent, 2 = operator |
 | `id` | str | agent identity or operator name (≤ 128 bytes) |
 | `pub` | bin[32] | client ephemeral X25519 public key |
@@ -237,8 +237,44 @@ HELLO fields:
 | `suite` | uint | offered AEAD suite |
 | `auth` | bin[32] | `hello_auth` |
 | `meta` | map | agents: `host, os, arch, user, pid, integ, ver`; operators: `client, ver` |
+| `caps` | list[str] | **version 2 only**: the task kinds the implant can run (§7.2f) |
+| `iver` | str | **version 2 only**: the version of the implant |
+| `abi` | uint | **version 2 only**: the module ABI the implant speaks (§7.2j) |
+| `plat` | map | **version 2 only**: the platform details: `os, arch, family` |
 
-HELLO_ACK fields: `v, pub, sn, sid, suite, auth, cfg{sleep,jitter}, name, meta`.
+HELLO_ACK fields: `v, pub, sn, sid, suite, auth, cfg{sleep,jitter}, name, meta`,
+plus, **in version 2 only**:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `abi` | uint | the module ABI the server speaks |
+| `compat` | list[uint] | the handshake versions the server accepts |
+| `limits` | map | the limits of the queue: `max_in_flight_per_agent`, `max_deliver_per_minute_per_agent`, `max_deliver_per_second`, `max_attempts` (§7.2o) |
+
+### 5.1 The handshake versions, and who speaks to whom
+
+The server speaks two handshake versions at the same time, and the answer
+is always in the version the peer asked for: an old beacon never sees a
+field it does not understand.
+
+| the HELLO says | the server accepts | the answer is | what the peer gets |
+|---|---|---|---|
+| `v = 1` | yes | `HELLO_ACK` with `v = 1` | the original shape: the policy, the server name and its version |
+| `v = 2` | yes | `HELLO_ACK` with `v = 2` | the same, plus the ABI, the accepted versions and the limits of the queue |
+| `v = 0` or `v ≥ 3` | no | — | the handshake is refused and the connection is closed |
+
+The capability list is the reason the second version exists: in the first
+version it travelled inside the metadata, and a metadata map is the wrong
+place for a list the server has to read before anything else.  A version 1
+beacon keeps the list in the metadata, and the server reads it from there
+when the field is missing — the two versions interoperate in both
+directions.
+
+The frame layer is versioned separately: a beacon that speaks the version 2
+handshake still uses the same frames, and a frame it does not know is
+ignored.  The only new frame is `HEARTBEAT` (§7.2p), and a server that
+receives one from a beacon that never heard of it still answers it, because
+the frame type is the only thing that decides what a frame means.
 
 Server-side validation order: decrypt → marker → upk → version → role ↔ key
 binding (an operator token only authenticates the identity it was issued for;
@@ -344,6 +380,7 @@ All bodies are upk maps. Types are stable wire constants.
 | `0x1A` | TUNNEL_OPEN | either | `{stream, op, host?, port?, ok?, err?}` — pivoting (§7.3) |
 | `0x1B` | TUNNEL_DATA | either | `{stream, data}` — payload bytes of one pivot stream |
 | `0x1C` | TUNNEL_CLOSE | either | `{stream, reason?}` — one pivot stream ended |
+| `0x1D` | HEARTBEAT | agent → server | `{v, iver, abi, busy, up}` — the cheap signal of a beacon that is alive between two check-ins (§7.2p) |
 | `0x1E` | PADDING | either | `{data}` — random bytes, ignored by the receiver; used to shape traffic |
 | `0x1F` | ERROR | either | `{code, msg}` — informational; the session stays up and the server emits a `beacon.error` operator event (message clipped to 512 bytes) |
 | `0x20` | OP_REQUEST | operator → server | `{rid, cmd, args}` |
@@ -1243,6 +1280,34 @@ The counters of all of this are served in the Prometheus text format at
 `/metrics` of the dashboard listener: the depth of the queue, the latency
 histogram, the rate of the check-ins, the rate of the failures, the mix of
 the transports and the bytes that moved.
+
+### 7.2p The heartbeat
+
+A check-in is expensive: it carries the whole inventory, and the beacon
+may be minutes apart.  The heartbeat (`0x1D`) is the small frame a beacon
+sends in between, and it answers one question: *is the host there, and how
+busy is it?*
+
+The body is a map:
+
+| key | type | meaning |
+|---|---|---|
+| `v` | uint | the version of the heartbeat body (1 today) |
+| `iver` | str | the version of the implant |
+| `abi` | uint | the module ABI the implant speaks |
+| `busy` | uint | how many tasks the implant was carrying |
+| `up` | uint | how long the implant has been running, in seconds |
+
+The server records it (the inventory shows `heartbeat`, `busy`,
+`implant_version` and `abi`) and emits an `agent.heartbeat` event with
+the same fields.  Nothing else happens: the heartbeat asks for no work and
+carries no inventory, so a beacon may send as many of them as it likes.
+
+**The one rule.**  A heartbeat is sent *after* the `TASK_BATCH` of its
+cycle, never between the `CHECKIN` and the batch.  The server may rotate
+the session keys right after the check-in (§6), and a frame that is sent
+in between is sealed with the old keys — the server cannot read it, and
+the session is over.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

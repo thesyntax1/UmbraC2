@@ -184,6 +184,28 @@ one pass over the store, one pass over the counters, and a histogram of
 the latency of the finished tasks.  The dashboard serves them in the
 Prometheus text format.
 
+### The versions of the protocol
+
+The wire is versioned in two places, and both of them are answered the
+same way: the server speaks every version it knows and answers in the
+version the peer asked for.
+
+The **handshake** carries a version.  The first version had nothing but
+the metadata; the second version moved the capability list out of the
+metadata and into a field of its own, and added the version of the
+implant, the module ABI and the platform details.  The server accepts
+both, and the answer is in the version the peer asked for — an old
+beacon never sees a field it does not understand.
+
+The **frames** are versioned by their type.  The only new one is the
+heartbeat (`0x1D`): the small frame a beacon sends between two check-ins
+so the operator can tell a host that is busy from a host that is gone.
+
+The versions are pinned in `contracts/vectors.json`: the frame bytes, the
+handshake bodies and the list of the fields each version carries.  The
+checker compares the constants of the four implementations, and the tests
+compare the bytes.
+
 ### Concurrency and safety
 
 * one goroutine per connection, no shared mutable message state;

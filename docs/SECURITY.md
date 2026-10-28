@@ -307,6 +307,35 @@ operator: a console that queues a thousand tasks occupies the queue, and
 the operator's own rate limit (`rate limited` in a response) is what
 stops a single console from looping.
 
+## 3.13 The versions of the protocol
+
+The handshake version is not a security boundary, and it is worth saying
+so plainly: a version 2 beacon is not more trustworthy than a version 1
+beacon.  The version decides which fields travel, not who is allowed in.
+
+What the versions do buy:
+
+* **the capability list is a field of its own.**  The server reads it
+  before it looks at anything else, and it is the list it uses to refuse
+  work the host cannot run.  In the first version it was buried in the
+  metadata, where a change of the metadata could have changed the reach
+  of a host;
+* **the module ABI is named.**  A module built for another ABI is refused
+  by the host, and the server knows what the beacon understands;
+* **the answer is in the version the peer asked for.**  A beacon is never
+  shown a field it does not understand, so a new server cannot break an
+  old beacon by accident.
+
+The heartbeat is a signal, not a channel: it carries the version of the
+implant, the module ABI, how much work the host is carrying and its
+uptime.  It asks for nothing and it carries no material, so it cannot
+be used to move data out of a host.
+
+**The rule about the keys.**  A heartbeat is sent after the batch of its
+cycle, never between the check-in and the batch: the server may rotate
+the session keys right after the check-in, and a frame that is sealed with
+the old keys cannot be read.
+
 ## 4. Secret handling
 
 * Secrets come from environment variables or `0600` files, never from the JSON

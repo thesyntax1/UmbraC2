@@ -33,8 +33,22 @@ object Wire {
     const val MSG_TUNNEL_OPEN = 0x1A.toByte()
     const val MSG_TUNNEL_DATA = 0x1B.toByte()
     const val MSG_TUNNEL_CLOSE = 0x1C.toByte()
+    // The cheap signal of a beacon that is alive but between two check-ins.
+    const val MSG_HEARTBEAT = 0x1D.toByte()
     const val MSG_PADDING = 0x1E.toByte()
     const val MSG_ERROR = 0x1F.toByte()
+
+    /**
+     * The newest handshake version this build speaks.
+     *
+     * The server accepts every version down to 1 and answers in the version
+     * the peer asked for, so an old beacon never sees a field it does not
+     * understand.  The matrix is in docs/PROTOCOL.md.
+     */
+    const val HELLO_VERSION = 2
+
+    /** The module ABI version this build speaks. */
+    const val ABI_VERSION = 1
 
     const val MARKER_HELLO = 0x01.toByte()
     const val MARKER_HELLO_ACK = 0x02.toByte()

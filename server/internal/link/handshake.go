@@ -35,7 +35,27 @@ type HelloInfo struct {
 	KeyName   string // which keyring entry authenticated the peer
 	ClientIP  string
 	SessionID []byte // 128-bit session id handed to the peer in HELLO_ACK
+
+	// The fields of the second version of the handshake.
+	//
+	// A beacon that speaks the first version leaves them empty; the
+	// server answers in the version the peer asked for, so an old beacon
+	// never sees a field it does not understand.
+	Version        int
+	Caps           []string
+	ImplantVersion string
+	ABI            int
+	Platform       map[string]any
 }
+
+// helloVersions are the handshake versions this server speaks, newest
+// first.
+//
+// The server accepts every version in this list and answers in the
+// version the peer asked for.  The matrix is in docs/PROTOCOL.md.
+var helloVersions = []int{int(wire.HelloVersion), 1}
+
+
 
 // candidate is one (suite, key) pair the server is willing to try.
 type candidate struct {
@@ -154,7 +174,7 @@ func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAdd
 	}
 	sleep, jitter := cfg.Server.Beacon.Sleep, cfg.Server.Beacon.Jitter
 	ack := upk.Map{
-		"v":     1,
+		"v":     info.Version,
 		"pub":   serverKP.Pub,
 		"sn":    serverNonce,
 		"sid":   sessionID,
@@ -163,6 +183,17 @@ func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAdd
 		"name":  "umbra-server",
 		"cfg":   upk.Map{"sleep": sleep, "jitter": jitter, "obf": true},
 		"meta":  upk.Map{"ver": hub.Version},
+	}
+	if info.Version >= 2 {
+		// What the server speaks, what it accepts and the limits of the
+		// queue: a beacon that knows the limits can pace itself.
+		ack["abi"] = uint64(wire.ABIVersion)
+		compat := make([]any, 0, len(helloVersions))
+		for _, v := range helloVersions {
+			compat = append(compat, uint64(v))
+		}
+		ack["compat"] = compat
+		ack["limits"] = queueLimits(cfg)
 	}
 	// The peer is authenticated.  A hook may still put the peer in place
 	// before the answer goes out: the console believes it is connected as
@@ -262,10 +293,78 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 		meta = m
 	}
 	v, _ := number(hello["v"])
-	if v != 1 {
+	if !helloVersionKnown(int(v)) {
 		return nil, handshakeErr("unsupported HELLO version %d", v)
 	}
-	return &HelloInfo{Role: byte(role), ID: id, Meta: meta, Suite: byte(suiteID), KeyName: cand.keyName}, nil
+	// The capability list is a field of its own in the second version;
+	// the first version kept it in the metadata.
+	caps := metaCaps(hello["caps"])
+	if len(caps) == 0 {
+		caps = metaCaps(meta["caps"])
+	}
+	platform := map[string]any{}
+	if m, ok := hello["plat"].(map[string]any); ok {
+		platform = m
+	}
+	implantVersion, _ := hello["iver"].(string)
+	abi, _ := number(hello["abi"])
+	return &HelloInfo{
+		Role:           byte(role),
+		ID:             id,
+		Meta:           meta,
+		Suite:          byte(suiteID),
+		KeyName:        cand.keyName,
+		Version:        int(v),
+		Caps:           caps,
+		ImplantVersion: implantVersion,
+		ABI:            int(abi),
+		Platform:       platform,
+	}, nil
+}
+
+// queueLimits is what the server tells a beacon about the queue.
+//
+// A beacon that knows the limits can pace itself: it does not have to
+// take work it cannot run, and it does not have to ask.
+func queueLimits(cfg *config.Config) upk.Map {
+	queue := config.Queue{}
+	if cfg != nil {
+		queue = cfg.Server.Queue
+	}
+	// A configuration that says nothing keeps the defaults: a beacon
+	// must never be told that there is no limit.
+	inFlight := queue.MaxInFlightPerAgent
+	if inFlight <= 0 {
+		inFlight = config.DefaultMaxInFlightPerAgent
+	}
+	perMinute := queue.MaxDeliverPerMinutePerAgent
+	if perMinute <= 0 {
+		perMinute = config.DefaultMaxDeliverPerMinutePerAgent
+	}
+	perSecond := queue.MaxDeliverPerSecond
+	if perSecond <= 0 {
+		perSecond = config.DefaultMaxDeliverPerSecond
+	}
+	attempts := queue.MaxAttempts
+	if attempts <= 0 {
+		attempts = config.DefaultMaxAttempts
+	}
+	return upk.Map{
+		"max_in_flight_per_agent":         uint64(inFlight),
+		"max_deliver_per_minute_per_agent": uint64(perMinute),
+		"max_deliver_per_second":           uint64(perSecond),
+		"max_attempts":                     uint64(attempts),
+	}
+}
+
+// helloVersionKnown says whether the server speaks a handshake version.
+func helloVersionKnown(v int) bool {
+	for _, known := range helloVersions {
+		if known == v {
+			return true
+		}
+	}
+	return false
 }
 
 func mustEncode(m upk.Map) []byte {

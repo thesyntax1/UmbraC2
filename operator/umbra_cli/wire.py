@@ -102,6 +102,9 @@ class MsgType:
     TUNNEL_DATA = 0x1B
     TUNNEL_CLOSE = 0x1C
 
+    # the cheap signal of a beacon that is alive but between two check-ins
+    HEARTBEAT = 0x1D
+
     # padding frames: random bytes, ignored by the receiver
     PADDING = 0x1E
 
@@ -117,6 +120,19 @@ class MsgType:
     FRAME_VERSION = 0x01
     FRAME_HELLO_ACK = 0x02
 
+
+# The newest handshake version this build speaks.
+#
+# The server accepts every version down to 1 and answers in the version
+# the peer asked for, so an old beacon never sees a field it does not
+# understand.  The matrix is in docs/PROTOCOL.md.
+HELLO_VERSION = 2
+
+# The module ABI version this build speaks.
+#
+# The ABI is the contract between the host and the modules it loads: a
+# module built for another ABI is refused by the host.
+ABI_VERSION = 1
 
 # Payload marker understood by peers as "handshake body version 1".
 FRAME_VERSION = MsgType.FRAME_VERSION

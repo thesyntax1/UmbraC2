@@ -1557,6 +1557,7 @@ class MockServer:
                     stream,
                     keyring=self._keyring(),
                     cfg={"sleep": self.sleep, "jitter": self.jitter, "obf": True},
+                    limits=self._queue_limits(),
                 )
             except (handshake.HandshakeError, netio.StreamError, OSError, ValueError):
                 return b""
@@ -1567,7 +1568,9 @@ class MockServer:
             }
             with self._lock:
                 self.batch_sessions[agent_id] = state
-            self._register_agent(result.peer_id, result.meta, f"{transport}:{agent_id}")
+            self._register_agent(result.peer_id, result.meta, f"{transport}:{agent_id}",
+                                 caps=list(result.caps), version=result.version,
+                                 implant_version=result.implant_version, abi=result.abi)
             rest = stream
         else:
             rest = batch_transports.BufferStream(data)
@@ -1582,6 +1585,15 @@ class MockServer:
         except (netio.StreamError, session.SessionError, ValueError):
             pass
         return bytes(rest.out)
+
+    def _queue_limits(self) -> Dict[str, Any]:
+        """The limits of the queue, as the server tells them to a beacon."""
+        return {
+            "max_in_flight_per_agent": 4,
+            "max_deliver_per_minute_per_agent": 60,
+            "max_deliver_per_second": 200,
+            "max_attempts": MAX_ATTEMPTS,
+        }
 
     def _keyring(self) -> List[handshake.KeyringEntry]:
         ring = [handshake.KeyringEntry("agent", self.agent_psk, crypto.ROLE_AGENT)]
@@ -1647,6 +1659,7 @@ class MockServer:
                 stream, keyring=self._keyring(),
                 cfg={"sleep": self.sleep, "jitter": self.jitter, "obf": True},
                 on_peer=on_peer,
+                limits=self._queue_limits(),
             )
         except (handshake.HandshakeError, netio.StreamError, OSError):
             self._drop_operator(operator_box)
@@ -2035,7 +2048,9 @@ class MockServer:
                 pass
             self._stop.wait(0.1)
 
-    def _register_agent(self, agent_id: str, meta: Dict[str, Any], addr: str) -> None:
+    def _register_agent(self, agent_id: str, meta: Dict[str, Any], addr: str,
+                        caps: Optional[List[str]] = None, version: int = 1,
+                        implant_version: str = "", abi: int = 0) -> None:
         """Put an agent into the inventory.
 
         The socket transports and the batch transports register the same
@@ -2059,7 +2074,12 @@ class MockServer:
                     # The capability list is what the beacon said it can
                     # do; the panic flag belongs to the operator, so it
                     # survives a re-registration.
-                    "caps": list(meta.get("caps") or record.get("caps") or []),
+                    "caps": list(caps or meta.get("caps") or record.get("caps") or []),
+                    # The handshake the beacon speaks, the version of the
+                    # implant itself and the module ABI it understands.
+                    "hello_version": int(version),
+                    "implant_version": str(implant_version or record.get("implant_version") or ""),
+                    "abi": int(abi or record.get("abi") or 0),
                     # The peer address of the beacon: where another
                     # beacon (or the server) can dial in to carry a
                     # pivot through this host.
@@ -2078,7 +2098,9 @@ class MockServer:
     def _agent_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
         sess = result.session
         agent_id = result.peer_id
-        self._register_agent(agent_id, result.meta, addr)
+        self._register_agent(agent_id, result.meta, addr, caps=list(result.caps),
+                              version=result.version,
+                              implant_version=result.implant_version, abi=result.abi)
         try:
             while not self._stop.is_set():
                 raw = stream.recv_frame()
@@ -2111,6 +2133,12 @@ class MockServer:
         object transport share this, so an agent behaves the same way on
         every transport.
         """
+        if msg_type == wire.MsgType.HEARTBEAT:
+            # The cheap signal of a beacon that is alive but between two
+            # check-ins: the version of the implant, the module ABI it
+            # speaks and how much work it is carrying.
+            self._heartbeat(agent_id, msg)
+            return True
         if msg_type == wire.MsgType.CHECKIN:
             # The implant says who it is running as: the inventory
             # has to show the truth, not the account it started with.
@@ -2320,6 +2348,28 @@ class MockServer:
         switch = meta.get("killswitch")
         if isinstance(switch, dict) and switch.get("armed"):
             self.emit("killswitch.armed", agent_id, task_id=task_id, data={"armed": True})
+
+    def _heartbeat(self, agent_id: str, msg: Dict[str, Any]) -> None:
+        """Record a heartbeat of a beacon."""
+        busy = 0
+        try:
+            busy = int(msg.get("busy", 0) or 0)
+        except (TypeError, ValueError):
+            busy = 0
+        with self._lock:
+            record = self.agents.get(agent_id)
+            if record is None:
+                return
+            record["heartbeat"] = _now()
+            record["busy"] = busy
+            record["implant_version"] = str(msg.get("iver", "") or "")
+            record["abi"] = int(msg.get("abi", 0) or 0)
+            record["uptime"] = int(msg.get("up", 0) or 0)
+        self.emit("agent.heartbeat", agent_id, data={
+            "busy": busy,
+            "implant_version": str(msg.get("iver", "") or ""),
+            "abi": int(msg.get("abi", 0) or 0),
+        })
 
     def _take_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
         """The tasks of one agent, in the order they should be delivered.
@@ -4664,6 +4714,11 @@ CLAIM_LEASE = 120
 BREAKER_THRESHOLD = 5
 MAX_ATTEMPTS = 3
 
+# The handshake version the fake agent speaks, and the module ABI it
+# claims: the same numbers the Rust beacon and the Go server use.
+HELLO_VERSION = wire.HELLO_VERSION
+ABI_VERSION = wire.ABI_VERSION
+
 
 def _expand_workflow_steps(steps: List[Any], params: Dict[str, str]) -> List[Dict[str, Any]]:
     """Fill the parameters of the steps of a workflow.
@@ -4794,6 +4849,8 @@ class FakeAgent(threading.Thread):
             "caps": list(AGENT_CAPS),
         }
         self.execute_shell = execute_shell
+        # When the fake agent started: the heartbeat carries the uptime.
+        self.started = time.time()
         self.interval = interval
         self._stop = threading.Event()
         self.completed = threading.Event()
@@ -4965,6 +5022,15 @@ class FakeAgent(threading.Thread):
                 role=crypto.ROLE_AGENT,
                 ident=self.agent_id,
                 meta=self.meta,
+                version=HELLO_VERSION,
+                caps=list(self.meta.get("caps") or []),
+                implant_version=str(self.meta.get("ver", "") or ""),
+                abi=ABI_VERSION,
+                platform={
+                    "os": str(self.meta.get("os", "") or ""),
+                    "arch": str(self.meta.get("arch", "") or ""),
+                    "family": str(self.meta.get("family", "") or ""),
+                },
             )
             sess = result.session
             checkin: Dict[str, Any] = {"ts": _now(), "n": 0}
@@ -5028,6 +5094,18 @@ class FakeAgent(threading.Thread):
                 return
             if not batch:
                 return
+            # The heartbeat: the small frame that says "still here, this
+            # is what I am".  It is sent after the batch, because a frame
+            # that is sent between the check-in and the batch would be
+            # sealed with the old keys when the server has already
+            # switched.
+            stream.send_frame(sess.encrypt(wire.MsgType.HEARTBEAT, {
+                "v": 1,
+                "iver": str(self.meta.get("ver", "") or ""),
+                "abi": ABI_VERSION,
+                "busy": len(batch.get("tasks", []) or []),
+                "up": int(time.time() - self.started),
+            }))
             for task in batch.get("tasks", []):
                 kind = str(task.get("kind", ""))
                 if kind in ("session.open", "session.input", "session.close"):

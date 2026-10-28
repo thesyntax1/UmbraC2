@@ -1304,6 +1304,28 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4004/metrics
 The health check needs no token, and says nothing but that the process is
 alive: `GET /healthz`.
 
+## 5i. The versions, and what to do when a host is old
+
+The server speaks two handshake versions at the same time and answers in
+the version the peer asked for, so a beacon that was built before the
+second version keeps working.  The matrix is in the protocol document
+(§5.1); what the operator sees is the `hello_version` of every host in
+the inventory.
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice agents
+```
+
+| `hello_version` | what the host speaks | what to do |
+|---|---|---|
+| 2 | the second handshake: the capability list, the implant version, the module ABI and the platform details | nothing |
+| 1 | the first handshake: the capability list is inside the metadata | nothing; it still works |
+| 0 | a host that never said | the server refused the handshake |
+
+A host that is still on the first version does not send heartbeats, so
+the inventory shows no heartbeat for it.  That is the only difference
+an operator sees.
+
 ## 6. Monitoring
 
 ```bash

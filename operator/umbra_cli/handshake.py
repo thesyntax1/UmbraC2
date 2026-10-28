@@ -15,12 +15,27 @@ Wire flow (both messages are AEAD protected under PSK-derived bootstrap keys)::
 ``auth`` is HMAC-SHA256(PSK, transcript).  The transcript binds both role and
 identity, both public keys, both nonces, the session id and the negotiated
 suite, so it cannot be replayed into a different context.
+
+Two handshake versions exist, and a server speaks both:
+
+``v=1``
+    The original shape.  The capability list travels inside the metadata,
+    the implant version is inside the metadata, and the server answers with
+    the original HELLO_ACK.
+
+``v=2``
+    The capability list, the implant version, the module ABI version and
+    the platform details are first-class fields of the HELLO, and the
+    answer carries the ABI the server speaks, the handshake versions the
+    server accepts and the limits of the queue.  A beacon that only knows
+    ``v=1`` keeps working: the server answers in the version it was asked
+    for.  The matrix is in docs/PROTOCOL.md.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 from . import crypto, netio, session, upk, wire
@@ -35,6 +50,20 @@ __all__ = [
 ]
 
 MAX_SKEW = session.MAX_CLOCK_SKEW
+
+# The handshake versions this build speaks, newest first.
+#
+# The server accepts every version in this list; the answer is always in
+# the version the peer asked for, so an old beacon never sees a field it
+# does not understand.
+HELLO_VERSIONS = (wire.HELLO_VERSION, 1)
+
+# The module ABI version this build speaks.
+#
+# The ABI is the contract between the host and the modules it loads: a
+# module that was built for another ABI is refused by the host, so the
+# server has to know what the beacon understands.
+ABI_VERSION = wire.ABI_VERSION
 
 
 class HandshakeError(Exception):
@@ -58,6 +87,18 @@ class HandshakeResult:
     suite: int
     meta: dict
     cfg: dict
+    # The handshake version that was used, and the fields the newer
+    # handshake carries.
+    version: int = 1
+    caps: tuple = ()
+    implant_version: str = ""
+    abi: int = 0
+    platform: dict = field(default_factory=dict)
+    # What the server said about itself: the ABI it speaks, the versions
+    # it accepts and the limits of the queue.
+    server_abi: int = 0
+    compat: tuple = ()
+    limits: dict = field(default_factory=dict)
 
 
 def _negotiate(client_suite: int, server_suites: Sequence[int]) -> int:
@@ -82,7 +123,18 @@ def client_handshake(
     ident: str,
     suite: int = wire.SUITE_AES256_GCM,
     meta: Optional[dict] = None,
+    version: int = 1,
+    caps: Optional[Sequence[str]] = None,
+    implant_version: str = "",
+    abi: int = 0,
+    platform: Optional[dict] = None,
 ) -> HandshakeResult:
+    """The client side of the handshake.
+
+    ``version`` is the handshake version to speak.  Version 2 adds the
+    first-class fields: the capability list, the implant version, the
+    module ABI version and the platform details.
+    """
     priv, pub = crypto.x25519_keypair()
     cn = crypto.random_bytes(16)
     ts = int(time.time())
@@ -97,8 +149,10 @@ def client_handshake(
         timestamp=ts,
         suite=suite,
     )
+    if version not in HELLO_VERSIONS:
+        raise HandshakeError(f"unsupported handshake version {version}")
     hello = {
-        "v": 1,
+        "v": version,
         "role": role,
         "id": ident,
         "pub": pub,
@@ -108,6 +162,14 @@ def client_handshake(
         "auth": auth,
         "meta": meta or {},
     }
+    if version >= 2:
+        # The capability list is a first-class field now: the server
+        # refuses work the beacon cannot do, and it needs the list before
+        # it looks at the metadata.
+        hello["caps"] = list(caps or [])
+        hello["iver"] = implant_version
+        hello["abi"] = int(abi)
+        hello["plat"] = dict(platform or {})
     boot = session.Session(
         suite=suite,
         material=crypto.KeyMaterial(
@@ -128,8 +190,9 @@ def client_handshake(
     if not pt or pt[0] != wire.MsgType.FRAME_HELLO_ACK:
         raise HandshakeError("bad HELLO_ACK payload marker")
     ack = upk.decode_exact(pt[1:])
-    if not isinstance(ack, dict) or ack.get("v") != 1:
+    if not isinstance(ack, dict) or ack.get("v") not in HELLO_VERSIONS:
         raise HandshakeError("bad HELLO_ACK body")
+    ack_version = int(ack.get("v", 1))
 
     server_pub = ack["pub"]
     sn = ack["sn"]
@@ -164,6 +227,14 @@ def client_handshake(
         suite=neg_suite,
         meta=ack.get("meta", {}) or {},
         cfg=ack.get("cfg", {}) or {},
+        version=version,
+        caps=tuple(str(c) for c in (caps or [])),
+        implant_version=implant_version,
+        abi=int(abi),
+        platform=dict(platform or {}),
+        server_abi=int(ack.get("abi", 0) or 0),
+        compat=tuple(int(v) for v in (ack.get("compat", []) or [])),
+        limits=dict(ack.get("limits", {}) or {}),
     )
 
 
@@ -177,6 +248,7 @@ def server_handshake(
     suites: Sequence[int] = (wire.SUITE_AES256_GCM,),
     cfg: Optional[dict] = None,
     on_peer: Optional[Callable[[str, int, dict], None]] = None,
+    limits: Optional[dict] = None,
 ) -> HandshakeResult:
     """Server side of the handshake.
 
@@ -218,8 +290,12 @@ def server_handshake(
                 if not pt or pt[0] != wire.MsgType.FRAME_VERSION:
                     raise HandshakeError("bad HELLO payload marker")
                 body = upk.decode_exact(pt[1:])
-                if not isinstance(body, dict) or body.get("v") != 1:
+                if not isinstance(body, dict):
                     raise HandshakeError("bad HELLO body")
+                # The server speaks every version it knows: the answer is
+                # always in the version the peer asked for.
+                if body.get("v") not in HELLO_VERSIONS:
+                    raise HandshakeError(f"unsupported HELLO version {body.get('v')}")
                 hello, boot, chosen = body, candidate, (suite, entry)
                 break
             except (session.SessionError, upk.UpkError, crypto.AeadError, ValueError) as exc:
@@ -280,8 +356,9 @@ def server_handshake(
         session_id=sid,
         suite=suite,
     )
+    version = int(hello.get("v", 1))
     ack = {
-        "v": 1,
+        "v": version,
         "pub": pub,
         "sn": sn,
         "sid": sid,
@@ -291,6 +368,12 @@ def server_handshake(
         "name": "umbra-server",
         "meta": {"ver": "0.1.0"},
     }
+    if version >= 2:
+        # What the server speaks, what it accepts and the limits of the
+        # queue: a beacon that knows the limits can pace itself.
+        ack["abi"] = ABI_VERSION
+        ack["compat"] = list(HELLO_VERSIONS)
+        ack["limits"] = dict(limits or {})
     if on_peer is not None:
         on_peer(ident, role, hello.get("meta", {}) or {})
     stream.send_frame(boot.encrypt(wire.MsgType.HELLO_ACK, b"\x02" + upk.encode(ack)))
@@ -298,6 +381,13 @@ def server_handshake(
     sess = session.Session(
         suite=suite, material=material, is_server=True, bootstrap=False, prk=prk
     )
+    caps = hello.get("caps")
+    if not isinstance(caps, (list, tuple)):
+        # A version 1 beacon keeps the capability list in the metadata.
+        caps = (hello.get("meta", {}) or {}).get("caps", [])
+    platform = hello.get("plat")
+    if not isinstance(platform, dict):
+        platform = {}
     return HandshakeResult(
         session=sess,
         peer_id=ident,
@@ -305,4 +395,12 @@ def server_handshake(
         suite=suite,
         meta=hello.get("meta", {}) or {},
         cfg=ack["cfg"],
+        version=version,
+        caps=tuple(str(c) for c in caps),
+        implant_version=str(hello.get("iver", "") or ""),
+        abi=int(hello.get("abi", 0) or 0),
+        platform=dict(platform),
+        server_abi=int(ack.get("abi", 0) or 0),
+        compat=tuple(int(v) for v in (ack.get("compat", []) or [])),
+        limits=dict(ack.get("limits", {}) or {}),
     )

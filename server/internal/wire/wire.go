@@ -68,6 +68,18 @@ const (
 	MsgTunnelData  byte = 0x1B
 	MsgTunnelClose byte = 0x1C
 
+	// MsgHeartbeat is the cheap signal of a beacon that is alive but
+	// between two check-ins.
+	//
+	// A check-in is expensive: it may be minutes apart, and it carries
+	// the whole inventory.  The heartbeat is the small frame a beacon
+	// sends in between: the version of the implant, the module ABI it
+	// speaks, how much work it is carrying and how long it has been up.
+	// The server uses it to tell "the host is busy" from "the host is
+	// gone", which is the difference between waiting and moving the work
+	// somewhere else.
+	MsgHeartbeat byte = 0x1D
+
 	// Padding frames carry random bytes and are ignored by the receiver.
 	// They let a transport pad its traffic to a fixed size bucket without
 	// changing the frame format (see docs/PROTOCOL.md §7.3).
@@ -83,6 +95,19 @@ const (
 	MarkerHello    byte = 0x01
 	MarkerHelloAck byte = 0x02
 )
+
+// HelloVersion is the newest handshake version this build speaks.
+//
+// The server accepts every version down to 1 and answers in the version
+// the peer asked for, so an old beacon never sees a field it does not
+// understand.  The matrix is in docs/PROTOCOL.md.
+const HelloVersion byte = 2
+
+// ABIVersion is the module ABI version this build speaks.
+//
+// The ABI is the contract between the host and the modules it loads: a
+// module built for another ABI is refused by the host.
+const ABIVersion byte = 1
 
 // SuiteName returns the human readable name of an AEAD suite.
 func SuiteName(id byte) string {
@@ -123,6 +148,8 @@ func TypeName(t byte) string {
 		return "TASK_CANCEL"
 	case MsgBye:
 		return "BYE"
+	case MsgHeartbeat:
+		return "HEARTBEAT"
 	case MsgTunnelOpen:
 		return "TUNNEL_OPEN"
 	case MsgTunnelData:

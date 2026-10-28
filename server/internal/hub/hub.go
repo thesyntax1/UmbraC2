@@ -473,6 +473,22 @@ func (h *Hub) SetImpersonation(agentID, account string) {
 	}
 }
 
+// Heartbeat records the heartbeat of a beacon.
+//
+// The heartbeat says that the host is alive and how busy it is.  The
+// operator sees it in the inventory, and the queue uses it to tell a
+// host that is working from a host that is gone.
+func (h *Hub) Heartbeat(agentID string, busy int, implantVersion string, abi int, uptime int64) {
+	if !h.store.Heartbeat(agentID, busy, implantVersion, abi, uptime) {
+		return
+	}
+	h.Emit(Event{Kind: "agent.heartbeat", AgentID: agentID, Data: map[string]any{
+		"busy":    int64(busy),
+		"version": implantVersion,
+		"abi":     int64(abi),
+	}})
+}
+
 // Live returns the live link info for an agent.
 func (h *Hub) Live(agentID string) (*Live, bool) {
 	h.mu.Lock()
@@ -1822,6 +1838,15 @@ func agentData(a *store.Agent) map[string]any {
 		"persist": a.Persist,
 		// What the implant thinks of the host.
 		"posture": a.Posture,
+		// The heartbeat of the host: when it last said that it was
+		// alive, and how much work it was carrying.
+		"heartbeat": a.LastHeartbeat.Format(time.RFC3339),
+		"busy":      a.Busy,
+		// The version of the handshake the beacon speaks and the
+		// version of the implant itself.
+		"hello_version":   a.HelloVersion,
+		"implant_version": a.ImplantVersion,
+		"abi":             a.ABI,
 	}
 	// The route of the agent: the transport it speaks and the order it may
 	// fall back in.  It is only there when the operator gave one.

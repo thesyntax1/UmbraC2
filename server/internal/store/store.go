@@ -201,6 +201,27 @@ type Agent struct {
 	// and it refuses every further task, so a half-sent engagement cannot
 	// grow new work.
 	Panicked bool `json:"panicked,omitempty"`
+	// LastHeartbeat is when the beacon last said that it was alive.
+	//
+	// The heartbeat is the small frame between two check-ins: it does
+	// not carry the inventory and it does not ask for work, it only says
+	// that the host is there and how busy it is.
+	LastHeartbeat time.Time `json:"last_heartbeat,omitempty"`
+	// Busy is how many tasks the beacon was carrying when it sent its
+	// last heartbeat.
+	Busy int `json:"busy,omitempty"`
+	// HelloVersion is the version of the handshake the beacon speaks.
+	//
+	// The server answers in the version the peer asked for, so an old
+	// beacon keeps working; the version is kept so the operator can
+	// see what a host runs.
+	HelloVersion int `json:"hello_version,omitempty"`
+	// ImplantVersion is the version of the beacon itself, and ABI the
+	// module ABI it speaks.
+	ImplantVersion string `json:"implant_version,omitempty"`
+	ABI            int    `json:"abi,omitempty"`
+	// Uptime is how long the beacon said it had been running.
+	Uptime int64 `json:"uptime,omitempty"`
 	// Persist is what the operator installed on this host.
 	//
 	// The beacon reports the entries with every persistence task, and the
@@ -1381,6 +1402,30 @@ func (s *Store) SetImpersonation(agentID, account string) bool {
 		return false
 	}
 	a.Impersonation = account
+	return true
+}
+
+// Heartbeat records the heartbeat of a beacon.
+//
+// The heartbeat is cheap: it is written on every beat, so it is not
+// saved to the snapshot every time.  The last one is enough for the
+// operator to see that the host is alive.
+func (s *Store) Heartbeat(agentID string, busy int, implantVersion string, abi int, uptime int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	a.LastHeartbeat = time.Now().UTC()
+	a.Busy = busy
+	if implantVersion != "" {
+		a.ImplantVersion = implantVersion
+	}
+	if abi > 0 {
+		a.ABI = abi
+	}
+	a.Uptime = uptime
 	return true
 }
 

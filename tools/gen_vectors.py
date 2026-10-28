@@ -182,6 +182,9 @@ def main() -> None:
          ]}),
         (wire.SUITE_CHACHA20_POLY1305, km.c2s_key, km.c2s_prefix, 129,
          wire.MsgType.RESULT, {"id": "t-1", "code": -1, "out": b"\x00binary\xff"}),
+        (wire.SUITE_AES256_GCM, km.s2c_key, km.s2c_prefix, 3,
+         wire.MsgType.HEARTBEAT, {"v": 1, "iver": "0.1.0", "abi": 1,
+                                  "busy": 2, "up": 900}),
     ]:
         plaintext = upk.encode(payload)
         nonce = wire.make_nonce(prefix, counter)
@@ -221,6 +224,41 @@ def main() -> None:
         "key": bkey.hex(), "prefix": bprefix.hex(), "counter": 0,
         "plaintext_hex": plaintext.hex(), "frame_hex": frame.hex(),
         "msg_type": wire.MsgType.HELLO, "flags": wire.FLAG_BOOTSTRAP,
+    }
+
+    # The second version of the handshake: the capability list, the version
+    # of the implant, the module ABI and the platform details are fields of
+    # their own.  The frame is the same bootstrap frame as above, with the
+    # new body, so a decoder that only knows the first version still reads
+    # the frame and ignores the fields it does not know.
+    hello_v2 = {
+        "v": 2, "role": crypto.ROLE_AGENT, "id": "agent-7f3a", "pub": cpub,
+        "cn": CNONCE, "ts": TS, "suite": wire.SUITE_AES256_GCM,
+        "auth": bytes(32), "meta": {"os": "linux", "arch": "x86_64"},
+        "caps": ["shell", "sysinfo"], "iver": "0.1.0", "abi": 1,
+        "plat": {"os": "linux", "arch": "x86_64", "family": "unix"},
+    }
+    plaintext_v2 = b"\x01" + upk.encode(hello_v2)
+    frame_v2 = wire.build_frame(
+        suite=wire.SUITE_AES256_GCM, flags=wire.FLAG_BOOTSTRAP,
+        msg_type=wire.MsgType.HELLO, key=bkey,
+        nonce=wire.make_nonce(bprefix, 0), plaintext=plaintext_v2,
+        aead_encrypt=lambda k, n, a, p: crypto.aead_encrypt(wire.SUITE_AES256_GCM, k, n, a, p),
+    )
+    out["bootstrap_frame_v2"] = {
+        "key": bkey.hex(), "prefix": bprefix.hex(), "counter": 0,
+        "plaintext_hex": plaintext_v2.hex(), "frame_hex": frame_v2.hex(),
+        "msg_type": wire.MsgType.HELLO, "flags": wire.FLAG_BOOTSTRAP,
+    }
+    # The versions of the handshake, and the fields each of them carries.
+    out["handshake"] = {
+        "versions": [2, 1],
+        "abi_version": 1,
+        "v1_fields": ["v", "role", "id", "pub", "cn", "ts", "suite", "auth", "meta"],
+        "v2_fields": ["v", "role", "id", "pub", "cn", "ts", "suite", "auth", "meta",
+                      "caps", "iver", "abi", "plat"],
+        "ack_v2_fields": ["v", "pub", "sn", "sid", "suite", "auth", "cfg", "name",
+                           "meta", "abi", "compat", "limits"],
     }
 
     # ---- negative cases (must be rejected) -----------------------------

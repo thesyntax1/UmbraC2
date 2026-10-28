@@ -36,9 +36,22 @@ pub const MSG_BYE: u8 = 0x19;
 pub const MSG_TUNNEL_OPEN: u8 = 0x1A;
 pub const MSG_TUNNEL_DATA: u8 = 0x1B;
 pub const MSG_TUNNEL_CLOSE: u8 = 0x1C;
+/// The cheap signal of a beacon that is alive but between two check-ins.
+pub const MSG_HEARTBEAT: u8 = 0x1D;
 pub const MSG_PADDING: u8 = 0x1E;
 pub const MSG_ERROR: u8 = 0x1F;
 
+/// The newest handshake version this build speaks.
+///
+/// The server accepts every version down to 1 and answers in the version
+/// the peer asked for, so an old beacon never sees a field it does not
+/// understand.  The matrix is in docs/PROTOCOL.md.
+pub const HELLO_VERSION: u8 = 2;
+/// The module ABI version this build speaks.
+///
+/// The ABI is the contract between the host and the modules it loads: a
+/// module built for another ABI is refused by the host.
+pub const ABI_VERSION: u8 = 1;
 pub const MARKER_HELLO: u8 = 0x01;
 pub const MARKER_HELLO_ACK: u8 = 0x02;
 
@@ -180,6 +193,7 @@ pub fn type_name(t: u8) -> &'static str {
         MSG_REKEY => "REKEY",
         MSG_KILL => "KILL",
         MSG_BYE => "BYE",
+        MSG_HEARTBEAT => "HEARTBEAT",
         MSG_TUNNEL_OPEN => "TUNNEL_OPEN",
         MSG_TUNNEL_DATA => "TUNNEL_DATA",
         MSG_TUNNEL_CLOSE => "TUNNEL_CLOSE",

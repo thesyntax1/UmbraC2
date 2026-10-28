@@ -7432,3 +7432,165 @@ def test_the_reliability_is_in_every_implementation():
     prod = json.loads(read_text("deploy/server.prod.json"))
     assert "queue" in prod, prod
     assert prod["queue"]["max_attempts"] == 3, prod
+
+
+def test_the_second_handshake_carries_the_fields_of_the_new_version():
+    """The version 2 handshake: the caps, the version, the ABI and the platform."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-hello2-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-hello2")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        agents = client.agents()
+        assert agents, "the agent never registered"
+        record = agents[0]
+        # The capability list is a field of its own now, and the server
+        # kept it: the operator still sees what the host can do.
+        assert "shell" in record.get("caps", []), record
+        # The handshake version is recorded, so the operator can see what
+        # the host speaks.
+        assert record.get("hello_version") == 2, record
+        assert record.get("abi") == 1, record
+        # The implant version travels too.
+        assert record.get("implant_version"), record
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_old_handshake_still_works():
+    """A beacon that only knows the first version is still served."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli import handshake, netio, session, upk, wire  # noqa: WPS433
+
+    token = b"operator-token-hello1-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    # A hand-made beacon: the first version of the handshake, the
+    # capability list inside the metadata, and nothing else.
+    host, _, port = server.address.rpartition(":")
+    sock = socket.create_connection((host, int(port)), timeout=5)
+    stream = netio.Stream(sock, timeout=5)
+    try:
+        result = handshake.client_handshake(
+            stream,
+            psk=AGENT_PSK,
+            role=crypto.ROLE_AGENT,
+            ident="agent-old",
+            meta={"os": "linux", "arch": "x86_64",
+                  "caps": ["shell", "sysinfo"], "ver": "0.0.9"},
+            version=1,
+        )
+        # The answer is in the version the peer asked for.
+        assert result.version == 1, result.version
+        # The first version has no limits and no ABI in the answer.
+        assert result.limits == {}, result.limits
+        assert result.compat == (), result.compat
+        sess = result.session
+        checkin = {"ts": int(time.time()), "n": 0}
+        stream.send_frame(sess.encrypt(wire.MsgType.CHECKIN, upk.encode(checkin)))
+    finally:
+        stream.close()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        records = {a["id"]: a for a in client.agents()}
+        assert "agent-old" in records, records
+        old = records["agent-old"]
+        # The capability list of the old beacon is known all the same.
+        assert "shell" in old.get("caps", []), old
+        assert old.get("hello_version") == 1, old
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_heartbeat_says_that_the_host_is_alive():
+    """The heartbeat is recorded: the operator sees that the host is there."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-heartbeat-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-beat")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        # The heartbeat arrives with the cycle of the beacon.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            record = client.agents()[0]
+            if record.get("heartbeat"):
+                break
+            time.sleep(0.1)
+        record = client.agents()[0]
+        assert record.get("heartbeat"), record
+        assert record.get("implant_version"), record
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_handshake_vectors_pin_the_new_version():
+    """The second version of the handshake is pinned byte for byte."""
+    case = VECTORS["bootstrap_frame_v2"]
+    suite = VECTORS["meta"]["suites"]["aes-256-gcm"]
+    key = b(case["key"])
+    nonce = wire.make_nonce(b(case["prefix"]), case["counter"])
+    plain = b(case["plaintext_hex"])
+    frame = wire.build_frame(
+        suite=suite,
+        flags=case["flags"],
+        msg_type=case["msg_type"],
+        key=key,
+        nonce=nonce,
+        plaintext=plain,
+        aead_encrypt=lambda k, n, a, p, s=suite: crypto.aead_encrypt(s, k, n, a, p),
+    )
+    assert frame.hex() == case["frame_hex"]
+    # The body is the version 2 body: the fields are there.
+    body = upk.decode_exact(plain[1:])
+    assert body["v"] == 2, body
+    for field in ("caps", "iver", "abi", "plat"):
+        assert field in body, body
+    # The versions the contract pins are the ones the implementations speak.
+    assert VECTORS["handshake"]["versions"] == [2, 1]
+    assert VECTORS["handshake"]["abi_version"] == 1
+
+
+def test_the_protocol_documents_the_new_frame_and_the_versions():
+    """The frame and the handshake version are in the contract."""
+    text = read_text("docs/PROTOCOL.md")
+    assert "| `0x1D` | HEARTBEAT |" in text, "the heartbeat frame is not documented"
+    assert "### 5.1 The handshake versions" in text, "the matrix is missing"
+    assert "### 7.2p The heartbeat" in text, "the heartbeat is not documented"

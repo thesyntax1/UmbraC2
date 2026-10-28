@@ -93,6 +93,11 @@ SPECS: list[tuple[str, dict[str, str]]] = [
     # ---- rekey threshold ---------------------------------------------
     ("REKEY_AFTER", {"python": r"^REKEY_AFTER = 1 << (\d+)", "go": r"RekeyAfter\s*=\s*1 << (\d+)",
                      "rust": r"pub const REKEY_AFTER: u64 = 1 << (\d+)", "kotlin": r"const val REKEY_AFTER = 1L shl (\d+)"}),
+    # ---- the handshake version and the module ABI --------------------
+    ("HELLO_VERSION", {"python": r"^HELLO_VERSION = (\d+)", "go": r"HelloVersion\s+byte\s*=\s*(\d+)",
+                       "rust": r"pub const HELLO_VERSION: u8 = (\d+)", "kotlin": r"const val HELLO_VERSION = (\d+)"}),
+    ("ABI_VERSION", {"python": r"^ABI_VERSION = (\d+)", "go": r"ABIVersion\s+byte\s*=\s*(\d+)",
+                     "rust": r"pub const ABI_VERSION: u8 = (\d+)", "kotlin": r"const val ABI_VERSION = (\d+)"}),
 ]
 
 # Message type tables. Names differ in case/prefix across languages, so every

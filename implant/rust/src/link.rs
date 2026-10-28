@@ -23,6 +23,39 @@ pub struct Handshake {
     pub stream: Option<crate::transport::TcpStream>,
 }
 
+/// The fields of the newer handshake.
+///
+/// The version 1 handshake had nothing but the metadata.  Version 2 moves
+/// the capability list out of the metadata and into a field of its own,
+/// and adds the version of the implant, the module ABI version it speaks
+/// and the platform details.  A server that only knows version 1 still
+/// works: the handshake falls back to the old shape.
+#[derive(Clone, Debug)]
+pub struct Hello {
+    /// The handshake version to speak.
+    pub version: u8,
+    /// The capability list: the task kinds this implant can run.
+    pub caps: Vec<Value>,
+    /// The version of the implant.
+    pub implant_version: String,
+    /// The module ABI version the implant speaks.
+    pub abi: u8,
+    /// The platform details: the os, the architecture and the family.
+    pub platform: Value,
+}
+
+impl Default for Hello {
+    fn default() -> Self {
+        Hello {
+            version: 1,
+            caps: Vec::new(),
+            implant_version: String::new(),
+            abi: 0,
+            platform: Value::Map(std::collections::BTreeMap::new()),
+        }
+    }
+}
+
 /// Perform the client side of the handshake.
 ///
 /// `meta` is the HELLO metadata map: the agent metadata for a beacon, and
@@ -34,6 +67,7 @@ pub fn client_handshake(
     ident: &str,
     suite: u8,
     meta: Value,
+    hello: &Hello,
 ) -> Result<Handshake, String> {
     let (secret, pubkey) = crypto::x25519_keypair();
     let cn = crypto::random_bytes(16);
@@ -42,8 +76,8 @@ pub fn client_handshake(
     let auth = crypto::hello_auth(psk, role, ident.as_bytes(), &pubkey, &cn, ts, suite)
         .map_err(|e| format!("hello auth: {e}"))?;
 
-    let hello = upk::map(vec![
-        ("v", upk::u(1)),
+    let mut fields = vec![
+        ("v", upk::u(hello.version as u64)),
         ("role", upk::u(role as u64)),
         ("id", upk::s(ident)),
         ("pub", upk::bin(&pubkey)),
@@ -52,8 +86,18 @@ pub fn client_handshake(
         ("suite", upk::u(suite as u64)),
         ("auth", upk::bin(&auth)),
         ("meta", meta),
-    ]);
-    let encoded = upk::encode(&hello).map_err(|e| format!("encode hello: {e}"))?;
+    ];
+    if hello.version >= 2 {
+        // The capability list is a field of its own now: the server reads
+        // it before it looks at the metadata, and it refuses work the
+        // beacon cannot do.
+        fields.push(("caps", upk::arr(hello.caps.clone())));
+        fields.push(("iver", upk::s(&hello.implant_version)));
+        fields.push(("abi", upk::u(hello.abi as u64)));
+        fields.push(("plat", hello.platform.clone()));
+    }
+    let hello_body = upk::map(fields);
+    let encoded = upk::encode(&hello_body).map_err(|e| format!("encode hello: {e}"))?;
     let mut body = Vec::with_capacity(encoded.len() + 1);
     body.push(wire::MARKER_HELLO);
     body.extend_from_slice(&encoded);

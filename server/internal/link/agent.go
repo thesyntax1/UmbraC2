@@ -50,6 +50,12 @@ func (l *AgentLink) HandleFrame(raw []byte) ([][]byte, error) {
 		return l.onCheckin(msg)
 	case wire.MsgResult:
 		return l.onResult(msg)
+	case wire.MsgHeartbeat:
+		// The cheap signal of a beacon that is alive but between two
+		// check-ins: the version of the implant, the module ABI it
+		// speaks and how much work it is carrying.
+		l.onHeartbeat(msg)
+		return nil, nil
 	case wire.MsgPing:
 		frame, err := l.Session.Encrypt(wire.MsgPong, upk.Map{"ts": msg["ts"]})
 		if err != nil {
@@ -95,6 +101,29 @@ func (l *AgentLink) maxTasksPerCycle() int {
 		return MaxTasksPerCycle
 	}
 	return l.Hub.Config().MaxTaskBatch()
+}
+
+// onHeartbeat records a heartbeat of a beacon.
+//
+// The heartbeat is not a check-in: it does not carry the inventory and
+// it does not ask for work.  It says that the host is alive and how
+// busy it is, which is what tells "the host is working" from "the host
+// is gone".
+func (l *AgentLink) onHeartbeat(msg map[string]any) {
+	busy := 0
+	if n, ok := asInt64(msg["busy"]); ok {
+		busy = int(n)
+	}
+	version, _ := msg["iver"].(string)
+	abi := 0
+	if n, ok := asInt64(msg["abi"]); ok {
+		abi = int(n)
+	}
+	uptime := int64(0)
+	if n, ok := asInt64(msg["up"]); ok {
+		uptime = n
+	}
+	l.Hub.Heartbeat(l.AgentID, busy, version, abi, uptime)
 }
 
 func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
@@ -289,6 +318,15 @@ func AgentMeta(info *HelloInfo, transport, addr string, sleep, jitter int) *stor
 		Sleep:     sleep,
 		Jitter:    jitter,
 		Caps:      metaCaps(meta["caps"]),
+		// The fields of the second version of the handshake.
+		HelloVersion:   info.Version,
+		ImplantVersion: info.ImplantVersion,
+		ABI:            info.ABI,
+	}
+	// The capability list is a field of its own in the second version of
+	// the handshake; the first version kept it in the metadata.
+	if len(info.Caps) > 0 {
+		rec.Caps = info.Caps
 	}
 	if rec.Host == "" {
 		rec.Host = str("hostname")
