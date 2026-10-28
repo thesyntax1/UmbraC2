@@ -1045,6 +1045,8 @@ class Console:
                     host = ""
                     port = 0
                     listen = ""
+                    pipe = False
+                    pipe_name = ""
                     path: List[str] = []
                     for token in rest[2:]:
                         if token.startswith("--mode="):
@@ -1057,9 +1059,14 @@ class Console:
                             listen = token.split("=", 1)[1]
                         elif token.startswith("--through="):
                             path.append(token.split("=", 1)[1])
+                        elif token == "--pipe":
+                            pipe = True
+                        elif token.startswith("--pipe-name="):
+                            pipe_name = token.split("=", 1)[1]
                     data = self.client.pivot_open(
                         rest[1], mode=mode, host=host, port=port, listen=listen,
-                        path=path, through=path[0] if path else "")
+                        path=path, through=path[0] if path else "",
+                        pipe=pipe, pipe_name=pipe_name)
                     print(f"pivot {data.get('stream')} open on {data.get('listen')}")
                 elif sub_cmd in ("close", "rm") and len(rest) >= 2:
                     self.client.pivot_close(rest[1])
@@ -1671,6 +1678,10 @@ def build_parser() -> argparse.ArgumentParser:
                             "to chain the pivot through several agents")
     pivot.add_argument("--user", default="",
                        help="the user the socks5 proxy asks for")
+    pivot.add_argument("--pipe", action="store_true",
+                        help="listen on a named pipe (Windows servers only)")
+    pivot.add_argument("--pipe-name", default="",
+                        help="the name of the named pipe (default umbra-<tunnel>)")
     pivot.add_argument("--password", default="",
                        help="the password the socks5 proxy asks for")
 
@@ -2500,7 +2511,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not args.target:
                     print("usage: umbra pivot open <agent> [--mode socks|forward] "
                           "[--host H --port P] [--listen ADDR] [--dns remote|local] "
-                          "[--loopback] [--claim NAME] [--through AGENT ...]",
+                          "[--loopback] [--claim NAME] [--through AGENT ...] "
+                          "[--pipe] [--pipe-name NAME]",
                           file=sys.stderr)
                     return 2
                 data = client.pivot_open(
@@ -2516,6 +2528,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     user=args.user,
                     password=args.password,
                     path=list(args.through),
+                    pipe=args.pipe,
+                    pipe_name=args.pipe_name,
                 )
                 if args.json:
                     emit(data)

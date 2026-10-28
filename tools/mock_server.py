@@ -217,6 +217,35 @@ def socks5_connect(conn: socket.socket, user: str = "", password: str = "") -> T
         return None, 0
 
 
+def _peer_name(conn: Optional[socket.socket]) -> str:
+    """The name of the client of a connection.
+
+    A socket of the file system has a path, not an address and a port.
+    """
+    if conn is None:
+        return ""
+    try:
+        name = conn.getpeername()
+    except OSError:
+        return ""
+    if isinstance(name, tuple):
+        return str(name[0]) if name else ""
+    return str(name)
+
+
+def _local_name(conn: Optional[socket.socket]) -> str:
+    """The name of the local end of a connection."""
+    if conn is None:
+        return ""
+    try:
+        name = conn.getsockname()
+    except OSError:
+        return ""
+    if isinstance(name, tuple):
+        return str(name[0]) if name else ""
+    return str(name)
+
+
 def _socks5_reply(rep: int, bind_host: str) -> bytes:
     """The SOCKS5 answer: the code and the address of the listener.
 
@@ -1348,7 +1377,7 @@ class MockServer:
         """Turn one local connection into a stream through the agent."""
         client = ""
         try:
-            client = conn.getpeername()[0] if conn else ""
+            client = _peer_name(conn)
         except OSError:
             client = ""
         target_host, target_port = host, port
@@ -1358,7 +1387,7 @@ class MockServer:
         # its family is the family of the listener.
         listen_host = ""
         try:
-            listen_host = conn.getsockname()[0] if conn else ""
+            listen_host = _local_name(conn)
         except OSError:
             listen_host = ""
         try:
@@ -3087,6 +3116,13 @@ class MockServer:
                 return fail(f"unknown agent {agent_id!r}")
             if dns not in ("remote", "local"):
                 return fail(f"pivot.open: unknown dns mode {dns!r}")
+            # A named pipe is the Windows equivalent of a Unix socket: it
+            # lives in the file system of the host, so only a process on
+            # the host can open it.  The mock has no named pipe of its
+            # own, so it uses a socket of the file system, which has the
+            # same shape.
+            pipe = bool(args.get("pipe", False))
+            pipe_name = str(args.get("pipe_name", "") or "")
             # The listener is bound before the agent is asked for a
             # session: the session is taken when the first connection
             # arrives, so a forward outlives the session it was opened
@@ -3097,22 +3133,33 @@ class MockServer:
                 # The family of the listener is kept: an IPv6 listener
                 # stays on the IPv6 loopback.
                 lhost = "::1" if ":" in lhost else "127.0.0.1"
-            family = socket.AF_INET6 if ":" in lhost else socket.AF_INET
-            listener = socket.socket(family, socket.SOCK_STREAM)
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                listener.bind((lhost or "127.0.0.1", int(lport or 0)))
-            except OSError as exc:
-                listener.close()
-                return fail(f"pivot.open: listen {listen}: {exc}")
-            listener.listen(16)
-            bound = listener.getsockname()
-            # An IPv6 address needs brackets, the way the Go server
-            # renders it: "host:port" is not enough for "::1".
-            if ":" in str(bound[0]):
-                address = f"[{bound[0]}]:{bound[1]}"
+            if pipe:
+                pipe_path = pipe_name or f"/tmp/umbra-pipe-{new_id('tun')}"
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    listener.bind(pipe_path)
+                except OSError as exc:
+                    listener.close()
+                    return fail(f"pivot.open: the named pipe {pipe_path}: {exc}")
+                listener.listen(16)
+                address = f"pipe:{pipe_path}"
             else:
-                address = f"{bound[0]}:{bound[1]}"
+                family = socket.AF_INET6 if ":" in lhost else socket.AF_INET
+                listener = socket.socket(family, socket.SOCK_STREAM)
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    listener.bind((lhost or "127.0.0.1", int(lport or 0)))
+                except OSError as exc:
+                    listener.close()
+                    return fail(f"pivot.open: listen {listen}: {exc}")
+                listener.listen(16)
+                bound = listener.getsockname()
+                # An IPv6 address needs brackets, the way the Go server
+                # renders it: "host:port" is not enough for "::1".
+                if ":" in str(bound[0]):
+                    address = f"[{bound[0]}]:{bound[1]}"
+                else:
+                    address = f"{bound[0]}:{bound[1]}"
             tunnel_id = new_id("tun")
             with self._lock:
                 self.pivots[tunnel_id] = {
@@ -3132,6 +3179,7 @@ class MockServer:
                     "through": through,
                     "path": list(path),
                     "dns": dns,
+                    "pipe": pipe,
                 }
                 if claim:
                     self.pivot_claims.setdefault(claim, []).append(tunnel_id)
@@ -3156,6 +3204,7 @@ class MockServer:
                 "through": through,
                 "path": list(path),
                 "dns": dns,
+                "pipe": pipe,
             })
 
         if cmd == "pivot.close":

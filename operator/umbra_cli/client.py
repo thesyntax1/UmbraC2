@@ -676,6 +676,8 @@ class OperatorClient:
         user: str = "",
         password: str = "",
         path: Optional[List[str]] = None,
+        pipe: bool = False,
+        pipe_name: str = "",
     ) -> Dict[str, Any]:
         """Open a pivot through an agent.
 
@@ -690,6 +692,11 @@ class OperatorClient:
 
         ``path`` chains the pivot: the hops after the first agent.  The
         server walks it, so the operator only names the far end.
+
+        ``pipe`` asks for a named pipe instead of a TCP socket.  A named
+        pipe is the Windows equivalent of a Unix socket: it lives in the
+        file system of the host, so only a process on the host can open
+        it.  It is only available on a Windows server.
         """
         res = self.rpc(
             "pivot.open",
@@ -706,6 +713,8 @@ class OperatorClient:
                 "user": user,
                 "password": password,
                 "path": list(path or []),
+                "pipe": bool(pipe),
+                "pipe_name": pipe_name,
             },
         )
         if not res.ok:

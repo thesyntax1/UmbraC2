@@ -3120,6 +3120,63 @@ def test_the_pivot_reaches_an_ipv6_target():
         target.close()
 
 
+def test_the_pivot_may_listen_on_a_named_pipe():
+    """A named pipe is the Windows equivalent of a Unix socket.
+
+    The pivot listens on a socket of the file system instead of a TCP
+    socket, so only a process of the host can reach it.  The mock has no
+    named pipe of its own, so it uses a socket of the file system, which
+    has the same shape.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server()
+    _, target_port = target.getsockname()[:2]
+
+    token = b"operator-token-pipe-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-pipe", interval=0.3)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        tunnel = client.pivot_open("agent-pipe", mode="socks", pipe=True)
+        assert tunnel.get("pipe") is True, tunnel
+        listen = tunnel["listen"]
+        assert listen.startswith("pipe:"), listen
+        path = listen.split(":", 1)[1]
+
+        # The proxy answers on the socket of the file system.
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(10)
+        conn.connect(path)
+        conn.sendall(b"\x05\x01\x00")
+        assert _recv_exact(conn, 2) == b"\x05\x00"
+        conn.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1") +
+                     int(target_port).to_bytes(2, "big"))
+        reply = _recv_exact(conn, 10)
+        assert reply[1] == 0x00, reply
+        conn.sendall(b"pipe")
+        assert conn.recv(64) == b"pipe"
+        conn.close()
+        assert b"pipe" in seen
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        target.close()
+
+
 def test_the_beacon_can_talk_over_the_mail_transport():
     """The mail transport: the frames are mailed out and the answer comes
     back from the mailbox.

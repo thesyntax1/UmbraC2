@@ -934,6 +934,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		user, _ := args["user"].(string)
 		password, _ := args["password"].(string)
 		loopback, _ := args["loopback"].(bool)
+		pipe, _ := args["pipe"].(bool)
+		pipeName, _ := args["pipe_name"].(string)
 		// The chain of hops after the first agent: the server walks it,
 		// so the operator only names the far end.
 		var path []string
@@ -956,6 +958,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			User:     user,
 			Password: password,
 			Path:     path,
+			Pipe:     pipe,
+			PipeName: pipeName,
 		})
 		if err != nil {
 			return fail("pivot.open: %v", err)
@@ -971,6 +975,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"through":  tun.Through,
 			"dns":      tun.DNS,
 			"path":     pathAny(tun.Path),
+			"pipe":     tun.Pipe,
 		})
 
 	case "pivot.close":

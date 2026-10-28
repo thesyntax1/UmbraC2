@@ -113,6 +113,9 @@ type TunnelInfo struct {
 	// DNS is "remote" when the target resolves the name and "local" when
 	// the server resolves it before the agent connects.
 	DNS string `json:"dns,omitempty"`
+	// Pipe is true when the pivot listens on a named pipe instead of a
+	// TCP socket.
+	Pipe bool `json:"pipe,omitempty"`
 	// LastActivity is when the pivot moved bytes the last time.
 	LastActivity time.Time `json:"last_activity"`
 }
@@ -148,6 +151,13 @@ type Options struct {
 	// its listener.
 	User     string
 	Password string
+	// Pipe asks for a named pipe instead of a TCP socket.  A named pipe
+	// is the Windows equivalent of a Unix socket: it lives in the file
+	// system of the host and only a process on the host can open it.
+	Pipe bool
+	// PipeName is the name of the pipe.  The default is a name that
+	// carries the id of the tunnel.
+	PipeName string
 }
 
 // relayStream is the byte stream of a pivot.
@@ -302,13 +312,31 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 	if opt.Loopback {
 		listen = forceLoopback(listen)
 	}
-	ln, err := net.Listen("tcp", listen)
-	if err != nil {
-		return nil, fmt.Errorf("pivot: listen %s: %w", listen, err)
+	// The id of the tunnel is drawn before the listener, because a named
+	// pipe carries it in its name.
+	tunnelID := newID("tun")
+	var ln net.Listener
+	if opt.Pipe {
+		name := strings.TrimSpace(opt.PipeName)
+		if name == "" {
+			name = "umbra-" + tunnelID
+		}
+		pipeListener, err := newPipeListener(name)
+		if err != nil {
+			return nil, fmt.Errorf("pivot: the named pipe: %w", err)
+		}
+		ln = pipeListener
+		listen = pipeListener.Addr().String()
+	} else {
+		tcpListener, err := net.Listen("tcp", listen)
+		if err != nil {
+			return nil, fmt.Errorf("pivot: listen %s: %w", listen, err)
+		}
+		ln = tcpListener
 	}
 	now := time.Now().UTC()
 	tun := &tunnel{
-		id:          newID("tun"),
+		id:          tunnelID,
 		agentID:     agentID,
 		mode:        mode,
 		host:        opt.Host,
@@ -322,6 +350,7 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 		path:        path,
 		user:        opt.User,
 		password:    opt.Password,
+		pipe:        opt.Pipe,
 	}
 	tun.listener = ln
 	tun.listen = ln.Addr().String()
@@ -340,11 +369,11 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 
 	go m.serve(tun)
 	m.log.Info("pivot tunnel opened", "tunnel", tun.id, "agent", agentID,
-		"mode", mode, "listen", tun.listen, "claim", tun.claim)
+		"mode", mode, "listen", tun.listen, "claim", tun.claim, "pipe", tun.pipe)
 	m.hub.Emit(hub.Event{Kind: "pivot.opened", AgentID: agentID, Data: map[string]any{
 		"tunnel": tun.id, "mode": mode, "listen": tun.listen,
 		"host": opt.Host, "port": int64(opt.Port), "claim": tun.claim,
-		"through": tun.through, "dns": dns, "path": tun.path,
+		"through": tun.through, "dns": dns, "path": tun.path, "pipe": tun.pipe,
 	}})
 	return m.info(tun), nil
 }
@@ -788,6 +817,7 @@ func (m *Manager) info(tun *tunnel) TunnelInfo {
 		Through:     tun.through,
 		Path:        append([]string(nil), tun.path...),
 		DNS:         tun.dns,
+		Pipe:        tun.pipe,
 		LastActivity: tun.lastActivity,
 	}
 }
@@ -811,6 +841,8 @@ type tunnel struct {
 	path []string
 	// dns is "remote" or "local".
 	dns string
+	// pipe is true when the listener is a named pipe.
+	pipe bool
 	// user and password are the credentials of the SOCKS5 proxy.
 	user     string
 	password string

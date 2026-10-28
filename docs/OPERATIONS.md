@@ -784,6 +784,24 @@ per agent.  The object transport uses the same password as the secret key
 of the request and signs every request with AWS Signature Version 4, so the
 same beacon can talk to a real bucket.
 
+### A pivot on a named pipe
+
+On a Windows server the pivot may listen on a named pipe instead of a TCP
+socket.  Only a process of the host can open it, so nothing outside the
+host reaches it.
+
+```
+umbra pivot open laptop-1 --mode socks --pipe
+```
+
+The reply carries the name of the pipe (`\\.\pipe\umbra-<tunnel>`), and
+the operator opens it with the tools of the host:
+
+```powershell
+# the proxy of the pivot, read with the SOCKS5 client of the host
+curl --socks5-hostname "\\.\pipe\umbra-tun-8f2a1c" http://10.0.0.5:8080/
+```
+
 ### IPv6
 
 A pivot may be opened on an IPv6 address, and a proxy may run on one:

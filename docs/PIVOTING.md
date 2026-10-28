@@ -82,6 +82,27 @@ the `CONNECT` command only.  `server/internal/pivot/socks.go` is the
 reference; the Python test double has the same code path so the behaviour can
 be tested without Go.
 
+### The named pipe
+
+A named pipe is the Windows equivalent of a Unix socket: it lives in the
+file system of the host, and only a process of the host can open it.  A
+pivot that listens on one is therefore reachable by the tools of the host
+and by nothing else — no port, no firewall rule, nothing that a scanner
+would see.
+
+```bash
+umbra pivot open laptop-1 --mode socks --pipe
+# -> pivot tun-8f2a1c on \\?\pipe\umbra-tun-8f2a1c
+
+# a name of your own
+umbra pivot open laptop-1 --mode socks --pipe --pipe-name umbra-laptop-1
+```
+
+The proxy above the listener is the same SOCKS5 proxy, the session of the
+agent is the same session: only the socket changes.  A named pipe is a
+Windows thing, so a server on another system refuses the request with a
+clear answer instead of waiting for a listener that will never come.
+
 ### Limits
 
 Every limit is a hard number in `server/internal/pivot/pivot.go`:
