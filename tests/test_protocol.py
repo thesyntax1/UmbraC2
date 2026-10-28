@@ -1823,6 +1823,164 @@ def test_pivot_refuses_an_unknown_agent():
         server.stop()
 
 
+def test_a_pivot_can_be_chained_through_another_agent():
+    """A pivot through a pivot: the operator names the far end only.
+
+    The path is server -> agent A -> agent B -> target.  The server asks A
+    for a stream to B, then plays the peer link on it and asks B for the
+    stream to the target.  Nothing but the far end is named by the operator.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server()
+    target_host, target_port = target.getsockname()
+
+    token = b"operator-token-chain-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    # The first hop only relays; the second one waits for peers.
+    first = FakeAgent(server.address, AGENT_PSK, "agent-first")
+    second = FakeAgent(server.address, AGENT_PSK, "agent-second",
+                       peer_listen="127.0.0.1:0")
+    first.start()
+    second.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        peers = ""
+        while time.time() < deadline:
+            for agent in client.agents():
+                if agent["id"] == "agent-second":
+                    peers = str(agent.get("p2p", "") or "")
+            if peers:
+                break
+            time.sleep(0.05)
+        assert peers, "the second agent never reported its peer address"
+
+        tunnel = client.pivot_open("agent-first", mode="socks", path=["agent-second"])
+        assert tunnel.get("path") == ["agent-second"]
+
+        conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
+                               "127.0.0.1", target_port)
+        conn.sendall(b"chained")
+        assert conn.recv(64) == b"chained"
+        conn.close()
+        assert b"chained" in seen
+    finally:
+        client.close()
+        first.stop()
+        second.stop()
+        server.stop()
+        target.close()
+
+
+def test_the_peer_link_refuses_a_stranger() -> None:
+    """The peer link only answers the holder of the agent key.
+
+    The handshake proves the key in both directions: a beacon that does
+    not hold it cannot join the link, so a host that reaches the peer
+    port gains nothing.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-peer-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-peer",
+                      peer_listen="127.0.0.1:0")
+    agent.start()
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline and not agent.peer_address:
+            time.sleep(0.05)
+        assert agent.peer_address, "the agent never bound its peer listener"
+
+        from umbra_cli import peer
+
+        host, _, port = agent.peer_address.rpartition(":")
+        # The right key: the handshake goes through.
+        sock = socket.create_connection((host, int(port)), timeout=10)
+        try:
+            sess = peer.dial_peer(netio.SocketBytes(sock), AGENT_PSK, "tester")
+            assert sess is not None
+        finally:
+            sock.close()
+
+        # The wrong key: the peer refuses the transcript.
+        sock = socket.create_connection((host, int(port)), timeout=10)
+        try:
+            with pytest.raises(Exception):
+                peer.dial_peer(netio.SocketBytes(sock), b"\x00" * 32, "tester")
+        finally:
+            sock.close()
+    finally:
+        agent.stop()
+        server.stop()
+
+
+def test_a_chained_pivot_falls_back_to_the_server_when_the_peer_is_down() -> None:
+    """A broken peer link must not break the pivot.
+
+    When the peer handshake fails, the server takes the hop over itself:
+    the operator still reaches the target, only the traffic takes another
+    road.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server()
+    target_host, target_port = target.getsockname()
+
+    token = b"operator-token-fall-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    first = FakeAgent(server.address, AGENT_PSK, "agent-first")
+    # The peer listener of the second agent waits with another key: the
+    # peer link cannot be established.
+    second = FakeAgent(server.address, AGENT_PSK, "agent-second",
+                       peer_listen="127.0.0.1:0", peer_psk=b"\x11" * 32)
+    first.start()
+    second.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        peers = ""
+        while time.time() < deadline:
+            for agent in client.agents():
+                if agent["id"] == "agent-second":
+                    peers = str(agent.get("p2p", "") or "")
+            if peers:
+                break
+            time.sleep(0.05)
+        assert peers, "the second agent never reported its peer address"
+
+        tunnel = client.pivot_open("agent-first", mode="socks", path=["agent-second"])
+        assert tunnel.get("path") == ["agent-second"]
+
+        conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
+                               "127.0.0.1", target_port)
+        conn.sendall(b"fallback")
+        assert conn.recv(64) == b"fallback"
+        conn.close()
+        assert b"fallback" in seen
+    finally:
+        client.close()
+        first.stop()
+        second.stop()
+        server.stop()
+        target.close()
+
+
 def _socks5_connect_auth(proxy_host: str, proxy_port: int, host: str, port: int,
                          user: str, password: str) -> socket.socket:
     """Open a SOCKS5 tunnel through a proxy that asks for credentials."""

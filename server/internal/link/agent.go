@@ -103,6 +103,12 @@ func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 	if account, ok := msg["impersonation"].(string); ok {
 		l.Hub.SetImpersonation(l.AgentID, account)
 	}
+	// The peer listener may be bound after the handshake (the p2p task
+	// does that), so the address travels with the check-in as well: the
+	// server resolves the chain of a pivot from it.
+	if addr, ok := msg["p2p"].(string); ok && addr != "" {
+		l.Hub.SetPeerAddress(l.AgentID, addr)
+	}
 	tasks := l.Hub.NextTasks(l.AgentID, l.maxTasksPerCycle())
 	sleep, jitter, obfuscate := l.Hub.PolicyFull(l.AgentID)
 
@@ -260,6 +266,9 @@ func AgentMeta(info *HelloInfo, transport, addr string, sleep, jitter int) *stor
 		PID:       pid,
 		Transport: transport,
 		Addr:      addr,
+		// The peer listener of the beacon: the server chains a pivot
+		// through it when the operator names a far end.
+		P2P:       str("p2p"),
 		Sleep:     sleep,
 		Jitter:    jitter,
 		Caps:      metaCaps(meta["caps"]),

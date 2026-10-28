@@ -116,6 +116,9 @@ func run() error {
 	// operator asks for a tunnel.
 	pivotMgr := pivot.New(h, logger)
 	pivotMgr.SetDeny(pivotDenyRules(cfg.Server.PivotDeny))
+	// The peer link is authenticated with the agent key: the beacons of
+	// one team already share it.
+	pivotMgr.SetPSK(cfg.Keyring.AgentPSK)
 	srv.SetPivot(pivotMgr)
 
 	// Extensions: a signed catalogue of post-exploitation modules.

@@ -33,7 +33,7 @@ Added on top of that core:
 
 | Area | What works | Where |
 |---|---|---|
-| Pivoting | SOCKS5 proxy and TCP port forward through a compromised agent, agent-initiated callback sessions, peer-to-peer chains between implants | [docs/PIVOTING.md](docs/PIVOTING.md) |
+| Pivoting | SOCKS5 proxy and TCP port forward through a compromised agent, agent-initiated callback sessions, peer links with a real handshake and a rekey, and chains of pivots that the server resolves from the far end | [docs/PIVOTING.md](docs/PIVOTING.md) |
 | Layer-3 tunnel | An encrypted tunnel between the console and the implants: every agent gets an address in the tunnel network | [docs/PIVOTING.md](docs/PIVOTING.md#the-layer-3-tunnel) |
 | DNS transport | The beacon talks to the server through TXT records when everything else is blocked | [docs/PIVOTING.md](docs/PIVOTING.md#the-dns-transport) |
 | In-memory modules | COFF/BOF objects and PE images are loaded and executed without touching the disk | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) |

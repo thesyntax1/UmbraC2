@@ -33,6 +33,7 @@ object RemoteConfig {
             version = BuildConfig.VERSION_NAME,
             androidContext = context,
             stateDir = context?.filesDir?.absolutePath ?: "",
+            peerListen = BuildConfig.UMBRA_PEER_LISTEN,
         )
     }
 }

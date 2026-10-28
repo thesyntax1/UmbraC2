@@ -65,6 +65,9 @@ android {
         buildConfigField "String", "UMBRA_HTTP_PATH", envStr('UMBRA_HTTP_PATH', '/api/v1/beacon')
         buildConfigField "int", "UMBRA_SLEEP", envInt('UMBRA_SLEEP', 15)
         buildConfigField "int", "UMBRA_JITTER", envInt('UMBRA_JITTER', 30)
+        // The address of the peer listener: a pivot can be chained through
+        // the phone.  Empty means "no peer link".
+        buildConfigField "String", "UMBRA_PEER_LISTEN", envStr('UMBRA_PEER_LISTEN', '')
     }
 
     buildTypes {

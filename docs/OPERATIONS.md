@@ -598,10 +598,38 @@ The list is a graph, not a table of ports:
 | `state` | `open`, `closed` or `waiting` |
 | `claim` | the name of the claim the tunnel belongs to |
 | `dns` | `remote` (the agent resolves the name) or `local` (the server does) |
+| `path` | the chain of hops the server walked to reach the target |
 
 The dashboard draws the same thing: the "reach" panel shows the agents as
 nodes and the pivots as edges, so a chained pivot is visible as a line that
 starts at one agent and ends at another.
+
+### The chain
+
+A pivot can run through other pivots.  The operator names the far end; the
+server resolves the road from the addresses the beacons reported:
+
+```bash
+# server -> agent-01 -> agent-02 -> target
+umbra pivot open agent-01 --mode socks --through agent-02
+
+# a longer chain: every --through adds one hop
+umbra pivot open agent-01 --mode socks --through agent-02 --through agent-03
+```
+
+The server asks the first agent for a stream to the next one, speaks the
+peer handshake on it (PROTOCOL.md §7.3a) and continues over the peer link.
+When the peer link of a hop cannot be established, the server takes that
+hop over itself: the pivot keeps working and the traffic takes another
+road.  The "reach" table shows the chain in the `path` column.
+
+The beacons that wait for peers must serve their peer listener; the address
+they wait on is reported to the server in the handshake, so nothing has to
+be configured by hand:
+
+```bash
+umbra-beacon --server 10.0.0.5:4001 --peer-listen 0.0.0.0:9001
+```
 
 ### The proxy
 

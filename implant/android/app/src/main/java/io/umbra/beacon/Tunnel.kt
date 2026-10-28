@@ -130,6 +130,49 @@ object Tunnel {
         )
         log("tunnel callback open ($streamId)")
 
+        try {
+            serveSession(session, input, output, log)
+        } finally {
+            try {
+                socket.close()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    /**
+     * Serve the frames of an established session until the link fails.
+     *
+     * The callback session and the peer link carry the same frames, so
+     * they share this loop: what arrives is a pivot stream, what goes out
+     * are its bytes.
+     */
+    internal fun serveSession(
+        session: Session,
+        input: InputStream,
+        output: OutputStream,
+        log: (String) -> Unit,
+    ) {
+        val writeLock = Any()
+        fun send(type: Byte, value: Upk) {
+            // One critical section: the session nonce must not repeat, the
+            // frames must leave in order and the keys may not rotate in the
+            // middle of a frame.
+            synchronized(writeLock) {
+                Wire.writeFrame(output, session.sealValue(type, value))
+                if (session.needsRekey()) {
+                    // The REKEY frame is sealed with the old keys and
+                    // carries the seed: both ends derive the same keys.
+                    val seed = Crypto.random(32)
+                    Wire.writeFrame(
+                        output,
+                        session.sealValue(Wire.MSG_REKEY, Upk.map("seed" to Upk.bin(seed))),
+                    )
+                    session.applyRekey(seed)
+                }
+            }
+        }
+
         val streams = ConcurrentHashMap<String, Stream>()
         try {
             while (true) {
@@ -168,6 +211,15 @@ object Tunnel {
                         val id = body.field("stream")?.text() ?: ""
                         streams.remove(id)?.close()
                     }
+                    Wire.MSG_REKEY -> {
+                        // The other end rotates the keys: the seed travels
+                        // with the frame.
+                        val seed = body.field("seed")?.bytes() ?: ByteArray(0)
+                        if (seed.size != 32) throw SessionException("malformed REKEY seed")
+                        synchronized(writeLock) {
+                            session.applyRekey(seed)
+                        }
+                    }
                     Wire.MSG_PADDING -> {
                         // Padding frames carry nothing.
                     }
@@ -179,10 +231,6 @@ object Tunnel {
         } finally {
             streams.values.forEach { it.close() }
             streams.clear()
-            try {
-                socket.close()
-            } catch (_: Throwable) {
-            }
         }
     }
 

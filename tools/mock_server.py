@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "operator"))
 
-from umbra_cli import crypto, handshake, netio, session, upk, wire, ws  # noqa: E402
+from umbra_cli import crypto, handshake, netio, peer, session, upk, wire, ws  # noqa: E402
 
 
 # How long an agent stays online after its last check-in.  Mirrors
@@ -247,6 +247,39 @@ class TunnelStream:
         self.result: "queue.Queue[Optional[str]]" = queue.Queue(maxsize=1)
         self.data: "queue.Queue[bytes]" = queue.Queue(maxsize=64)
         self.closed = threading.Event()
+        # The session this stream belongs to: it is what carries the
+        # bytes.  A stream of a peer link carries them on the peer
+        # session instead.
+        self.session: Any = None
+        # The bytes that were read but not asked for: a read must return
+        # exactly what the caller wanted, and a chunk can be larger.
+        self._buf = bytearray()
+        self._buf_lock = threading.Lock()
+
+    # -- the bytes -------------------------------------------------------
+    def write(self, data: bytes) -> int:
+        """Send bytes over this stream."""
+        if not data:
+            return 0
+        self.session.send(wire.MsgType.TUNNEL_DATA, {"stream": self.id, "data": data})
+        return len(data)
+
+    def read(self, count: int) -> bytes:
+        """Read exactly ``count`` bytes; an empty result means the end."""
+        with self._buf_lock:
+            while len(self._buf) < count:
+                try:
+                    chunk = self.data.get(timeout=0.2)
+                except queue.Empty:
+                    if self.closed.is_set():
+                        return b""
+                    continue
+                if not chunk:
+                    return b""
+                self._buf += chunk
+            out = bytes(self._buf[:count])
+            del self._buf[:count]
+            return out
 
 
 class TunnelSession:
@@ -269,6 +302,9 @@ class TunnelSession:
         self.sid = sid
         self.stream = stream
         self.sess = sess
+        # "callback" is the session the server opened to this agent;
+        # "peer" is the link another beacon (or the server) dialled in.
+        self.kind = "callback"
         self.gate = netio.SendGate(sess, stream)
         self.streams: Dict[str, TunnelStream] = {}
         self.lock = threading.Lock()
@@ -332,6 +368,7 @@ class TunnelSession:
         """Ask the agent to connect to ``host:port`` and wait for the answer."""
         sid = new_id("s")
         st = TunnelStream(sid)
+        st.session = self
         with self.lock:
             self.streams[sid] = st
         self.send(
@@ -360,7 +397,12 @@ class TunnelSession:
         with self.server._lock:
             if self.server.tunnel_sessions.get(self.agent_id) is self:
                 del self.server.tunnel_sessions[self.agent_id]
-        self.server.emit("pivot.session_closed", self.agent_id, data={"session": self.sid})
+        if self.kind == "peer":
+            self.server.emit("pivot.peer_closed", self.agent_id,
+                             data={"session": self.sid})
+        else:
+            self.server.emit("pivot.session_closed", self.agent_id,
+                             data={"session": self.sid})
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +812,7 @@ class MockServer:
         password: str = "",
         dns: str = "remote",
         deny: Optional[List[str]] = None,
+        path: Optional[List[str]] = None,
     ) -> None:
         while not self._stop.is_set():
             try:
@@ -785,7 +828,7 @@ class MockServer:
             t = threading.Thread(
                 target=self._pivot_handle,
                 args=(conn, ts, mode, host, port, tunnel_id, agent_id,
-                      user, password, dns, deny),
+                      user, password, dns, deny, list(path or [])),
                 daemon=True,
             )
             t.start()
@@ -803,6 +846,7 @@ class MockServer:
         password: str = "",
         dns: str = "remote",
         deny: Optional[List[str]] = None,
+        path: Optional[List[str]] = None,
     ) -> None:
         """Turn one local connection into a stream through the agent."""
         client = ""
@@ -835,7 +879,15 @@ class MockServer:
                         pass
                 return
             try:
-                st = ts.open_stream(target_host, target_port)
+                if path:
+                    # A chained pivot: every further hop is reached
+                    # through the peer link of the previous one.
+                    opener, st = self._pivot_open_chain(
+                        agent_id, list(path), target_host, target_port
+                    )
+                else:
+                    opener = ts
+                    st = ts.open_stream(target_host, target_port)
             except RuntimeError:
                 self._pivot_note(client, target_host, target_port, 0, 0, "refused")
                 if mode == "socks":
@@ -868,13 +920,15 @@ class MockServer:
                         if not data:
                             break
                         counter["up"] += len(data)
-                        ts.send(wire.MsgType.TUNNEL_DATA, {"stream": st.id, "data": data})
+                        opener.send(
+                            wire.MsgType.TUNNEL_DATA, {"stream": st.id, "data": data}
+                        )
                 except OSError:
                     pass
                 finally:
                     local_closed.set()
                     try:
-                        ts.send(
+                        opener.send(
                             wire.MsgType.TUNNEL_CLOSE,
                             {"stream": st.id, "reason": "the local side closed"},
                         )
@@ -908,6 +962,50 @@ class MockServer:
             except OSError:
                 pass
 
+    def _peer_addr(self, agent_id: str) -> Tuple[str, int]:
+        """The peer address of an agent: where its peer listener waits.
+
+        The beacon reports it in the handshake, so the server can chain a
+        pivot through it without the operator naming an address.
+        """
+        with self._lock:
+            record = self.agents.get(agent_id) or {}
+        addr = str(record.get("p2p", "") or "")
+        if not addr:
+            raise RuntimeError(f"agent {agent_id} has no peer address")
+        host, _, port = addr.rpartition(":")
+        if not host or not port.isdigit():
+            raise RuntimeError(f"agent {agent_id} has a bad peer address {addr!r}")
+        return host, int(port)
+
+    def _pivot_open_chain(
+        self, agent_id: str, path: List[str], host: str, port: int
+    ) -> Tuple[Any, TunnelStream]:
+        """Open a stream to the target, walking the path of the pivot.
+
+        The first hop is the agent the pivot belongs to.  Every further hop
+        is reached through the peer link: the server asks the previous agent
+        for a stream to the next one and then plays the peer on that
+        stream.  The operator only names the far end; the path is resolved
+        here, from the addresses the beacons reported.
+        """
+        opener: Any = self._tunnel_session(agent_id)
+        for hop in path:
+            peer_host, peer_port = self._peer_addr(hop)
+            st = opener.open_stream(peer_host, peer_port)
+            try:
+                sess = peer.dial_peer(st, self.agent_psk, "umbra-server")
+            except Exception:
+                # The peer link is down: the server takes the hop over.
+                # The pivot still works, only the traffic takes another
+                # road.
+                opener = self._tunnel_session(hop)
+                continue
+            link = peer.PeerLink(sess, st, ident=hop)
+            link.start()
+            opener = link
+        return opener, opener.open_stream(host, port)
+
     def _pivot_topology(self) -> Dict[str, Any]:
         """The picture of the reach.
 
@@ -935,6 +1033,7 @@ class MockServer:
                     "state": info.get("state", ""),
                     "claim": info.get("claim", ""),
                     "dns": info.get("dns", ""),
+                    "path": list(info.get("path", []) or []),
                 })
             nodes = []
             for agent in agents:
@@ -1022,6 +1121,10 @@ class MockServer:
                     # do; the panic flag belongs to the operator, so it
                     # survives a re-registration.
                     "caps": list(meta.get("caps") or record.get("caps") or []),
+                    # The peer address of the beacon: where another
+                    # beacon (or the server) can dial in to carry a
+                    # pivot through this host.
+                    "p2p": str(meta.get("p2p", "") or record.get("p2p", "") or ""),
                     "panicked": bool(record.get("panicked", False)),
                     # The cadence the operator configured survives a
                     # re-registration: the beacon reconnects every cycle.
@@ -2362,6 +2465,11 @@ class MockServer:
             dns = str(args.get("dns", "remote")) or "remote"
             claim = str(args.get("claim", "") or "")
             through = str(args.get("through", "") or "")
+            # The path of a chained pivot: the hops after the first agent.
+            # The operator names the far end; the server walks the path.
+            path = [str(x) for x in (args.get("path") or []) if str(x)]
+            if path:
+                through = path[0]
             user = str(args.get("user", "") or "")
             password = str(args.get("password", "") or "")
             loopback = bool(args.get("loopback", False))
@@ -2405,6 +2513,7 @@ class MockServer:
                     "state": "open",
                     "claim": claim,
                     "through": through,
+                    "path": list(path),
                     "dns": dns,
                 }
                 if claim:
@@ -2412,7 +2521,7 @@ class MockServer:
             t = threading.Thread(
                 target=self._pivot_accept,
                 args=(listener, mode, host, port, tunnel_id, agent_id,
-                      user, password, dns, list(self.pivot_deny)),
+                      user, password, dns, list(self.pivot_deny), list(path)),
                 daemon=True,
             )
             t.start()
@@ -2428,6 +2537,7 @@ class MockServer:
                 "port": port,
                 "claim": claim,
                 "through": through,
+                "path": list(path),
                 "dns": dns,
             })
 
@@ -2793,11 +2903,20 @@ class FakeAgent(threading.Thread):
         execute_shell: bool = True,
         interval: float = 0.3,
         websocket: bool = False,
+        peer_listen: str = "",
+        peer_psk: Optional[bytes] = None,
     ) -> None:
         super().__init__(daemon=True, name="mock-agent")
         self.server = server
         self.psk = psk
         self.agent_id = agent_id or new_id("agent")
+        # The address of the peer listener: where another beacon (or the
+        # server) can dial in to carry a pivot through this host.
+        self.peer_listen = peer_listen
+        # The key of the peer listener.  It is the agent key by default; a
+        # different one is how a broken peer link is simulated.
+        self.peer_psk = peer_psk if peer_psk is not None else psk
+        self.peer_address = ""
         # The WebSocket transport talks to the same server, but through an
         # HTTP upgrade instead of a raw socket.
         self.websocket = websocket
@@ -2843,12 +2962,103 @@ class FakeAgent(threading.Thread):
         self._stop.set()
 
     def run(self) -> None:
+        if self.peer_listen:
+            threading.Thread(target=self._peer_listener, args=(self.peer_listen,),
+                             daemon=True).start()
         while not self._stop.is_set():
             try:
                 self._cycle()
             except Exception:  # pragma: no cover - dev helper
                 pass
             self._stop.wait(self.interval)
+
+    # -- the peer link ---------------------------------------------------
+    def _peer_listener(self, bind: str) -> None:
+        """Wait for peer links and serve the pivot streams on them."""
+        host, _, port = bind.rpartition(":")
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind((host or "127.0.0.1", int(port or 0)))
+        except OSError:
+            return
+        listener.listen(8)
+        listener.settimeout(0.5)
+        bound = listener.getsockname()
+        self.peer_address = f"{bound[0]}:{bound[1]}"
+        # The address travels in the handshake: the server resolves the
+        # path of a chained pivot from it.
+        self.meta["p2p"] = self.peer_address
+        while not self._stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            threading.Thread(target=self._peer_serve, args=(conn,), daemon=True).start()
+
+    def _peer_serve(self, conn: socket.socket) -> None:
+        """Serve one peer link: the handshake, then the pivot streams.
+
+        The peer link carries the same frames as the callback session, so
+        the same relay serves it: the peer asks for a stream, the beacon
+        connects to the target and moves the bytes.
+        """
+        try:
+            stream = netio.Stream(conn, timeout=30)
+            sess = peer.accept_peer(
+                netio.SocketBytes(stream.sock), self.peer_psk, self.agent_id
+            )
+        except Exception:
+            try:
+                conn.close()
+            except OSError:
+                pass
+            return
+        gate = netio.SendGate(sess, stream)
+        targets: Dict[str, socket.socket] = {}
+        try:
+            while not self._stop.is_set():
+                msg_type, body = sess.decrypt_message(stream.recv_frame())
+                if msg_type == wire.MsgType.TUNNEL_OPEN and str(body.get("op", "")) == "open":
+                    stream_id = str(body.get("stream", ""))
+                    target_host = str(body.get("host", ""))
+                    target_port = int(body.get("port", 0) or 0)
+                    threading.Thread(
+                        target=self._tunnel_stream,
+                        args=(gate, stream_id, target_host, target_port, targets),
+                        daemon=True,
+                    ).start()
+                elif msg_type == wire.MsgType.TUNNEL_DATA:
+                    target = targets.get(str(body.get("stream", "")))
+                    if target is not None:
+                        try:
+                            target.sendall(bytes(body.get("data") or b""))
+                        except OSError:
+                            pass
+                elif msg_type == wire.MsgType.TUNNEL_CLOSE:
+                    target = targets.pop(str(body.get("stream", "")), None)
+                    if target is not None:
+                        try:
+                            target.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        try:
+                            target.close()
+                        except OSError:
+                            pass
+                elif msg_type == wire.MsgType.REKEY:
+                    # The peer rotates the keys: the seed travels with the
+                    # frame.
+                    seed = body.get("seed") or b""
+                    if len(seed) != 32:
+                        raise ValueError("malformed REKEY seed")
+                    sess.apply_rekey(bytes(seed))
+        except Exception:
+            pass
+        finally:
+            stream.close()
 
     def _cycle(self) -> None:
         host, _, port = self.server.rpartition(":")

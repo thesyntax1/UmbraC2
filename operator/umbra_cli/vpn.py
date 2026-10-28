@@ -80,13 +80,14 @@ def print_pivots(tunnels: List[Dict[str, Any]], sessions: int = 0,
             t.get("bytes_up", 0),
             t.get("bytes_down", 0),
             t.get("claim", "") or "-",
+            " -> ".join(t.get("path") or []) or "-",
             t.get("state", "?"),
         ]
         for t in tunnels
     ]
     print(_table(
         ["TUNNEL", "AGENT", "THROUGH", "MODE", "LISTEN", "TARGET", "STREAMS",
-         "UP", "DOWN", "CLAIM", "STATE"],
+         "UP", "DOWN", "CLAIM", "CHAIN", "STATE"],
         rows,
     ))
     if not topology:
@@ -105,6 +106,7 @@ def print_pivots(tunnels: List[Dict[str, Any]], sessions: int = 0,
                 e.get("bytes_up", 0),
                 e.get("bytes_down", 0),
                 e.get("dns", "") or "-",
+                " -> ".join(e.get("path") or []) or "-",
                 _ago(e.get("last_active", 0)),
                 e.get("state", "?"),
             ]
@@ -112,7 +114,7 @@ def print_pivots(tunnels: List[Dict[str, Any]], sessions: int = 0,
         ]
         print(_table(
             ["TUNNEL", "AGENT", "THROUGH", "MODE", "STREAMS", "UP", "DOWN",
-             "DNS", "LAST", "STATE"],
+             "DNS", "CHAIN", "LAST", "STATE"],
             edge_rows,
         ))
     pivots = [n for n in nodes if n.get("tunnels")]

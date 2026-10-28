@@ -297,12 +297,27 @@
           ? place[edge.through]
           : { x: width / 2, y: height / 2 };
         var idle = edge.state !== "open";
-        parts.push('<line class="edge' + (idle ? ' idle' : '') + '" x1="' + from.x +
-          '" y1="' + from.y + '" x2="' + to.x + '" y2="' + to.y + '"></line>');
         var moved = (edge.bytes_up || 0) + (edge.bytes_down || 0);
+        // The chain of the pivot: its own agent first, then every hop of
+        // the path the server walked.
+        var chain = [to];
+        (edge.path || []).forEach(function (hop) {
+          var at = place[hop];
+          if (at) chain.push(at);
+        });
+        var previous = from;
+        chain.forEach(function (point) {
+          parts.push('<line class="edge' + (idle ? ' idle' : '') + '" x1="' + previous.x +
+            '" y1="' + previous.y + '" x2="' + point.x + '" y2="' + point.y + '"></line>');
+          previous = point;
+        });
+        var chainLabel = edge.path && edge.path.length
+          ? " via " + edge.path.join(" \u2192 ")
+          : "";
         parts.push('<text class="label" x="' + ((from.x + to.x) / 2) + '" y="' +
           ((from.y + to.y) / 2 - 4) + '" text-anchor="middle">' +
-          (edge.mode || "pivot") + " " + Math.round(moved / 1024) + "k</text>");
+          (edge.mode || "pivot") + " " + Math.round(moved / 1024) + "k" +
+          chainLabel + "</text>");
       });
       shown.forEach(function (node) {
         var at = place[node.agent_id];

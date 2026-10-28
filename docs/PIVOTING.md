@@ -111,15 +111,54 @@ agent PSK and an X25519 exchange, so the server does not have to be in the
 path.  The frames that travel over it are the same `TUNNEL_*` frames, so the
 server side has one implementation to reason about.
 
-```bash
-# on agent B: listen
-umbra task agent-b p2p --args '{"action":"listen","host":"0.0.0.0","port":9001}'
-# on agent A: connect through B
-umbra task agent-a p2p --args '{"action":"connect","host":"10.0.0.9","port":9001}'
+The handshake of the peer link is a pair of length prefixed maps, not the
+umbra handshake: it runs over a byte stream that may be a tunnel, a pipe or
+a socket.  The tags are keyed with the agent PSK and cover both halves of
+the exchange, so neither a hello nor an answer can be replayed into another
+link:
+
+```
+hello.mac = HMAC(psk, "umbra/v1/p2p/hello" | id | pub | nonce)
+ack.mac   = HMAC(psk, "umbra/v1/p2p/ack" | hello.id | hello.pub | hello.nonce
+                                     | ack.id   | ack.pub   | ack.nonce)
 ```
 
-The peer link is a *pivot* link: once it is up, the server can open streams
-through it exactly like it does through a callback session.
+The full description of the handshake, the key schedule and the rekey is in
+[PROTOCOL.md §7.3a](PROTOCOL.md#73a-the-peer-link).
+
+### 2.1 The beacon that waits
+
+A beacon serves the peer link when it is told to.  The address it waits on
+travels to the server in the handshake metadata (`meta.p2p`), so the server
+knows where to reach the beacon without the operator naming an address.
+
+```bash
+# the beacon waits for peers on this address
+umbra-beacon --server 10.0.0.5:4001 --peer-listen 0.0.0.0:9001
+# the beacon dials a peer (the server is the fallback when it is down)
+umbra-beacon --server 10.0.0.5:4001 --peer-connect 10.0.0.9:9001
+```
+
+The Android beacon does the same: `UMBRA_PEER_LISTEN` (build time) binds
+the listener of the phone.
+
+### 2.2 The chain the operator asks for
+
+The operator names the far end; the server resolves the road:
+
+```bash
+# server -> agent A -> agent B -> target
+umbra pivot open agent-a --mode socks --through agent-b
+# the same, with the console in the middle of the chain
+umbra pivot open agent-a --mode socks --through agent-b --through agent-c
+```
+
+The server asks the first agent for a stream to the address the next agent
+reported, speaks the peer handshake on that stream and continues with the
+peer link.  When the peer link of a hop cannot be established, the server
+takes the hop over itself: the pivot keeps working and the traffic takes
+another road.  The console shows the chain in the "reach" table and the
+dashboard draws it.
 
 ---
 

@@ -231,6 +231,8 @@ type TopologyEdge struct {
 	State       string `json:"state"`
 	Claim       string `json:"claim,omitempty"`
 	DNS         string `json:"dns,omitempty"`
+	// Path is the chain of hops after the first agent.
+	Path []string `json:"path,omitempty"`
 }
 
 // Topology is the whole picture: the agents, the pivots between them, the
@@ -291,6 +293,7 @@ func (m *Manager) Topology() Topology {
 			State:      info.State,
 			Claim:      info.Claim,
 			DNS:        info.DNS,
+			Path:       info.Path,
 		})
 	}
 

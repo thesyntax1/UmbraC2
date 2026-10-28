@@ -1045,6 +1045,7 @@ class Console:
                     host = ""
                     port = 0
                     listen = ""
+                    path: List[str] = []
                     for token in rest[2:]:
                         if token.startswith("--mode="):
                             mode = token.split("=", 1)[1]
@@ -1054,15 +1055,18 @@ class Console:
                             port = int(token.split("=", 1)[1])
                         elif token.startswith("--listen="):
                             listen = token.split("=", 1)[1]
+                        elif token.startswith("--through="):
+                            path.append(token.split("=", 1)[1])
                     data = self.client.pivot_open(
-                        rest[1], mode=mode, host=host, port=port, listen=listen)
+                        rest[1], mode=mode, host=host, port=port, listen=listen,
+                        path=path, through=path[0] if path else "")
                     print(f"pivot {data.get('stream')} open on {data.get('listen')}")
                 elif sub_cmd in ("close", "rm") and len(rest) >= 2:
                     self.client.pivot_close(rest[1])
                     print(f"closed {rest[1]}")
                 else:
                     print("usage: pivot [list | open <agent> [--mode=] [--host=] [--port=] "
-                          "[--listen=] | close <tunnel>]")
+                          "[--listen=] [--through=] | close <tunnel>]")
             elif cmd == "vpn":
                 sub_cmd = rest[0] if rest else "status"
                 if sub_cmd == "status":
@@ -1662,8 +1666,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="force the listener onto the loopback of the server")
     pivot.add_argument("--claim", default="",
                        help="name the pivot, so it can be released as a group")
-    pivot.add_argument("--through", default="",
-                       help="the agent this pivot is chained through")
+    pivot.add_argument("--through", action="append", default=[],
+                       help="the agent this pivot is chained through; repeat it "
+                            "to chain the pivot through several agents")
     pivot.add_argument("--user", default="",
                        help="the user the socks5 proxy asks for")
     pivot.add_argument("--password", default="",
@@ -2472,7 +2477,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not args.target:
                     print("usage: umbra pivot open <agent> [--mode socks|forward] "
                           "[--host H --port P] [--listen ADDR] [--dns remote|local] "
-                          "[--loopback] [--claim NAME] [--through AGENT]", file=sys.stderr)
+                          "[--loopback] [--claim NAME] [--through AGENT ...]",
+                          file=sys.stderr)
                     return 2
                 data = client.pivot_open(
                     args.target,
@@ -2483,9 +2489,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     dns=args.dns,
                     loopback=args.loopback,
                     claim=args.claim,
-                    through=args.through,
+                    through=args.through[0] if args.through else "",
                     user=args.user,
                     password=args.password,
+                    path=list(args.through),
                 )
                 if args.json:
                     emit(data)

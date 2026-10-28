@@ -374,6 +374,13 @@ func (h *Hub) UnregisterAgent(agentID string) {
 //
 // The beacon says it in the check-in, so the inventory shows the truth
 // instead of the account the implant started with.
+// SetPeerAddress records the address of the peer listener of an agent.
+func (h *Hub) SetPeerAddress(agentID, addr string) {
+	if h.store.SetPeerAddress(agentID, addr) {
+		h.store.SaveAsync()
+	}
+}
+
 func (h *Hub) SetImpersonation(agentID, account string) {
 	if h.store.SetImpersonation(agentID, account) {
 		h.store.SaveAsync()
@@ -1523,6 +1530,9 @@ func agentData(a *store.Agent) map[string]any {
 		"integrity":  a.Integrity,
 		"transport":  a.Transport,
 		"addr":       a.Addr,
+		// The peer address of the beacon: where a chained pivot can
+		// reach it.
+		"p2p":        a.P2P,
 		"sleep":      a.Sleep,
 		"jitter":     a.Jitter,
 		"state":      a.State,

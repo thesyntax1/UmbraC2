@@ -334,8 +334,11 @@ state preserved when a late result arrives).
 Done (pivoting and extensions): agent callback sessions with a SOCKS5 proxy
 and a TCP port forward (`internal/pivot`), the picture of the reach
 (`internal/pivot/topology.go`: the graph of the pivots, the accounting per
-client, the log of the connections, the deny list and the claims), peer-to-peer links between implants
-(`implant/rust/src/tunnel.rs`), the layer-3 tunnel between the console and the
+client, the log of the connections, the deny list and the claims), the peer
+link between two implants with a real handshake, a key exchange and a rekey
+(`internal/pivot/peer.go`, `implant/rust/src/tunnel.rs`,
+`implant/android/.../Peer.kt`) and the chains of pivots the server resolves
+from the far end (`internal/pivot/pivot.go`), the layer-3 tunnel between the console and the
 beacons (`internal/vpn`, `implant/rust/src/vpn.rs`), the DNS transport
 (`internal/dnstun`, `implant/rust/src/dns.rs`), in-memory COFF execution and
 reflective PE loading (`implant/rust/src/bof.rs`, `implant/rust/src/post.rs`),

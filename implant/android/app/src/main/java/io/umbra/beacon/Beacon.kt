@@ -37,6 +37,14 @@ class Beacon(
     private var evasion = Evasion.load(config.stateDir)
 
     /**
+     * The address of the peer listener, once it is bound.
+     *
+     * It travels in the handshake: the server resolves the chain of a
+     * pivot from it.
+     */
+    @Volatile private var peerAddress: String = ""
+
+    /**
      * Start the loop. Refuses if a thread still exists: two live loops would
      * share one session and violate the SEND-SERIAL invariant (frames must
      * leave in nonce order), so a restart waits for [stop] to have joined.
@@ -45,6 +53,7 @@ class Beacon(
         synchronized(lifecycle) {
             if (running.get() || thread != null) return
             running.set(true)
+            startPeerListener()
             // The pivot callback needs the server address and the agent key.
             TaskRunner.configure(
                 TaskRunner.Context(
@@ -181,6 +190,37 @@ class Beacon(
         }
     }
 
+    /**
+     * The metadata of the handshake: the host facts and where the peer
+     * listener waits.
+     */
+    private fun meta(): Upk.MapV {
+        val meta = SysInfo.meta(config.version)
+        val address = peerAddress
+        if (address.isNotEmpty()) {
+            meta.entries["p2p"] = Upk.str(address)
+        }
+        return meta
+    }
+
+    /**
+     * Bind the peer listener and serve the pivots that are chained
+     * through this host.
+     *
+     * The listener is bound before the first handshake, so the address is
+     * known when the server learns about the beacon.
+     */
+    private fun startPeerListener() {
+        if (config.peerListen.isEmpty()) return
+        try {
+            peerAddress = Peer.listenPeer(
+                config.peerListen, config.psk, config.agentId,
+            ) { message -> log(message) }
+        } catch (t: Throwable) {
+            log("the peer listener could not bind: ${t.message}")
+        }
+    }
+
     private fun handshake() {
         val suite = Wire.SUITE_AES256_GCM
         val ephemeral = Crypto.x25519Keypair()
@@ -199,7 +239,7 @@ class Beacon(
             "ts" to Upk.num(ts),
             "suite" to Upk.num(suite.toLong()),
             "auth" to Upk.bin(auth),
-            "meta" to SysInfo.meta(config.version),
+            "meta" to meta(),
         )
         val boot = Session.fromBootstrap(config.psk, suite, isServer = false)
         val frame = boot.sealValue(Wire.MSG_HELLO, hello)
@@ -395,4 +435,11 @@ data class BeaconConfig(
      * phone what is installed on it long after the fact.
      */
     val stateDir: String = "",
+    /**
+     * The address of the peer listener ("" = no peer link).
+     *
+     * The beacon binds it, tells the server where it waits, and serves the
+     * pivots that are chained through this host.
+     */
+    val peerListen: String = "",
 )

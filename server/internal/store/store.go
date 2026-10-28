@@ -116,6 +116,10 @@ type Agent struct {
 	Integrity string    `json:"integrity,omitempty"`
 	Transport string    `json:"transport"`
 	Addr      string    `json:"addr"`
+	// P2P is the address of the peer listener of the beacon: where
+	// another beacon (or the server) can dial in to carry a pivot
+	// through this host.
+	P2P string `json:"p2p,omitempty"`
 	Sleep     int       `json:"sleep"`
 	Jitter    int       `json:"jitter"`
 	// What the beacon last reported, kept apart from the cadence the
@@ -1040,6 +1044,25 @@ func (s *Store) CredentialCount() int {
 }
 
 // SetImpersonation records the account an agent runs as, or clears it.
+// SetPeerAddress records the address of the peer listener of an agent.
+//
+// The address is where another beacon (or the server) dials in to carry a
+// pivot through this host.  It changes when the listener is rebound, so
+// it is overwritten every time the agent reports it.
+func (s *Store) SetPeerAddress(agentID, addr string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	if a.P2P == addr {
+		return false
+	}
+	a.P2P = addr
+	return true
+}
+
 func (s *Store) SetImpersonation(agentID, account string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

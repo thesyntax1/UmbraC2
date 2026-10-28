@@ -62,6 +62,10 @@ pub const COMPILED_PROXY: &str = match option_env!("UMBRA_PROXY") {
     Some(v) => v,
     None => "",
 };
+pub const COMPILED_PEER_LISTEN: &str = match option_env!("UMBRA_PEER_LISTEN") {
+    Some(v) => v,
+    None => "",
+};
 pub const COMPILED_HTTP_PAD: &str = match option_env!("UMBRA_HTTP_PAD") {
     Some(v) => v,
     None => "0",
@@ -114,6 +118,11 @@ pub struct Config {
     pub servers: Vec<String>,
     /// Whether the beacon obfuscates its sleep interval (on by default).
     pub sleep_obfuscate: bool,
+    /// The address of the peer listener (empty = no peer link).
+    ///
+    /// The beacon binds it, tells the server where it waits, and serves
+    /// the pivots that are chained through this host.
+    pub peer_listen: String,
 }
 
 fn pick(name: &str, compiled: &str) -> String {
@@ -218,6 +227,7 @@ impl Config {
             sleep_obfuscate: env::var("UMBRA_SLEEP_OBFUSCATE")
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),
+            peer_listen: pick("UMBRA_PEER_LISTEN", COMPILED_PEER_LISTEN),
         })
     }
 }

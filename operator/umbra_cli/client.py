@@ -675,6 +675,7 @@ class OperatorClient:
         through: str = "",
         user: str = "",
         password: str = "",
+        path: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Open a pivot through an agent.
 
@@ -686,6 +687,9 @@ class OperatorClient:
         an internal host never leaves the network) or ``local``.  ``claim``
         names the pivot, so the operator can release it as a group.
         ``loopback`` forces the listener onto the loopback of the server.
+
+        ``path`` chains the pivot: the hops after the first agent.  The
+        server walks it, so the operator only names the far end.
         """
         res = self.rpc(
             "pivot.open",
@@ -701,6 +705,7 @@ class OperatorClient:
                 "through": through,
                 "user": user,
                 "password": password,
+                "path": list(path or []),
             },
         )
         if not res.ok:

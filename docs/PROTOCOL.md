@@ -946,6 +946,7 @@ connections (`connections`).
 | `edges[].bytes_up` / `bytes_down` | the bytes that moved through it |
 | `edges[].last_active` | when it moved bytes the last time (unix seconds) |
 | `edges[].dns` | `remote` (the target resolves the name) or `local` |
+| `edges[].path` | the hops the server walked to reach the target |
 | `edges[].claim` | the name the operator gave to this pivot |
 | `clients[].address` | the client of the proxy |
 | `clients[].connections` | how many connections it made |
@@ -960,6 +961,7 @@ The options of `pivot.open` decide how the pivot behaves:
 | `loopback` | forces the listener onto the loopback of the server, whatever the operator asked for |
 | `claim` | names the pivot; `pivot.release` tears every pivot of the claim down |
 | `through` | the agent this pivot is chained through; the topology shows the chain |
+| `path` | the chain of hops after the first agent; the server resolves it (§7.3b) |
 | `user` / `password` | the credentials the SOCKS5 proxy asks for |
 
 A pivot outlives the session it was opened with: the listener stays bound
@@ -969,12 +971,87 @@ also keeps a deny list (`pivot_deny` in the configuration): a target on
 the list is refused with the SOCKS5 "not allowed" answer and the refusal
 is written in the connection log.
 
-**Peer-to-peer** pivoting chains two beacons: the `p2p` task makes one agent
-open a TCP link to another agent (`action:"connect"` with `host`/`port`) or
-listen for one (`action:"listen"`). The link is encrypted with keys derived
-from the agent PSK and an X25519 exchange, and it carries the same
-`TUNNEL_*` frames, so a third host can be reached through a chain of
-beacons without the team server carrying the traffic.
+### 7.3a The peer link
+
+The peer link is a link between two beacons, or between a beacon and the
+server.  It is the road a *chain* of pivots runs on: the server asks the
+first agent for a stream to the next one and then speaks the peer protocol
+on that stream, so the traffic of a chained pivot does not have to travel
+through the team server twice.
+
+The handshake of the peer link is **not** the umbra handshake: the peer link
+runs over a byte stream that may be a tunnel, a pipe or a socket, so its
+messages are length prefixed upk maps and nothing else.
+
+```
+peer hello   4-byte length | {id, pub, nonce, mac}
+peer ack     4-byte length | {id, pub, nonce, mac}
+then the ordinary umbra frames
+```
+
+| field | meaning |
+|---|---|
+| `id` | the identity of the sender |
+| `pub` | the 32-byte X25519 public key of the sender |
+| `nonce` | the 16-byte nonce of the sender |
+| `mac` | the tag that proves the sender owns the key |
+
+The two tags are the whole authentication of the link:
+
+```
+hello.mac = HMAC(psk, "umbra/v1/p2p/hello" | hello.id | hello.pub | hello.nonce)
+ack.mac   = HMAC(psk, "umbra/v1/p2p/ack"   | hello.id | hello.pub | hello.nonce
+                                     | ack.id   | ack.pub   | ack.nonce)
+```
+
+The key is the **agent PSK**: the beacons of one team already hold it, so
+no new key has to be distributed. The hello tag binds the identity to the
+key and the nonce of the sender, so a hello cannot be replayed into another
+link. The answer tag covers *both* hellos, so the transcript cannot be
+rearranged and an answer cannot be replayed into another link either.
+
+After the handshake both sides derive the same session keys:
+
+```
+mixed = HMAC(psk, x25519_shared)
+prk, km = HKDF(mixed, salt = sha256("umbra/v1/session" | client_nonce | server_nonce))
+```
+
+The initiator is the client of the session (`is_server = false`), the
+responder is the server of it (`is_server = true`). The frames that follow
+are the ordinary umbra frames, so a pivot stream is asked for with
+`TUNNEL_OPEN` and the bytes travel in `TUNNEL_DATA` — exactly like on a
+callback session. The link rekeys on its own: when either direction carried
+`REKEY_AFTER` frames, the side that noticed sends a `REKEY {seed}` frame
+(sealed with the *old* keys) and both ends derive the new keys from the
+seed.
+
+A beacon that serves the peer link binds a listener and tells the server
+where it waits: the address travels in the handshake metadata as `meta.p2p`
+(`"host:port"`). The server resolves the chain of a pivot from it.
+
+### 7.3b Chained pivots
+
+`pivot.open` takes an optional `path`: the chain of hops *after* the agent
+the pivot belongs to. The operator names the far end; the server resolves
+the road.
+
+```
+pivot.open {id: "agent-a", mode: "socks", path: ["agent-b", "agent-c"]}
+```
+
+The server walks the path hop by hop: for every hop it asks the previous
+agent for a stream to the address that agent reported (`meta.p2p`), speaks
+the peer handshake on that stream (§7.3a) and continues with the peer link
+as the new opener. The last hop opens the stream to the target.
+
+When the peer link of a hop cannot be established, the server **falls back
+to itself**: it asks that agent for a callback session and continues the
+chain through the server. The pivot keeps working; only the road changes,
+and the fallback is written in the log.
+
+The topology shows the chain: `edges[].path` lists the hops the server
+walked, and the dashboard draws them as a line from one agent to the next.
 
 **The layer-3 tunnel** (`vpn`) is a transport of its own: a UDP socket with a
 Noise-IK-style handshake (`INIT`/`RESP`), AES-256-GCM data packets and a

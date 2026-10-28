@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from . import wire
 
-__all__ = ["Stream", "StreamError", "SendGate"]
+__all__ = ["Stream", "ByteStream", "SocketBytes", "StreamError", "SendGate"]
 
 
 class StreamError(Exception):
@@ -183,6 +183,92 @@ class Stream:
         except (OSError, ValueError) as exc:
             raise StreamError(f"the socket is gone: {exc}") from exc
         return bool(ready_r or ready_w)
+
+
+class SocketBytes:
+    """The byte stream of a socket.
+
+    ``read(n)`` returns exactly ``n`` bytes or raises, and ``write`` sends
+    everything.  That is the contract every byte stream in the framework
+    follows, so the peer handshake can run over a socket, over a tunnel
+    stream or over a pipe.
+    """
+
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock = sock
+
+    def read(self, n: int) -> bytes:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise StreamError("connection closed by peer")
+            buf += chunk
+        return bytes(buf)
+
+    def write(self, data: bytes) -> int:
+        if data:
+            self.sock.sendall(data)
+        return len(data)
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class ByteStream:
+    """The umbra frame layer over a byte stream.
+
+    A byte stream is anything with ``read(n)`` -- exactly ``n`` bytes or an
+    exception -- and ``write(data)`` -- all of it: a socket, a tunnel
+    stream, a pipe.  The frames are the ordinary umbra frames, so anything
+    that speaks them can run over anything that carries bytes.
+
+    This is what makes a *chained* pivot possible: the far end of a hop
+    only sees bytes, and the frames of the next hop travel inside them.
+    """
+
+    def __init__(self, rw: Any, timeout: Optional[float] = None) -> None:
+        self.rw = rw
+        self.timeout = timeout
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+
+    def send_frame(self, frame: bytes) -> None:
+        with self._lock:
+            self.rw.write(frame)
+
+    def _fill(self, n: int) -> None:
+        while len(self._buf) < n:
+            chunk = self.rw.read(n - len(self._buf))
+            if not chunk:
+                raise StreamError("connection closed by peer")
+            self._buf += chunk
+
+    def recv_frame(self) -> bytes:
+        self._fill(wire.PRELUDE_LEN)
+        prelude = bytes(self._buf[: wire.PRELUDE_LEN])
+        if prelude[0:2] != wire.MAGIC:
+            raise StreamError("bad magic on stream")
+        (length,) = struct.unpack(">I", prelude[8:12])
+        if length > wire.MAX_BODY:
+            raise StreamError("frame too large")
+        total = wire.PRELUDE_LEN + wire.NONCE_LEN + length + wire.TAG_LEN
+        self._fill(total)
+        frame = bytes(self._buf[:total])
+        del self._buf[:total]
+        return frame
+
+    def close(self) -> None:
+        closer = getattr(self.rw, "close", None)
+        if closer is None:
+            return
+        try:
+            closer()
+        except OSError:
+            pass
 
 
 class SendGate:

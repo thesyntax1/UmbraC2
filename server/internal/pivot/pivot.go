@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,6 +107,9 @@ type TunnelInfo struct {
 	// Through is the agent this pivot is chained through.  It is empty
 	// for the first hop and names the previous agent for the others.
 	Through string `json:"through,omitempty"`
+	// Path is the chain of hops after the first agent: the server walks
+	// it, so the operator only names the far end.
+	Path []string `json:"path,omitempty"`
 	// DNS is "remote" when the target resolves the name and "local" when
 	// the server resolves it before the agent connects.
 	DNS string `json:"dns,omitempty"`
@@ -136,11 +140,35 @@ type Options struct {
 	Claim string
 	// Through is the agent this pivot is chained through.
 	Through string
+	// Path is the chain of hops after the first agent.  Every further hop
+	// is reached through the peer link of the previous one.
+	Path []string
 	// User and Password are the credentials the SOCKS5 proxy asks for.
 	// An empty user means the proxy is open to everybody who can reach
 	// its listener.
 	User     string
 	Password string
+}
+
+// relayStream is the byte stream of a pivot.
+//
+// It is what the local connection and the far end share: the bytes of the
+// client go in, the bytes of the target come out.  A tunnel stream and a
+// peer stream are both one.
+type relayStream interface {
+	io.Reader
+	io.Writer
+	io.Closer
+	// CloseWrite tells the far end that this side is done sending.
+	CloseWrite()
+}
+
+// streamOpener opens a stream through a session.
+//
+// The callback session of an agent and a peer link are both one: the server
+// asks, the far end opens.
+type streamOpener interface {
+	openStream(host string, port int) (relayStream, error)
 }
 
 // Manager owns every tunnel, tunnel session and local listener.
@@ -163,6 +191,20 @@ type Manager struct {
 	connections []connectionRecord
 	// deny is the list of hosts and ports the proxy refuses.
 	deny []denyRule
+	// psk is the key of the peer link: it is the agent key, the one two
+	// beacons of the same team already hold.
+	psk []byte
+}
+
+// SetPSK installs the key of the peer link.
+//
+// The peer link is authenticated with the agent key: the beacons of one
+// team already share it, so a beacon can be reached by its neighbour
+// without the server carrying anything new.
+func (m *Manager) SetPSK(psk []byte) {
+	m.mu.Lock()
+	m.psk = append([]byte(nil), psk...)
+	m.mu.Unlock()
 }
 
 // New creates a pivot manager.
@@ -238,6 +280,21 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 	default:
 		return nil, fmt.Errorf("pivot: unknown dns mode %q", dns)
 	}
+	// The chain of hops after the first agent.  Every hop has to be a
+	// different agent: a pivot that goes through itself would loop.
+	path := make([]string, 0, len(opt.Path))
+	seen := map[string]bool{agentID: true}
+	for _, hop := range opt.Path {
+		hop = strings.TrimSpace(hop)
+		if hop == "" {
+			continue
+		}
+		if seen[hop] {
+			return nil, fmt.Errorf("pivot: the agent %q is already on the path", hop)
+		}
+		seen[hop] = true
+		path = append(path, hop)
+	}
 	listen := opt.Listen
 	if listen == "" {
 		listen = "127.0.0.1:0"
@@ -262,6 +319,7 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 		dns:         dns,
 		claim:       opt.Claim,
 		through:     opt.Through,
+		path:        path,
 		user:        opt.User,
 		password:    opt.Password,
 	}
@@ -286,9 +344,85 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 	m.hub.Emit(hub.Event{Kind: "pivot.opened", AgentID: agentID, Data: map[string]any{
 		"tunnel": tun.id, "mode": mode, "listen": tun.listen,
 		"host": opt.Host, "port": int64(opt.Port), "claim": tun.claim,
-		"through": tun.through, "dns": dns,
+		"through": tun.through, "dns": dns, "path": tun.path,
 	}})
 	return m.info(tun), nil
+}
+
+// peerAddr returns the peer address of an agent: where its peer listener
+// waits.
+//
+// The beacon reports the address in the handshake, so the server can chain
+// a pivot through it without the operator naming an address.
+func (m *Manager) peerAddr(agentID string) (string, int, error) {
+	for _, agent := range m.hub.Agents() {
+		id, _ := agent["id"].(string)
+		if id != agentID {
+			continue
+		}
+		addr, _ := agent["p2p"].(string)
+		if addr == "" {
+			return "", 0, fmt.Errorf("pivot: the agent %q has no peer address", agentID)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return "", 0, fmt.Errorf("pivot: the agent %q has a bad peer address %q", agentID, addr)
+		}
+		number, err := strconv.Atoi(port)
+		if err != nil || number <= 0 || number > 65535 {
+			return "", 0, fmt.Errorf("pivot: the agent %q has a bad peer address %q", agentID, addr)
+		}
+		return host, number, nil
+	}
+	return "", 0, fmt.Errorf("pivot: unknown agent %q", agentID)
+}
+
+// openChain walks the path of the pivot and returns the stream to the
+// target.
+//
+// The first hop is the agent the pivot belongs to.  Every further hop is
+// reached through the peer link: the server asks the previous agent for a
+// stream to the next one and then plays the peer on that stream.  The
+// operator names the far end; the path is resolved here, from the
+// addresses the beacons reported.
+func (m *Manager) openChain(tun *tunnel, sess *tunnelSession, host string, port int) (relayStream, error) {
+	m.mu.Lock()
+	psk := append([]byte(nil), m.psk...)
+	m.mu.Unlock()
+	if len(tun.path) == 0 {
+		return sess.openStream(host, port)
+	}
+	if len(psk) == 0 {
+		return nil, errors.New("pivot: the peer link has no key")
+	}
+	var opener streamOpener = sess
+	for _, hop := range tun.path {
+		peerHost, peerPort, err := m.peerAddr(hop)
+		if err != nil {
+			return nil, err
+		}
+		st, err := opener.openStream(peerHost, peerPort)
+		if err != nil {
+			return nil, fmt.Errorf("pivot: the hop %q failed: %w", hop, err)
+		}
+		peerSess, err := peerDial(st, psk, PeerID)
+		if err != nil {
+			// The peer link is down: the server takes the hop over.  The
+			// pivot still works, only the traffic takes another road.
+			m.log.Warn("pivot peer link failed, the server takes the hop over",
+				"hop", hop, "err", err)
+			fallback, ferr := m.session(hop)
+			if ferr != nil {
+				return nil, fmt.Errorf(
+					"pivot: the peer link to %q failed (%v) and the server could not reach it either: %w",
+					hop, err, ferr)
+			}
+			opener = fallback
+			continue
+		}
+		opener = newPeerSession(peerSess, newWireStream(st))
+	}
+	return opener.openStream(host, port)
 }
 
 // forceLoopback turns a bind address into one on the loopback.
@@ -542,7 +676,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 		return
 	}
 
-	stream, err := sess.openStream(host, port)
+	stream, err := m.openChain(tun, sess, host, port)
 	if err != nil {
 		m.log.Warn("pivot stream failed", "tunnel", tun.id, "host", host, "err", err)
 		if tun.mode == ModeSOCKS {
@@ -556,7 +690,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 	}
 	tun.addStream(1)
 	defer tun.addStream(-1)
-	defer stream.close()
+	defer stream.Close()
 
 	if tun.mode == ModeSOCKS {
 		if err := socks5Reply(conn, 0x00, "0.0.0.0", 0); err != nil {
@@ -577,7 +711,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
-				if werr := stream.write(buf[:n]); werr != nil {
+				if werr := stream.Write(buf[:n]); werr != nil {
 					break
 				}
 				tun.addUp(int64(n))
@@ -587,13 +721,13 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 				break
 			}
 		}
-		stream.closeWrite()
+		stream.CloseWrite()
 	}()
 
 	// agent -> local
 	buf := make([]byte, ChunkSize)
 	for {
-		n, err := stream.read(buf)
+		n, err := stream.Read(buf)
 		if n > 0 {
 			if _, werr := conn.Write(buf[:n]); werr != nil {
 				break
@@ -626,8 +760,9 @@ func (m *Manager) info(tun *tunnel) TunnelInfo {
 		State:       tun.state,
 		Claim:       tun.claim,
 		Through:     tun.through,
+		Path:        append([]string(nil), tun.path...),
 		DNS:         tun.dns,
-		LastActivity: tun.lastActive,
+		LastActivity: tun.lastActivity,
 	}
 }
 
@@ -646,6 +781,8 @@ type tunnel struct {
 	claim string
 	// through is the agent this pivot is chained through.
 	through string
+	// path is the chain of hops after the first agent.
+	path []string
 	// dns is "remote" or "local".
 	dns string
 	// user and password are the credentials of the SOCKS5 proxy.
@@ -813,7 +950,7 @@ func (ts *tunnelSession) onClose(msg map[string]any) {
 }
 
 // openStream asks the agent to open a connection to host:port.
-func (ts *tunnelSession) openStream(host string, port int) (*tunnelStream, error) {
+func (ts *tunnelSession) openStream(host string, port int) (relayStream, error) {
 	id := newID("s")
 	st := &tunnelStream{
 		id:     id,
@@ -891,6 +1028,30 @@ type tunnelStream struct {
 	once   sync.Once
 	mu     sync.Mutex
 	reason string
+}
+
+// Read returns the bytes the agent sent.
+func (st *tunnelStream) Read(buf []byte) (int, error) {
+	return st.read(buf)
+}
+
+// Write forwards bytes to the agent.
+func (st *tunnelStream) Write(buf []byte) (int, error) {
+	if err := st.write(buf); err != nil {
+		return 0, err
+	}
+	return len(buf), nil
+}
+
+// Close tears the stream down.
+func (st *tunnelStream) Close() error {
+	st.close()
+	return nil
+}
+
+// CloseWrite tells the agent that this side is done sending.
+func (st *tunnelStream) CloseWrite() {
+	st.closeWrite()
 }
 
 // write forwards bytes to the agent.
