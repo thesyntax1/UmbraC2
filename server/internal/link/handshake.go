@@ -267,7 +267,7 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 	if !ok {
 		return nil, handshakeErr("missing timestamp")
 	}
-	skew := time.Since(time.Unix(ts, 0))
+	skew := time.Since(time.Unix(int64(ts), 0))
 	if skew < 0 {
 		skew = -skew
 	}

@@ -21,7 +21,7 @@ transport-tcp = []
 transport-http = []
 # The WebSocket transport (RFC 6455) and the DNS tunnel need no extra crate.
 transport-ws = []
-transport-dns = []</new_string>
+transport-dns = []
 # ChaCha20-Poly1305 is optional so the default build stays small; the server
 # negotiates AES-256-GCM when this feature is off.
 chacha = ["dep:chacha20poly1305"]

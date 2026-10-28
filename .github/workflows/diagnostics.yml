@@ -56,7 +56,11 @@ jobs:
           set +e
           gradle --no-daemon assembleDebug > /tmp/android.log 2>&1
           echo "exit: $?"
-          tail -120 /tmp/android.log | while IFS= read -r line; do echo "::error::$line"; done
+          {
+            grep -n -E "^e: |^w: .*(never used|deprecat)" /tmp/android.log
+            grep -n -A 25 "What went wrong" /tmp/android.log
+            grep -n -E "error:|Caused by:" /tmp/android.log | head -30
+          } | tail -80 | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
   gofmt:

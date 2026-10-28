@@ -1945,7 +1945,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		// The handover: everything a colleague needs to take the
 		// engagement over.  The server knows the engagement; the console
 		// adds its own notes to the document it renders from this.
-		agents := s.Hub.Agents()
+		agents := s.Hub.SelectAgents(hub.AgentFilter{})
 		agentRows := make([]any, 0, len(agents))
 		for _, a := range agents {
 			row := upk.Map{

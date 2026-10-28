@@ -386,7 +386,7 @@ func (m *MailServer) servePOP3(conn net.Conn) {
 			if _, err := bw.Write(msg); err != nil {
 				return
 			}
-			if err := bw.WriteString("\r\n.\r\n"); err != nil {
+			if _, err := bw.WriteString("\r\n.\r\n"); err != nil {
 				return
 			}
 			if err := bw.Flush(); err != nil {
