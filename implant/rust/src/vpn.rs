@@ -412,7 +412,10 @@ pub mod tun {
     use std::os::raw::{c_char, c_int, c_ulong, c_void};
 
     extern "C" {
-        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+        // The call of the system is renamed, because the module has a
+        // function of its own that opens a tunnel.
+        #[link_name = "open"]
+        fn libc_open(path: *const c_char, flags: c_int, ...) -> c_int;
         fn close(fd: c_int) -> c_int;
         fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
         fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
@@ -475,7 +478,7 @@ pub mod tun {
     /// reports the error instead of pretending to work.
     pub fn open(address: &str) -> Result<Device, String> {
         let path = b"/dev/net/tun\0";
-        let fd = unsafe { open(path.as_ptr() as *const c_char, O_RDWR) };
+        let fd = unsafe { libc_open(path.as_ptr() as *const c_char, O_RDWR) };
         if fd < 0 {
             return Err(format!(
                 "the tun device is not available: {}",

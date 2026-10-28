@@ -185,6 +185,10 @@ TASK_KIND_SPECS = {
     "kotlin": r'^\s*"([a-z][a-z0-9.]*)"\s*(?:, "[a-z][a-z0-9.]*")*\s*->',  # TaskRunner.run
 }
 
+# The Go implant is a switch of its own, and its capability list is a
+# slice of strings.
+GO_IMPLANT_TASKS = "implant/go/internal/beacon/tasks.go"
+
 RPC_SPECS = {
     # A Go case may list aliases on one line (`case "agents.kill", "agents.exit":`),
     # so collect every quoted command in the case label, not just the first.
@@ -456,6 +460,55 @@ def kind_set(spec: str, rel: str) -> set[str]:
     return found
 
 
+def go_implant_kinds() -> set[str]:
+    """The kinds the Go implant runs: the arms of its switch."""
+    text = read(GO_IMPLANT_TASKS)
+    return set(re.findall(r'^\s*case "([a-z][a-z0-9.]*)":', text, re.M))
+
+
+def go_implant_caps() -> set[str]:
+    """The kinds the Go implant advertises in its handshake."""
+    text = read(GO_IMPLANT_TASKS)
+    block = text.split("kinds := []string{", 1)
+    if len(block) < 2:
+        return set()
+    body = block[1].split("}", 1)[0]
+    return set(re.findall(r'"([a-z][a-z0-9.]*)"', body))
+
+
+def check_go_implant(documented: set[str], vocabulary: set[str]) -> int:
+    """The Go implant says what it does, and it does what it says.
+
+    The capability list is what the server reads before it queues work, so
+    a kind that is advertised and not implemented is a task the operator
+    waits for forever, and a kind that is implemented and not advertised is
+    work the server refuses to queue.
+    """
+    problems = 0
+    kinds = go_implant_kinds()
+    caps = go_implant_caps()
+    if not kinds:
+        print(f"  !! TASK_KINDS: the Go implant has no task table")
+        return 1
+    missing = caps - kinds
+    if missing:
+        print(f"  !! TASK_KINDS: the Go implant advertises {sorted(missing)} and does not run them")
+        problems += 1
+    unadvertised = kinds - caps
+    if unadvertised:
+        print(f"  !! TASK_KINDS: the Go implant runs {sorted(unadvertised)} and does not advertise them")
+        problems += 1
+    # The vocabulary of the framework is the documented kinds and the
+    # aliases the other implants run.
+    unknown = kinds - vocabulary
+    if unknown:
+        print(f"  !! TASK_KINDS: the Go implant runs {sorted(unknown)}, which the framework does not know")
+        problems += 1
+    if problems == 0:
+        print(f"  TASK_KINDS       go implant: {len(kinds)} kinds, advertised and documented")
+    return problems
+
+
 def check_set(name: str, expected: set[str], actual: set[str], where: str) -> int:
     missing = expected - actual
     extra = actual - expected
@@ -534,6 +587,9 @@ def main() -> int:
                             "implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
     failures += check_set("TASK_KINDS", documented, rust_kinds, "rust")
     failures += check_set("TASK_KINDS", documented, kotlin_kinds, "kotlin")
+    # The Go implant is deliberately small, so it is not asked to cover
+    # every documented kind; it is asked to be honest about its own.
+    failures += check_go_implant(documented, documented | rust_kinds | kotlin_kinds)
 
     print("\n== deploy config vs config.Server ==")
     failures += check_deploy_configs()

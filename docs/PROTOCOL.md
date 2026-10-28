@@ -401,6 +401,7 @@ Task kinds understood by the reference implants:
 | `domain.map` | optional `target` (a node of the graph; the domain controller by default) | the paths from the identity of the implant to the target: one record per path |
 | `ls` | `path` | directory listing |
 | `download` | `path`, optional `offset`, `limit` | file bytes (≤ 900 KiB per task) + transfer metadata (§7.1) |
+| `cat` | `path` | the contents of a file (the same work as `download`, without the transfer) |
 | `upload` | `path`, `data` (bin), optional `offset`, `eof` | confirmation text + transfer metadata (§7.1) |
 | `ps` | — | the process table of the host: the pid, the parent, the user, the start time and the command line |
 | `sleep` | `sleep`, `jitter` | confirmation; beacon applies it (with sleep obfuscation, §7.5) |
