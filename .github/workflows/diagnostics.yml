@@ -33,6 +33,30 @@ jobs:
           tail -120 /tmp/go.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
+  rust-macos:
+    name: rust diagnostics (macOS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+      - name: check
+        working-directory: implant/rust
+        run: |
+          set +e
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            log="/tmp/$target.log"
+            cargo check --all-targets --target "$target" > "$log" 2>&1
+            code=$?
+            if [ $code -ne 0 ]; then
+              grep -E "^(error|warning)" "$log" | head -30 | while IFS= read -r line; do echo "::error::$line"; done
+              tail -40 "$log" | while IFS= read -r line; do echo "::error::$line"; done
+            fi
+          done
+          exit 0
+
   rust:
     name: rust diagnostics
     runs-on: ubuntu-latest

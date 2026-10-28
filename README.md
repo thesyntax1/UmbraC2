@@ -97,9 +97,10 @@ Added on top of that core:
 | The transports that keep no connection | The beacon mails its frames out and polls its mailbox, or reads its work from one bucket and writes its results into another: two transports for the networks where nothing else gets through | [docs/TRANSPORTS.md](docs/TRANSPORTS.md#10-the-transports-without-a-connection) |
 | The pivot on a named pipe | On a Windows server the pivot may listen on a named pipe: no port, no firewall rule, nothing a scanner would see | [docs/PIVOTING.md](docs/PIVOTING.md#the-named-pipe) |
 | The layer-3 tunnel, finished | The peers have their addresses, the networks behind them are routed to them, the operator can ask a peer whether it is there, and a peer behind another agent joins its relay | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-layer-3-tunnel) |
+| The Go implant | A fourth implementation of the protocol, in the standard library of Go and with nothing else: it checks in, runs the sixteen task kinds it advertises and answers the ones it does not know with an error instead of a silence | [implant/go/README.md](implant/go/README.md) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
-TLS inside the implant binaries and a Go implant.
+TLS inside the implant binaries.
 
 ## Quick start (5 commands, no Go/Rust needed)
 

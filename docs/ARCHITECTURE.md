@@ -17,14 +17,14 @@
                      ▲  CHECKIN / TASK_BATCH / RESULT / BYE
       ┌──────────────┴──────────────┬───────────────────────┐
       │                             │                       │
- Rust beacon (win/linux/macOS)  Android implant (Kotlin)   (future: Go/other)
+ Rust beacon (win/linux/macOS)  Android implant (Kotlin)  Go implant (Go)
 ```
 
 Three properties drive the whole design:
 
-* **one protocol core, three implementations** — `upk`, `wire`, `crypt` and
-  `session` are mirrored in Go, Rust and Python/Kotlin, pinned by
-  `contracts/vectors.json`;
+* **one protocol core, four implementations** — `upk`, `wire`, `crypt` and
+  `session` are mirrored in Go, Rust, Python/Kotlin and the Go implant,
+  pinned by `contracts/vectors.json`;
 * **one message pipeline, many transports** — TCP and HTTP handlers both feed
   the same frame-processing code, so behaviour cannot diverge;
 * **server is the only stateful authority** — implants are dumb, sleeping
@@ -323,7 +323,44 @@ platform differences:
 * the UI is an explicit consent screen: nothing runs unless the device owner
   starts the service.
 
-## 5. Operator console
+## 5. The Go implant
+
+`implant/go` is the smallest of the implants: it speaks the protocol and it
+does exactly what it says it does.
+
+```
+main → Config → Beacon.Run
+       loop { connect → handshake → checkin → batch → heartbeat → execute → result → BYE → jitter sleep }
+```
+
+| Module | Responsibility |
+|---|---|
+| `internal/wire` | the frame format |
+| `internal/upk` | the encoding |
+| `internal/crypt` | the key schedule |
+| `internal/session` | the link state machine |
+| `internal/beacon` | the cycle, the client half of the handshake, the task table, the inventory and the self test |
+
+The implant carries its own copy of the protocol core, the way the Rust and
+the Kotlin implants carry theirs, and the conformance vectors in
+`contracts/vectors.json` are what proves that the four implementations agree
+on every byte.  There is no `go.sum`: the implant is the standard library of
+Go and nothing else.
+
+It is deliberately small, and the capability list it advertises in the
+handshake is the list of what it can really do:
+
+* sixteen task kinds, and no module loader, no persistence and no desktop
+  access: those are the Rust beacon;
+* the link is TCP only: the other transports are the Rust beacon as well;
+* the shell task needs a POSIX shell and the process table is read from
+  `/proc`, so the implant says so on a host that has neither.
+
+The self test (`--selftest`) runs a whole cycle against a server that lives
+in the process, so the implant is proved to be understood by a server and not
+only by itself.
+
+## 6. Operator console
 
 `operator/umbra_cli` is both the console and the executable specification of the
 protocol:
@@ -356,7 +393,7 @@ protocol:
 agent) so the console and the protocol can be exercised without a Go build. It is
 a test double, not a production server.
 
-## 6. Why these choices
+## 7. Why these choices
 
 | Decision | Reason | Trade-off |
 |---|---|---|
@@ -368,7 +405,7 @@ a test double, not a production server.
 | JSON state file instead of a database | zero dependencies, easy to inspect and back up | not suitable beyond ~10⁴ agents/tasks (two generations on disk: `state.json` + `.bak`, schema version checked on load). The operator console keeps its own SQLite notebook (`umbra_cli/db.py`) for the history it collects |
 | Python reference implementation | generates the vectors, drives e2e tests, teaches the protocol | must be kept in lockstep with Go/Rust |
 
-## 7. Roadmap
+## 8. Roadmap
 
 Short term: `CONFIG` as a first-class policy push, per-agent authorisation
 profiles.
@@ -484,9 +521,16 @@ capped (`max_task_batch`, `max_queued_tasks`), so a backlog cannot grow
 without a bound; and the binary arguments of a queued task survive a
 restart of the team server instead of turning into a base64 string.
 
-Medium term: S3 and SMTP transports, named-pipe pivots, a Go implant,
-per-operator ACLs on the chat, and a sandbox for task modules that are not
-plain memory.
+Medium term: S3 and SMTP transports, named-pipe pivots, per-operator ACLs on
+the chat, and a sandbox for task modules that are not plain memory.
+
+Done (the Go implant): the fourth implementation of the protocol, in the
+standard library of Go and with nothing else (`implant/go`, no `go.sum`): it
+checks in, takes the batch, runs the sixteen task kinds it advertises and
+answers the ones it does not know with an error instead of a silence; it
+carries its own copy of the protocol core and is proved against the same
+conformance vectors as the other three; and its self test runs a whole cycle
+against a server that lives in the process.
 
 Done: a versioned module ABI (the manifest of a module, its argument
 schema, its output schema and the capabilities it needs), the sandboxed

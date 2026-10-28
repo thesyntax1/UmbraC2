@@ -161,8 +161,19 @@ jobs:
       # for both of the macs, so it is checked here.
       - name: check
         run: |
-          cargo check --all-targets --target x86_64-apple-darwin
-          cargo check --all-targets --target aarch64-apple-darwin
+          set +e
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            log="/tmp/$target.log"
+            cargo check --all-targets --target "$target" > "$log" 2>&1
+            code=$?
+            if [ $code -ne 0 ]; then
+              echo "::error::the code of $target does not compile"
+              grep -E "^(error|warning)" "$log" | head -30 | while IFS= read -r line; do echo "::error::$line"; done
+              tail -40 "$log" | while IFS= read -r line; do echo "::error::$line"; done
+              exit $code
+            fi
+          done
+          exit 0
 
   android:
     name: android implant (compile only)
