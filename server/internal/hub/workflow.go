@@ -75,6 +75,12 @@ func (h *Hub) runWorkflow(run *store.WorkflowRun, steps []store.WorkflowStep) {
 	report := &strings.Builder{}
 	lastOK := true
 	lastCode := int64(0)
+	// The reason the run failed, when it does.  A step that fails is
+	// not the end of the workflow: the remaining steps still run, so the
+	// report says everything that happened, and the run ends in the
+	// failed state with the reason of the first step that broke.
+	failed := false
+	failReason := ""
 	for i, step := range steps {
 		entry := store.WorkflowRunStep{Index: i, Kind: step.Kind}
 		switch step.Kind {
@@ -159,8 +165,21 @@ func (h *Hub) runWorkflow(run *store.WorkflowRun, steps []store.WorkflowStep) {
 					"state": run.State}})
 			return
 		}
+		if !entry.OK && !failed {
+			// The first step that broke decides why the run failed.
+			failed = true
+			failReason = entry.Detail
+			if failReason == "" {
+				failReason = fmt.Sprintf("step %d (%s) failed with code %d", i, step.Kind, entry.Code)
+			}
+		}
 	}
-	run.State = store.RunDone
+	if failed {
+		run.State = store.RunFailed
+		run.Error = failReason
+	} else {
+		run.State = store.RunDone
+	}
 	run.Finished = time.Now().UTC()
 	run.Report = report.String()
 	h.store.UpdateWorkflowRun(run)

@@ -2383,8 +2383,8 @@ func workflowRunMap(r *store.WorkflowRun) upk.Map {
 	if !r.Finished.IsZero() {
 		row["finished"] = r.Finished.Unix()
 	}
-	if r.Err != "" {
-		row["err"] = r.Err
+	if r.Error != "" {
+		row["err"] = r.Error
 	}
 	if r.Report != "" {
 		row["report"] = r.Report
@@ -2955,12 +2955,6 @@ func upkValue(v any) any {
 				"state":        item.State,
 				"installed_at": item.InstalledAt,
 			})
-		}
-		return out
-	case []string:
-		out := make([]any, 0, len(x))
-		for _, item := range x {
-			out = append(out, item)
 		}
 		return out
 	case time.Time:
