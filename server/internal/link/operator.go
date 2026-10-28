@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1135,17 +1136,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		cat := s.Armory.Catalog()
 		entries := make([]any, 0, len(cat.Entries))
 		for _, m := range cat.Entries {
-			entries = append(entries, upk.Map{
-				"name":        m.Name,
-				"version":     m.Version,
-				"os":          m.OS,
-				"arch":        m.Arch,
-				"format":      m.Format,
-				"sha256":      m.SHA256,
-				"size":        m.Size,
-				"description": m.Description,
-				"args":        stringsToAny(m.Args),
-			})
+			entries = append(entries, manifestMap(m))
 		}
 		installed := s.Armory.List()
 		rows := make([]any, 0, len(installed))
@@ -1156,12 +1147,114 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				"sha256":    ext.Manifest.SHA256,
 				"size":      ext.Bytes,
 				"installed": ext.Installed.Unix(),
+				"caps":      stringsToAny(ext.Manifest.Caps),
+				"format":    ext.Manifest.Format,
 			})
 		}
 		return reply(upk.Map{
 			"entries":   entries,
 			"installed": rows,
 			"verified":  s.Armory.Verified(),
+		})
+
+	case "armory.search":
+		if s.Armory == nil {
+			return reply(upk.Map{"entries": []any{}, "count": 0})
+		}
+		query, _ := args["query"].(string)
+		found := s.Armory.Search(query)
+		entries := make([]any, 0, len(found))
+		for _, m := range found {
+			entries = append(entries, manifestMap(m))
+		}
+		return reply(upk.Map{
+			"entries": entries,
+			"count":   len(entries),
+			"query":   query,
+		})
+
+	case "armory.needs":
+		if s.Armory == nil {
+			return fail("armory.needs: the extension registry is not enabled")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("armory.needs needs a name")
+		}
+		needs, err := s.Armory.Needs(name)
+		if err != nil {
+			return fail("armory.needs: %v", err)
+		}
+		return reply(upk.Map{
+			"name":     needs.Name,
+			"version":  needs.Version,
+			"format":   needs.Format,
+			"os":       needs.OS,
+			"arch":     needs.Arch,
+			"digest":   needs.Digest,
+			"caps":     stringsToAny(needs.Caps),
+			"args":     argSchemaToAny(needs.Args),
+			"output":   outputMap(needs.Output),
+			"requires": stringsToAny(needs.Requires),
+			"missing":  stringsToAny(needs.Missing),
+		})
+
+	case "armory.versions":
+		if s.Armory == nil {
+			return reply(upk.Map{"name": "", "versions": []any{}})
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("armory.versions needs a name")
+		}
+		versions := s.Armory.Versions(name)
+		return reply(upk.Map{
+			"name":     name,
+			"versions": stringsToAny(versions),
+			"count":    len(versions),
+		})
+
+	case "armory.resolve":
+		if s.Armory == nil {
+			return fail("armory.resolve: the extension registry is not enabled")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("armory.resolve needs a name")
+		}
+		order, err := s.Armory.Resolve(name)
+		if err != nil {
+			return fail("armory.resolve: %v", err)
+		}
+		names := make([]any, 0, len(order))
+		for _, m := range order {
+			names = append(names, m.Name)
+		}
+		return reply(upk.Map{
+			"name":     name,
+			"order":    names,
+			"count":    len(names),
+			"modules":  entriesOf(order),
+			"resolved": true,
+		})
+
+	case "armory.import":
+		if s.Armory == nil {
+			return fail("armory.import: the extension registry is not enabled")
+		}
+		url, _ := args["url"].(string)
+		if url == "" {
+			return fail("armory.import needs an url")
+		}
+		cat, err := s.Armory.ImportCatalog(context.Background(), url)
+		if err != nil {
+			return fail("armory.import: %v", err)
+		}
+		return reply(upk.Map{
+			"source":  cat.Source,
+			"entries": len(cat.Entries),
+			"url":     url,
+			"verified": cat.Verified,
 		})
 
 	case "armory.install":
@@ -1172,12 +1265,13 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if name == "" {
 			return fail("armory.install needs a name")
 		}
-		ext, err := s.Armory.InstallFrom(name)
+		ext, err := s.Armory.InstallVersion(name, "")
 		if err != nil {
 			return fail("armory.install: %v", err)
 		}
 		return reply(upk.Map{
 			"name":      ext.Manifest.Name,
+			"version":   ext.Manifest.Version,
 			"sha256":    ext.Manifest.SHA256,
 			"size":      ext.Bytes,
 			"installed": ext.Installed.Unix(),
@@ -1572,18 +1666,56 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		url, _ := args["url"].(string)
 		digest, _ := args["sha256"].(string)
 		agentID, _ := args["agent_id"].(string)
+		mode, _ := args["mode"].(string)
+		storeName, _ := args["store"].(string)
+		storeBase, _ := args["store_base"].(string)
+		dnsDomain, _ := args["dns_domain"].(string)
+		dnsResolver, _ := args["dns_resolver"].(string)
+		smtpAddr, _ := args["smtp_addr"].(string)
+		pop3Addr, _ := args["pop3_addr"].(string)
+		s3Endpoint, _ := args["s3_endpoint"].(string)
+		s3Region, _ := args["s3_region"].(string)
+		wsPath, _ := args["ws_path"].(string)
 		if server == "" {
 			server = s.Cfg.Server.AgentListen
 		}
+		if mode == "" {
+			mode = stager.ModeDownload
+		}
+		if storeBase == "" {
+			// The store of the server is served by the http listener, so
+			// the stager that pulls from it points at that listener.
+			storeBase = s.Cfg.Server.HTTPListen
+		}
+		if s3Region == "" {
+			s3Region = s.Cfg.Server.S3Region
+		}
 		opts := stager.Options{
-			Platform:  platform,
-			Transport: transport,
-			Server:    server,
-			HTTPPath:  s.Cfg.Server.HTTPPath,
-			URL:       url,
-			SHA256:    digest,
-			PSK:       s.Cfg.Keyring.AgentPSK,
-			AgentID:   agentID,
+			Platform:        platform,
+			Transport:       transport,
+			Server:          server,
+			HTTPPath:        s.Cfg.Server.HTTPPath,
+			WSPath:          wsPath,
+			DNSResolver:     dnsResolver,
+			DNSDomain:       dnsDomain,
+			SMTPAddr:        smtpAddr,
+			POP3Addr:        pop3Addr,
+			S3Endpoint:      s3Endpoint,
+			S3Region:        s3Region,
+			S3TasksBucket:   s.Cfg.Server.S3TasksBucket,
+			S3ResultsBucket: s.Cfg.Server.S3ResultsBucket,
+			URL:             url,
+			SHA256:          digest,
+			PSK:             s.Cfg.Keyring.AgentPSK,
+			AgentID:         agentID,
+			Mode:            mode,
+			StoreName:       storeName,
+			StoreBase:       storeBase,
+		}
+		// The offline stager carries the beacon inside itself, so the
+		// operator hands the bytes of the payload over with the command.
+		if payload, ok := args["payload"].([]byte); ok {
+			opts.Payload = payload
 		}
 		script, err := stager.Render(opts)
 		if err != nil {
@@ -1595,6 +1727,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"platform":  platform,
 			"transport": transport,
 			"server":    server,
+			"mode":      mode,
 			"stager":    script,
 		})
 
@@ -1607,6 +1740,12 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 //
 // The blob travels inside the task arguments, so it is bounded by the frame
 // limit: extensions are small in-memory modules, not payloads.
+//
+// The manifest travels with it. The manifest is what says what the module
+// needs from the host, and the server checks that before the module is
+// queued: a module that needs a capability the agent does not have is
+// refused here, where the operator can read the reason, instead of on the
+// target, where the answer would be a line of text in a result.
 func (s *Server) submitExtension(agentID, name string, args map[string]any) (*store.Task, error) {
 	if s.Armory == nil {
 		return nil, errors.New("the extension registry is not enabled")
@@ -1622,13 +1761,22 @@ func (s *Server) submitExtension(agentID, name string, args map[string]any) (*st
 	if len(blob) > armory.MaxBlobSize {
 		return nil, fmt.Errorf("extension %q is too large to run in one frame", name)
 	}
+	agent, ok := s.Hub.Store().Agent(agentID)
+	if !ok {
+		return nil, fmt.Errorf("unknown agent %q", agentID)
+	}
+	if missing := armory.MissingCapabilities(ext.Manifest.Caps, agent.Caps); len(missing) > 0 {
+		return nil, fmt.Errorf("the agent %s cannot run %s: it lacks %s",
+			agentID, name, strings.Join(missing, ", "))
+	}
 	if args == nil {
 		args = map[string]any{}
 	}
 	return s.Hub.SubmitTask(agentID, TaskKindExtension, upk.Map{
-		"name": name,
-		"data": blob,
-		"args": toUpkMap(args),
+		"name":     name,
+		"data":     blob,
+		"args":     toUpkMap(args),
+		"manifest": toUpkMap(ext.Manifest.ABIManifest()),
 	})
 }
 
@@ -1637,6 +1785,80 @@ func stringsToAny(in []string) []any {
 	out := make([]any, 0, len(in))
 	for _, s := range in {
 		out = append(out, s)
+	}
+	return out
+}
+
+// manifestMap renders a catalogue entry for the operator.
+//
+// The whole module ABI travels with it: the magic, the ABI number, the
+// argument schema, the output schema, the capabilities the module needs and
+// the modules it depends on. The operator sees what the module is before it
+// is pushed anywhere.
+func manifestMap(m armory.Manifest) upk.Map {
+	out := upk.Map{
+		"name":        m.Name,
+		"version":     m.Version,
+		"os":          m.OS,
+		"arch":        m.Arch,
+		"format":      m.Format,
+		"sha256":      m.SHA256,
+		"size":        m.Size,
+		"description": m.Description,
+		"args":        stringsToAny(m.Args),
+		"caps":        stringsToAny(m.Caps),
+		"requires":    stringsToAny(m.Requires),
+		"schema":      argSchemaToAny(m.Schema()),
+		"output":      outputMap(m.Output),
+	}
+	if m.Magic != "" {
+		out["magic"] = m.Magic
+	}
+	if m.ABI != 0 {
+		out["abi"] = int64(m.ABI)
+	}
+	return out
+}
+
+// argSchemaToAny renders the argument schema of a module.
+func argSchemaToAny(in []armory.ArgSpec) []any {
+	out := make([]any, 0, len(in))
+	for _, arg := range in {
+		entry := upk.Map{
+			"name": arg.Name,
+			"type": arg.Type,
+		}
+		if arg.Required {
+			entry["required"] = true
+		}
+		if arg.Default != "" {
+			entry["default"] = arg.Default
+		}
+		if arg.Help != "" {
+			entry["help"] = arg.Help
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// outputMap renders the output schema of a module.
+func outputMap(out *armory.OutputSpec) map[string]any {
+	if out == nil {
+		return map[string]any{}
+	}
+	entry := map[string]any{"type": out.Type}
+	if out.Description != "" {
+		entry["description"] = out.Description
+	}
+	return entry
+}
+
+// entriesOf renders a list of catalogue entries.
+func entriesOf(in []armory.Manifest) []any {
+	out := make([]any, 0, len(in))
+	for _, m := range in {
+		out = append(out, manifestMap(m))
 	}
 	return out
 }

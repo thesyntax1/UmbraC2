@@ -37,10 +37,12 @@ Added on top of that core:
 | Layer-3 tunnel | An encrypted tunnel between the console and the implants: every agent gets an address in the tunnel network | [docs/PIVOTING.md](docs/PIVOTING.md#the-layer-3-tunnel) |
 | DNS transport | The beacon talks to the server through TXT records when everything else is blocked | [docs/PIVOTING.md](docs/PIVOTING.md#the-dns-transport) |
 | In-memory modules | COFF/BOF objects and PE images are loaded and executed without touching the disk | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) |
+| The module ABI | Every module carries a signed manifest: the version, the argument schema, the output schema and the capabilities it needs. A module that asks for more than the host has is never pushed to it | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#31-the-module-abi) |
+| Sandboxed modules | A webassembly interpreter and a script dialect: a module computes, parses and decrypts without ever being native code, and the host API is capability limited | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-sandboxed-loaders) |
 | Post-exploitation | Reflective loading, process migration, token impersonation, credential collection, privilege helpers | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#post-exploitation) |
 | Extension store | A signed catalogue of modules, installed on the server and pushed to the agents | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-extension-store) |
 | Command namespace | Named task templates (`umbra alias`) shared by the whole team | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-command-namespace) |
-| Stagers | One-line PowerShell and Bash stagers with the agent key baked in | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#stagers) |
+| Stagers | One-line PowerShell and Bash stagers for every transport, with the agent key baked in: the beacon comes from a url, from the file store of the server, from inside the stager, or behind a digest shim | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#stagers) |
 | Team work | Focus/presence, task claims, directed chat, and one `team.sync` snapshot of the whole team | [docs/PROTOCOL.md](docs/PROTOCOL.md#operator-rpcs) |
 | Covert channels | WebSocket and DNS transports, mutual TLS for the console, traffic padding, domain fronting through a configurable `Host` header | [docs/TRANSPORTS.md](docs/TRANSPORTS.md) |
 | The route of an agent | The operator says which transport an agent speaks, in which order it may fall back, and which front domain it hides behind; the beacon follows the route | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-route-of-an-agent) |
@@ -79,8 +81,7 @@ Added on top of that core:
 | The layer-3 tunnel, finished | The peers have their addresses, the networks behind them are routed to them, the operator can ask a peer whether it is there, and a peer behind another agent joins its relay | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-layer-3-tunnel) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
-a WASM sandbox for task modules, TLS inside the implant binaries, and a Go
-implant.
+TLS inside the implant binaries and a Go implant.
 
 ## Quick start (5 commands, no Go/Rust needed)
 

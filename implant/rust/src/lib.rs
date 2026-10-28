@@ -11,6 +11,11 @@
 //!   vpn      the layer-3 tunnel client
 //!   ws       the WebSocket transport
 //!   bof      in-memory COFF loader
+//!   manifest the module ABI: the manifest of a module and its schema
+//!   migrate  process migration: the work moves into another process
+//!   wasm     a small webassembly interpreter
+//!   script   the sandboxed script dialect
+//!   shellcode raw position independent shellcode
 //!   post     in-memory post-exploitation helpers
 //!   creds    the credential collection with a structured result
 //!   remote   the remote execution through the pivots
@@ -40,7 +45,9 @@ pub mod evade;
 pub mod hygiene;
 pub mod install;
 pub mod link;
+pub mod manifest;
 pub mod mail;
+pub mod migrate;
 pub mod netinfo;
 pub mod persist;
 pub mod post;
@@ -48,8 +55,10 @@ pub mod proc;
 pub mod registry;
 pub mod remote;
 pub mod s3;
+pub mod script;
 pub mod session;
 pub mod sessions;
+pub mod shellcode;
 pub mod sysinfo;
 pub mod task;
 pub mod transport;
@@ -57,6 +66,7 @@ pub mod triage;
 pub mod tunnel;
 pub mod upk;
 pub mod vpn;
+pub mod wasm;
 pub mod desktop;
 pub mod ws;
 pub mod wire;

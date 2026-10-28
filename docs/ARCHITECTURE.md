@@ -58,7 +58,7 @@ main: load config → build keyring → open store → start listeners
 | `dnstun` | DNS transport | TXT records carry the frames; the session above the transport does not change |
 | `armory` | extension store | Ed25519 signed catalogue; an unsigned catalogue installs nothing |
 | `alias` | command namespace | named task templates, call-time arguments win |
-| `stager` | stager generation | PowerShell and Bash; the agent key never reaches the audit log |
+| `stager` | stager generation | PowerShell and Bash, one per transport; the download stager, the store stager, the offline stager and the digest shim; the agent key never reaches the audit log |
 | `coff` | object inspection | the server parses a module before it is pushed to an agent |
 | `mtls` | TLS configuration | mutual TLS for the operator listener, plain TLS for the agent listener |
 
@@ -431,5 +431,16 @@ Medium term: S3 and SMTP transports, named-pipe pivots, a Go implant,
 per-operator ACLs on the chat, and a sandbox for task modules that are not
 plain memory.
 
+Done: a versioned module ABI (the manifest of a module, its argument
+schema, its output schema and the capabilities it needs), the sandboxed
+loaders (a small webassembly interpreter, a script dialect and a raw
+shellcode loader, all capability limited), the armory of the framework
+finished (search, dependency resolver, versions, a "what does it need" view
+and a remote catalogue import), the stagers finished (one one-liner per
+transport, a loader that pulls the beacon from the file store of the server,
+an offline variant and a digest shim) and the process migration done
+properly (into a spawned process, into a running process and out of its own
+process, with the task stream alive across the move).
+
 Long term: trait-object plugin ABI for implants (new tasks without rebuilding),
-WASM-sandboxed task modules, automated detection-engineering fixtures.
+automated detection-engineering fixtures.

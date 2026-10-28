@@ -56,6 +56,15 @@ var (
 )
 
 // Manifest describes one extension.
+//
+// The first block is the legacy catalogue: a name, a version, a platform and
+// a digest. The second block is the module ABI (see abi.go): the magic, the
+// ABI number, the argument schema, the output schema, the capabilities the
+// module needs from the host and the other modules it depends on.
+//
+// A manifest without the ABI block is a legacy entry. It is still valid and
+// still signed, but it says nothing about what it needs, so the server
+// treats it as a module that needs nothing.
 type Manifest struct {
 	Name        string   `json:"name"`
 	Version     string   `json:"version"`
@@ -68,6 +77,21 @@ type Manifest struct {
 	Args        []string `json:"args"`
 	Description string   `json:"description"`
 	URL         string   `json:"url"`
+
+	// ---- the module ABI ------------------------------------------------
+	// Magic opens the manifest and ABI says which dialect it is written
+	// in. Both are empty in a legacy catalogue entry.
+	Magic string `json:"magic,omitempty"`
+	// ABI is the version of the module ABI the manifest is written in.
+	ABI int `json:"abi,omitempty"`
+	// ArgSchema is the declared argument list of the module.
+	ArgSchema []ArgSpec `json:"arg_schema,omitempty"`
+	// Output describes what the module answers.
+	Output *OutputSpec `json:"output,omitempty"`
+	// Caps are the host capabilities the module needs.
+	Caps []string `json:"caps,omitempty"`
+	// Requires are the other modules the module depends on.
+	Requires []string `json:"requires,omitempty"`
 }
 
 // signingBytes is the canonical byte string a signature covers.
@@ -75,7 +99,23 @@ type Manifest struct {
 // It is a purpose-built encoding rather than "the JSON of the manifest": the
 // fields are written in a fixed order with explicit lengths, so a re-serialiser
 // cannot produce a different byte string for the same manifest.
+//
+// The encoding depends on the ABI the manifest declares, and the ABI is
+// inside the signed bytes. A catalogue that is tampered with therefore
+// cannot change the dialect of a manifest without breaking the signature:
+// dropping the ABI turns the v2 bytes into the v1 bytes, and the signature
+// that was made over the v2 bytes no longer verifies.
 func (m Manifest) signingBytes() []byte {
+	if m.ABI >= ManifestABI {
+		return m.signingBytesV2()
+	}
+	return m.signingBytesLegacy()
+}
+
+// signingBytesLegacy is the encoding of a catalogue entry that predates the
+// module ABI. It is kept byte for byte: the signatures of the catalogues
+// that are already deployed must still verify.
+func (m Manifest) signingBytesLegacy() []byte {
 	var b strings.Builder
 	b.WriteString("umbra/armory/v1\n")
 	b.WriteString(m.Name)
@@ -264,6 +304,9 @@ func (r *Registry) Install(m Manifest, blob []byte) (*Extension, error) {
 	if len(blob) > MaxBlobSize {
 		return nil, ErrTooLarge
 	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
 	if err := r.Verify(m); err != nil {
 		return nil, err
 	}
@@ -289,6 +332,11 @@ func (r *Registry) Install(m Manifest, blob []byte) (*Extension, error) {
 		}
 		details = obj.Describe()
 		exports = obj.Exports()
+	}
+	if isWebAssemblyFormat(m.Format) {
+		if !isWebAssembly(blob) {
+			return nil, fmt.Errorf("armory: %s is not a webassembly module", m.Name)
+		}
 	}
 	path := filepath.Join(r.dir, sanitize(m.Name)+".bin")
 	tmp := path + ".tmp"
@@ -317,29 +365,36 @@ func (r *Registry) Install(m Manifest, blob []byte) (*Extension, error) {
 	return &cp, nil
 }
 
+// Validate checks that the server understands the manifest.
+//
+// A manifest with a magic this server does not know, or an ABI from the
+// future, is refused: the fields the operator would read are not the fields
+// the module was built with, and pushing it would be a guess.
+func (m Manifest) Validate() error {
+	if m.Magic != "" && m.Magic != ManifestMagic {
+		return fmt.Errorf("armory: %s has a manifest of another kind: %s", m.Name, m.Magic)
+	}
+	if m.ABI > ManifestABI {
+		return fmt.Errorf("armory: %s speaks the module ABI %d, this server speaks %d",
+			m.Name, m.ABI, ManifestABI)
+	}
+	for _, arg := range m.Schema() {
+		switch arg.Type {
+		case ArgString, ArgInt, ArgBool, ArgBytes:
+		case "":
+			return fmt.Errorf("armory: %s declares the argument %s without a type", m.Name, arg.Name)
+		default:
+			return fmt.Errorf("armory: %s declares the argument %s of the unknown type %s",
+				m.Name, arg.Name, arg.Type)
+		}
+	}
+	return nil
+}
+
 // InstallFrom installs an extension from the catalogue, fetching the blob if
 // it is not cached yet.
 func (r *Registry) InstallFrom(name string) (*Extension, error) {
-	cat := r.Catalog()
-	var manifest *Manifest
-	for i := range cat.Entries {
-		if cat.Entries[i].Name == name {
-			m := cat.Entries[i]
-			manifest = &m
-			break
-		}
-	}
-	if manifest == nil {
-		return nil, ErrNoSuchExtension
-	}
-	if err := r.Verify(*manifest); err != nil {
-		return nil, err
-	}
-	blob, err := r.blob(manifest)
-	if err != nil {
-		return nil, err
-	}
-	return r.Install(*manifest, blob)
+	return r.InstallVersion(name, "")
 }
 
 // blob returns the extension bytes, downloading them when needed.
@@ -469,6 +524,25 @@ func isObjectFormat(format string) bool {
 		return true
 	}
 	return false
+}
+
+// isWebAssemblyFormat reports whether a manifest describes a webassembly
+// module. The server checks the magic before it installs one: a module that
+// claims to be webassembly and is not would fail on the target, where the
+// failure is much harder to read.
+func isWebAssemblyFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "wasm", "webassembly":
+		return true
+	}
+	return false
+}
+
+// isWebAssembly reports whether the blob is a webassembly module.
+//
+// The magic is four bytes: "\0asm" followed by the version 1.
+func isWebAssembly(blob []byte) bool {
+	return len(blob) >= 8 && string(blob[:4]) == "\x00asm" && blob[4] == 1
 }
 
 // sanitize keeps an extension name usable as a file name.

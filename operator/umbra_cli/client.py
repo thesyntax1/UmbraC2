@@ -836,6 +836,47 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data
 
+    def armory_search(self, query: str = "") -> Dict[str, Any]:
+        """Look for a module in the catalogue.
+
+        The query is matched against the name, the description, the
+        platform, the format and the capabilities of the module, so
+        "token" finds the modules that need a token and not only the
+        ones that are called "token".
+        """
+        res = self.rpc("armory.search", {"query": query})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def armory_needs(self, name: str) -> Dict[str, Any]:
+        """Ask what a module needs from the host and from the catalogue."""
+        res = self.rpc("armory.needs", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def armory_versions(self, name: str) -> Dict[str, Any]:
+        """List the versions of a module the catalogue knows about."""
+        res = self.rpc("armory.versions", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def armory_resolve(self, name: str) -> Dict[str, Any]:
+        """Resolve the dependencies of a module into an install order."""
+        res = self.rpc("armory.resolve", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def armory_import(self, url: str) -> Dict[str, Any]:
+        """Import a remote catalogue; every entry is verified first."""
+        res = self.rpc("armory.import", {"url": url})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
     def armory_install(self, name: str) -> Dict[str, Any]:
         res = self.rpc("armory.install", {"name": name})
         if not res.ok:
@@ -896,8 +937,25 @@ class OperatorClient:
         url: str = "",
         sha256: str = "",
         agent_id: str = "",
+        mode: str = "download",
+        store: str = "",
+        store_base: str = "",
+        dns_domain: str = "",
+        dns_resolver: str = "",
+        smtp_addr: str = "",
+        pop3_addr: str = "",
+        s3_endpoint: str = "",
+        s3_region: str = "",
+        ws_path: str = "",
+        payload: Optional[bytes] = None,
     ) -> str:
-        """Render a stager script for the requested platform."""
+        """Render a stager script for the requested platform.
+
+        The mode decides the shape of the stager: ``download`` fetches the
+        beacon from a url, ``store`` fetches it from the file store of the
+        server, ``offline`` carries the beacon inside the stager, and
+        ``shim`` only proves the digest of the payload.
+        """
         res = self.rpc(
             "stager.generate",
             {
@@ -907,6 +965,17 @@ class OperatorClient:
                 "url": url,
                 "sha256": sha256,
                 "agent_id": agent_id,
+                "mode": mode,
+                "store": store,
+                "store_base": store_base,
+                "dns_domain": dns_domain,
+                "dns_resolver": dns_resolver,
+                "smtp_addr": smtp_addr,
+                "pop3_addr": pop3_addr,
+                "s3_endpoint": s3_endpoint,
+                "s3_region": s3_region,
+                "ws_path": ws_path,
+                "payload": payload or b"",
             },
         )
         if not res.ok:

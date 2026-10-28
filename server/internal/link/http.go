@@ -51,11 +51,46 @@ func (s *Server) httpHandler() http.Handler {
 	path := s.httpPath()
 	mux.HandleFunc(path, s.handleBeaconHandshake)
 	mux.HandleFunc(path+"/", s.handleBeaconFrame)
+	// The file store is served as well: the stager that pulls the beacon
+	// from the store of the server fetches it from here.
+	mux.HandleFunc("/api/v1/artifact/", s.handleArtifact)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, "ok\n")
 	})
 	return mux
+}
+
+// handleArtifact serves one file of the server-side store.
+//
+// The route is what the stager of the "store" mode downloads from: the
+// operator drops the beacon into the store once and hands the stager the
+// name of the artifact, so no third party host has to serve the payload.
+func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
+	if s.Artifacts == nil {
+		http.Error(w, "no artifact store", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/api/v1/artifact/")
+	if name == "" || strings.Contains(name, "/") {
+		http.Error(w, "bad artifact name", http.StatusBadRequest)
+		return
+	}
+	data, entry, err := s.Artifacts.Read(name)
+	if err != nil {
+		http.Error(w, "artifact not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	// The digest travels with the file, so a stager can prove what it got
+	// without a second request.
+	w.Header().Set("X-Umbra-SHA256", entry.SHA256)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 // handleBeaconHandshake handles the bootstrap POST: HELLO in, HELLO_ACK out.

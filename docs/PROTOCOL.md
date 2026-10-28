@@ -368,9 +368,12 @@ Task kinds understood by the reference implants:
 | `ping` | — | `pong` |
 | `tunnel` | `stream` | opens a pivot callback session (§7.3) |
 | `p2p` | `action` (`connect`/`listen`), `host`, `port`, `stream` | peer-to-peer pivot link (§7.3) |
-| `bof` | `name`, `data` (bin, COFF object), `args` (list) | in-memory COFF execution: output + exit code |
-| `ext` | `name`, `data` (bin, module), `args` (map) | in-memory extension execution |
-| `inject` | `pid`, `mode` (`inject`/`migrate`/`reflect`), optional `data` (bin, PE) | process injection / migration / reflective load |
+| `bof` | `name`, `data` (bin, COFF object), `args` (list), `manifest` | in-memory COFF execution: output + exit code |
+| `ext` | `name`, `data` (bin, module), `args` (map), `manifest` | in-memory extension execution; the loader is named by the manifest (§7.2j) |
+| `wasm` | `name`, `data` (bin, webassembly module), `args` (map), `manifest` | the webassembly module runs in the interpreter: its output + its exit code |
+| `script` | `name`, `data` (bin, the script), `args` (map), `manifest` | the script runs in the sandbox: its log + its exit code |
+| `shellcode` | `name`, `data` (bin, the machine code), `args` (map), `manifest` | the shellcode runs in an executable page: its output + its exit code |
+| `inject` | `pid`, `mode` (`inject`/`migrate`/`reflect`), optional `data` (bin, PE) | process injection / migration / reflective load; with `mode: migrate` the arguments are `pid` (a process that runs) or `spawn` (a program the implant starts), optional `args` (list), `out` (the implant leaves its own process) and `resume` (the original program keeps running) |
 | `creds` | `mode` (`vault`/`dpapi`/`lsass`/`local`/`all`), optional `raw` | the credential material of the host, one record per piece of material (§7.2i) |
 | `token` | `mode` (`list`/`impersonate`/`become`/`restore`), optional `pid`, optional `session` | the tokens of the host, or the identity the implant became (§7.2i) |
 | `privesc` | `mode` (`privileges`/`token`) | the privilege escalation attempts, one record per technique (§7.2i) |
@@ -517,14 +520,19 @@ Operator RPC commands, with the minimum role each requires:
 | `vpn.routes` | viewer | the routing table of the tunnel: the networks behind the peers |
 | `vpn.route` | operator | send the traffic of a network to a peer; `remove` forgets it |
 | `vpn.ping` | operator | ask a peer of the tunnel whether it is there; the answer carries the round trip |
-| `armory.list` | viewer | catalogue and installed extensions |
-| `armory.install` | operator | fetch, verify and install an extension |
+| `armory.list` | viewer | catalogue and installed extensions, with the module ABI of every entry |
+| `armory.search` | viewer | the catalogue entries that match a `query` (the name, the description, the platform, the format, the capabilities) |
+| `armory.needs` | viewer | what a module needs: the `caps` of the host, the argument schema, the output schema and the dependencies |
+| `armory.versions` | viewer | the versions of a module the catalogue knows about |
+| `armory.resolve` | viewer | the modules that have to be installed first, in the order they have to be installed |
+| `armory.install` | operator | fetch, verify and install an extension (`name` may carry the version: `whoami@1.2.0`) |
+| `armory.import` | operator | import a remote catalogue over https; every entry is verified before it is merged |
 | `armory.remove` | admin | delete an installed extension |
-| `armory.run` | operator | run an extension on an agent |
+| `armory.run` | operator | run an extension on an agent; the server refuses a module the agent cannot run (§7.2j) |
 | `alias.list` | viewer | the runtime command namespace |
 | `alias.run` | operator | run a named template on an agent |
 | `team.sync` | viewer | full state snapshot for a console that joins late |
-| `stager.generate` | admin | build a stage-0 one-liner (it carries the agent PSK) |
+| `stager.generate` | admin | build a stage-0 one-liner (it carries the agent PSK); `mode` is `download`, `store` (the beacon comes from the file store of the server), `offline` (the beacon travels inside the stager) or `shim` (the digest check on its own) |
 | `artifact.list` | viewer | the artifacts the server holds: name, size, digest |
 | `artifact.get` | viewer | read a chunk of a stored artifact: `offset`, `limit` |
 | `artifact.put` | operator | write a chunk into the store: `name`, `data` (bin), `offset`, `eof` |
@@ -889,6 +897,88 @@ that same agent.  The task names the target and the protocol:
 
 Every one of them cleans up after itself: the remote file, the remote task
 and the remote service are removed when the output has been read.
+
+### 7.2j The module ABI
+
+A module is a blob and a manifest.  The manifest is what makes the blob
+safe to push: it says what the module is, what it needs from the host and
+what it takes.  The manifest travels inside the task, as an upk map:
+
+```
+{
+  "magic": "UMBRAMOD1",
+  "abi": 1,
+  "name": "whoami",
+  "version": "1.2.0",
+  "description": "the user the implant runs as",
+  "os": "windows", "arch": "x64",
+  "format": "coff",
+  "digest": "sha256:…",
+  "caps": ["shell"],
+  "args": [{"name": "domain", "type": "string", "required": false}],
+  "output": {"type": "text", "description": "the account name"}
+}
+```
+
+| field | meaning |
+|---|---|
+| `magic` | opens the manifest: `UMBRAMOD1` |
+| `abi` | the version of the dialect: `1` |
+| `name`, `version` | the identity of the module |
+| `description` | one line, for the operator |
+| `os`, `arch` | the platform the module is for (empty = every one) |
+| `format` | the loader: `coff`, `pe`, `shellcode`, `wasm` or `script` |
+| `digest` | the digest of the blob: `sha256:…` |
+| `caps` | the capabilities the host must have |
+| `args` | the argument schema: `name`, `type` (`string`, `int`, `bool`, `bytes`), `required`, `default`, `help` |
+| `output` | the output schema: `type` and `description` |
+
+**The refusal rules.**  Both sides refuse, and they refuse the same things:
+
+* a manifest without the magic, or with another ABI, is not read at all;
+* a module that declares a capability the host does not have is refused —
+  the server refuses to queue it, the implant refuses to run it;
+* a required argument that is missing, or a value of the wrong kind,
+  stops the module before it runs.
+
+The server keeps the capability list of every agent (it arrives in the
+handshake) and compares it with the `caps` of the manifest before it queues
+the task.  An agent that advertises no capabilities at all is allowed
+everything: the list did not exist in the first version of the framework.
+
+**The loaders.**  The format of the manifest names the loader:
+
+| format | the loader | the notes |
+|---|---|---|
+| `coff` | the COFF loader | the object is mapped into the memory of the implant |
+| `pe` | the reflective loader | the image is mapped and its entry point is called |
+| `shellcode` | the shellcode loader | the code is copied into an executable page; the module is position independent and receives a pointer to its context |
+| `wasm` | the webassembly interpreter | a small subset: `i32`/`i64`, one memory, the arithmetic, the loads and the stores, `block`/`loop`/`if`/`br` |
+| `script` | the script dialect | integers and strings, `var`, `if`, `while`, `log`, `call` and `exit` |
+
+**The host API of the sandboxed loaders.**  A webassembly module and a
+script may call three things, and two of them need a capability:
+
+| call | needs | what it does |
+|---|---|---|
+| `log` | — | writes bytes to the answer of the module |
+| `sha256` | `hash` | the SHA-256 of a buffer |
+| `decrypt` | `crypto` | AES-256-GCM, with the key the operator gave as the `key` argument |
+
+A module that calls `sha256` without declaring the `hash` capability is
+refused by the interpreter itself: the capability is checked where the call
+happens, not only at the door.
+
+**The migration.**  `inject` with `mode: migrate` moves the work of the
+implant into another process: into a process the implant starts itself
+(`spawn`), into a process that already runs (`pid`), or out of its own
+process (`out`).  The process that takes over inherits the environment of
+the implant, so it reports the same agent id and reconnects with the same
+key.  The identity is what the server knows the agent by, so the task
+stream survives the move: the tasks the operator queued while the move was
+happening are delivered to the new process.  The answer of the migration
+travels before the implant leaves, and it carries `migrated`, `migrate_pid`,
+`migrate_spawned`, `migrate_threads` and `migrate_agent`.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

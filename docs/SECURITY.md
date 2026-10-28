@@ -164,6 +164,14 @@ listed here with the guard that keeps them from becoming the weakest link.
   never written to the audit log, and the templates do not contain it.
 * Rendered stagers are text (PowerShell, Bash). Keep them in the deployment
   directory with `0600` and delete them when the engagement ends.
+* The `store` mode keeps the payload on the team server: the stager pulls it
+  from the file store of the server, so the beacon itself never has to live
+  on a third party host.
+* The `shim` mode is the digest check on its own: it proves what it
+  downloaded and hands the path over. It is the only part of a stager that
+  can be handed to somebody else, and it proves nothing else.
+* The `offline` mode carries the beacon inside the stager. The script is
+  then as secret as the beacon: treat it like the key.
 
 ### 3.8 The operator's notebook (`umbra_cli/db.py`)
 

