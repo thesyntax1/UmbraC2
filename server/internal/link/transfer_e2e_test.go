@@ -75,10 +75,7 @@ func TestResultMetaIsStoredAndReturned(t *testing.T) {
 		"rid": uint64(1), "cmd": "task.get",
 		"args": upk.Map{"task_id": task.ID},
 	})
-	msgType, resp := op.recv(t)
-	if msgType != wire.MsgOpResponse {
-		t.Fatalf("expected OP_RESPONSE, got %s", wire.TypeName(msgType))
-	}
+	resp := op.recvResponse(t, 1)
 	if ok, _ := resp["ok"].(bool); !ok {
 		t.Fatalf("task.get failed: %v", resp["err"])
 	}

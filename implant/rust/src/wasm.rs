@@ -28,6 +28,7 @@
 //! page by page, up to a hard limit.
 
 use crate::crypto;
+use crate::wire;
 
 /// The magic that opens a webassembly module.
 pub const MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];

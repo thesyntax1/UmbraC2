@@ -447,3 +447,60 @@ func TestSnapshotVersionIsEnforced(t *testing.T) {
 		t.Fatalf("unhelpful error: %v", err)
 	}
 }
+
+// A beacon that stops checking in is offline, whatever its connection
+// looked like when it was last open.
+//
+// The grace window is what keeps the inventory honest: a beacon closes its
+// connection after every cycle, so a host that is merely asleep must not
+// flip to "offline" between two cycles.  A host that has been quiet for
+// longer than the grace has really gone.
+func TestAnAgentThatStoppedCheckingInGoesOffline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	old := time.Now().UTC().Add(-2 * store.OfflineGrace)
+	snap := map[string]any{
+		"version":  3,
+		"saved_at": time.Now().UTC(),
+		"agents": []any{map[string]any{
+			"id":         "quiet-1",
+			"host":       "host-quiet-1",
+			"os":         "linux",
+			"arch":       "x86_64",
+			"first_seen": old,
+			"last_seen":  old,
+			"state":      "online",
+		}},
+		"tasks": []any{},
+	}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	agents := st.Agents()
+	if len(agents) != 1 {
+		t.Fatalf("expected one agent, got %d", len(agents))
+	}
+	if agents[0].State != store.StateOffline {
+		t.Fatalf("agent state is %q, want offline", agents[0].State)
+	}
+	// The record can be flipped as well: the hub does it when a link
+	// ends, and it reports whether the host really went away.
+	if !st.MarkOffline("quiet-1") {
+		t.Fatal("MarkOffline did not report the change")
+	}
+	rec, ok := st.Agent("quiet-1")
+	if !ok {
+		t.Fatal("agent record disappeared")
+	}
+	if rec.State != store.StateOffline {
+		t.Fatalf("agent state is %q, want offline", rec.State)
+	}
+}

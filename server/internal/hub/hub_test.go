@@ -58,7 +58,7 @@ func TestUnregisterSessionOnlyDropsItsOwnSession(t *testing.T) {
 		t.Fatalf("live entry is the old session: %+v", live)
 	}
 
-	// The current session's cleanup does remove it, and marks it offline.
+	// The current session's cleanup does remove it.
 	h.UnregisterSession("a1", hexOf(newSession))
 	if _, ok := h.Live("a1"); ok {
 		t.Fatal("matching session did not unregister the agent")
@@ -67,8 +67,12 @@ func TestUnregisterSessionOnlyDropsItsOwnSession(t *testing.T) {
 	if !ok {
 		t.Fatal("agent record disappeared")
 	}
-	if rec.State != store.StateOffline {
-		t.Fatalf("agent state is %q, want offline", rec.State)
+	// The record stays "online" while the beacon is inside its grace
+	// window: a beacon closes its connection after every cycle, and the
+	// inventory must not flicker because of it.  What is gone is the
+	// session: nothing is listening any more.
+	if rec.State != store.StateOnline {
+		t.Fatalf("agent state is %q, want online inside the grace window", rec.State)
 	}
 }
 

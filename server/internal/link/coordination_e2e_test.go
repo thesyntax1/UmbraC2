@@ -17,10 +17,7 @@ func (c *client) rpc(t *testing.T, rid uint64, cmd string, args upk.Map) map[str
 		req["args"] = args
 	}
 	c.send(t, wire.MsgOpRequest, req)
-	msgType, resp := c.recv(t)
-	if msgType != wire.MsgOpResponse {
-		t.Fatalf("%s: expected OP_RESPONSE, got %s", cmd, wire.TypeName(msgType))
-	}
+	resp := c.recvResponse(t, rid)
 	if got, _ := resp["rid"].(uint64); got != rid {
 		t.Fatalf("%s: rid %v != %d", cmd, resp["rid"], rid)
 	}

@@ -187,6 +187,27 @@ func (c *client) recv(t *testing.T) (byte, map[string]any) {
 	return msgType, msg
 }
 
+// recvResponse reads until the answer to a request arrives.
+//
+// The server pushes events to the operators while they work (a beacon that
+// checked in, a task that was claimed, a task that was delivered), so the
+// answer to a request is looked for and not assumed to be the next frame.
+func (c *client) recvResponse(t *testing.T, rid uint64) map[string]any {
+	t.Helper()
+	for i := 0; i < 64; i++ {
+		msgType, msg := c.recv(t)
+		if msgType != wire.MsgOpResponse {
+			continue
+		}
+		if got, _ := msg["rid"].(uint64); got != rid {
+			continue
+		}
+		return msg
+	}
+	t.Fatalf("no answer to request %d", rid)
+	return nil
+}
+
 // An agent can report a frame-level failure with ERROR (0x1F) without ending
 // the session; operators must see it as a hub event.
 func TestAgentErrorIsSurfacedToOperators(t *testing.T) {
@@ -305,10 +326,7 @@ func TestOperatorRPC(t *testing.T) {
 	op.send(t, wire.MsgOpRequest, upk.Map{
 		"rid": uint64(1), "cmd": "server.stats", "args": upk.Map{},
 	})
-	msgType, resp := op.recv(t)
-	if msgType != wire.MsgOpResponse {
-		t.Fatalf("expected OP_RESPONSE, got %s", wire.TypeName(msgType))
-	}
+	resp := op.recvResponse(t, 1)
 	if ok, _ := resp["ok"].(bool); !ok {
 		t.Fatalf("server.stats failed: %v", resp["err"])
 	}
@@ -320,7 +338,7 @@ func TestOperatorRPC(t *testing.T) {
 	op.send(t, wire.MsgOpRequest, upk.Map{
 		"rid": uint64(2), "cmd": "agents.list", "args": upk.Map{},
 	})
-	_, resp = op.recv(t)
+	resp = op.recvResponse(t, 2)
 	if ok, _ := resp["ok"].(bool); !ok {
 		t.Fatalf("agents.list failed: %v", resp["err"])
 	}
@@ -329,7 +347,7 @@ func TestOperatorRPC(t *testing.T) {
 	op.send(t, wire.MsgOpRequest, upk.Map{
 		"rid": uint64(3), "cmd": "does.not.exist", "args": upk.Map{},
 	})
-	_, resp = op.recv(t)
+	resp = op.recvResponse(t, 3)
 	if ok, _ := resp["ok"].(bool); ok {
 		t.Fatal("unknown command reported success")
 	}

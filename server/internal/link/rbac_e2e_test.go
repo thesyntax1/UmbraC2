@@ -15,10 +15,7 @@ import (
 func rpc(t *testing.T, c *client, rid uint64, cmd string, args upk.Map) (bool, upk.Map) {
 	t.Helper()
 	c.send(t, wire.MsgOpRequest, upk.Map{"rid": rid, "cmd": cmd, "args": args})
-	msgType, resp := c.recv(t)
-	if msgType != wire.MsgOpResponse {
-		t.Fatalf("%s: expected OP_RESPONSE, got %s", cmd, wire.TypeName(msgType))
-	}
+	resp := c.recvResponse(t, rid)
 	ok, _ := resp["ok"].(bool)
 	data, _ := resp["data"].(map[string]any)
 	return ok, data
@@ -47,12 +44,10 @@ func TestViewerIsReadOnly(t *testing.T) {
 	}
 	_ = data
 	// The refusal must say what is required, not just "no".
-	_, resp := func() (byte, map[string]any) {
-		viewer.send(t, wire.MsgOpRequest, upk.Map{
-			"rid": uint64(4), "cmd": "agents.kill", "args": upk.Map{"id": "nobody"},
-		})
-		return viewer.recv(t)
-	}()
+	viewer.send(t, wire.MsgOpRequest, upk.Map{
+		"rid": uint64(4), "cmd": "agents.kill", "args": upk.Map{"id": "nobody"},
+	})
+	resp := viewer.recvResponse(t, 4)
 	errText, _ := resp["err"].(string)
 	if errText == "" {
 		t.Fatalf("refusal had no message: %v", resp)

@@ -33,11 +33,11 @@ func TestOperatorActionsAreAudited(t *testing.T) {
 
 	// A success, a failure, and a task submission that we can trace by id.
 	op.send(t, wire.MsgOpRequest, upk.Map{"rid": uint64(1), "cmd": "server.stats", "args": upk.Map{}})
-	if msgType, resp := op.recv(t); msgType != wire.MsgOpResponse || resp["ok"] != true {
+	if resp := op.recvResponse(t, 1); resp["ok"] != true {
 		t.Fatalf("server.stats failed: %v", resp["err"])
 	}
 	op.send(t, wire.MsgOpRequest, upk.Map{"rid": uint64(2), "cmd": "agents.info", "args": upk.Map{"id": "nope"}})
-	if _, resp := op.recv(t); resp["ok"] == true {
+	if resp := op.recvResponse(t, 2); resp["ok"] == true {
 		t.Fatal("agents.info on an unknown agent reported success")
 	}
 
@@ -45,7 +45,7 @@ func TestOperatorActionsAreAudited(t *testing.T) {
 	op.send(t, wire.MsgOpRequest, upk.Map{
 		"rid": uint64(3), "cmd": "audit.tail", "args": upk.Map{"limit": int64(10)},
 	})
-	_, resp := op.recv(t)
+	resp := op.recvResponse(t, 3)
 	if resp["ok"] != true {
 		t.Fatalf("audit.tail failed: %v", resp["err"])
 	}
@@ -54,10 +54,12 @@ func TestOperatorActionsAreAudited(t *testing.T) {
 	if len(entries) < 2 {
 		t.Fatalf("expected at least two audit entries, got %d", len(entries))
 	}
-	// Newest first: audit.tail itself is the most recent recorded action.
+	// Newest first.  The trail is written *after* the call it describes,
+	// because the entry carries the outcome of the call: a command cannot
+	// be in its own answer.  The call before it is the newest entry.
 	first, _ := entries[0].(map[string]any)
-	if first["cmd"] != "audit.tail" {
-		t.Fatalf("newest entry is %v, want audit.tail", first["cmd"])
+	if first["cmd"] != "agents.info" {
+		t.Fatalf("newest entry is %v, want agents.info", first["cmd"])
 	}
 	if first["operator"] != "op1" {
 		t.Fatalf("entry not attributed to the operator: %v", first["operator"])
@@ -67,6 +69,19 @@ func TestOperatorActionsAreAudited(t *testing.T) {
 	}
 	if first["peer"] == "" {
 		t.Error("entry lost the peer address")
+	}
+
+	// The next tail sees the call before it: the trail is not a promise
+	// for later, it is a record of what already happened.
+	op.send(t, wire.MsgOpRequest, upk.Map{
+		"rid": uint64(4), "cmd": "audit.tail", "args": upk.Map{"limit": int64(10)},
+	})
+	resp = op.recvResponse(t, 4)
+	data, _ = resp["data"].(map[string]any)
+	entries, _ = data["entries"].([]any)
+	first, _ = entries[0].(map[string]any)
+	if first["cmd"] != "audit.tail" {
+		t.Fatalf("newest entry is %v, want audit.tail", first["cmd"])
 	}
 
 	// Find the failed call and make sure the error text survived.
@@ -138,7 +153,7 @@ func TestAuditRecordsTaskAndAgentIDs(t *testing.T) {
 		"rid": uint64(1), "cmd": "task.cancel",
 		"args": upk.Map{"task_id": task.ID},
 	})
-	if _, resp := op.recv(t); resp["ok"] != true {
+	if resp := op.recvResponse(t, 1); resp["ok"] != true {
 		t.Fatalf("task.cancel failed: %v", resp["err"])
 	}
 
