@@ -116,7 +116,7 @@ pub fn impersonation() -> Option<Impersonation> {
 /// task that follows runs as that account: the shell the beacon starts
 /// inherits the token of the thread.  A one-shot impersonation ends when
 /// the task that follows it is done.
-pub fn become(pid: u32, one_shot: bool) -> Result<Identity, String> {
+pub fn impersonate(pid: u32, one_shot: bool) -> Result<Identity, String> {
     let identity = platform::impersonate(pid)?;
     if let Ok(mut guard) = IMPERSONATION.lock() {
         *guard = Some(Impersonation {
@@ -1239,7 +1239,9 @@ pub mod windows {
         if realm.is_empty() {
             account
         } else {
-            format!("{realm}\{account}")
+            // The realm and the account are separated by a backslash,
+            // the way the name of a principal is written.
+            format!(r"{realm}\{account}")
         }
     }
 

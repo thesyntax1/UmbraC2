@@ -1290,7 +1290,7 @@ fn registry_set(hive: &str, key: &str, value: &str, data: &str) -> Result<(Strin
     if status != 0 {
         return Err(format!("the value could not be written ({status})"));
     }
-    Ok((key.to_string(), format!("{hive}\\{key}\\{value} = {data}")))
+    Ok((key.to_string(), format!(r"{hive}\\{key}\\{value} = {data}")))
 }
 
 /// Delete a registry value.
@@ -1304,7 +1304,7 @@ fn registry_del(hive: &str, key: &str, value: &str) -> Result<Vec<String>, Strin
     if status != 0 {
         return Err(format!("the value could not be removed ({status})"));
     }
-    Ok(vec![format!("removed {hive}\\{key}\\{value}")])
+    Ok(vec![format!(r"removed {hive}\\{key}\\{value}")])
 }
 
 /// Read a registry value back.

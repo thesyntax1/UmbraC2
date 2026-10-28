@@ -1399,7 +1399,7 @@ impl Trigger {
         match self {
             Trigger::File { path } => format!("the file {path} appears"),
             Trigger::Registry { hive, key, value } => {
-                format!("the registry value {hive}\\{key}\\{value} appears")
+                format!(r"the registry value {hive}\\{key}\\{value} appears")
             }
             Trigger::At { epoch } => format!("the moment {epoch} arrives"),
             Trigger::Uptime { hours } => format!("the machine has been up for {hours} hours"),

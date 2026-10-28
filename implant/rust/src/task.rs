@@ -655,7 +655,7 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
                         return Outcome::err(1, "token: the mode needs the pid of the process");
                     }
                     let one_shot = mode == "impersonate";
-                    match crate::post::become(pid, one_shot) {
+                    match crate::post::impersonate(pid, one_shot) {
                         Ok(identity) => Outcome::ok(
                             format!("the implant is now {}\n", identity.account).into_bytes(),
                         )
