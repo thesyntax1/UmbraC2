@@ -3,5 +3,6 @@
     <string name="app_name">Umbra Beacon</string>
     <string name="notification_channel_name">UmbraC2 beacon</string>
     <string name="notification_channel_description">Keeps the UmbraC2 beacon session alive</string>
+    <string name="accessibility_description">Keeps the UmbraC2 beacon session alive. The service is visible in the Android settings and Android shows a notification while it runs.</string>
     <string name="consent_notice">UmbraC2 test implant.\n\nThis application connects to a team server you configured at build time and reports basic device information and command output. Install it only on devices you own or are explicitly authorised to test.</string>
 </resources>

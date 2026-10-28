@@ -8255,3 +8255,67 @@ def test_a_task_carries_its_deadline_and_its_timeout():
         client.close()
         agent.stop()
         server.stop()
+
+
+def test_the_catalogue_of_the_techniques_is_the_whole_one():
+    """Every technique of the specification is in the catalogue.
+
+    The catalogue of the persistence manager is the specification of what
+    the implant can do to a host: a technique that is not in the catalogue
+    cannot be installed, verified or removed, and a technique in the
+    catalogue without an implementation is a promise the manager breaks.
+    """
+    rust = read_text("implant/rust/src/persist.rs")
+    required = {
+        "windows": [
+            "schtasks", "registry.run", "registry.runonce", "registry.explorer_run",
+            "service", "service.dll", "startup", "wmi.event", "registry.com",
+            "dll.searchorder", "registry.appinit", "registry.ifeo",
+            "registry.printmonitor", "registry.shell_ext", "taskxml",
+            "registry.winlogon", "bcdedit",
+        ],
+        "linux": [
+            "systemd.system", "systemd.user", "systemd.timer",
+            "systemd.execstartpre", "cron.user", "cron.d", "rc.local", "init.d",
+            "profile", "profile.alias", "ld_preload", "xdg_autostart", "at",
+            "kernel.module",
+        ],
+        "macos": [
+            "launchd.daemon", "launchd.agent", "loginitem", "shell_rc",
+            "cron.user", "xdg_autostart",
+        ],
+    }
+    def between(text: str, first: str, second: str) -> str:
+        start = text.index(first)
+        end = text.index(second, start + len(first))
+        return text[start:end]
+
+    # The three arms of the manager: install, remove and verify.
+    arms = {
+        "install": between(rust, "fn install_technique(", "fn remove_technique("),
+        "remove": between(rust, "fn remove_technique(", "fn verify_technique("),
+        "verify": between(rust, "fn verify_technique(", "fn write_unit("),
+    }
+    for platform, techniques in required.items():
+        for technique in techniques:
+            assert f'id: "{technique}", platform: "{platform}"' in rust, (
+                platform, technique)
+            # The manager knows how to install it, to read it back and to
+            # take it away again: three arms, one technique.
+            for arm, text in arms.items():
+                assert f'"{technique}"' in text, (technique, arm)
+
+    kotlin = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                        "Persistence.kt")
+    for technique in ("boot_receiver", "foreground_service", "alarm",
+                      "jobscheduler", "app_update", "accessibility",
+                      "device_owner"):
+        assert f'Technique("{technique}"' in kotlin, technique
+        # The install, the remove and the verification of the phone.
+        assert kotlin.count(f'"{technique}" ->') >= 3, technique
+
+    # The phone's new techniques are real components of the application.
+    manifest = read_text("implant/android/app/src/main/AndroidManifest.xml")
+    for component in (".UmbraJobService", ".UmbraAccessibilityService",
+                      ".UpdateReceiver", ".UmbraAdminReceiver"):
+        assert component in manifest, component

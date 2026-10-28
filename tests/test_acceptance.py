@@ -97,6 +97,13 @@ def test_a_beacon_survives_the_host_and_leaves_nothing_behind(team):
     assert entries[0]["state"] == "installed"
     assert entries[0]["technique"], entries[0]
 
+    # An update of the host does not take the start-up entry with it: the
+    # new build is installed and the entry stays.
+    task = client.submit("host-1", "update", {"path": "/tmp/umbra-beacon-new"})
+    done = client.wait_for_result(task, timeout=20, poll=0.05)
+    assert done["state"] == "done", done
+    assert agent.persist, "the update took the start-up entry with it"
+
     # The verification reads the entries back from the host.
     task = client.submit("host-1", "persist.verify", {})
     done = client.wait_for_result(task, timeout=20, poll=0.05)

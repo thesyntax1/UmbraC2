@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The policies of the device owner.
+
+     The implant asks for the smallest set a device owner needs: the
+     policies are declared, but the implant never uses them to lock the
+     user out of the phone.  The enrolment itself is the technique, and the
+     operator has to know that the phone is no longer personal. -->
+<device-admin>
+    <uses-policies>
+        <force-lock />
+    </uses-policies>
+</device-admin>

@@ -100,6 +100,7 @@ Added on top of that core:
 | The Go implant | A fourth implementation of the protocol, in the standard library of Go and with nothing else: it checks in, runs the sixteen task kinds it advertises and answers the ones it does not know with an error instead of a silence | [implant/go/README.md](implant/go/README.md) |
 | The phone | The Android implant is not a toy: a real foreground service with a notification, the persistence of the phone (boot receiver, foreground service, alarm) that is verified and can be taken away again, the tunnel, and a capability list that says what the phone can do | [docs/OPERATIONS.md](docs/OPERATIONS.md#3f-the-implants) |
 | The mac as a first-class target | The persistence, the registry equivalents (property lists, the defaults of a domain, the jobs of launchd) and the desktop (the screen, the clipboard, the keys) work on a mac as well | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-mac-is-a-first-class-target) |
+| Work that has a time | A task may carry a deadline and a timeout: the server cancels the work that is no longer worth running, fails the work that ran out of time, and hands the bound to the beacon so the implant stops the command itself | [docs/PROTOCOL.md](docs/PROTOCOL.md#72o-the-queue-the-breakers-and-the-traces) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 TLS inside the implant binaries.
@@ -214,6 +215,15 @@ make vectors       # regenerate contracts/vectors.json after a protocol change
 `contracts/vectors.json` pins the canonical encoding, the key schedule, the
 handshake transcripts and full frame bytes. The Go, Rust and Python suites all
 read it, so the three implementations cannot drift apart silently.
+
+`tests/test_acceptance.py` is the acceptance test of the framework: one test
+per sentence of the specification that says what a real command and control
+is — the beacon that survives its host, the inventory of what was installed,
+the task the host cannot run, the file that is pushed to a fleet, the chain of
+pivots, two operators at the same time, the task with a deadline, the wire
+that four implementations share, the green build, and the end of an
+engagement.  The tests name the code that does the work, so a sentence that
+stops being true fails the suite.
 
 Three checks cover the parts a single suite cannot see, and all of them run in
 CI (`.github/workflows/ci.yml`):

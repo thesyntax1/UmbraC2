@@ -772,17 +772,30 @@ like `wipe` asks for "wipe".
 techniques, and the whole lifecycle travels over the wire.
 
 **The catalogue.** Every technique has an id, a platform, a trigger
-(`logon`, `boot`, `schedule`), a flag for whether it needs administrator
-rights and a score for how quiet it is. The desktop beacon knows fifteen
-Windows techniques (the `Run` keys, `Winlogon`, `AppInit_DLLs`, the Image
-File Execution Options, a COM hijack, a print monitor, a shell extension, a
-scheduled task, a task from an XML definition, a service, the startup
-folder, a boot execute entry), thirteen on Linux (a systemd system unit, a
-systemd user unit, a systemd timer, a user crontab, an `/etc/cron.d` entry,
-`rc.local`, an init script, a shell profile hook, the `ld_preload`
-technique, an XDG autostart entry, an `at` job) and five on macOS (a launch agent, a launch
-daemon, a login item, a shell rc hook, a crontab). The phone has three: the
-boot receiver, the sticky foreground service and the alarm.
+(`logon`, `boot`, `schedule`, `service`, `update`), a flag for whether it
+needs administrator rights and a score for how quiet it is. The desktop
+beacon knows seventeen Windows techniques (the `Run` keys, `Winlogon`,
+`AppInit_DLLs`, the Image File Execution Options, a COM hijack, a print
+monitor, a shell extension, a scheduled task, a task from an XML definition,
+a service, a service DLL shim, the startup folder, a boot execute entry, a
+permanent WMI event subscription and a DLL search-order hijack), fourteen on
+Linux (a systemd system unit, a systemd user unit, a systemd timer, a
+drop-in that hooks into a unit that already exists, a user crontab, an
+`/etc/cron.d` entry, `rc.local`, an init script, a shell profile hook, a
+shell alias wrapper, the `ld_preload` technique, an XDG autostart entry, an
+`at` job and a kernel module) and six on macOS (a launch agent, a launch
+daemon, a login item, a shell rc hook, a crontab and an XDG autostart
+entry). The phone has seven: the boot receiver, the sticky foreground
+service, the alarm, a job scheduler entry, the re-launch after an update of
+the application, an accessibility service and the enrolment as the device
+owner of the phone.
+
+Two of them are loud on purpose, and the report says so: the kernel module
+runs inside the kernel of the host, and the device owner of a phone means
+the phone is no longer a personal device.  The accessibility service of the
+phone is visible to the user of the phone -- Android shows it in the
+settings -- and the report says that too, because an operator who does not
+know it is visible is an operator whose technique breaks in the field.
 
 **The selection.** `method: "auto"` lets the manager pick: the quietest
 technique that needs no administrator rights, and one that is already

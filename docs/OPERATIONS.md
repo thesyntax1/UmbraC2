@@ -225,10 +225,35 @@ that one:
 
 | Platform | Techniques |
 |---|---|
-| Windows | `registry.run`, `registry.runonce`, `registry.explorer_run`, `registry.winlogon`, `registry.ifeo`, `registry.appinit`, `registry.com`, `registry.printmonitor`, `registry.shell_ext`, `schtasks`, `taskxml`, `service`, `startup`, `bcdedit` |
-| Linux | `systemd.user`, `systemd.system`, `systemd.timer`, `cron.user`, `cron.d`, `rc.local`, `init.d`, `profile`, `ld_preload`, `xdg_autostart`, `at` |
-| macOS | `launchd.agent`, `launchd.daemon`, `loginitem`, `shell_rc`, `cron.user` |
-| Android | `boot_receiver`, `foreground_service`, `alarm` |
+| Windows | `registry.run`, `registry.runonce`, `registry.explorer_run`, `registry.winlogon`, `registry.ifeo`, `registry.appinit`, `registry.com`, `registry.printmonitor`, `registry.shell_ext`, `schtasks`, `taskxml`, `service`, `service.dll`, `startup`, `bcdedit`, `wmi.event`, `dll.searchorder` |
+| Linux | `systemd.user`, `systemd.system`, `systemd.timer`, `systemd.execstartpre`, `cron.user`, `cron.d`, `rc.local`, `init.d`, `profile`, `profile.alias`, `ld_preload`, `xdg_autostart`, `at`, `kernel.module` |
+| macOS | `launchd.agent`, `launchd.daemon`, `loginitem`, `shell_rc`, `cron.user`, `xdg_autostart` |
+| Android | `boot_receiver`, `foreground_service`, `alarm`, `jobscheduler`, `app_update`, `accessibility`, `device_owner` |
+
+A few of them need something from the operator, and the report says so
+instead of pretending:
+
+* `dll.searchorder` needs the module to plant (`--args '{"dll":"...",
+  "dir":"C:\\Program Files\\Some App"}'`) and the directory of the
+  program that loads it.
+* `service.dll` needs the shim (`--args '{"dll":"..."}'`) and the name of
+  the service that loads it.
+* `wmi.event` writes three objects in the subscription namespace: a filter,
+  a consumer and the binding between them.  Nothing of the implant is
+  written to the disk of the host.
+* `systemd.execstartpre` needs the unit it hooks into
+  (`--args '{"unit":"sshd.service"}'`): the implant runs as a step before
+  the real work of a unit that already exists.
+* `kernel.module` needs the module (`--args '{"module":"..."}'`) and
+  administrator rights.  It is the loudest technique in the catalogue.
+* The accessibility service of a phone can only be enabled by the user of
+  the phone, in the settings of Android.  The implant records the entry
+  and says that the operator has to do it; the verification reads the
+  answer of the system.
+* The device owner of a phone is the most extreme technique there is: the
+  phone is no longer a personal device.  It only works when the
+  application was pushed to the phone as the device owner candidate, and
+  the implant reports what the system answered.
 
 Three things make the difference between a start-up entry and a persistence
 engine:

