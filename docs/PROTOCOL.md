@@ -725,6 +725,14 @@ An agent that says nothing — a beacon from before this extension — is asked
 for everything. The server fails open for old implants and closed for new
 ones, so an upgrade never breaks an engagement that is already running.
 
+The list is a promise, and it is kept honest twice: the server refuses a
+kind that is not on the list, and the consistency checker of the repository
+compares the list with the task table of the implant
+(`tools/check_consistency.py`, the `TASK_KINDS` check). The Go implant is
+the small one — sixteen kinds — and everything it cannot do (the modules,
+the persistence, the desktop, the other transports) is answered with an
+error and not with a silence.
+
 **The artifact store.** The team server keeps files: a payload, a
 configuration, a tool. The operator drops a file into the store once
 (`artifact.put`, in chunks, because the frames are bounded) and pushes it to

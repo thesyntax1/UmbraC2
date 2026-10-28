@@ -34,7 +34,7 @@ object Credentials {
         val out = mutableListOf<Entry>()
         if (context == null) return out
         val manager = android.accounts.AccountManager.get(context)
-        val accounts = runCatching { manager.accounts }.getOrElse { emptyList() }
+        val accounts = runCatching { manager.accounts }.getOrElse { emptyArray() }
         for (account in accounts) {
             out.add(
                 Entry(

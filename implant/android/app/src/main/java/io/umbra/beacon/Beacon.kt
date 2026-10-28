@@ -265,7 +265,7 @@ class Beacon(
         val primary = value.field("primary")?.text() ?: ""
         if (primary.isEmpty()) return
         val fallback = (value.field("fallback")?.list() ?: emptyList())
-            .map { it.text() }
+            .mapNotNull { it.text() }
             .filter { it.isNotEmpty() }
         route = Route(
             primary = primary.lowercase(),

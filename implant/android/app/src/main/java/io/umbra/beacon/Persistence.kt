@@ -170,20 +170,21 @@ object Persistence {
         val entries = load(stateDir).toMutableList()
         val text = StringBuilder()
         var broken = 0L
-        for (entry in entries) {
+        for (index in entries.indices) {
+            val entry = entries[index]
             val ok = when (entry.technique) {
                 "boot_receiver" -> isEnabled(context, "io.umbra.beacon", ".BootReceiver")
                 "foreground_service" -> isEnabled(context, "io.umbra.beacon", ".BeaconService")
                 "alarm" -> isArmed(context)
                 else -> false
             }
-            if (ok) {
-                entry.state = "installed"
-            } else {
-                entry.state = "broken"
-                broken += 1
-            }
-            text.append("${entry.technique.padEnd(24)} ${entry.state.padEnd(10)}\n")
+            // The entry is a value: the state is a new value, not a field to
+            // write into, so the list is rebuilt entry by entry.
+            val state = if (ok) "installed" else "broken"
+            if (!ok) broken += 1
+            val updated = entry.copy(state = state)
+            entries[index] = updated
+            text.append("${updated.technique.padEnd(24)} ${updated.state.padEnd(10)}\n")
         }
         if (entries.isEmpty()) {
             text.append("nothing is installed on this phone\n")

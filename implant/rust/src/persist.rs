@@ -184,8 +184,9 @@ pub fn install(args: &Value) -> Result<Report, String> {
     };
     if tech.platform != platform() {
         return Err(format!(
-            "persist: {chosen} is a {} technique and this host is {platform()}",
-            tech.platform
+            "persist: {chosen} is a {} technique and this host is {}",
+            tech.platform,
+            platform()
         ));
     }
 

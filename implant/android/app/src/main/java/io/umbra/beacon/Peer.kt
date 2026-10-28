@@ -231,7 +231,10 @@ object Peer {
         val (host, port) = Addr.splitHostPort(bind)
         server.reuseAddress = true
         server.bind(InetSocketAddress(host, port))
-        val address = Addr.hostPort(server.localAddress.hostAddress, server.localPort)
+        // Android's ServerSocket knows the address it is bound to as
+        // "inetAddress"; the JDK spelling ("localAddress") does not exist
+        // in the platform library the phone compiles against.
+        val address = Addr.hostPort(server.inetAddress?.hostAddress ?: host, server.localPort)
         log("peer listener on $address")
         val thread = Thread({
             while (true) {

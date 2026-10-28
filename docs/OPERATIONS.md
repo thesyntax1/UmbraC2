@@ -872,6 +872,38 @@ The same rules hold in the implant: the transports dial an IPv6 literal
 (`[::1]:8443`), the scan expands an IPv6 block, and the peer link binds an
 IPv6 socket when it is asked for one.
 
+## 3f. The implants
+
+Four implementations of the same protocol are in the tree, and they are not
+the same size. The operator picks the one that fits the host.
+
+| Implant | Where it runs | What it carries |
+|---|---|---|
+| Rust (`implant/rust`) | Windows, Linux, macOS | everything: the module ecosystem, the persistence catalogue, the desktop, the pivot and the other transports |
+| Kotlin (`implant/android`) | Android | the foreground service, the persistence of the phone and the tunnel; no desktop and no modules |
+| Go (`implant/go`) | Linux, macOS, BSD | sixteen task kinds and nothing else: no modules, no persistence, no desktop, the link is TCP |
+| Python (`operator/umbra_cli`, `tools/mock_server.py`) | the operator's machine | the reference: the console, the mock server and the vectors |
+
+Every one of them says in its handshake which task kinds it runs, and the
+server refuses to queue anything else. The list is part of the record of the
+agent, so the operator sees the limits of a host before a task fails:
+
+```
+$ umbra info web-01
+{
+  "id": "web-01",
+  "os": "linux",
+  ...
+  "caps": ["shell", "exec", "sysinfo", "recon", "ls", "download", "cat", "upload", "tail", "hash", "ps"],
+  ...
+}
+```
+
+The Go implant is the honest one about its limits: a kind it does not run
+is answered with an error and not with a silence, and its self test runs a
+whole cycle against a server that lives in the process, so the binary can
+be proved to work before it goes near a target.
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)
