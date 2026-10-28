@@ -8197,3 +8197,61 @@ def test_the_protocol_document_lists_every_event():
     emitted = kinds.code_event_kinds()
     assert len(documented) >= 50
     assert emitted == documented
+
+
+def test_a_task_carries_its_deadline_and_its_timeout():
+    """The promise the operator makes is kept by the server.
+
+    A task that passed its deadline is cancelled instead of delivered, and
+    the timeout travels to the beacon so the implant stops the work itself.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"limits-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-limits", interval=0.2)
+    agent.start()
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents()
+
+        # The task carries the deadline and the timeout.
+        task_id = client.submit("agent-limits", "shell",
+                                 {"cmd": "echo hello"},
+                                 deadline="2030-01-01T00:00:00Z", timeout=45)
+        record = client.task(task_id)
+        assert record.get("deadline"), record
+        assert record.get("timeout") == 45, record
+
+        # The timeout travels to the beacon inside the arguments.
+        assert server.tasks[task_id]["args"]["timeout"] == 45
+
+        # A deadline that is not a time is refused, with a reason.
+        res = client.rpc("task.submit", {"id": "agent-limits", "kind": "shell",
+                                         "deadline": "when the coffee is ready"})
+        assert not res.ok
+        assert "deadline" in res.error, res.error
+
+        # A task that passed its deadline is cancelled, not delivered.
+        late = client.submit("agent-limits", "shell", {"cmd": "echo late"},
+                             deadline=str(int(time.time()) - 5))
+        server.sweep_tasks(300)
+        record = client.task(late)
+        assert record["state"] == "cancelled", record
+        assert "deadline" in str(record.get("err", "")), record
+
+        # The event says it too.
+        kinds = [e.get("kind") for e in client.events(limit=200).get("events", [])]
+        assert "task.expired" in kinds, kinds
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()

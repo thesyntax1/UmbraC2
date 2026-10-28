@@ -591,9 +591,16 @@ def _report_findings(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def run_task_and_wait(client: OperatorClient, console: Console, agent_id: str,
                       kind: str, task_args: Dict[str, Any], wait: bool,
-                      timeout: float, as_json: bool) -> None:
-    """Queue a task and, when asked, wait for its result."""
-    task_id = client.submit(agent_id, kind, task_args)
+                      timeout: float, as_json: bool,
+                      deadline: str = "", task_timeout: int = 0) -> None:
+    """Queue a task and, when asked, wait for its result.
+
+    The deadline and the task timeout are the operator's promises: the
+    server cancels a task that passed its deadline and fails one that ran
+    out of time, so a stale piece of work never reaches a host.
+    """
+    task_id = client.submit(agent_id, kind, task_args,
+                            deadline=deadline, timeout=task_timeout)
     console.note_task(task_id, agent_id, kind, task_args)
     if as_json and not wait:
         emit({"task_id": task_id, "agent": agent_id, "kind": kind})
@@ -2493,6 +2500,11 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--args", default="{}", help="task arguments as JSON")
     task.add_argument("--wait", action="store_true")
     task.add_argument("--timeout", type=float, default=120.0)
+    task.add_argument("--deadline", default="",
+                      help="when the task stops being worth running "
+                           "(RFC 3339 or a unix timestamp)")
+    task.add_argument("--task-timeout", type=int, default=0,
+                      help="how long the task may run, in seconds")
     task.add_argument("--agents", default="",
                       help="comma separated agent ids: queue the task on all of them")
     task.add_argument("--filter", default="",
@@ -3390,7 +3402,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not args.agent:
                 print("no agent given", file=sys.stderr)
                 return 2
-            task_id = client.submit(args.agent, kind, task_args)
+            task_id = client.submit(args.agent, kind, task_args,
+                                    deadline=args.deadline,
+                                    timeout=args.task_timeout)
             console.note_task(task_id, args.agent, kind, task_args)
             if args.json and not args.wait:
                 emit({"task_id": task_id, "agent": args.agent, "kind": kind})

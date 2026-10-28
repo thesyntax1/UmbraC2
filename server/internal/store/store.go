@@ -386,6 +386,15 @@ type Task struct {
 	// Priority orders the queue: the higher the number, the sooner the
 	// task is delivered.  Zero is the normal priority.
 	Priority int `json:"priority,omitempty"`
+	// Deadline is the moment after which the task is not worth running.
+	// The server cancels such a task instead of delivering it, so the
+	// promise the operator made ("do this before the window closes") is
+	// kept by the server and not only by the beacon.
+	Deadline time.Time `json:"deadline,omitempty"`
+	// TimeoutSec is how long the task may run, in seconds.  Zero means the
+	// server's own timeout applies.  A task with a timeout of its own is
+	// failed when the beacon does not answer within it.
+	TimeoutSec int `json:"timeout,omitempty"`
 	// Attempts counts how many times the task was delivered.  A task that
 	// keeps failing goes to the dead letter queue.
 	Attempts int `json:"attempts,omitempty"`
@@ -930,14 +939,45 @@ func (s *Store) AppendOutput(taskID string, chunk []byte) (*Task, bool) {
 func (s *Store) StaleTasks(older time.Duration) []*Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cutoff := time.Now().UTC().Add(-older)
+	now := time.Now().UTC()
 	out := make([]*Task, 0, 8)
 	for _, id := range s.order {
 		t := s.tasks[id]
 		if t == nil || t.State != TaskDelivered {
 			continue
 		}
-		if t.Delivered.IsZero() || t.Delivered.After(cutoff) {
+		if t.Delivered.IsZero() {
+			continue
+		}
+		// A task with a timeout of its own is measured by it: the
+		// operator asked for a bound, and the server keeps it.
+		limit := older
+		if t.TimeoutSec > 0 {
+			limit = time.Duration(t.TimeoutSec) * time.Second
+		}
+		if t.Delivered.After(now.Add(-limit)) {
+			continue
+		}
+		out = append(out, t.Clone())
+	}
+	return out
+}
+
+// ExpiredTasks returns the queued tasks whose deadline has passed.
+//
+// A task with a deadline is not worth running after it: the operator said
+// when the work mattered, and the server keeps that promise instead of
+// delivering the work to a host that cannot use it any more.
+func (s *Store) ExpiredTasks(now time.Time) []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Task, 0, 4)
+	for _, id := range s.order {
+		t := s.tasks[id]
+		if t == nil || t.State != TaskQueued || t.Deadline.IsZero() {
+			continue
+		}
+		if t.Deadline.After(now) {
 			continue
 		}
 		out = append(out, t.Clone())
@@ -1584,6 +1624,14 @@ func (s *Store) FilteredTasksFor(agentID, kind, state, assignedTo string, limit 
 // was in, so the caller can tell "it never shipped" from "the beacon may already
 // be running it".
 func (s *Store) Cancel(taskID string) (previous string, ok bool) {
+	return s.CancelWithReason(taskID, "")
+}
+
+// CancelWithReason cancels a task and records why.
+//
+// The reason is what the operator reads: "the deadline passed" and "the
+// operator cancelled it" are different facts, and the trail keeps both.
+func (s *Store) CancelWithReason(taskID, reason string) (previous string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, found := s.tasks[taskID]
@@ -1598,6 +1646,9 @@ func (s *Store) Cancel(taskID string) (previous string, ok bool) {
 	}
 	previous = t.State
 	t.State = TaskCancelled
+	if reason != "" {
+		t.Err = reason
+	}
 	return previous, true
 }
 

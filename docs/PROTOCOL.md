@@ -1264,6 +1264,18 @@ may carry at a time:
 | `queue.max_deliver_per_second` | the tasks the whole server hands out per second | 200 |
 | `queue.max_attempts` | the deliveries of one task before it is parked | 3 |
 
+**The deadline and the timeout.** A task may carry a `deadline` (the moment
+after which the work is not worth running) and a `timeout` (how long it may
+run). `task.submit {id, kind, args, deadline, timeout}` takes both: the
+deadline is an RFC 3339 time or a unix timestamp, the timeout is a number of
+seconds. The server keeps the promise: a task that passes its deadline is
+*cancelled* with the reason "the deadline passed" and the `task.expired`
+event, and a task whose beacon does not answer within its timeout is failed
+with the `task.timeout` event. The timeout travels to the implant inside the
+arguments of the task, so the beacon stops the work itself instead of
+letting it run past its time. The console says it with `umbra task <agent>
+<kind> --deadline 2026-01-01T00:00:00Z --task-timeout 30`.
+
 **The dead letter queue.** A task that failed and cannot be run again
 without a decision is *parked*: its state becomes `dead`, the reason is in
 the record and in the `task.dead` event, and the task is not delivered
@@ -1446,6 +1458,7 @@ The kinds the server emits:
 | `task.released` | an operator let a task go | `by` |
 | `task.cancelled` | a task was cancelled | `was` |
 | `task.timeout` | a task was not answered in time | `kind`, `trace`, `waited` |
+| `task.expired` | a task passed its deadline and was cancelled | `kind`, `trace`, `deadline` |
 | `task.dead` | a task failed too often and was parked in the dead letter queue | `kind`, `trace`, `attempts`, `reason` |
 | `token.rotated` | an operator token was rotated | `target`, `role` |
 | `workflow.created` | a workflow was saved | `workflow`, `steps` |

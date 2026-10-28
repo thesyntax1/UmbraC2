@@ -542,6 +542,21 @@ func (h *Hub) Agents() []map[string]any {
 //   - the agent's queue must have room: a backlog that keeps growing is
 //     work that is stale by the time it is delivered.
 func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task, error) {
+	return h.SubmitTaskWithLimits(agentID, kind, args, time.Time{}, 0)
+}
+
+// SubmitTaskWithLimits queues a task with a deadline and a timeout.
+//
+// The deadline is the moment after which the task is not worth running: the
+// server cancels it instead of delivering it.  The timeout is how long the
+// task may run: the server fails it when the beacon does not answer in
+// time, and the beacon is told the bound so it can stop the work itself.
+//
+// Both are optional.  A task without them behaves exactly as it did
+// before, and the operator's promise is kept by the server rather than by
+// the good manners of the beacon.
+func (h *Hub) SubmitTaskWithLimits(agentID, kind string, args map[string]any,
+	deadline time.Time, timeout time.Duration) (*store.Task, error) {
 	agent, ok := h.store.Agent(agentID)
 	if !ok {
 		return nil, ErrNoSuchAgent
@@ -566,10 +581,27 @@ func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task
 			return nil, fmt.Errorf("agent %s already has %d queued tasks (limit %d)", agentID, queued, limit)
 		}
 	}
+	// The timeout travels with the task, so the beacon knows how long it
+	// may run.  The operator's own value wins: the task knows better than
+	// the server what its own bound is.
+	if timeout > 0 {
+		if args == nil {
+			args = map[string]any{}
+		}
+		if _, given := args["timeout"]; !given {
+			clone := make(map[string]any, len(args))
+			for k, v := range args {
+				clone[k] = v
+			}
+			clone["timeout"] = int(timeout.Seconds())
+			args = clone
+		}
+	}
 	// The trace id follows the task from this RPC to the result that
 	// comes back, so the operator can grep for it.
 	t := h.store.AddTask(&store.Task{
 		AgentID: agentID, Kind: kind, Args: args, TraceID: NewTraceID(),
+		Deadline: deadline, TimeoutSec: int(timeout.Seconds()),
 	})
 	h.store.SaveAsync()
 	h.Emit(Event{Kind: "task.queued", AgentID: agentID, TaskID: t.ID,
@@ -1750,8 +1782,28 @@ func (h *Hub) StartScheduler(ctx context.Context) {
 // a `task.timeout` event, instead of a task that never ends.  The task is
 // not run again: a task that may have run must not run twice.
 func (h *Hub) SweepTasks(timeout time.Duration) int {
+	// A task whose deadline has passed is not worth delivering: the
+	// operator said when the work mattered, and the server keeps that
+	// promise.  The task is cancelled, not failed: nothing went wrong,
+	// the window simply closed.
+	expired := h.store.ExpiredTasks(time.Now().UTC())
+	for _, t := range expired {
+		prev, ok := h.store.CancelWithReason(t.ID, "the deadline passed")
+		if !ok || prev != store.TaskQueued {
+			continue
+		}
+		h.Emit(Event{Kind: "task.expired", AgentID: t.AgentID, TaskID: t.ID,
+			Data: map[string]any{
+				"kind":     t.Kind,
+				"deadline": t.Deadline.Unix(),
+				"trace":    t.TraceID,
+			}})
+	}
+	if len(expired) > 0 {
+		h.store.SaveAsync()
+	}
 	if timeout <= 0 {
-		return 0
+		return len(expired)
 	}
 	stale := h.store.StaleTasks(timeout)
 	for _, t := range stale {
@@ -1762,17 +1814,23 @@ func (h *Hub) SweepTasks(timeout time.Duration) int {
 		// that keeps not being answered goes to the dead letter queue.
 		h.NoteFailure(t.AgentID)
 		h.DeadLetter(t, "the agent never answered")
+		waited := int64(timeout.Seconds())
+		if t.TimeoutSec > 0 {
+			// The task had a bound of its own, and that is the bound
+			// it missed.
+			waited = int64(t.TimeoutSec)
+		}
 		h.Emit(Event{Kind: "task.timeout", AgentID: t.AgentID, TaskID: t.ID,
 			Data: map[string]any{
 				"kind":   t.Kind,
-				"waited": int64(timeout.Seconds()),
+				"waited": waited,
 				"trace":  t.TraceID,
 			}})
 	}
 	if len(stale) > 0 {
 		h.store.SaveAsync()
 	}
-	return len(stale)
+	return len(stale) + len(expired)
 }
 
 func (h *Hub) fireDueSchedules(now time.Time) {

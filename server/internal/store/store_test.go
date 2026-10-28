@@ -504,3 +504,65 @@ func TestAnAgentThatStoppedCheckingInGoesOffline(t *testing.T) {
 		t.Fatalf("agent state is %q, want offline", rec.State)
 	}
 }
+
+// A task with a deadline of its own is not worth running after it, and a
+// task with a timeout of its own is measured by that timeout: the promise
+// the operator made is kept by the server, not by the good manners of the
+// beacon.
+func TestDeadlineAndTimeoutOfATask(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "agent-1", Host: "host", OS: "linux"})
+
+	now := time.Now().UTC()
+	past := st.AddTask(&store.Task{
+		AgentID: "agent-1", Kind: "ping", Deadline: now.Add(-time.Minute),
+	})
+	future := st.AddTask(&store.Task{
+		AgentID: "agent-1", Kind: "ping", Deadline: now.Add(time.Hour),
+	})
+
+	expired := st.ExpiredTasks(now)
+	if len(expired) != 1 || expired[0].ID != past.ID {
+		t.Fatalf("the expired task is not the one that passed its deadline: %v", expired)
+	}
+	for _, task := range expired {
+		if task.ID == future.ID {
+			t.Fatalf("a task with a deadline in the future expired: %v", expired)
+		}
+	}
+
+	// A task with a timeout of its own is stale after that timeout, even
+	// when the server's own timeout is much longer.
+	short := st.AddTask(&store.Task{
+		AgentID: "agent-1", Kind: "ping", TimeoutSec: 1,
+	})
+	st.MarkDelivered([]string{short.ID})
+	time.Sleep(1100 * time.Millisecond)
+	stale := st.StaleTasks(10 * time.Minute)
+	found := false
+	for _, task := range stale {
+		if task.ID == short.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the task with its own timeout is not stale: %v", stale)
+	}
+
+	// The reason a task was cancelled is part of the record.
+	previous, ok := st.CancelWithReason(short.ID, "the deadline passed")
+	if !ok || previous != store.TaskDelivered {
+		t.Fatalf("cancel: %v %v", previous, ok)
+	}
+	task, ok := st.Task(short.ID)
+	if !ok {
+		t.Fatalf("the task is gone")
+	}
+	if task.Err != "the deadline passed" {
+		t.Fatalf("the reason was not kept: %q", task.Err)
+	}
+}

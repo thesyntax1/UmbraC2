@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -786,7 +787,15 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		id, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)
 		taskArgs, _ := args["args"].(map[string]any)
-		t, err := s.Hub.SubmitTask(id, kind, taskArgs)
+		deadline, err := parseDeadline(args["deadline"])
+		if err != nil {
+			return fail("task.submit: %v", err)
+		}
+		timeout, err := parseTimeout(args["timeout"])
+		if err != nil {
+			return fail("task.submit: %v", err)
+		}
+		t, err := s.Hub.SubmitTaskWithLimits(id, kind, taskArgs, deadline, timeout)
 		if err != nil {
 			return fail("task.submit: %v", err)
 		}
@@ -2574,6 +2583,62 @@ func truncate(data []byte, n int) []byte {
 	return cut
 }
 
+// parseDeadline reads the deadline of a task.
+//
+// The operator may say "until 18:30" (RFC 3339) or "until 1750000000"
+// (a Unix timestamp).  An empty value means no deadline at all: the task is
+// worth running whenever the host comes back.
+func parseDeadline(v any) (time.Time, error) {
+	if v == nil {
+		return time.Time{}, nil
+	}
+	if raw, ok := v.(string); ok {
+		text := strings.TrimSpace(raw)
+		if text == "" {
+			return time.Time{}, nil
+		}
+		if ts, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return time.Unix(ts, 0).UTC(), nil
+		}
+		parsed, err := time.Parse(time.RFC3339, text)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("the deadline %q is neither a unix timestamp nor an RFC 3339 time", text)
+		}
+		return parsed.UTC(), nil
+	}
+	if ts, ok := asInt64(v); ok {
+		return time.Unix(ts, 0).UTC(), nil
+	}
+	return time.Time{}, errors.New("the deadline must be a unix timestamp or an RFC 3339 time")
+}
+
+// parseTimeout reads the timeout of a task: a number of seconds, or a
+// duration such as "90s".  A timeout that is not positive means that the
+// server's own timeout applies.
+func parseTimeout(v any) (time.Duration, error) {
+	if v == nil {
+		return 0, nil
+	}
+	if raw, ok := v.(string); ok {
+		text := strings.TrimSpace(raw)
+		if text == "" {
+			return 0, nil
+		}
+		if secs, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return time.Duration(secs) * time.Second, nil
+		}
+		d, err := time.ParseDuration(text)
+		if err != nil {
+			return 0, fmt.Errorf("the timeout %q is neither a number of seconds nor a duration", text)
+		}
+		return d, nil
+	}
+	if secs, ok := asInt64(v); ok {
+		return time.Duration(secs) * time.Second, nil
+	}
+	return 0, errors.New("the timeout must be a number of seconds")
+}
+
 // taskMap renders a task for the operator.
 //
 // The claim of a task carries its state: a claim that is still held is
@@ -2624,6 +2689,12 @@ func (s *Server) taskMap(t *store.Task) upk.Map {
 	}
 	if t.Priority != 0 {
 		m["priority"] = int64(t.Priority)
+	}
+	if !t.Deadline.IsZero() {
+		m["deadline"] = t.Deadline.Unix()
+	}
+	if t.TimeoutSec > 0 {
+		m["timeout"] = int64(t.TimeoutSec)
 	}
 	if t.Attempts > 0 {
 		m["attempts"] = int64(t.Attempts)

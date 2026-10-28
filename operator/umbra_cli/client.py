@@ -423,8 +423,22 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data
 
-    def submit(self, agent_id: str, kind: str, args: Optional[Dict[str, Any]] = None) -> str:
-        res = self.rpc("task.submit", {"id": agent_id, "kind": kind, "args": args or {}})
+    def submit(self, agent_id: str, kind: str, args: Optional[Dict[str, Any]] = None,
+               deadline: str = "", timeout: int = 0) -> str:
+        """Queue a task on an agent.
+
+        The deadline is the moment after which the task is not worth
+        running ("2026-01-01T00:00:00Z" or a unix timestamp), and the
+        timeout is how long the task may run, in seconds.  The server keeps
+        both promises: it cancels a task that passed its deadline and
+        fails one that ran out of time.
+        """
+        payload: Dict[str, Any] = {"id": agent_id, "kind": kind, "args": args or {}}
+        if deadline:
+            payload["deadline"] = deadline
+        if timeout:
+            payload["timeout"] = int(timeout)
+        res = self.rpc("task.submit", payload)
         if not res.ok:
             raise OperatorError(res.error)
         return str(res.data.get("task_id", ""))

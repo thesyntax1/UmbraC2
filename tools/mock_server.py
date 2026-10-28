@@ -112,6 +112,66 @@ def _now() -> int:
     return int(time.time())
 
 
+def _parse_deadline(value: Any) -> int:
+    """Read the deadline of a task: a unix timestamp or an RFC 3339 time.
+
+    An empty value means no deadline at all: the task is worth running
+    whenever the host comes back.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError("the deadline must be a unix timestamp or an RFC 3339 time")
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        import datetime
+
+        stamp = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+        return int(stamp.timestamp())
+    except ValueError:
+        raise ValueError("the deadline %r is neither a unix timestamp nor an "
+                         "RFC 3339 time" % text)
+
+
+def _parse_timeout(value: Any) -> int:
+    """Read the timeout of a task: a number of seconds or a duration.
+
+    A timeout that is not positive means that the server's own timeout
+    applies, exactly as it did before the operator could ask for one.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError("the timeout must be a number of seconds")
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if len(text) > 1 and text[-1] in units:
+        try:
+            return int(float(text[:-1]) * units[text[-1]])
+        except ValueError:
+            pass
+    raise ValueError("the timeout %r is neither a number of seconds nor a "
+                     "duration" % text)
+
+
 def _expand_scan_target(target: str, cap: int) -> List[str]:
     """Expand a scan target into the addresses the scan walks.
 
@@ -2492,17 +2552,41 @@ class MockServer:
         Mirrors the Go server's sweep: a beacon that dies in the middle of
         a task leaves it in the "delivered" state, and the operator has to
         learn that instead of waiting forever.
+
+        A task with a deadline of its own is cancelled when the deadline
+        passes, and a task with a timeout of its own is measured by that
+        timeout: the promise the operator made is kept by the server.
         """
+        expired: List[str] = []
+        with self._lock:
+            now = _now()
+            for task in self.tasks.values():
+                if task["state"] != "queued":
+                    continue
+                deadline = int(task.get("deadline", 0) or 0)
+                if deadline <= 0 or deadline > now:
+                    continue
+                task["state"] = "cancelled"
+                task["err"] = "the deadline passed"
+                task["completed"] = now
+                expired.append(task["id"])
+        for task_id in expired:
+            self.emit("task.expired", task_id=task_id, data={})
         if timeout_s <= 0:
-            return []
-        cutoff = _now() - timeout_s
+            return expired
+        now = _now()
+        cutoff = now - timeout_s
         failed: List[str] = []
         with self._lock:
             for task in self.tasks.values():
                 if task["state"] != "delivered":
                     continue
                 delivered = int(task.get("delivered", 0))
-                if delivered == 0 or delivered > cutoff:
+                if delivered == 0:
+                    continue
+                # A task with a timeout of its own is measured by it.
+                limit = int(task.get("timeout", 0) or 0) or timeout_s
+                if delivered > now - limit:
                     continue
                 task["state"] = "failed"
                 task["err"] = "the agent never answered"
@@ -2516,7 +2600,7 @@ class MockServer:
                 failed.append(task["id"])
         for task_id in failed:
             self.emit("task.timeout", task_id=task_id, data={})
-        return failed
+        return expired + failed
 
     def _refusal(self, agent_id: str, kind: str) -> str:
         """The reason a task must not be queued, or an empty string.
@@ -2539,12 +2623,18 @@ class MockServer:
         return ""
 
     def _queue_task(self, agent_id: str, kind: str,
-                    task_args: Dict[str, Any]) -> Dict[str, Any]:
+                    task_args: Dict[str, Any],
+                    deadline: int = 0, timeout: int = 0) -> Dict[str, Any]:
         """Queue a task and announce it.
 
         The trace id follows the task from this call to the result, so the
-        operator can grep for it.
+        operator can grep for it.  The deadline is the moment after which
+        the task is not worth running, and the timeout is how long it may
+        run: the beacon is told the bound so it can stop the work itself.
         """
+        task_args = dict(task_args or {})
+        if timeout and "timeout" not in task_args:
+            task_args["timeout"] = int(timeout)
         task = {
             "id": new_id("t"),
             "agent_id": agent_id,
@@ -2558,6 +2648,8 @@ class MockServer:
             "trace_id": secrets.token_hex(8),
             "attempts": 0,
             "priority": 0,
+            "deadline": int(deadline or 0),
+            "timeout": int(timeout or 0),
         }
         with self._lock:
             self.tasks[task["id"]] = task
@@ -3452,7 +3544,13 @@ class MockServer:
             problem = self._refusal(agent_id, kind)
             if problem:
                 return fail(problem)
-            task = self._queue_task(agent_id, kind, args.get("args") or {})
+            try:
+                deadline = _parse_deadline(args.get("deadline"))
+                timeout = _parse_timeout(args.get("timeout"))
+            except ValueError as exc:
+                return fail("task.submit: %s" % exc)
+            task = self._queue_task(agent_id, kind, args.get("args") or {},
+                                    deadline=deadline, timeout=timeout)
             return ok({"task_id": task["id"], "agent_id": agent_id,
                        "state": task["state"]})
 
@@ -6036,8 +6134,6 @@ class FakeAgent(threading.Thread):
             hive = str(args.get("hive", "HKLM"))
             key = str(args.get("key", ""))
             return 0, f"mock agent: the registry {hive}\\{key} would be read\n".encode(), "", {}
-        if kind == "unpersist":
-            return 0, b"mock agent: the start-up entries would be removed\n", "", {}
         if kind == "keylog.file":
             path = str(args.get("path", ""))
             return 0, f"mock agent: the key logger writes to {path}\n".encode(), "", {}

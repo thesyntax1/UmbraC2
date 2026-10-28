@@ -89,6 +89,26 @@ umbra --server 127.0.0.1:4002 --operator alice result t-1a2b3c4d
 
 `--token` shows up in the process list; prefer `--token-file` or the environment.
 
+### Work that has a time
+
+A task may carry a deadline and a timeout, and the server keeps both
+promises instead of leaving them to the good manners of the beacon:
+
+```bash
+umbra task web-01 shell --args '{"cmd":"collect the logs"}' \
+      --deadline 2026-01-01T18:30:00Z --task-timeout 120 --wait
+```
+
+* the **deadline** is the moment after which the work is not worth running.
+  A task that passes it is *cancelled* with the reason "the deadline passed",
+  and the `task.expired` event says so.
+* the **timeout** is how long the task may run.  It travels to the beacon
+  inside the arguments of the task, so the implant stops the command itself,
+  and the server fails the task when the beacon does not answer in time
+  (the `task.timeout` event).
+
+Neither is required: a task without them behaves exactly as it always did.
+
 ## 3a. Working on groups of agents
 
 An engagement is rarely about a single machine.  The console therefore speaks
