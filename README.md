@@ -44,6 +44,8 @@ Added on top of that core:
 | Command namespace | Named task templates (`umbra alias`) shared by the whole team | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-command-namespace) |
 | Stagers | One-line PowerShell and Bash stagers for every transport, with the agent key baked in: the beacon comes from a url, from the file store of the server, from inside the stager, or behind a digest shim | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#stagers) |
 | Team work | Focus/presence, task claims, directed chat, and one `team.sync` snapshot of the whole team | [docs/PROTOCOL.md](docs/PROTOCOL.md#operator-rpcs) |
+| The presence that expires | A console that stops talking goes silent and then stale, and the claim it holds expires with it: a crashed console never keeps a task to itself | [docs/OPERATIONS.md](docs/OPERATIONS.md#5e1-the-presence-the-lease-and-the-handover) |
+| Working as a team | A task is handed to a colleague, the namespace is shared, the chat carries mentions, and `umbra handover` writes the document that goes with the shift | [docs/OPERATIONS.md](docs/OPERATIONS.md#5e1-the-presence-the-lease-and-the-handover) |
 | Covert channels | WebSocket and DNS transports, mutual TLS for the console, traffic padding, domain fronting through a configurable `Host` header | [docs/TRANSPORTS.md](docs/TRANSPORTS.md) |
 | The route of an agent | The operator says which transport an agent speaks, in which order it may fall back, and which front domain it hides behind; the beacon follows the route | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-route-of-an-agent) |
 | Reconnaissance | Host facts, BloodHound-style domain edges, and awareness of debuggers and sandboxes | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#reconnaissance) |

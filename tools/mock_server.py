@@ -2621,6 +2621,8 @@ class MockServer:
         "task.get": "viewer",
         "task.list": "viewer",
         "chat.history": "viewer",
+        # Who is in the channel is presence, like the operator list.
+        "chat.operators": "viewer",
         "schedule.list": "viewer",
         "task.submit": "operator",
         "task.cancel": "operator",
@@ -2640,6 +2642,8 @@ class MockServer:
         "schedule.add": "operator",
         "task.claim": "operator",
         "task.release": "operator",
+        # Handing a task to a colleague orders human work as well.
+        "task.assign": "operator",
         "operators.focus": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
@@ -2679,9 +2683,35 @@ class MockServer:
         "armory.remove": "admin",
         "alias.list": "viewer",
         "alias.run": "operator",
+        # The namespace is shared: the team writes the aliases everybody
+        # uses, and the trail says who wrote what.
+        "alias.add": "operator",
+        "alias.remove": "operator",
         "team.sync": "viewer",
+        # The handover document only reads the engagement.
+        "team.handover": "viewer",
         "stager.generate": "admin",
     }
+
+    def _claim_state(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """The state of the claim of a task.
+
+        The claim lives as long as the operator that holds it keeps its
+        presence: a console that died releases the task.
+        """
+        holder = str(task.get("claimed_by", "") or "")
+        if not holder:
+            return {}
+        now = time.time()
+        with self._lock:
+            live = self.op_sessions.get(holder)
+        alive = live is not None and (now - live.get("last_seen", now)) < CLAIM_LEASE
+        claimed_at = float(task.get("claimed_at", now) or now)
+        return {
+            "claimed_age": int(max(0.0, now - claimed_at)),
+            "claim_state": "live" if alive else "expired",
+            "claim_expires_at": int(claimed_at + CLAIM_LEASE),
+        }
 
     def min_role(self, cmd: str) -> str:
         return self.REQUIREMENTS.get(cmd, "admin")
@@ -2802,6 +2832,9 @@ class MockServer:
                 message = {"from": operator, "role": role, "text": text[:2000], "at": _now()}
                 if to:
                     message["to"] = to
+                mentions = _parse_mentions(text)
+                if mentions:
+                    message["mentions"] = mentions
                 self.chat.append(message)
                 del self.chat[:-200]
             self.emit("chat", data=dict(message), to=to, sender=operator)
@@ -2814,6 +2847,28 @@ class MockServer:
             limit = int(args.get("limit", 50) or 50)
             with self._lock:
                 return ok({"messages": [dict(m) for m in self.chat[-limit:]]})
+
+        if cmd == "chat.operators":
+            # Who is in the channel: the consoles, what they are working
+            # on and how long they have been quiet.
+            now = time.time()
+            rows = []
+            with self._lock:
+                for name, live in sorted(self.op_sessions.items()):
+                    idle = int(max(0.0, now - live.get("last_seen", now)))
+                    rows.append({
+                        "name": name,
+                        "role": live.get("role", ""),
+                        "focus": live.get("focus", ""),
+                        "focus_at": live.get("focus_at", ""),
+                        "idle_sec": idle,
+                        "silent": idle >= PRESENCE_TTL,
+                        "stale": idle >= CLAIM_LEASE,
+                        "since": live.get("since", ""),
+                        "transport": live.get("transport", ""),
+                        "expires_at": int(now - idle + PRESENCE_TTL),
+                    })
+            return ok({"operators": rows, "count": len(rows)})
 
         if cmd == "schedule.add":
             agent_id = str(args.get("id", ""))
@@ -2887,8 +2942,10 @@ class MockServer:
                 backlog: Dict[str, int] = {}
                 for name, q in self.subscribers:
                     backlog[name] = backlog.get(name, 0) + q.qsize()
+                now = time.time()
                 ops = []
                 for i, (name, live) in enumerate(sorted(self.op_sessions.items())):
+                    idle = int(max(0.0, now - live.get("last_seen", now)))
                     ops.append(
                         {
                             "id": i + 1,
@@ -2900,7 +2957,13 @@ class MockServer:
                             "backlog": backlog.get(name, 0),
                             "focus": live.get("focus", ""),
                             "focus_at": live.get("focus_at", ""),
-                            "idle_sec": int(max(0.0, time.time() - live.get("last_seen", time.time()))),
+                            "idle_sec": idle,
+                            # The presence expires: a console that stopped
+                            # talking is silent, and after the lease it is
+                            # stale and holds no claim any more.
+                            "silent": idle >= PRESENCE_TTL,
+                            "stale": idle >= CLAIM_LEASE,
+                            "expires_at": int(now - idle + PRESENCE_TTL),
                         }
                     )
             return ok({"operators": ops, "count": len(ops)})
@@ -3016,20 +3079,55 @@ class MockServer:
                 task = self.tasks.get(str(args.get("task_id", "")))
                 if task is None:
                     return fail("unknown task")
-                return ok(_task_out(dict(task)))
+                snapshot = dict(task)
+            row = _task_out(snapshot)
+            row.update(self._claim_state(snapshot))
+            return ok(row)
 
         if cmd == "task.list":
             agent_id = str(args.get("id", ""))
             kind = str(args.get("kind", "") or "")
             state = str(args.get("state", "") or "")
+            assigned = str(args.get("assigned", "") or "")
             limit = int(args.get("limit", 50))
             with self._lock:
                 items = [t for t in self.tasks.values()
                          if (not agent_id or t["agent_id"] == agent_id)
                          and (not kind or t["kind"] == kind)
-                         and (not state or t["state"] == state)]
-            return ok({"tasks": [_task_out(t) for t in items[-limit:]],
-                       "count": len(items[-limit:])})
+                         and (not state or t["state"] == state)
+                         and (not assigned or t.get("assigned_to", "") == assigned)]
+            rows = []
+            for task in items[-limit:]:
+                row = _task_out(task)
+                row.update(self._claim_state(task))
+                rows.append(row)
+            return ok({"tasks": rows, "count": len(rows)})
+
+        if cmd == "task.assign":
+            # Handing a task to a colleague: the assignment is not a
+            # claim, it says who is expected to work on the task.
+            task_id = str(args.get("task_id", ""))
+            to = str(args.get("to", "") or "").strip()
+            with self._lock:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    return fail("task.assign: no such task")
+                if to and to not in self.op_sessions:
+                    return fail(f"task.assign: {to!r} is not a connected operator")
+                if task.get("state") in ("done", "failed", "cancelled"):
+                    return fail(f"task.assign: task {task_id} is already {task['state']}")
+                if to:
+                    task["assigned_to"] = to
+                    task["assigned_at"] = _now()
+                else:
+                    task.pop("assigned_to", None)
+                    task.pop("assigned_at", None)
+                snapshot = dict(task)
+            # The event is broadcast: the whole team sees who passed what
+            # to whom, and the colleague finds it in their inbox.
+            self.emit("task.assigned", snapshot["agent_id"], task_id=task_id,
+                      data={"assigned_to": to, "assigned_by": operator})
+            return ok({"task_id": task_id, "assigned_to": to, "assigned_by": operator})
 
         if cmd == "task.bulk":
             kind = str(args.get("kind", "") or "")
@@ -3918,6 +4016,40 @@ class MockServer:
                 aliases = [dict(a) for a in self.aliases.values()]
             return ok({"aliases": aliases, "count": len(aliases)})
 
+        if cmd == "alias.add":
+            # The command namespace is shared: the team writes the aliases
+            # everybody uses, and everybody sees who wrote them.
+            name = str(args.get("name", "")).strip()
+            if not name:
+                return fail("alias.add needs a name")
+            kind = str(args.get("kind", "") or "")
+            extension = str(args.get("extension", "") or "")
+            if not kind and not extension:
+                return fail("alias.add needs a kind or an extension")
+            entry = {
+                "name": name,
+                "kind": kind,
+                "extension": extension,
+                "args": args.get("args") or {},
+                "args_spec": list(args.get("args_spec") or []),
+                "description": str(args.get("description", "") or ""),
+                "by": operator,
+                "created": _now(),
+            }
+            with self._lock:
+                self.aliases[name] = entry
+            self.emit("alias.created", data={"name": name, "kind": kind})
+            return ok({"name": name, "kind": kind, "by": operator, "created": True})
+
+        if cmd == "alias.remove":
+            name = str(args.get("name", ""))
+            with self._lock:
+                if name not in self.aliases:
+                    return fail(f"alias.remove: unknown alias {name!r}")
+                del self.aliases[name]
+            self.emit("alias.removed", data={"name": name})
+            return ok({"name": name, "removed": True})
+
         if cmd == "alias.run":
             name = str(args.get("name", ""))
             agent_id = str(args.get("id", ""))
@@ -3971,6 +4103,82 @@ class MockServer:
                 "agents": agents,
                 "operators": operators,
                 "chat": chat,
+            })
+
+        if cmd == "team.handover":
+            # The handover: everything a colleague needs to take the
+            # engagement over.  The server knows the engagement; the
+            # console adds its own notes to the document it renders.
+            now = time.time()
+            with self._lock:
+                agents = [dict(a) for a in self.agents.values()]
+                open_tasks = [dict(t) for t in self.tasks.values()
+                              if t.get("state") in ("queued", "delivered")]
+                findings = [dict(t) for t in self.tasks.values()
+                            if t.get("kind") == "recon"]
+                sessions = [dict(s) for s in self.open_sessions.values()]
+                artifacts = [dict(a) for a in self.artifacts.values()]
+                operators = []
+                for name, live in sorted(self.op_sessions.items()):
+                    idle = int(max(0.0, now - live.get("last_seen", now)))
+                    operators.append({
+                        "name": name,
+                        "role": live.get("role", ""),
+                        "focus": live.get("focus", ""),
+                        "idle_sec": idle,
+                        "stale": idle >= CLAIM_LEASE,
+                    })
+                persistence = []
+                for agent in self.agents.values():
+                    for entry in agent.get("persist", []) or []:
+                        persistence.append({
+                            "agent_id": agent.get("id", ""),
+                            "technique": entry.get("technique", ""),
+                            "name": entry.get("name", ""),
+                            "location": entry.get("location", ""),
+                            "state": entry.get("state", ""),
+                        })
+            finding_rows = []
+            for task in findings:
+                row = {
+                    "task_id": task.get("id", ""),
+                    "agent_id": task.get("agent_id", ""),
+                    "at": task.get("created", 0),
+                }
+                meta = task.get("meta") or {}
+                if "recon_total" in meta:
+                    row["total"] = meta["recon_total"]
+                out = task.get("out") or b""
+                if isinstance(out, (bytes, bytearray)):
+                    out = bytes(out)
+                if out:
+                    row["excerpt"] = out[:400].decode("utf-8", "replace")
+                finding_rows.append(row)
+            task_rows = []
+            for task in open_tasks:
+                row = {
+                    "id": task.get("id", ""),
+                    "agent_id": task.get("agent_id", ""),
+                    "kind": task.get("kind", ""),
+                    "state": task.get("state", ""),
+                    "created": task.get("created", 0),
+                }
+                if task.get("claimed_by"):
+                    row["claimed_by"] = task["claimed_by"]
+                if task.get("assigned_to"):
+                    row["assigned_to"] = task["assigned_to"]
+                task_rows.append(row)
+            return ok({
+                "generated": _now(),
+                "by": operator,
+                "agents": agents,
+                "tasks": task_rows,
+                "findings": finding_rows,
+                "persistence": persistence,
+                "sessions": sessions,
+                "artifacts": artifacts,
+                "operators": operators,
+                "events": [dict(e) for e in self.events[-25:]],
             })
 
         # ---- stagers ----------------------------------------------------------
@@ -4119,6 +4327,29 @@ def _task_out(task: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(task)
     if isinstance(out.get("out"), (bytes, bytearray)):
         out["out"] = bytes(out["out"])
+    return out
+
+
+# The presence window and the claim lease: the same numbers as the Go hub.
+#
+# The presence of a console expires, and so does the claim a console holds:
+# a console that crashed must not keep a task to itself.
+PRESENCE_TTL = 90
+CLAIM_LEASE = 120
+
+
+def _parse_mentions(text: str) -> List[str]:
+    """The operators a chat line names with an @."""
+    out: List[str] = []
+    seen = set()
+    for field in text.replace(",", " ").replace(".", " ").split():
+        if not field.startswith("@") or len(field) < 2:
+            continue
+        name = field[1:].strip("!?;:()[]\"'*")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
     return out
 
 

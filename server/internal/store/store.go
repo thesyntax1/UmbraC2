@@ -349,6 +349,10 @@ type Task struct {
 	// duplicate work on the same target.
 	ClaimedBy string    `json:"claimed_by,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// AssignedTo is the operator the task was handed to. The assignment is
+	// a handover, not a claim: it says who is expected to work on the task.
+	AssignedTo string    `json:"assigned_to,omitempty"`
+	AssignedAt time.Time `json:"assigned_at,omitempty"`
 	// ChainID links this task to the multi-stage task it belongs to, and
 	// Stage is its position in that chain (0 is the first stage).
 	ChainID string `json:"chain_id,omitempty"`
@@ -1247,6 +1251,74 @@ func (s *Store) Release(taskID, by string) (*Task, error) {
 	return t.Clone(), nil
 }
 
+// Assign hands a task to an operator.
+//
+// An empty name takes the assignment back: the operator who hands a task
+// over may change their mind.  The task has to exist and it must not be
+// finished already, because a finished task cannot be worked on.
+func (s *Store) Assign(taskID, to string) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return nil, ErrNoSuchTask
+	}
+	switch t.State {
+	case TaskDone, TaskFailed, TaskCancelled:
+		return nil, fmt.Errorf("task %s is already %s", taskID, t.State)
+	}
+	if to == "" {
+		t.AssignedTo = ""
+		t.AssignedAt = time.Time{}
+		return t.Clone(), nil
+	}
+	t.AssignedTo = to
+	t.AssignedAt = time.Now().UTC()
+	return t.Clone(), nil
+}
+
+// AssignedTasks returns the tasks that were handed to an operator.
+//
+// The inbox of a console: the tasks somebody else thought were worth the
+// operator's time.
+func (s *Store) AssignedTasks(operator string, limit int) []*Task {
+	return s.FilteredTasksFor("", "", "", operator, limit)
+}
+
+// FilteredTasksFor returns the newest tasks that match the filters.
+//
+// An empty filter matches everything, so the call degrades into "the task
+// history" when an operator does not narrow it down.  The tasks come back
+// newest first, which is the order an operator reads them in.
+func (s *Store) FilteredTasksFor(agentID, kind, state, assignedTo string, limit int) []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Task, 0, 16)
+	for i := len(s.order) - 1; i >= 0; i-- {
+		t := s.tasks[s.order[i]]
+		if t == nil {
+			continue
+		}
+		if agentID != "" && t.AgentID != agentID {
+			continue
+		}
+		if kind != "" && t.Kind != kind {
+			continue
+		}
+		if state != "" && t.State != state {
+			continue
+		}
+		if assignedTo != "" && t.AssignedTo != assignedTo {
+			continue
+		}
+		out = append(out, t.Clone())
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 // Cancel marks a queued or delivered task as cancelled and reports the state it
 // was in, so the caller can tell "it never shipped" from "the beacon may already
 // be running it".
@@ -1290,29 +1362,7 @@ func (s *Store) AgentTasks(agentID string, limit int) []*Task {
 // history" when an operator does not narrow it down.  The tasks come back
 // newest first, which is the order an operator reads them in.
 func (s *Store) FilteredTasks(agentID, kind, state string, limit int) []*Task {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]*Task, 0, 16)
-	for i := len(s.order) - 1; i >= 0; i-- {
-		t := s.tasks[s.order[i]]
-		if t == nil {
-			continue
-		}
-		if agentID != "" && t.AgentID != agentID {
-			continue
-		}
-		if kind != "" && t.Kind != kind {
-			continue
-		}
-		if state != "" && t.State != state {
-			continue
-		}
-		out = append(out, t.Clone())
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	return out
+	return s.FilteredTasksFor(agentID, kind, state, "", limit)
 }
 
 // Stats returns counters for the operator dashboard.

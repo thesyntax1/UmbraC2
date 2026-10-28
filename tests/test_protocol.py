@@ -6538,3 +6538,303 @@ def test_the_reconnaissance_is_in_every_implementation():
     assert "| `recon.suggest` |" in protocol
     assert "| `domain.map` |" in protocol
     assert "### 7.2k" in protocol
+
+
+def test_the_presence_of_a_console_expires():
+    """A console that stopped talking is silent, and its claim expires."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-presence-012345678"
+    bob_token = b"operator-token-presence-bob-01234"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": bob_token})
+    server.start()
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    other = OperatorClient(server.address, bob_token.decode(), "bob")
+    try:
+        client.connect()
+        other.connect()
+        ops = {row["name"]: row for row in client.operators()}
+        assert set(ops) == {"alice", "bob"}, ops
+        # A console that just talked is neither silent nor stale.
+        assert ops["bob"]["silent"] is False, ops
+        assert ops["bob"]["stale"] is False, ops
+        assert ops["bob"]["idle_sec"] < 90, ops
+        assert ops["bob"]["expires_at"] > 0, ops
+
+        # The presence of a console that went quiet expires: the server
+        # keeps the console in the list, but it is silent and stale.
+        with server._lock:
+            live = server.op_sessions.get("bob")
+            if live is not None:
+                live["last_seen"] = time.time() - 600
+        ops = {row["name"]: row for row in client.operators()}
+        assert ops["bob"]["silent"] is True, ops
+        assert ops["bob"]["stale"] is True, ops
+        assert ops["bob"]["idle_sec"] > 120, ops
+        # The console that is still talking is fine.
+        assert ops["alice"]["stale"] is False, ops
+
+        # The channel shows the same truth.
+        in_channel = {row["name"]: row for row in client.chat_operators()}
+        assert in_channel["bob"]["stale"] is True, in_channel
+        assert in_channel["alice"]["stale"] is False, in_channel
+    finally:
+        client.close()
+        other.close()
+        server.stop()
+
+
+def test_a_task_is_handed_to_a_colleague():
+    """The assignment shows up in the inbox of the colleague."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-assign-0123456789a"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": b"operator-token-assign-bob-01234567"})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-assign")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    alice = OperatorClient(server.address, token.decode(), "alice")
+    bob = OperatorClient(server.address, b"operator-token-assign-bob-01234567".decode(), "bob")
+    try:
+        alice.connect()
+        bob.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not alice.agents():
+            time.sleep(0.05)
+
+        task_id = alice.submit("agent-assign", "shell", {"cmd": "id"})
+
+        # The colleague sees the task in the inbox.
+        data = alice.assign_task(task_id, "bob")
+        assert data["assigned_to"] == "bob", data
+        assert data["assigned_by"] == "alice", data
+
+        inbox = bob.inbox("bob")
+        assert [t["id"] for t in inbox] == [task_id], inbox
+        assert inbox[0]["assigned_to"] == "bob", inbox
+
+        # The task itself carries the assignment.
+        task = alice.task(task_id)
+        assert task["assigned_to"] == "bob", task
+
+        # The assignment can be taken back.
+        alice.assign_task(task_id, "")
+        assert bob.inbox("bob") == [], bob.inbox("bob")
+
+        # An assignment to somebody who is not here fails loudly.
+        with pytest.raises(Exception):
+            alice.assign_task(task_id, "nobody")
+    finally:
+        alice.close()
+        bob.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_claim_says_who_holds_it_and_for_how_long():
+    """The claim of a task carries its state and its age."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-claim-0123456789a"
+    bob_token = b"operator-token-claim-bob-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": bob_token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-claim")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    other = OperatorClient(server.address, bob_token.decode(), "bob")
+    try:
+        client.connect()
+        other.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task_id = client.submit("agent-claim", "shell", {"cmd": "id"})
+        other.claim(task_id)
+        task = client.task(task_id)
+        assert task["claimed_by"] == "bob", task
+        assert task["claim_state"] == "live", task
+        assert task["claimed_age"] >= 0, task
+        assert task["claim_expires_at"] > 0, task
+
+        # A claim whose holder is gone expires: the task is free again.
+        with server._lock:
+            live = server.op_sessions.get("bob")
+            if live is not None:
+                live["last_seen"] = time.time() - 600
+        task = client.task(task_id)
+        assert task["claim_state"] == "expired", task
+        assert task["claimed_by"] == "bob", task
+    finally:
+        client.close()
+        other.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_chat_carries_mentions_and_never_reaches_an_agent():
+    """A mention is a highlight, and the chat is not for the implants."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-chat-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-chat")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        client.say("@bob the dc is open, take it")
+        history = client.chat_history(10)
+        assert history, history
+        last = history[-1]
+        assert last["mentions"] == ["bob"], last
+
+        # The chat is the team channel: it never lands in the stream the
+        # implants read.
+        assert not getattr(agent, "chat_received", []), "the agent saw the chat"
+        events = client.events(0, 50).get("events", [])
+        kinds = {e.get("kind") for e in events}
+        assert "chat" in kinds, kinds
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_namespace_of_the_team_is_shared():
+    """The aliases are written by the team, and everybody sees who wrote them."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-namespace-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        data = client.alias_add("team-probe", kind="shell",
+                                 args={"cmd": "whoami"}, description="who am i")
+        assert data["by"] == "alice", data
+        names = [a["name"] for a in client.alias_list()]
+        assert "team-probe" in names, names
+        entry = [a for a in client.alias_list() if a["name"] == "team-probe"][0]
+        assert entry["by"] == "alice", entry
+        assert entry["description"] == "who am i", entry
+
+        client.alias_remove("team-probe")
+        names = [a["name"] for a in client.alias_list()]
+        assert "team-probe" not in names, names
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_handover_document_tells_the_whole_story():
+    """The handover holds the inventory, the open work and the findings."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-handover-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-handover")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        client.submit("agent-handover", "recon", {"profile": "windows"})
+        time.sleep(0.5)
+
+        payload = client.team_handover()
+        assert payload["by"] == "alice", payload
+        assert payload["generated"] > 0, payload
+        assert any(a["id"] == "agent-handover" for a in payload["agents"]), payload
+        assert payload["findings"], payload
+        assert payload["operators"], payload
+        assert "sessions" in payload and "artifacts" in payload, payload
+
+        # The console renders the document out of it.
+        from umbra_cli.cli import render_handover
+        document = render_handover(payload)
+        assert "# Handover" in document, document
+        assert "The inventory" in document, document
+        assert "agent-handover" in document, document
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_collaboration_is_in_every_implementation():
+    """The presence, the lease, the assignment and the handover are everywhere."""
+    hub = read_text("server/internal/hub/hub.go")
+    for marker in ("PresenceTTL", "ClaimLease", "func (h *Hub) ExpireClaims",
+                   "func (h *Hub) AssignTask", "func parseMentions"):
+        assert marker in hub, marker
+
+    store = read_text("server/internal/store/store.go")
+    assert "AssignedTo" in store, "the assignment is not in the store"
+    assert "func (s *Store) Assign(" in store
+    assert "func (s *Store) AssignedTasks(" in store
+
+    operator = read_text("server/internal/link/operator.go")
+    for rpc in ("task.assign", "chat.operators", "alias.add", "alias.remove",
+                "team.handover"):
+        assert 'case "%s"' % rpc in operator, rpc
+
+    rbac = read_text("server/internal/rbac/rbac.go")
+    for rpc in ("task.assign", "chat.operators", "alias.add", "alias.remove",
+                "team.handover"):
+        assert '"%s"' % rpc in rbac, rpc
+
+    mock = read_text("tools/mock_server.py")
+    for rpc in ("task.assign", "chat.operators", "alias.add", "alias.remove",
+                "team.handover"):
+        assert '"%s"' % rpc in mock, rpc
+
+    console = read_text("operator/umbra_cli/cli.py")
+    assert "render_handover" in console, console
+    assert '"assign"' in console, console
+    assert '"inbox"' in console, console
+
+    # The namespace of the team is kept between two runs of the server.
+    aliases = read_text("server/internal/alias/alias.go")
+    assert "func (r *Registry) Save()" in aliases, aliases
+    assert "func (r *Registry) Load()" in aliases, aliases
+    main = read_text("server/cmd/umbra-server/main.go")
+    assert "aliases.SetPath" in main, main
+
+    protocol = read_text("docs/PROTOCOL.md")
+    assert "| `task.assign` |" in protocol, protocol
+    assert "| `chat.operators` |" in protocol, protocol
+    assert "| `team.handover` |" in protocol, protocol

@@ -69,6 +69,8 @@ var requirements = map[string]string{
 	"task.get":       Viewer,
 	"task.list":      Viewer,
 	"chat.history":   Viewer,
+	// Who is in the channel is presence, like the operator list.
+	"chat.operators": Viewer,
 	"schedule.list":  Viewer,
 	// The alert rules are configuration: reading them is harmless.
 	"alerts.list":    Viewer,
@@ -123,6 +125,8 @@ var requirements = map[string]string{
 	// operator may take and drop one.
 	"task.claim":      Operator,
 	"task.release":    Operator,
+	// Handing a task to a colleague orders human work as well.
+	"task.assign":     Operator,
 	// Focus is presence: which agent this console is looking at.
 	"operators.focus": Operator,
 
@@ -169,9 +173,15 @@ var requirements = map[string]string{
 	// ---- runtime command namespace -------------------------------------
 	"alias.list": Viewer,
 	"alias.run":  Operator,
+	// The namespace is shared: the team writes the aliases everybody
+	// uses, and the audit trail says who wrote what.
+	"alias.add":    Operator,
+	"alias.remove": Operator,
 
 	// ---- team synchronisation ------------------------------------------
 	"team.sync": Viewer,
+	// The handover document only reads the engagement.
+	"team.handover": Viewer,
 
 	// ---- affects the engagement or other operators --------------------
 	"schedule.remove": Admin,

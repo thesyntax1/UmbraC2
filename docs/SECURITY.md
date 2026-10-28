@@ -207,6 +207,30 @@ listed here with the guard that keeps them from becoming the weakest link.
   server's state file and delete it when the engagement ends.
 * `--db` (or `UMBRA_DB`) moves it; an empty value switches it off.
 
+### 3.10 The collaboration (`internal/hub`, `internal/link/operator.go`)
+
+* **The chat is for the team, not for the implants.** The event stream the
+  agents read carries tasks and results. A line of chat never travels into
+  it, and the chat history stays on the server.
+* **A directed message is addressed, not encrypted.** The line reaches the
+  console it is addressed to and the sender's own; the history stays
+  complete, because a shared engagement needs a shared record. Treat the
+  operator link as the boundary: it is encrypted per session, and the
+  server sees everything in between.
+* **The presence expires.** A console that stops talking goes silent after
+  ninety seconds and stale after two, and the claims it held expire with
+  it. A crashed console therefore cannot keep a task to itself, and a
+  stale console cannot be mistaken for a working one.
+* **The handover document is a secret.** It holds the inventory, the
+  findings, the persistence and the artefacts of the engagement: the
+  document that goes with the shift is the document that tells a
+  colleague everything. Keep it with the same care as the report of the
+  engagement.
+* **The shared namespace is shared.** A template that everybody runs is
+  written by one operator and used by all of them. The write is an event
+  and the audit trail keeps it, so a template that does something nobody
+  expected has an author.
+
 ## 4. Secret handling
 
 * Secrets come from environment variables or `0600` files, never from the JSON

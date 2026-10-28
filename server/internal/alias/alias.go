@@ -11,8 +11,11 @@
 package alias
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -67,6 +70,10 @@ func (a Alias) Clone() Alias {
 type Registry struct {
 	mu     sync.RWMutex
 	byName map[string]Alias
+	// path is where the namespace is kept between two runs of the server.
+	// The namespace is shared by the team, so a template that one operator
+	// wrote has to be there for the next one.
+	path string
 }
 
 // New creates an empty registry.
@@ -204,4 +211,92 @@ func (r *Registry) Expand(name string, extra map[string]any) (kind string, args 
 		return "ext", merged, a.Extension, nil
 	}
 	return a.Kind, merged, "", nil
+}
+
+// SetPath tells the registry where to keep the namespace.
+//
+// The path is a file: the namespace is written as a JSON list of the
+// templates the team wrote.
+func (r *Registry) SetPath(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.path = path
+}
+
+// Path is where the namespace is kept, empty when it is not kept.
+func (r *Registry) Path() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.path
+}
+
+// Load reads the namespace back.
+//
+// A file that cannot be read is not fatal: the server starts with the
+// built-in templates and says so, because a namespace that is lost is a
+// nuisance and a namespace that is silently wrong is a trap.
+func (r *Registry) Load() error {
+	r.mu.RLock()
+	path := r.path
+	r.mu.RUnlock()
+	if path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("alias: read %s: %w", path, err)
+	}
+	var list []Alias
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return fmt.Errorf("alias: parse %s: %w", path, err)
+	}
+	for _, a := range list {
+		if a.Name == "" {
+			continue
+		}
+		// A template the team wrote replaces the built-in one of the same
+		// name: the namespace belongs to the team, not to the binary.
+		_ = r.Remove(a.Name)
+		if err := r.Register(a); err != nil {
+			// A template that cannot be registered is skipped: one broken
+			// entry must not take the whole namespace with it.
+			continue
+		}
+	}
+	return nil
+}
+
+// Save writes the namespace to the disk.
+//
+// The file is written to a temporary name and renamed into place, so a
+// crash never leaves a namespace that is half written.
+func (r *Registry) Save() error {
+	r.mu.RLock()
+	path := r.path
+	r.mu.RUnlock()
+	if path == "" {
+		return nil
+	}
+	list := r.List()
+	raw, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return fmt.Errorf("alias: encode the namespace: %w", err)
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("alias: create %s: %w", dir, err)
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("alias: write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("alias: save the namespace: %w", err)
+	}
+	return nil
 }

@@ -387,6 +387,13 @@ class OperatorClient:
             raise OperatorError(res.error)
         return list(res.data.get("messages", []))
 
+    def chat_operators(self) -> List[Dict[str, Any]]:
+        """Who is in the channel: the consoles, their focus and their idleness."""
+        res = self.rpc("chat.operators")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("operators", []))
+
     def schedules(self) -> List[Dict[str, Any]]:
         res = self.rpc("schedule.list")
         if not res.ok:
@@ -919,6 +926,33 @@ class OperatorClient:
             raise OperatorError(res.error)
         return str(res.data.get("task_id", ""))
 
+    def alias_add(self, name: str, kind: str = "", args: Optional[Dict[str, Any]] = None,
+                  description: str = "", args_spec: Optional[List[str]] = None,
+                  extension: str = "") -> Dict[str, Any]:
+        """Write a command into the shared namespace of the team."""
+        payload: Dict[str, Any] = {"name": name}
+        if kind:
+            payload["kind"] = kind
+        if extension:
+            payload["extension"] = extension
+        if args:
+            payload["args"] = args
+        if description:
+            payload["description"] = description
+        if args_spec:
+            payload["args_spec"] = list(args_spec)
+        res = self.rpc("alias.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def alias_remove(self, name: str) -> Dict[str, Any]:
+        """Take a command out of the shared namespace of the team."""
+        res = self.rpc("alias.remove", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
     # -- team ------------------------------------------------------------
     def team_sync(self) -> Dict[str, Any]:
         """One snapshot of the team: agents, operators and the chat log."""
@@ -926,6 +960,30 @@ class OperatorClient:
         if not res.ok:
             raise OperatorError(res.error)
         return res.data
+
+    def team_handover(self) -> Dict[str, Any]:
+        """Everything a colleague needs to take the engagement over."""
+        res = self.rpc("team.handover")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def assign_task(self, task_id: str, to: str) -> Dict[str, Any]:
+        """Hand a task to a colleague; an empty name takes it back."""
+        res = self.rpc("task.assign", {"task_id": task_id, "to": to})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def inbox(self, operator: str = "") -> List[Dict[str, Any]]:
+        """The tasks that were handed to an operator."""
+        args: Dict[str, Any] = {}
+        if operator:
+            args["assigned"] = operator
+        res = self.rpc("task.list", args)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("tasks", []))
 
     # -- stagers ---------------------------------------------------------
     def stager_generate(

@@ -249,10 +249,11 @@ def go_event_kinds() -> set[str]:
     the other helpers emit their own events.
     """
     kinds: set[str] = set()
-    for path in sorted(pathlib.Path("server/internal/hub").glob("*.go")):
-        if path.name.endswith("_test.go"):
-            continue
-        kinds |= set(re.findall(r'Kind:\s*"([a-z]+\.[a-z]+)"', path.read_text()))
+    for base in ("server/internal/hub", "server/internal/link"):
+        for path in sorted(pathlib.Path(base).glob("*.go")):
+            if path.name.endswith("_test.go"):
+                continue
+            kinds |= set(re.findall(r'Kind:\s*"([a-z]+\.[a-z]+)"', path.read_text()))
     return kinds
 
 

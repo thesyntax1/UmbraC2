@@ -1066,6 +1066,38 @@ others, and three small mechanisms keep a team from stepping on each other.
   own. The history stays shared and shows the recipient, because a shared
   engagement needs a shared record: treat it as addressing, not encryption.
 
+## 5e.1 The presence, the lease and the handover
+
+Three more things keep a team from fighting itself.
+
+* **The presence expires** — a console that stops talking for ninety seconds
+  is *silent*, and after two minutes it is *stale*: the socket may still be
+  open, but the team does not wait for it any more. `umbra operators` and
+  `umbra chat --operators` both show it, so a colleague that is gone looks
+  gone instead of busy.
+* **A claim has a lease** — the promise that somebody is working on a task
+  only lasts as long as the presence behind it. When the holder goes stale the
+  claim expires, the task becomes available again and the team is told. The
+  task row carries `CLAIMED BY`, the age of the claim and whether it is still
+  live.
+* **An assignment is a handover** — `umbra assign <task-id> bob` says who is
+  expected to work on a task; it does not stop anybody else from taking it.
+  Bob sees it in `umbra inbox`, and the team sees a `task.assigned` event.
+* **The namespace is shared** — `umbra alias add` writes a command that
+  everybody uses, and the list says who wrote it and when. The namespace is
+  kept next to the state file, so the template one operator wrote is there
+  for the next one and for the next run of the server. The schedules and
+  the alert rules work the same way: the change is an event, and the audit
+  trail keeps it.
+* **The handover** — `umbra handover --out handover.md` writes the document a
+  colleague reads when you go home: the inventory, the open work, the
+  findings of the reconnaissance, the persistence, the open sessions, the
+  artefacts, the team and the last moves of the journal, plus the notes of
+  your own notebook.
+
+The chat never reaches the implants: the stream the agents read carries
+tasks and results, never a word of the team.
+
 ## 5f. File transfer
 
 ```bash

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
@@ -416,6 +417,32 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"messages": out})
 
+	case "chat.operators":
+		// Who is in the channel: the consoles that are here, what they are
+		// working on and how long they have been quiet.
+		ops := s.Hub.Operators()
+		rows := make([]any, 0, len(ops))
+		for _, o := range ops {
+			row := upk.Map{
+				"name":      o.Name,
+				"role":      o.Role,
+				"focus":     o.Focus,
+				"idle_sec":  int64(o.IdleSec),
+				"silent":    o.Silent,
+				"stale":     o.Stale,
+				"since":     o.Since,
+				"transport": o.Transport,
+			}
+			if o.FocusAt != "" {
+				row["focus_at"] = o.FocusAt
+			}
+			if o.ExpiresAt != "" {
+				row["expires_at"] = o.ExpiresAt
+			}
+			rows = append(rows, row)
+		}
+		return reply(upk.Map{"operators": rows, "count": len(rows)})
+
 	case "schedule.add":
 		agentID, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)
@@ -576,7 +603,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		hist := s.Hub.Store().AgentTasks(id, 20)
 		tasks := make([]any, 0, len(hist))
 		for _, t := range hist {
-			tasks = append(tasks, taskMap(t))
+			tasks = append(tasks, s.taskMap(t))
 		}
 		data := toUpkMap(agentDataMap(a))
 		data["tasks"] = tasks
@@ -671,16 +698,40 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		id, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)
 		state, _ := args["state"].(string)
+		assigned, _ := args["assigned"].(string)
 		limit, ok := asInt64(args["limit"])
 		if !ok || limit <= 0 {
 			limit = 50
 		}
-		hist := s.Hub.Store().FilteredTasks(id, kind, state, int(limit))
+		hist := s.Hub.Store().FilteredTasksFor(id, kind, state, assigned, int(limit))
 		tasks := make([]any, 0, len(hist))
 		for _, t := range hist {
-			tasks = append(tasks, taskMap(t))
+			tasks = append(tasks, s.taskMap(t))
 		}
 		return reply(upk.Map{"tasks": tasks, "count": len(tasks)})
+
+	case "task.assign":
+		// Handing a task to a colleague: the assignment is not a claim,
+		// it says who is expected to work on the task.
+		taskID, _ := args["task_id"].(string)
+		if taskID == "" {
+			return fail("task.assign needs task_id")
+		}
+		to, _ := args["to"].(string)
+		to = strings.TrimSpace(to)
+		if to != "" && !s.Hub.HasOperator(to) {
+			return fail("task.assign: %q is not a connected operator", to)
+		}
+		t, err := s.Hub.AssignTask(taskID, to, op.Name)
+		if err != nil {
+			return fail("task.assign: %v", err)
+		}
+		s.Hub.Store().SaveAsync()
+		out := upk.Map{"task_id": t.ID, "assigned_to": t.AssignedTo, "assigned_by": op.Name}
+		if !t.AssignedAt.IsZero() {
+			out["assigned_at"] = t.AssignedAt.Unix()
+		}
+		return reply(out)
 
 	case "task.bulk":
 		kind, _ := args["kind"].(string)
@@ -711,7 +762,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if !ok {
 			return fail("unknown task %q", taskID)
 		}
-		return reply(taskMap(t))
+		return reply(s.taskMap(t))
 
 	case "agents.sleep":
 		id, _ := args["id"].(string)
@@ -1342,6 +1393,73 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name, "kind": kind})
 
+	case "alias.add":
+		// The command namespace is shared: the team writes the aliases
+		// everybody uses, and everybody sees who wrote them.
+		if s.Aliases == nil {
+			return fail("alias.add: the command namespace is not enabled")
+		}
+		name, _ := args["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fail("alias.add needs a name")
+		}
+		kind, _ := args["kind"].(string)
+		extension, _ := args["extension"].(string)
+		if kind == "" && extension == "" {
+			return fail("alias.add needs a kind or an extension")
+		}
+		aliasArgs, _ := args["args"].(map[string]any)
+		if aliasArgs == nil {
+			aliasArgs = map[string]any{}
+		}
+		description, _ := args["description"].(string)
+		spec := []string{}
+		if raw, ok := args["args_spec"].([]any); ok {
+			for _, item := range raw {
+				if name, ok := item.(string); ok {
+					spec = append(spec, name)
+				}
+			}
+		}
+		if err := s.Aliases.Register(alias.Alias{
+			Name:        name,
+			Kind:        kind,
+			Extension:   extension,
+			Args:        aliasArgs,
+			ArgsSpec:    spec,
+			Description: description,
+			CreatedBy:   op.Name,
+		}); err != nil {
+			return fail("alias.add: %v", err)
+		}
+		// The namespace is shared: it has to survive the restart, or the
+		// template one operator wrote is gone for the next one.
+		if err := s.Aliases.Save(); err != nil {
+			return fail("alias.add: %v", err)
+		}
+		s.Hub.Emit(hub.Event{Kind: "alias.created", From: op.Name,
+			Data: map[string]any{"name": name, "kind": kind}})
+		return reply(upk.Map{"name": name, "kind": kind, "by": op.Name, "created": true})
+
+	case "alias.remove":
+		if s.Aliases == nil {
+			return fail("alias.remove: the command namespace is not enabled")
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return fail("alias.remove needs a name")
+		}
+		if err := s.Aliases.Remove(name); err != nil {
+			return fail("alias.remove: %v", err)
+		}
+		if err := s.Aliases.Save(); err != nil {
+			return fail("alias.remove: %v", err)
+		}
+		s.Hub.Emit(hub.Event{Kind: "alias.removed", From: op.Name,
+			Data: map[string]any{"name": name}})
+		return reply(upk.Map{"name": name, "removed": true})
+
 	case "creds.list":
 		// The vault of the engagement.  The values are not in here: the
 		// operator sees the shape of the material and asks for the value
@@ -1658,6 +1776,133 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"chat":        chatRows,
 		})
 
+	// ---- the handover -------------------------------------------------
+	case "team.handover":
+		// The handover: everything a colleague needs to take the
+		// engagement over.  The server knows the engagement; the console
+		// adds its own notes to the document it renders from this.
+		agents := s.Hub.Agents()
+		agentRows := make([]any, 0, len(agents))
+		for _, a := range agents {
+			row := upk.Map{
+				"id":      a.ID,
+				"host":    a.Host,
+				"os":      a.OS,
+				"arch":    a.Arch,
+				"user":    a.User,
+				"last":    a.LastSeen.Unix(),
+				"state":   a.State,
+			}
+			if len(a.Tags) > 0 {
+				row["tags"] = stringsToAny(a.Tags)
+			}
+			if a.FirstSeen.Unix() > 0 {
+				row["first"] = a.FirstSeen.Unix()
+			}
+			agentRows = append(agentRows, row)
+		}
+		// The tasks that are still open: the queue of the engagement.
+		open := s.Hub.Store().FilteredTasksFor("", "", "queued", "", 0)
+		open = append(open, s.Hub.Store().FilteredTasksFor("", "", "delivered", "", 0)...)
+		taskRows := make([]any, 0, len(open))
+		for _, t := range open {
+			row := upk.Map{
+				"id":       t.ID,
+				"agent_id": t.AgentID,
+				"kind":     t.Kind,
+				"state":    t.State,
+				"created":  t.Created.Unix(),
+			}
+			if t.ClaimedBy != "" {
+				row["claimed_by"] = t.ClaimedBy
+			}
+			if t.AssignedTo != "" {
+				row["assigned_to"] = t.AssignedTo
+			}
+			taskRows = append(taskRows, row)
+		}
+		// The findings: the reconnaissance the team already ran.
+		findings := s.Hub.Store().FilteredTasksFor("", "recon", "", "", 0)
+		findingRows := make([]any, 0, len(findings))
+		for _, t := range findings {
+			row := upk.Map{
+				"task_id":  t.ID,
+				"agent_id": t.AgentID,
+				"at":       t.Created.Unix(),
+			}
+			if total, ok := t.Meta["recon_total"]; ok {
+				row["total"] = total
+			}
+			if len(t.Output) > 0 {
+				row["excerpt"] = string(truncate(t.Output, 400))
+			}
+			findingRows = append(findingRows, row)
+		}
+		// The persistence: what is installed on the hosts.
+		persistRows := make([]any, 0)
+		for _, a := range agents {
+			for _, p := range s.Hub.Store().Persistence(a.ID) {
+				persistRows = append(persistRows, upk.Map{
+					"agent_id":  a.ID,
+					"technique": p.Technique,
+					"name":      p.Name,
+					"location":  p.Location,
+					"state":     p.State,
+				})
+			}
+		}
+		// The sessions that are open.
+		sessionRows := make([]any, 0)
+		for _, sess := range s.Hub.Sessions() {
+			sessionRows = append(sessionRows, upk.Map{
+				"id":       sess.ID,
+				"agent_id": sess.AgentID,
+				"task_id":  sess.TaskID,
+				"opened":   sess.Opened.Unix(),
+			})
+		}
+		// The artefacts of the engagement.
+		artifactRows := make([]any, 0)
+		if s.Artifacts != nil {
+			for _, e := range s.Artifacts.List() {
+				artifactRows = append(artifactRows, upk.Map{
+					"name":    e.Name,
+					"sha256":  e.SHA256,
+					"size":    int64(e.Size),
+					"created": e.Created.Unix(),
+				})
+			}
+		}
+		// Who is on duty.
+		opRows := make([]any, 0)
+		for _, o := range s.Hub.Operators() {
+			opRows = append(opRows, upk.Map{
+				"name":     o.Name,
+				"role":     o.Role,
+				"focus":    o.Focus,
+				"idle_sec": int64(o.IdleSec),
+				"stale":    o.Stale,
+			})
+		}
+		// The tail of the journal: the last moves of the engagement.
+		events := s.Hub.Journal(0, 25)
+		eventRows := make([]any, 0, len(events))
+		for _, ev := range events {
+			eventRows = append(eventRows, eventMap(ev))
+		}
+		return reply(upk.Map{
+			"generated":   time.Now().Unix(),
+			"by":          op.Name,
+			"agents":      agentRows,
+			"tasks":       taskRows,
+			"findings":    findingRows,
+			"persistence": persistRows,
+			"sessions":    sessionRows,
+			"artifacts":   artifactRows,
+			"operators":   opRows,
+			"events":      eventRows,
+		})
+
 	// ---- stagers ------------------------------------------------------
 	case "stager.generate":
 		platform, _ := args["platform"].(string)
@@ -1903,7 +2148,28 @@ func scheduleMap(sc *store.Schedule) upk.Map {
 	}
 }
 
-func taskMap(t *store.Task) upk.Map {
+// truncate shortens a blob to at most n bytes, on a rune boundary.
+//
+// The handover document quotes the output of the reconnaissance; the quote
+// has to stay readable and the document has to stay small.
+func truncate(data []byte, n int) []byte {
+	if len(data) <= n {
+		return data
+	}
+	cut := data[:n]
+	for len(cut) > 0 && !utf8.Valid(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
+// taskMap renders a task for the operator.
+//
+// The claim of a task carries its state: a claim that is still held is
+// "live", one whose holder is gone is "expired".  The operator sees both,
+// so a task that is waiting for somebody who is not there any more does not
+// look like a task that is being worked on.
+func (s *Server) taskMap(t *store.Task) upk.Map {
 	m := upk.Map{
 		"id":       t.ID,
 		"agent_id": t.AgentID,
@@ -1928,6 +2194,19 @@ func taskMap(t *store.Task) upk.Map {
 	if t.ClaimedBy != "" {
 		m["claimed_by"] = t.ClaimedBy
 		m["claimed_at"] = t.ClaimedAt.Unix()
+		m["claimed_age"] = int64(time.Since(t.ClaimedAt).Seconds())
+		if s.Hub.ClaimLive(t) {
+			m["claim_state"] = "live"
+		} else {
+			m["claim_state"] = "expired"
+		}
+		if expiry := s.Hub.ClaimExpiry(t); !expiry.IsZero() {
+			m["claim_expires_at"] = expiry.Unix()
+		}
+	}
+	if t.AssignedTo != "" {
+		m["assigned_to"] = t.AssignedTo
+		m["assigned_at"] = t.AssignedAt.Unix()
 	}
 	if t.ChainID != "" {
 		m["chain_id"] = t.ChainID

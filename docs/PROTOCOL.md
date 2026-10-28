@@ -502,10 +502,12 @@ Operator RPC commands, with the minimum role each requires:
 | `agents.kill` | operator | queue the exit task |
 | `agents.exit` | operator | alias of `agents.kill` |
 | `agents.panic` | admin | tell the selected beacons to exit and stop the server from feeding them: `agents` (list) and/or `filter`, or `all: true` |
-| `chat.send` | operator | team message; `to` addresses one operator |
+| `chat.send` | operator | team message; `to` addresses one operator; an `@name` in the text is a mention |
+| `chat.operators` | viewer | who is in the channel: the console, its role, its focus, its idleness and whether its presence has expired |
 | `schedule.add` | operator | recurring task (5–86400 s) |
 | `task.claim` | operator | take ownership of a task |
 | `task.release` | operator | drop your claim |
+| `task.assign` | operator | hand a task to a colleague (`task_id`, `to`); an empty `to` takes the assignment back |
 | `operators.focus` | operator | announce the agent you are working on |
 | `schedule.remove` | admin | remove a recurring task |
 | `events.test` | admin | emit a synthetic event |
@@ -534,7 +536,10 @@ Operator RPC commands, with the minimum role each requires:
 | `armory.run` | operator | run an extension on an agent; the server refuses a module the agent cannot run (§7.2j) |
 | `alias.list` | viewer | the runtime command namespace |
 | `alias.run` | operator | run a named template on an agent |
+| `alias.add` | operator | write a template into the shared namespace: `name`, `kind` or `extension`, `args`, `args_spec`, `description` |
+| `alias.remove` | operator | take a template out of the shared namespace |
 | `team.sync` | viewer | full state snapshot for a console that joins late |
+| `team.handover` | viewer | the handover of the engagement: the inventory, the open work, the findings, the persistence, the sessions, the artefacts, the team and the last moves |
 | `stager.generate` | admin | build a stage-0 one-liner (it carries the agent PSK); `mode` is `download`, `store` (the beacon comes from the file store of the server), `offline` (the beacon travels inside the stager) or `shim` (the digest check on its own) |
 | `artifact.list` | viewer | the artifacts the server holds: name, size, digest |
 | `artifact.get` | viewer | read a chunk of a stored artifact: `offset`, `limit` |
@@ -1044,6 +1049,47 @@ CORP\admin@corp.example -[MemberOf]-> CORP\Domain Admins@corp.example -[AdminTo]
 ```
 
 The paths travel under `domain_map` and their number under `domain_paths`.
+
+### 7.2l The collaboration model
+
+A team works on one engagement, and the framework has to keep the team
+from fighting itself. Four things carry the collaboration.
+
+**The presence expires.**  Every console touches its presence on every
+call. A console that has been quiet for **90 seconds** is *silent*, and one
+that has been quiet for **120 seconds** is *stale*: its socket may still be
+open, but the team does not wait for it any more. `operators.list` and
+`chat.operators` both carry `silent`, `stale` and `expires_at`.
+
+**A claim has a lease.**  A claim is a promise that somebody is working on
+a task. The promise is only as good as the presence behind it: when the
+holder goes stale, the claim expires, the task becomes available again and
+the team is told with a `task.claim_expired` event. The task itself carries
+`claimed_by`, `claimed_at`, `claimed_age`, `claim_state` (`live` or
+`expired`) and `claim_expires_at`.
+
+**An assignment is a handover, not a claim.**  `task.assign` says who is
+expected to work on a task; it does not stop anybody else from taking it.
+The colleague sees the task in their inbox (`task.list` with `assigned`),
+and the event `task.assigned` tells the team who passed what to whom.
+
+**The chat belongs to the team.**  `chat.send` puts a line in the channel,
+or in one colleague's ear (`to`). An `@name` in the text is a *mention*:
+the message carries the names it mentions, so a console can highlight them.
+The chat never reaches the implants: the event stream the agents read
+carries tasks and results, never a word of the team.
+
+**The namespace and the schedules are shared.**  The file store is on the
+server, so the artefacts of the engagement belong to everybody. The
+command namespace (`alias.add`, `alias.remove`), the schedules and the
+alert rules are shared too: every entry says who wrote it, and the change
+is an event (`alias.created`, `alias.removed`, `schedule.created`).
+
+**The handover.**  `team.handover` produces the document a colleague reads
+when the operator who ran the engagement goes home: the inventory, the open
+work, the findings of the reconnaissance, the persistence, the open
+sessions, the artefacts, the team and the last moves of the journal. The
+console renders it as Markdown and adds the notes of its own notebook.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

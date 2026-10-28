@@ -87,6 +87,15 @@ type OperatorInfo struct {
 	FocusAt string `json:"focus_at,omitempty"`
 	// IdleSec is how long since this console last sent an RPC.
 	IdleSec int `json:"idle_sec"`
+	// Silent is true when the console has been quiet for longer than the
+	// presence window: it is still connected, but nobody should wait for it.
+	Silent bool `json:"silent"`
+	// Stale is true when the presence of the console has expired: the
+	// socket may still be open, but the console is gone as far as the team
+	// is concerned.
+	Stale bool `json:"stale"`
+	// ExpiresAt is when the presence of this console expires.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // Live describes a currently connected agent.
@@ -235,12 +244,16 @@ type ChatMessage struct {
 	Role string    `json:"role"`
 	Text string    `json:"text"`
 	At   time.Time `json:"at"`
+	// Mentions are the operators the line names with an @. A mention is a
+	// highlight, not a delivery: the line goes to the whole team anyway.
+	Mentions []string `json:"mentions,omitempty"`
 }
 
 // Say records a chat message and pushes it to the addressed console (or to
 // every console when `to` is empty).
 func (h *Hub) Say(from, role, text, to string) ChatMessage {
-	msg := ChatMessage{From: from, To: to, Role: role, Text: text, At: time.Now().UTC()}
+	msg := ChatMessage{From: from, To: to, Role: role, Text: text,
+		At: time.Now().UTC(), Mentions: parseMentions(text)}
 	h.mu.Lock()
 	h.chat = append(h.chat, msg)
 	if len(h.chat) > MaxChatHistory {
@@ -253,8 +266,40 @@ func (h *Hub) Say(from, role, text, to string) ChatMessage {
 	if msg.To != "" {
 		data["to"] = msg.To
 	}
+	if len(msg.Mentions) > 0 {
+		data["mentions"] = msg.Mentions
+	}
 	h.Emit(Event{Kind: "chat", From: msg.From, To: msg.To, Data: data})
 	return msg
+}
+
+// parseMentions finds the operators a chat line names.
+//
+// A mention is the "@name" at the start of a word.  The list keeps the
+// order of the line and never repeats a name.
+func parseMentions(text string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', ',', '.', '!', '?', ';', ':', '(', ')',
+			'[', ']', '"', '\'', '*', '<', '>', '|', '{', '}':
+			return true
+		}
+		return false
+	})
+	for _, field := range fields {
+		if !strings.HasPrefix(field, "@") || len(field) < 2 {
+			continue
+		}
+		name := field[1:]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // Chat returns the most recent messages, oldest first, at most limit of them.
@@ -1420,11 +1465,19 @@ func (h *Hub) allowAlert(rule config.AlertRule) bool {
 }
 
 // Operators lists the connected consoles, sorted by name.
+//
+// The presence of a console expires: a console that crashed keeps its
+// socket for a while, and a team that believes a dead console is still
+// working is a team that waits for nothing.  A console that has been quiet
+// for longer than the presence window is *silent*; one that has been quiet
+// for longer than the claim lease is *stale*, and the claims it holds are
+// released.
 func (h *Hub) Operators() []OperatorInfo {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make([]OperatorInfo, 0, len(h.subs))
 	for _, op := range h.subs {
+		idle := int(time.Since(lastSeen(op)).Seconds())
 		out = append(out, OperatorInfo{
 			ID:        op.ID,
 			Name:      op.Name,
@@ -1435,11 +1488,105 @@ func (h *Hub) Operators() []OperatorInfo {
 			Backlog:   len(op.Events),
 			Focus:     op.Focus,
 			FocusAt:   focusAt(op),
-			IdleSec:   int(time.Since(lastSeen(op)).Seconds()),
+			IdleSec:   idle,
+			Silent:    idle >= int(PresenceTTL.Seconds()),
+			Stale:     idle >= int(ClaimLease.Seconds()),
+			ExpiresAt: lastSeen(op).Add(PresenceTTL).UTC().Format(time.RFC3339),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// PresenceTTL is how long the presence of a console stays valid without an
+// RPC from it.
+//
+// The console touches its presence on every call, so the window only
+// matters for a console that stopped talking: after a minute and a half it
+// is silent, and the team stops waiting for it.
+const PresenceTTL = 90 * time.Second
+
+// ClaimLease is how long a claim survives without a heartbeat from the
+// operator that holds it.
+//
+// A claim is a promise that somebody is working on the task.  A console
+// that crashed cannot keep that promise, so the claim expires and the task
+// becomes available again.
+const ClaimLease = 120 * time.Second
+
+// PresenceAlive reports whether the presence of an operator is still valid.
+//
+// An operator that is not connected at all is not alive; one that has been
+// quiet for longer than the lease is not either.
+func (h *Hub) PresenceAlive(name string) bool {
+	if name == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, op := range h.subs {
+		if op.Name == name {
+			return time.Since(lastSeen(op)) < ClaimLease
+		}
+	}
+	return false
+}
+
+// ClaimLive reports whether the claim of a task is still held.
+//
+// The claim lives as long as the operator that took it keeps its presence;
+// when the console dies the claim is free again.
+func (h *Hub) ClaimLive(t *store.Task) bool {
+	if t == nil || t.ClaimedBy == "" {
+		return false
+	}
+	return h.PresenceAlive(t.ClaimedBy)
+}
+
+// ClaimExpiry is when the claim of a task expires.
+func (h *Hub) ClaimExpiry(t *store.Task) time.Time {
+	if t == nil || t.ClaimedBy == "" {
+		return time.Time{}
+	}
+	return t.ClaimedAt.Add(ClaimLease).UTC()
+}
+
+// ExpireClaims releases the claims whose operator is gone.
+//
+// The sweep runs with the scheduler: a claim that expired is released and
+// the team is told, so the task does not stay invisible.
+func (h *Hub) ExpireClaims() {
+	tasks := h.store.FilteredTasks("", "", "", 0)
+	for _, t := range tasks {
+		if t.ClaimedBy == "" || h.ClaimLive(t) {
+			continue
+		}
+		if _, err := h.store.Release(t.ID, t.ClaimedBy); err != nil {
+			continue
+		}
+		h.Emit(Event{Kind: "claim.expired", AgentID: t.AgentID,
+			TaskID: t.ID, From: t.ClaimedBy})
+	}
+}
+
+// AssignTask hands a task to a colleague.
+//
+// The assignment is not a claim: it says who is expected to work on the
+// task, and the colleague sees it in their inbox.
+func (h *Hub) AssignTask(taskID, to, by string) (*store.Task, error) {
+	t, err := h.store.Assign(taskID, to)
+	if err != nil {
+		return nil, err
+	}
+	data := map[string]any{"assigned_to": t.AssignedTo, "assigned_by": by}
+	if !t.AssignedAt.IsZero() {
+		data["assigned_at"] = t.AssignedAt.Format(time.RFC3339)
+	}
+	// The event is broadcast: the whole team sees who passed what to whom,
+	// and the colleague finds it in their inbox.
+	h.Emit(Event{Kind: "task.assigned", AgentID: t.AgentID, TaskID: t.ID,
+		From: by, Data: data})
+	return t, nil
 }
 
 // focusAt formats when an operator selected its current agent, if ever.
@@ -1481,6 +1628,9 @@ func (h *Hub) StartScheduler(ctx context.Context) {
 				h.fireDueSchedules(now.UTC())
 			case <-sweep.C:
 				h.SweepTasks(h.cfg.TaskTimeout())
+				// The claims of the consoles that are gone are released, so
+				// the tasks they were working on become available again.
+				h.ExpireClaims()
 			}
 		}
 	}()

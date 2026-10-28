@@ -573,6 +573,129 @@ def print_aliases(aliases: List[Dict[str, Any]]) -> None:
     print(table(["NAME", "KIND", "EXTENSION", "BY", "CREATED", "DESCRIPTION"], rows))
 
 
+def render_handover(payload: Dict[str, Any], notes: Optional[List[Dict[str, Any]]] = None) -> str:
+    """The handover document of an engagement.
+
+    The document is what a colleague reads when the operator who ran the
+    engagement goes home: the inventory, the open work, what is installed
+    on the hosts, what the reconnaissance found, the artefacts and the
+    notes of the notebook.
+    """
+    lines: List[str] = []
+    lines.append("# Handover")
+    lines.append("")
+    lines.append(f"- generated : {fmt_ts(payload.get('generated'))}")
+    lines.append(f"- by        : {payload.get('by', '-')}")
+    lines.append(f"- server    : {payload.get('server', '-')}")
+    lines.append("")
+
+    agents = payload.get("agents") or []
+    lines.append(f"## The inventory ({len(agents)})")
+    lines.append("")
+    if agents:
+        lines.append("| agent | host | os | user | state | last seen |")
+        lines.append("|---|---|---|---|---|---|")
+        for a in agents:
+            lines.append("| {id} | {host} | {os} | {user} | {state} | {last} |".format(
+                id=a.get("id", "?"), host=a.get("host", "?"), os=a.get("os", "?"),
+                user=a.get("user", "?"), state=a.get("state", "?"),
+                last=fmt_ts(a.get("last"))))
+    else:
+        lines.append("No agent ever checked in.")
+    lines.append("")
+
+    tasks = payload.get("tasks") or []
+    lines.append(f"## The open work ({len(tasks)})")
+    lines.append("")
+    if tasks:
+        lines.append("| task | agent | kind | state | claimed by | assigned to |")
+        lines.append("|---|---|---|---|---|---|")
+        for t in tasks:
+            lines.append("| {id} | {agent} | {kind} | {state} | {claimed} | {assigned} |".format(
+                id=t.get("id", "?"), agent=t.get("agent_id", "?"), kind=t.get("kind", "?"),
+                state=t.get("state", "?"), claimed=t.get("claimed_by", "-"),
+                assigned=t.get("assigned_to", "-")))
+    else:
+        lines.append("Nothing is pending.")
+    lines.append("")
+
+    findings = payload.get("findings") or []
+    lines.append(f"## The findings ({len(findings)})")
+    lines.append("")
+    for f in findings:
+        total = f.get("total")
+        head = f"- {f.get('agent_id', '?')} ({f.get('task_id', '?')})"
+        if total is not None:
+            head += f": {total} finding(s)"
+        lines.append(head)
+        excerpt = f.get("excerpt")
+        if excerpt:
+            for row in str(excerpt).splitlines()[:12]:
+                lines.append(f"  {row}")
+    if not findings:
+        lines.append("No reconnaissance has been run.")
+    lines.append("")
+
+    persist = payload.get("persistence") or []
+    lines.append(f"## The persistence ({len(persist)})")
+    lines.append("")
+    if persist:
+        lines.append("| agent | technique | location | state |")
+        lines.append("|---|---|---|---|")
+        for p in persist:
+            lines.append("| {agent} | {tech} | {loc} | {state} |".format(
+                agent=p.get("agent_id", "?"), tech=p.get("technique", "?"),
+                loc=p.get("location", "-"), state=p.get("state", "?")))
+    else:
+        lines.append("Nothing is installed on the hosts.")
+    lines.append("")
+
+    sessions = payload.get("sessions") or []
+    lines.append(f"## The open sessions ({len(sessions)})")
+    lines.append("")
+    for s in sessions:
+        lines.append(f"- {s.get('id', '?')} on {s.get('agent_id', '?')} "
+                     f"(task {s.get('task_id', '?')}, since {fmt_ts(s.get('opened'))})")
+    if not sessions:
+        lines.append("No session is open.")
+    lines.append("")
+
+    artifacts = payload.get("artifacts") or []
+    lines.append(f"## The artefacts ({len(artifacts)})")
+    lines.append("")
+    for a in artifacts:
+        lines.append(f"- {a.get('name', '?')} ({a.get('size', 0)} bytes, "
+                     f"sha256 {short(str(a.get('sha256', '')), 16)})")
+    if not artifacts:
+        lines.append("The store is empty.")
+    lines.append("")
+
+    operators = payload.get("operators") or []
+    lines.append(f"## The team ({len(operators)})")
+    lines.append("")
+    for o in operators:
+        state = "stale" if o.get("stale") else "here"
+        lines.append(f"- {o.get('name', '?')} ({o.get('role', '?')}): {state}, "
+                     f"focus {o.get('focus') or '-'}")
+    lines.append("")
+
+    events = payload.get("events") or []
+    lines.append(f"## The last moves ({len(events)})")
+    lines.append("")
+    for ev in events:
+        lines.append(f"- {fmt_ts(ev.get('at'))} {ev.get('kind', '?')} "
+                     f"{ev.get('agent_id') or ev.get('task_id') or ''}".rstrip())
+    lines.append("")
+
+    if notes:
+        lines.append("## The notes")
+        lines.append("")
+        for note in notes:
+            lines.append(f"- {note.get('body', '')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def print_team(payload: Dict[str, Any]) -> None:
     """Render the team snapshot: agents, operators and the chat log."""
     agents = payload.get("agents") or []
@@ -1179,8 +1302,39 @@ class Console:
                     task_id = self.client.alias_run(rest[1], rest[2])
                     self.note_task(task_id, rest[2], f"alias:{rest[1]}")
                     print(f"queued {task_id}")
+                elif sub_cmd == "add" and len(rest) >= 3:
+                    parts = {}
+                    for token in rest[3:]:
+                        if token.startswith("--") and "=" in token:
+                            key, _, value = token[2:].partition("=")
+                            parts[key.replace("-", "_")] = value
+                    data = self.client.alias_add(
+                        rest[2], kind=parts.get("kind", ""),
+                        description=parts.get("description", ""),
+                        extension=parts.get("extension", ""))
+                    print(f"alias {rest[2]} written by {data.get('by', '?')}")
+                elif sub_cmd in ("rm", "remove") and len(rest) >= 2:
+                    self.client.alias_remove(rest[1])
+                    print(f"alias {rest[1]} removed")
                 else:
-                    print("usage: alias [list | run <name> <agent>]")
+                    print("usage: alias [list | run <name> <agent> | "
+                          "add <name> --kind <kind> | rm <name>]")
+            elif cmd == "assign" and len(rest) >= 2:
+                data = self.client.assign_task(rest[1], rest[2] if len(rest) > 2 else "")
+                print(f"task {rest[1]} -> {data.get('assigned_to', '(unassigned)')}")
+            elif cmd == "inbox":
+                print_tasks(self.client.inbox(rest[1] if len(rest) > 1 else ""))
+            elif cmd == "handover":
+                print(render_handover(self.client.team_handover()))
+            elif cmd == "who":
+                rows = self.client.chat_operators()
+                print(table(
+                    ["OPERATOR", "ROLE", "FOCUS", "IDLE", "STATE"],
+                    [[r.get("name", "?"), r.get("role", "?"),
+                      r.get("focus") or "-", f"{r.get('idle_sec', 0)}s",
+                      "stale" if r.get("stale") else
+                      ("silent" if r.get("silent") else "here")]
+                     for r in rows]))
             elif cmd in ("team-sync", "team"):
                 print_team(self.client.team_sync())
             elif cmd == "migrate":
@@ -1701,12 +1855,28 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("message", nargs="*", help="send a message (omit to read history)")
     chat.add_argument("--limit", type=int, default=20)
     chat.add_argument("--to", default="", help="address one operator instead of the team")
+    chat.add_argument("--operators", action="store_true",
+                      help="who is in the channel instead of the history")
 
     focus = sub.add_parser("focus", help="announce the agent you are working on")
     focus.add_argument("agent", nargs="?", default="", help="agent id (omit to clear)")
 
     claim = sub.add_parser("claim", help="take ownership of a task")
     claim.add_argument("task_id")
+
+    assign = sub.add_parser("assign", help="hand a task to a colleague")
+    assign.add_argument("task_id")
+    assign.add_argument("to", nargs="?", default="",
+                        help="the operator (omit to take the assignment back)")
+
+    inbox = sub.add_parser("inbox", help="the tasks that were handed to you")
+    inbox.add_argument("--operator", default="",
+                       help="the inbox of another operator")
+    inbox.add_argument("--limit", type=int, default=50)
+
+    handover = sub.add_parser("handover", help="the handover document of the engagement")
+    handover.add_argument("--out", default="",
+                          help="write the document to a file instead of the screen")
 
     release = sub.add_parser("release", help="drop your claim on a task")
     release.add_argument("task_id")
@@ -1864,12 +2034,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- command namespace ------------------------------------------------
     alias = sub.add_parser("alias", help="saved commands")
-    alias.add_argument("action", choices=["list", "run"])
+    alias.add_argument("action", choices=["list", "run", "add", "rm"])
     alias.add_argument("name", nargs="?", default="", help="alias name")
     alias.add_argument("agent", nargs="?", default="", help="agent id (run)")
     alias.add_argument("--args", default="{}", help="task arguments as JSON (run)")
     alias.add_argument("--arg", action="append", default=[],
                        help="one argument as key=value (run), repeatable")
+    alias.add_argument("--kind", default="", help="the task kind of the alias (add)")
+    alias.add_argument("--extension", default="", help="the module of the alias (add)")
+    alias.add_argument("--description", default="", help="one line about the alias (add)")
+    alias.add_argument("--spec", default="",
+                       help="the parameters the alias takes, comma separated (add)")
 
     sub.add_parser("team-sync", help="one snapshot of the team (agents, operators, chat)")
 
@@ -2369,9 +2544,58 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit({"sent": text, **({"to": to} if to else {})})
                 else:
                     print(f"sent: {text}" + (f" -> {to}" if to else ""))
+            elif args.operators:
+                # Who is in the channel: the consoles, their focus and how
+                # long they have been quiet.
+                rows = client.chat_operators()
+                if args.json:
+                    emit(rows)
+                else:
+                    print(table(
+                        ["OPERATOR", "ROLE", "FOCUS", "IDLE", "STATE"],
+                        [[r.get("name", "?"), r.get("role", "?"),
+                          r.get("focus") or "-", f"{r.get('idle_sec', 0)}s",
+                          "stale" if r.get("stale") else
+                          ("silent" if r.get("silent") else "here")]
+                         for r in rows]))
             else:
                 messages = client.chat_history(args.limit)
                 emit(messages) if args.json else print_chat(messages)
+        elif args.cmd == "assign":
+            # Handing a task to a colleague: the colleague sees it in their
+            # inbox, and everybody sees who is expected to work on it.
+            data = client.assign_task(args.task_id, args.to)
+            if args.json:
+                emit(data)
+            else:
+                target = data.get("assigned_to", "")
+                print(f"task {args.task_id} -> {target}" if target
+                      else f"task {args.task_id} is unassigned")
+        elif args.cmd == "inbox":
+            rows = client.inbox(args.operator)
+            if args.json:
+                emit(rows)
+            else:
+                print_tasks(rows)
+        elif args.cmd == "handover":
+            payload = client.team_handover()
+            notes: List[Dict[str, Any]] = []
+            if console.store is not None:
+                try:
+                    notes = console.store.notes(limit=50)
+                except Exception:  # noqa: BLE001 - the notebook is optional
+                    notes = []
+            document = render_handover(payload, notes)
+            if args.out:
+                try:
+                    with open(args.out, "w", encoding="utf-8") as handle:
+                        handle.write(document)
+                except OSError as exc:
+                    print(f"cannot write {args.out}: {exc}", file=sys.stderr)
+                    return 2
+                print(f"wrote {args.out}")
+            else:
+                print(document)
         elif args.cmd == "schedule":
             if args.action == "list":
                 rows = client.schedules()
@@ -2941,6 +3165,32 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit(aliases)
                 else:
                     print_aliases(aliases)
+            elif args.action == "add":
+                if not args.name:
+                    print("usage: umbra alias add <name> --kind <kind>", file=sys.stderr)
+                    return 2
+                try:
+                    task_args = json.loads(args.args)
+                except json.JSONDecodeError as exc:
+                    print(f"invalid --args json: {exc}", file=sys.stderr)
+                    return 2
+                spec = [s.strip() for s in (args.spec or "").split(",") if s.strip()]
+                data = client.alias_add(args.name, kind=args.kind, args=task_args,
+                                        description=args.description, args_spec=spec,
+                                        extension=args.extension)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"alias {args.name} written by {data.get('by', '?')}")
+            elif args.action == "rm":
+                if not args.name:
+                    print("usage: umbra alias rm <name>", file=sys.stderr)
+                    return 2
+                data = client.alias_remove(args.name)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"alias {args.name} removed")
             else:
                 if not args.name or not args.agent:
                     print("usage: umbra alias run <name> <agent> [--args JSON]", file=sys.stderr)

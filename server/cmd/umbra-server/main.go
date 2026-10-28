@@ -148,7 +148,15 @@ func run() error {
 
 	// The runtime command namespace: named task templates.  The built-in
 	// ones are the one-liners everybody types; the team can replace them.
-	srv.SetAliases(alias.NewWithDefaults())
+	//
+	// The namespace is shared, so it lives next to the state file: the
+	// template one operator wrote has to be there for the next one.
+	aliases := alias.NewWithDefaults()
+	aliases.SetPath(aliasPath(cfg.Server.DataFile))
+	if err := aliases.Load(); err != nil {
+		logger.Warn("the command namespace could not be read", "err", err)
+	}
+	srv.SetAliases(aliases)
 
 	// The layer-3 tunnel between the console and the beacons.
 	if cfg.Server.VPNListen != "" {
@@ -362,6 +370,14 @@ func operatorKeys(cfg *config.Config) [][]byte {
 // The store sits next to the state file: a deployment already gives the
 // server a writable data directory for the queue, and the artifacts belong
 // to the same engagement record.
+// aliasPath is where the shared command namespace is kept.
+func aliasPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "aliases.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "aliases.json")
+}
+
 func artifactDir(dataFile string) string {
 	if dataFile == "" {
 		return filepath.Join("data", "artifacts")
