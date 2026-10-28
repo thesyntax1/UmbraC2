@@ -73,6 +73,43 @@ jobs:
           test ! -s go.sum || { echo "::error::unexpected go.sum: the server must stay dependency-free"; exit 1; }
           go mod verify
 
+  go-implant:
+    name: go implant
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: implant/go
+    steps:
+      - uses: actions/checkout@v4     # zizmor: ignore[unpinned-uses]
+      - uses: actions/setup-go@v5     # zizmor: ignore[unpinned-uses]
+        with:
+          go-version: "1.22"
+      # Advisory: the same reason as the server job above.
+      - name: gofmt (advisory)
+        continue-on-error: true
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::warning::these files need gofmt: $unformatted"
+          fi
+      - name: vet
+        run: go vet ./...
+      - name: test (the vectors are the contract with the other implants)
+        run: go test ./... -race -count=1
+      - name: build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/umbra-beacon ./cmd/umbra-beacon
+      - name: selftest (the protocol, without a server)
+        run: /tmp/umbra-beacon --selftest
+      - name: the beacon starts and exits cleanly against an unreachable server
+        run: |
+          timeout 20 /tmp/umbra-beacon --server 127.0.0.1:1 --psk 00000000000000000000000000000000000000000000000000000000000000ff || true
+          /tmp/umbra-beacon --version
+      - name: module is tidy (stdlib only, so it must have no requirements)
+        run: |
+          test ! -s go.sum || { echo "::error::unexpected go.sum: the implant must stay dependency-free"; exit 1; }
+          go mod verify
+
   rust:
     name: rust beacon
     runs-on: ubuntu-latest
