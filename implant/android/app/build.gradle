@@ -15,12 +15,14 @@ def envStr(String key, String fallback) {
 }
 
 // Integer variant: fail with the variable name instead of a Groovy cast error
-// buried in the generated BuildConfig.
+// buried in the generated BuildConfig.  The value comes back as text, because
+// that is what buildConfigField() takes: the type of the field is the first
+// argument and the literal of the value is the third one.
 def envInt(String key, int fallback) {
     def raw = System.getenv(key)
-    if (raw == null || raw.trim().isEmpty()) return fallback
+    if (raw == null || raw.trim().isEmpty()) return String.valueOf(fallback)
     try {
-        return Integer.parseInt(raw.trim())
+        return String.valueOf(Integer.parseInt(raw.trim()))
     } catch (NumberFormatException ignored) {
         throw new GradleException("${key} must be an integer, got '${raw}'")
     }

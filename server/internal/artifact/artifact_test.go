@@ -79,9 +79,14 @@ func TestTheStoreRefusesTheWrongKey(t *testing.T) {
 	}
 	// The store refuses to open with another key: it does not pretend to
 	// be empty and it does not hand out garbage.
-	if _, err := OpenEncrypted(dir, []byte("another key entirely")); err == nil {
+	//
+	// The error is kept outside the if: a shadowed one would be the
+	// error of the opening above, and that one is nil.
+	_, err = OpenEncrypted(dir, []byte("another key entirely"))
+	if err == nil {
 		t.Fatal("the store opened with the wrong key")
-	} else if !errors.Is(err, ErrWrongKey) {
+	}
+	if !errors.Is(err, ErrWrongKey) {
 		t.Fatalf("the error is not the wrong-key error: %v", err)
 	}
 	if !strings.Contains(err.Error(), "key") {

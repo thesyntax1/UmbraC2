@@ -144,6 +144,26 @@ jobs:
           timeout 20 ./target/release/umbra-beacon --selftest --server 127.0.0.1:1 || true
           ./target/release/umbra-beacon --version
 
+  rust-macos:
+    name: rust beacon (the macOS target compiles)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: implant/rust
+    steps:
+      - uses: actions/checkout@v4           # zizmor: ignore[unpinned-uses]
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses]
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+      # The code of macOS is behind a cfg, so the linux build never sees it.
+      # The frameworks are only linked on a mac, but the code has to compile
+      # for both of the macs, so it is checked here.
+      - name: check
+        run: |
+          cargo check --all-targets --target x86_64-apple-darwin
+          cargo check --all-targets --target aarch64-apple-darwin
+
   android:
     name: android implant (compile only)
     runs-on: ubuntu-latest

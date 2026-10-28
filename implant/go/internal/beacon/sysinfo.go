@@ -1,6 +1,7 @@
 package beacon
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -222,11 +223,11 @@ func readLimited(path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-	buf := make([]byte, 0, 64<<10)
+	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, io.LimitReader(file, limit)); err != nil {
 		return nil, err
 	}
-	return buf, nil
+	return buf.Bytes(), nil
 }
 
 // lookupHost resolves a name with the resolver of the host.

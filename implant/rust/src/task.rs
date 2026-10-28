@@ -1260,9 +1260,12 @@ fn peer_link(ctx: &Context, args: &Value) -> Outcome {
             if host.is_empty() || port == 0 {
                 return Outcome::err(1, "p2p requires args.host and args.port");
             }
+            // The thread takes a copy of the address: the report of the
+            // task still needs the original one.
+            let target = host.clone();
             thread::spawn(move || loop {
                 let result = crate::tunnel::connect_peer(
-                    &host,
+                    &target,
                     port as u16,
                     &context.psk,
                     &context.agent_id,
