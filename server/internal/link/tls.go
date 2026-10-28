@@ -53,7 +53,8 @@ func (s *Server) serveTLS(conn net.Conn) {
 		return
 	}
 	stream := NewConnStream(conn)
-	sess, info, err := Handshake(stream, s.Cfg, log, addr)
+	sub := &operatorSubscription{server: s, addr: addr, transport: "tls/operator"}
+	sess, info, err := Handshake(stream, s.Cfg, log, addr, sub.pre)
 	if err != nil {
 		s.guard.Fail(addr)
 		log.Warn("handshake failed", "err", err)
@@ -64,9 +65,10 @@ func (s *Server) serveTLS(conn net.Conn) {
 		s.guard.Succeed(addr)
 		s.runAgent(stream, conn, sess, info, addr, "tls", log)
 	case crypt.RoleOperator:
-		s.runOperator(stream, conn, sess, info, addr, "tls/operator", log)
+		s.runOperator(stream, conn, sess, info, addr, "tls/operator", log, sub.op)
 	default:
 		log.Warn("unknown role on the tls listener", "id", info.ID)
+		sub.release()
 	}
 }
 

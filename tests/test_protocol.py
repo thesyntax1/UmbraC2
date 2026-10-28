@@ -1692,19 +1692,26 @@ def _echo_server() -> Tuple[socket.socket, threading.Thread, List[bytes]]:
     listener.listen(4)
     seen: List[bytes] = []
 
+    def handle(conn: socket.socket) -> None:
+        """One connection at a time: the pivot opens a new one per stream."""
+        with conn:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                seen.append(data)
+                conn.sendall(data)
+
     def serve() -> None:
         while True:
             try:
                 conn, _ = listener.accept()
             except OSError:
                 return
-            with conn:
-                while True:
-                    data = conn.recv(4096)
-                    if not data:
-                        break
-                    seen.append(data)
-                    conn.sendall(data)
+            # Every connection gets its own thread: a pivot that opens a
+            # second stream while the first one is still open must not
+            # wait for it.
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -1814,6 +1821,267 @@ def test_pivot_refuses_an_unknown_agent():
     finally:
         client.close()
         server.stop()
+
+
+def _socks5_connect_auth(proxy_host: str, proxy_port: int, host: str, port: int,
+                         user: str, password: str) -> socket.socket:
+    """Open a SOCKS5 tunnel through a proxy that asks for credentials."""
+    conn = socket.create_connection((proxy_host, int(proxy_port)), timeout=10)
+    conn.sendall(b"\x05\x01\x02")
+    assert _recv_exact(conn, 2) == b"\x05\x02"
+    name = user.encode()
+    secret = password.encode()
+    conn.sendall(b"\x01" + bytes([len(name)]) + name +
+                 bytes([len(secret)]) + secret)
+    assert _recv_exact(conn, 2) == b"\x01\x00"
+    conn.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(host) +
+                 int(port).to_bytes(2, "big"))
+    reply = _recv_exact(conn, 10)
+    assert reply[1] == 0x00, reply
+    return conn
+
+
+def _pivot_client(server, token, agent_id="agent-reach"):
+    """A console and an agent that is ready to be pivoted through."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent  # noqa: WPS433
+
+    from umbra_cli.client import OperatorClient
+
+    agent = FakeAgent(server.address, AGENT_PSK, agent_id)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    client.connect()
+    deadline = time.time() + 5
+    while time.time() < deadline and not client.agents():
+        time.sleep(0.05)
+    return client, agent
+
+
+def test_the_picture_of_the_reach_shows_the_graph():
+    """The topology names the agents, the pivots and the clients."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    target, _, _ = _echo_server()
+    target_host, target_port = target.getsockname()
+
+    token = b"operator-token-reach-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client, agent = _pivot_client(server, token)
+    try:
+        tunnel = client.pivot_open("agent-reach", mode="socks")
+        topology = client.pivot_topology()
+
+        nodes = {n["agent_id"]: n for n in topology.get("nodes", [])}
+        assert "agent-reach" in nodes, topology
+        assert nodes["agent-reach"]["role"] == "pivot"
+
+        edges = topology.get("edges", [])
+        assert any(e["tunnel"] == tunnel["stream"] for e in edges), edges
+        edge = next(e for e in edges if e["tunnel"] == tunnel["stream"])
+        assert edge["agent_id"] == "agent-reach"
+        assert edge["dns"] == "remote"
+        assert edge["last_active"] > 0
+
+        # A connection through the proxy is accounted for: the client, the
+        # target and the bytes that moved.
+        conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
+                               "127.0.0.1", target_port)
+        conn.sendall(b"reach-hello")
+        assert conn.recv(64) == b"reach-hello"
+        conn.close()
+        # The accounting is written when the stream really ends, and the
+        # stream ends when the target closes the connection.
+        deadline = time.time() + 5
+        topology = client.pivot_topology()
+        while time.time() < deadline and not topology.get("clients"):
+            time.sleep(0.1)
+            topology = client.pivot_topology()
+        clients = topology.get("clients", [])
+        assert clients, topology
+        assert clients[0]["connections"] >= 1
+        connections = topology.get("connections", [])
+        assert any(c["target"] == "127.0.0.1" for c in connections), connections
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        target.close()
+
+
+def test_a_claim_is_released_as_a_group():
+    """The claim names the pivots, and the release tears them down."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-claim-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client, agent = _pivot_client(server, token)
+    try:
+        first = client.pivot_open("agent-reach", mode="socks", claim="campaign")
+        second = client.pivot_open("agent-reach", mode="socks", claim="campaign")
+        assert first["claim"] == "campaign"
+
+        claims = client.pivot_claims()
+        assert len(claims) == 1, claims
+        assert set(claims[0]["tunnels"]) == {first["stream"], second["stream"]}
+
+        closed = client.pivot_release("campaign")
+        assert set(closed) == {first["stream"], second["stream"]}
+        assert client.pivot_claims() == []
+        assert client.pivot_list() == []
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_proxy_asks_for_the_credentials_it_was_given():
+    """The SOCKS5 proxy asks for the user and refuses the wrong password."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server()
+    target_host, target_port = target.getsockname()
+
+    token = b"operator-token-auth-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client, agent = _pivot_client(server, token)
+    try:
+        tunnel = client.pivot_open("agent-reach", mode="socks",
+                                   user="operator", password="s3cret")
+        conn = _socks5_connect_auth(*tunnel["listen"].rsplit(":", 1),
+                                    "127.0.0.1", target_port,
+                                    "operator", "s3cret")
+        conn.sendall(b"authed")
+        assert conn.recv(64) == b"authed"
+        conn.close()
+        assert seen and seen[0] == b"authed"
+
+        # The wrong password is refused before any target is touched.
+        bad = socket.create_connection(
+            tuple(tunnel["listen"].rsplit(":", 1)), timeout=10)
+        bad.sendall(b"\x05\x01\x02")
+        assert _recv_exact(bad, 2) == b"\x05\x02"
+        bad.sendall(b"\x01\x08operator\x03bad")
+        assert _recv_exact(bad, 2) == b"\x01\x01"
+        bad.close()
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        target.close()
+
+
+def test_the_proxy_refuses_a_denied_target():
+    """The deny list of the server is the list the proxy refuses."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-deny-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token}, pivot_deny=["127.0.0.1"])
+    server.start()
+    client, agent = _pivot_client(server, token)
+    try:
+        tunnel = client.pivot_open("agent-reach", mode="socks")
+        conn = socket.create_connection(
+            tuple(tunnel["listen"].rsplit(":", 1)), timeout=10)
+        conn.sendall(b"\x05\x01\x00")
+        assert _recv_exact(conn, 2) == b"\x05\x00"
+        conn.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1") +
+                     (443).to_bytes(2, "big"))
+        reply = _recv_exact(conn, 10)
+        # 0x02 is "not allowed by ruleset".
+        assert reply[1] == 0x02, reply
+        conn.close()
+
+        time.sleep(0.3)
+        topology = client.pivot_topology()
+        connections = topology.get("connections", [])
+        assert any(c["state"] == "denied" for c in connections), connections
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_forward_survives_the_reconnect_of_its_agent():
+    """The listener stays bound and the session is taken again."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    target, _, seen = _echo_server()
+    target_host, target_port = target.getsockname()
+
+    token = b"operator-token-recon-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-reach")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        tunnel = client.pivot_open("agent-reach", mode="socks")
+
+        conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
+                               "127.0.0.1", target_port)
+        conn.sendall(b"first")
+        assert conn.recv(64) == b"first"
+        conn.close()
+
+        # The session of the agent dies: the callback connection is closed.
+        with server._lock:
+            session = server.tunnel_sessions.get("agent-reach")
+        assert session is not None
+        session.close()
+        time.sleep(0.2)
+
+        # The listener is still there and the next connection works: the
+        # session of the agent is taken again.
+        conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
+                               "127.0.0.1", target_port)
+        conn.sendall(b"second")
+        assert conn.recv(64) == b"second"
+        conn.close()
+        assert b"first" in seen and b"second" in seen
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        target.close()
+
+
+def test_the_server_keeps_the_picture_of_the_reach():
+    """The Go server and the dashboard carry the same picture."""
+    pivot_go = read_text("server/internal/pivot/topology.go")
+    assert "func (m *Manager) Topology() Topology" in pivot_go
+    assert "func (m *Manager) Release(claim string)" in pivot_go
+    assert "func (m *Manager) denied(" in pivot_go
+
+    socks_go = read_text("server/internal/pivot/socks.go")
+    assert "socks5UserPass" in socks_go
+    assert "subtle.ConstantTimeCompare" in socks_go
+
+    dash_go = read_text("server/internal/dash/dash.go")
+    assert "/api/pivot" in dash_go
+
+    dash_html = read_text("server/internal/dash/index.html")
+    assert "refreshReach" in dash_html
+    assert "/api/pivot" in dash_html
+
+    config_go = read_text("server/internal/config/config.go")
+    assert "PivotDeny" in config_go
+    assert "SocksPassword" in config_go
 
 
 def test_vpn_status_peers_and_allocation():
@@ -2228,6 +2496,187 @@ def test_operator_console_connects_over_mutual_tls(tmp_path):
             who = client.whoami()
             assert who["name"] == "alice"
             assert who["role"] == "admin"
+        finally:
+            client.close()
+    finally:
+        server.stop()
+
+
+def test_a_tls_session_is_never_entered_by_two_threads_at_once(tmp_path):
+    """The transport must serialise the TLS session.
+
+    OpenSSL keeps the record state in the session itself, so two threads
+    inside one session at the same time scramble the stream: the peer sees a
+    bad record MAC, or the link dies half way through a frame.  The console
+    reads the event stream while it asks for things, so the session is used
+    from two threads by design -- the transport has to keep them apart.
+
+    The check is an invariant, not a race: the socket is instrumented, and
+    two calls into the session at the same time are a failure.
+    """
+    import ssl
+
+    certs = _write_certificates(str(tmp_path))
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certs["server"], certs["server"])
+    client_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client_ctx.check_hostname = False
+    client_ctx.verify_mode = ssl.CERT_NONE
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def serve():
+        conn, _ = listener.accept()
+        sock = server_ctx.wrap_socket(conn, server_side=True)
+        try:
+            while True:
+                data = sock.recv(65536)
+                if not data:
+                    break
+                sock.sendall(data)
+        except (ssl.SSLError, OSError):
+            pass
+
+    server = threading.Thread(target=serve, name="umbra-echo")
+    server.start()
+    raw = socket.create_connection(("127.0.0.1", port), timeout=10)
+    client = client_ctx.wrap_socket(raw, server_hostname="localhost")
+
+    # Instrument the session: every call into OpenSSL is counted, and two
+    # calls at the same time are the failure this test is about.
+    inside = 0
+    overlaps = []
+    guard = threading.Lock()
+    real_recv = client.recv
+    real_send = client.send
+
+    def counted(func):
+        def wrapper(*args, **kwargs):
+            nonlocal inside
+            with guard:
+                inside += 1
+                if inside > 1:
+                    overlaps.append(inside)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                with guard:
+                    inside -= 1
+
+        return wrapper
+
+    client.recv = counted(real_recv)
+    client.send = counted(real_send)
+
+    stream = netio.Stream(client, timeout=10)
+    payload = b"umbra" * 512
+    # A frame the transport accepts: the magic, the length and the tag.
+    prelude = (
+        wire.MAGIC
+        + bytes([1, 0, int(wire.MsgType.OP_EVENT), 1, 0, 0])
+        + len(payload).to_bytes(4, "big")
+    )
+    frame = prelude + b"\x00" * wire.NONCE_LEN + payload + b"\x00" * wire.TAG_LEN
+    errors = []
+
+    def writer():
+        try:
+            for _ in range(200):
+                stream.send_frame(frame)
+        except Exception as exc:  # noqa: BLE001 - the test wants the reason
+            errors.append(exc)
+
+    def reader():
+        try:
+            for _ in range(200):
+                got = stream.recv_frame()
+                if got != frame:
+                    errors.append(ValueError("frame came back different"))
+                    return
+        except Exception as exc:  # noqa: BLE001 - the test wants the reason
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    try:
+        assert not errors, errors
+        assert not overlaps, f"the TLS session was used by two threads: {overlaps}"
+    finally:
+        stream.close()
+        server.join(timeout=5)
+        listener.close()
+
+
+def test_tls_link_carries_a_request_and_an_event_at_the_same_time(tmp_path):
+    """A TLS session must survive a read and a write at the same time.
+
+    The console asks for things while it reads the event stream, and the
+    server answers while it pushes events.  Both ends therefore read and
+    write the *same* TLS session at once.  OpenSSL does not allow that:
+    two threads inside one session scramble the record layer, and the link
+    dies with a bad record MAC or a half written frame.  The transport
+    serialises the session, so the traffic has to survive it.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    certs = _write_certificates(str(tmp_path))
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+    )
+    server.start()
+    try:
+        from umbra_cli.client import OperatorClient
+
+        client = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_cert=certs["client"],
+            tls_key=certs["client"],
+        )
+        errors = []
+        try:
+            client.connect()
+
+            def hammer() -> None:
+                try:
+                    for index in range(30):
+                        client.say(f"line {index}")
+                        client.whoami()
+                except Exception as exc:  # noqa: BLE001 - the test wants the reason
+                    errors.append(exc)
+
+            writer = threading.Thread(target=hammer, name="umbra-writer")
+            writer.start()
+            # The reader runs while the writer writes: this is the pair that
+            # used to break the session.
+            chats = 0
+            deadline = time.time() + 30
+            while chats < 30 and time.time() < deadline:
+                event = client.next_event(timeout=5.0)
+                if event is None:
+                    break
+                if event.get("kind") == "chat":
+                    chats += 1
+            writer.join(timeout=30)
+            assert not errors, errors
+            assert chats >= 10, f"only {chats} chat events arrived"
+            # The link is still good after all of that.
+            assert client.whoami()["name"] == "alice"
         finally:
             client.close()
     finally:

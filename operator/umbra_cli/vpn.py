@@ -8,7 +8,8 @@ scripts read the same numbers from `--json`.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 __all__ = ["print_vpn_status", "print_vpn_peers", "print_pivots"]
 
@@ -57,24 +58,112 @@ def print_vpn_peers(peers: List[Dict[str, Any]]) -> None:
     print(_table(["ID", "ADDRESS", "AGENT", "STATE", "IN", "OUT"], rows))
 
 
-def print_pivots(tunnels: List[Dict[str, Any]], sessions: int = 0) -> None:
-    """Print the open pivots and the number of live callback sessions."""
+def print_pivots(tunnels: List[Dict[str, Any]], sessions: int = 0,
+                 topology: Optional[Dict[str, Any]] = None) -> None:
+    """Print the open pivots, the graph of the reach and the clients.
+
+    The table is the pivots; the graph below it is the reach: which agent
+    is tunnelled through which, what moved through it and when it moved the
+    last time.  The clients of the proxy come last, because a proxy
+    nobody used is a proxy nobody should worry about.
+    """
     print(f"callback sessions: {sessions}")
     rows = [
         [
             t.get("stream", "?"),
             t.get("agent_id", "?"),
+            t.get("through", "") or "-",
             t.get("mode", "?"),
             t.get("listen", "?"),
             f"{t.get('host', '-')}:{t.get('port', 0)}" if t.get("host") else "-",
             t.get("streams", 0),
             t.get("bytes_up", 0),
             t.get("bytes_down", 0),
+            t.get("claim", "") or "-",
             t.get("state", "?"),
         ]
         for t in tunnels
     ]
     print(_table(
-        ["TUNNEL", "AGENT", "MODE", "LISTEN", "TARGET", "STREAMS", "UP", "DOWN", "STATE"],
+        ["TUNNEL", "AGENT", "THROUGH", "MODE", "LISTEN", "TARGET", "STREAMS",
+         "UP", "DOWN", "CLAIM", "STATE"],
         rows,
     ))
+    if not topology:
+        return
+    edges = topology.get("edges") or []
+    nodes = topology.get("nodes") or []
+    if edges:
+        print("\nthe reach")
+        edge_rows = [
+            [
+                e.get("tunnel", "?"),
+                e.get("agent_id", "?"),
+                e.get("through", "") or "console",
+                e.get("mode", "?"),
+                e.get("streams", 0),
+                e.get("bytes_up", 0),
+                e.get("bytes_down", 0),
+                e.get("dns", "") or "-",
+                _ago(e.get("last_active", 0)),
+                e.get("state", "?"),
+            ]
+            for e in edges
+        ]
+        print(_table(
+            ["TUNNEL", "AGENT", "THROUGH", "MODE", "STREAMS", "UP", "DOWN",
+             "DNS", "LAST", "STATE"],
+            edge_rows,
+        ))
+    pivots = [n for n in nodes if n.get("tunnels")]
+    if pivots:
+        print("\n" + ", ".join(
+            f"{n.get('agent_id')} ({n.get('transport') or 'tcp'})" for n in pivots
+        ))
+    clients = topology.get("clients") or []
+    if clients:
+        print("\nthe clients of the proxy")
+        client_rows = [
+            [
+                c.get("address", "?"),
+                c.get("connections", 0),
+                c.get("bytes_up", 0),
+                c.get("bytes_down", 0),
+                _ago(c.get("last", 0)),
+            ]
+            for c in clients
+        ]
+        print(_table(["CLIENT", "CONNECTIONS", "UP", "DOWN", "LAST"], client_rows))
+    connections = topology.get("connections") or []
+    if connections:
+        print("\nthe last connections")
+        conn_rows = [
+            [
+                c.get("client", "?"),
+                f"{c.get('target', '?')}:{c.get('port', 0)}",
+                c.get("bytes_up", 0),
+                c.get("bytes_down", 0),
+                c.get("state", "?"),
+                _ago(c.get("at", 0)),
+            ]
+            for c in connections[-10:]
+        ]
+        print(_table(["CLIENT", "TARGET", "UP", "DOWN", "STATE", "WHEN"], conn_rows))
+
+
+def _ago(stamp: Any) -> str:
+    """A short "how long ago" for a unix timestamp."""
+    try:
+        value = int(stamp)
+    except (TypeError, ValueError):
+        return "-"
+    if value <= 0:
+        return "-"
+    delta = max(0, int(time.time()) - value)
+    if delta < 60:
+        return f"{delta}s"
+    if delta < 3600:
+        return f"{delta // 60}m"
+    if delta < 86400:
+        return f"{delta // 3600}h"
+    return f"{delta // 86400}d"

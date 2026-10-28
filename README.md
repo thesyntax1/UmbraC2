@@ -71,6 +71,7 @@ Added on top of that core:
 | The credential vault | Every piece of material is a record with a kind, a source and a confidence; the value is redacted by default, encrypted at rest and only handed out when the operator asks for it | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-material-and-the-vault) |
 | The token work | The tokens of a host, an impersonation that lasts one task or until the operator takes it back, and the identity in the inventory | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-material-and-the-vault) |
 | The remote execution | A command that runs on a far host over WinRM, WMI, DCOM, SMB, LDAP or SSH, driven from the agent that holds the path to it | [docs/OPERATIONS.md](docs/OPERATIONS.md#running-a-command-on-a-far-host) |
+| The reach | Every pivot drawn as a graph: the agents, the tunnels between them, the bytes that moved, the clients of the proxy, the targets it refuses and the claims that tear a group of tunnels down | [docs/OPERATIONS.md](docs/OPERATIONS.md#3e-the-reach) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,

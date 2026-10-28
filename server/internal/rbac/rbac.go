@@ -129,9 +129,11 @@ var requirements = map[string]string{
 	// ---- pivoting ------------------------------------------------------
 	// Opening a pivot reaches into a network the operator console cannot
 	// see, so it is an operator action; listing them is harmless.
-	"pivot.list":  Viewer,
-	"pivot.open":  Operator,
-	"pivot.close": Operator,
+	"pivot.list":    Viewer,
+	"pivot.open":    Operator,
+	"pivot.close":   Operator,
+	"pivot.claim":   Viewer,
+	"pivot.release": Operator,
 
 	// ---- layer-3 tunnel ------------------------------------------------
 	"vpn.status":   Viewer,

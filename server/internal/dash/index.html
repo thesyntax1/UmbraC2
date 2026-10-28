@@ -46,6 +46,17 @@
   form button { flex: 0 0 auto; cursor: pointer; }
   .note { padding: 8px 12px; color: var(--dim); }
   code { color: var(--warn); }
+  section.wide { grid-column: 1 / -1; }
+  #reach { padding: 10px 12px; }
+  #reach svg { width: 100%; height: 260px; }
+  #reach .node { fill: #1b2230; stroke: var(--line); }
+  #reach .node.pivot { stroke: var(--acc); }
+  #reach .node.off { fill: #14181f; stroke: #1d2530; }
+  #reach .edge { stroke: var(--acc); stroke-width: 1.5; opacity: .8; }
+  #reach .edge.idle { stroke: var(--line); }
+  #reach .label { fill: var(--dim); font: 11px ui-monospace, monospace; }
+  #reach .name { fill: var(--ink); font: 11px ui-monospace, monospace; }
+  #reach .summary { color: var(--dim); padding: 4px 0 0; }
 </style>
 </head>
 <body>
@@ -106,6 +117,11 @@
   <section>
     <h2>events</h2>
     <div class="scroll feed" id="feed"></div>
+  </section>
+
+  <section class="wide">
+    <h2>reach</h2>
+    <div id="reach"></div>
   </section>
 </main>
 
@@ -247,11 +263,74 @@
     });
   }
 
-  function tick() {
-    refreshAgents().then(refreshTasks).then(refreshStats).then(refreshEvents).catch(function (err) {
-      state.textContent = "error: " + err.message;
-      state.className = "off";
+  // The picture of the reach: the agents, the pivots between them and the
+  // clients of the proxy.  The console has the same picture in a table;
+  // here it is a graph, because the shape of the reach is the thing an
+  // operator looks at.
+  function refreshReach() {
+    return api("/api/pivot").then(function (data) {
+      var box = document.getElementById("reach");
+      var nodes = data.nodes || [];
+      var edges = data.edges || [];
+      var clients = data.clients || [];
+      var connections = data.connections || [];
+      if (!nodes.length) {
+        box.innerHTML = '<div class="summary">no agent is registered yet</div>';
+        return;
+      }
+      var width = 900, height = 260, pad = 46;
+      var parts = [];
+      parts.push('<svg viewBox="0 0 ' + width + ' ' + height + '">');
+      var place = {};
+      var shown = nodes.slice(0, 24);
+      shown.forEach(function (node, index) {
+        var angle = (2 * Math.PI * index) / Math.max(shown.length, 1) - Math.PI / 2;
+        place[node.agent_id] = {
+          x: width / 2 + Math.cos(angle) * (width / 2 - pad),
+          y: height / 2 + Math.sin(angle) * (height / 2 - pad)
+        };
+      });
+      edges.forEach(function (edge) {
+        var to = place[edge.agent_id];
+        if (!to) return;
+        var from = edge.through && place[edge.through]
+          ? place[edge.through]
+          : { x: width / 2, y: height / 2 };
+        var idle = edge.state !== "open";
+        parts.push('<line class="edge' + (idle ? ' idle' : '') + '" x1="' + from.x +
+          '" y1="' + from.y + '" x2="' + to.x + '" y2="' + to.y + '"></line>');
+        var moved = (edge.bytes_up || 0) + (edge.bytes_down || 0);
+        parts.push('<text class="label" x="' + ((from.x + to.x) / 2) + '" y="' +
+          ((from.y + to.y) / 2 - 4) + '" text-anchor="middle">' +
+          (edge.mode || "pivot") + " " + Math.round(moved / 1024) + "k</text>");
+      });
+      shown.forEach(function (node) {
+        var at = place[node.agent_id];
+        var cls = "node" + (node.tunnels ? " pivot" : "") + (node.online ? "" : " off");
+        parts.push('<circle class="' + cls + '" cx="' + at.x + '" cy="' + at.y + '" r="13"></circle>');
+        parts.push('<text class="name" x="' + at.x + '" y="' + (at.y + 26) +
+          '" text-anchor="middle">' + node.agent_id.slice(0, 18) + "</text>");
+        if (node.transport) {
+          parts.push('<text class="label" x="' + at.x + '" y="' + (at.y + 38) +
+            '" text-anchor="middle">' + node.transport + "</text>");
+        }
+      });
+      parts.push("</svg>");
+      var claims = Object.keys(data.claims || {});
+      parts.push('<div class="summary">' + edges.length + " pivots, " +
+        clients.length + " proxy clients, " + connections.length +
+        " connections, " + claims.length + " claims" +
+        (claims.length ? " (" + claims.join(", ") + ")" : "") + "</div>");
+      box.innerHTML = parts.join("");
     });
+  }
+
+  function tick() {
+    refreshAgents().then(refreshTasks).then(refreshStats).then(refreshEvents)
+      .then(refreshReach).catch(function (err) {
+        state.textContent = "error: " + err.message;
+        state.className = "off";
+      });
   }
 
   document.getElementById("connect").addEventListener("click", function () {

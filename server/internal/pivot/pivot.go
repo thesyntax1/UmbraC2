@@ -28,7 +28,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
@@ -47,6 +49,16 @@ const (
 	ModeSOCKS = "socks"
 	// ModeForward forwards a local port to one fixed remote host:port.
 	ModeForward = "forward"
+)
+
+// The ways a pivot resolves a name.
+const (
+	// DNSRemote lets the target resolve the name.  The name of an
+	// internal host never leaves the network it belongs to, because the
+	// server never sees it.
+	DNSRemote = "remote"
+	// DNSLocal resolves the name on the server before the agent connects.
+	DNSLocal = "local"
 )
 
 // Limits. They are deliberately small: every open stream costs a file
@@ -88,6 +100,47 @@ type TunnelInfo struct {
 	BytesUp   int64     `json:"bytes_up"`
 	BytesDown int64     `json:"bytes_down"`
 	State     string    `json:"state"`
+	// Claim is the name the operator gave to this pivot.  Releasing the
+	// claim tears the pivot down.
+	Claim string `json:"claim,omitempty"`
+	// Through is the agent this pivot is chained through.  It is empty
+	// for the first hop and names the previous agent for the others.
+	Through string `json:"through,omitempty"`
+	// DNS is "remote" when the target resolves the name and "local" when
+	// the server resolves it before the agent connects.
+	DNS string `json:"dns,omitempty"`
+	// LastActivity is when the pivot moved bytes the last time.
+	LastActivity time.Time `json:"last_activity"`
+}
+
+// Options are the settings of one pivot.
+type Options struct {
+	// Mode is "socks" (the client picks the target) or "forward" (the
+	// target is fixed).
+	Mode string
+	// Host and Port are the target of a forward.
+	Host string
+	Port int
+	// Listen is the local bind address.  The default is a random
+	// loopback port.
+	Listen string
+	// DNS is "remote" (the target resolves the name) or "local" (the
+	// server resolves it).  The default is "remote": the name of an
+	// internal host must not leave the network it belongs to.
+	DNS string
+	// Loopback forces the listener onto the loopback of the server, no
+	// matter what the operator asked for.  A pivot that listens on every
+	// interface is an ingress into the internal network.
+	Loopback bool
+	// Claim is the name the operator gave to this pivot.
+	Claim string
+	// Through is the agent this pivot is chained through.
+	Through string
+	// User and Password are the credentials the SOCKS5 proxy asks for.
+	// An empty user means the proxy is open to everybody who can reach
+	// its listener.
+	User     string
+	Password string
 }
 
 // Manager owns every tunnel, tunnel session and local listener.
@@ -100,6 +153,16 @@ type Manager struct {
 	tunnels  map[string]*tunnel         // tunnel id -> tunnel
 	pending  map[string]*pendingOpen    // agent id -> unanswered request
 	closed   bool
+
+	// claims maps the name of a claim to the tunnels it holds.  The
+	// operator releases a claim to tear every tunnel of it down.
+	claims map[string][]string
+	// clients is the accounting of the SOCKS5 clients.
+	clients map[string]*clientAccount
+	// connections is the log of the last connections of the proxy.
+	connections []connectionRecord
+	// deny is the list of hosts and ports the proxy refuses.
+	deny []denyRule
 }
 
 // New creates a pivot manager.
@@ -113,15 +176,42 @@ func New(h *hub.Hub, log *slog.Logger) *Manager {
 		sessions: make(map[string]*tunnelSession),
 		tunnels:  make(map[string]*tunnel),
 		pending:  make(map[string]*pendingOpen),
+		claims:   make(map[string][]string),
+		clients:  make(map[string]*clientAccount),
 	}
+}
+
+// SetDeny installs the list of hosts and ports the proxy refuses.
+//
+// The rule is a host and a port; a port of zero matches every port of the
+// host.  A name matches the names the client asked for, an address matches
+// the address the server resolved.
+func (m *Manager) SetDeny(rules []DenyRule) {
+	m.mu.Lock()
+	m.deny = nil
+	for _, rule := range rules {
+		host := strings.TrimSpace(rule.Host)
+		if host == "" {
+			continue
+		}
+		m.deny = append(m.deny, denyRule{host: host, port: rule.Port})
+	}
+	m.mu.Unlock()
 }
 
 // Open creates a tunnel through agentID and starts its local listener.
 //
-// mode is "socks" (the client picks the target) or "forward" (host:port are
-// fixed). listen is the local bind address; the default is a random loopback
-// port, and the caller learns the real address from the returned TunnelInfo.
-func (m *Manager) Open(agentID, mode, host string, port int, listen string) (*TunnelInfo, error) {
+// The mode is "socks" (the client picks the target) or "forward" (the
+// target is fixed).  The listen address is the local bind address; the
+// default is a random loopback port, and the caller learns the real
+// address from the returned TunnelInfo.
+//
+// The listener is bound before the agent is asked for a session: a pivot
+// that is not listening yet is a pivot an operator cannot use, and the
+// session is only needed when the first connection arrives.  That is also
+// what lets a forward survive the re-connect of its agent.
+func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
+	mode := opt.Mode
 	switch mode {
 	case "":
 		mode = ModeSOCKS
@@ -133,32 +223,47 @@ func (m *Manager) Open(agentID, mode, host string, port int, listen string) (*Tu
 		return nil, errors.New("pivot: an agent id is required")
 	}
 	if mode == ModeForward {
-		if host == "" {
+		if opt.Host == "" {
 			return nil, errors.New("pivot: forward mode needs a remote host")
 		}
-		if port <= 0 || port > 65535 {
+		if opt.Port <= 0 || opt.Port > 65535 {
 			return nil, errors.New("pivot: forward mode needs a valid remote port")
 		}
 	}
+	dns := opt.DNS
+	switch dns {
+	case "":
+		dns = DNSRemote
+	case DNSRemote, DNSLocal:
+	default:
+		return nil, fmt.Errorf("pivot: unknown dns mode %q", dns)
+	}
+	listen := opt.Listen
 	if listen == "" {
 		listen = "127.0.0.1:0"
 	}
-	sess, err := m.session(agentID)
-	if err != nil {
-		return nil, err
+	if opt.Loopback {
+		listen = forceLoopback(listen)
 	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return nil, fmt.Errorf("pivot: listen %s: %w", listen, err)
 	}
+	now := time.Now().UTC()
 	tun := &tunnel{
-		id:      newID("tun"),
-		agentID: agentID,
-		mode:    mode,
-		host:    host,
-		port:    port,
-		opened:  time.Now().UTC(),
-		state:   "open",
+		id:          newID("tun"),
+		agentID:     agentID,
+		mode:        mode,
+		host:        opt.Host,
+		port:        opt.Port,
+		opened:      now,
+		lastActive:  now,
+		state:       "open",
+		dns:         dns,
+		claim:       opt.Claim,
+		through:     opt.Through,
+		user:        opt.User,
+		password:    opt.Password,
 	}
 	tun.listener = ln
 	tun.listen = ln.Addr().String()
@@ -170,16 +275,35 @@ func (m *Manager) Open(agentID, mode, host string, port int, listen string) (*Tu
 		return nil, errors.New("pivot: the manager is shutting down")
 	}
 	m.tunnels[tun.id] = tun
+	if tun.claim != "" {
+		m.claims[tun.claim] = append(m.claims[tun.claim], tun.id)
+	}
 	m.mu.Unlock()
 
-	go m.serve(tun, sess)
+	go m.serve(tun)
 	m.log.Info("pivot tunnel opened", "tunnel", tun.id, "agent", agentID,
-		"mode", mode, "listen", tun.listen)
+		"mode", mode, "listen", tun.listen, "claim", tun.claim)
 	m.hub.Emit(hub.Event{Kind: "pivot.opened", AgentID: agentID, Data: map[string]any{
 		"tunnel": tun.id, "mode": mode, "listen": tun.listen,
-		"host": host, "port": int64(port),
+		"host": opt.Host, "port": int64(opt.Port), "claim": tun.claim,
+		"through": tun.through, "dns": dns,
 	}})
 	return m.info(tun), nil
+}
+
+// forceLoopback turns a bind address into one on the loopback.
+//
+// The port is kept, so a forward that was asked for a port keeps it; only
+// the address changes.  A bind address without a port gets a random one.
+func forceLoopback(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "127.0.0.1:0"
+	}
+	if port == "" {
+		port = "0"
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
 
 // Close tears a tunnel down and releases its listener.
@@ -188,6 +312,7 @@ func (m *Manager) Close(id string) error {
 	tun, ok := m.tunnels[id]
 	if ok {
 		delete(m.tunnels, id)
+		m.dropClaimLocked(tun)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -234,6 +359,7 @@ func (m *Manager) CloseAll() {
 	m.tunnels = make(map[string]*tunnel)
 	m.sessions = make(map[string]*tunnelSession)
 	m.pending = make(map[string]*pendingOpen)
+	m.claims = make(map[string][]string)
 	m.closed = true
 	m.mu.Unlock()
 	for _, t := range tunnels {
@@ -350,18 +476,22 @@ func (m *Manager) session(agentID string) (*tunnelSession, error) {
 }
 
 // serve accepts local connections and turns each of them into a stream.
-func (m *Manager) serve(tun *tunnel, sess *tunnelSession) {
+//
+// The session of the agent is not held here: it is taken when a
+// connection arrives and taken again when the agent re-connects, so a
+// forward outlives the session it was opened with.
+func (m *Manager) serve(tun *tunnel) {
 	for {
 		conn, err := tun.listener.Accept()
 		if err != nil {
 			return
 		}
-		go m.handle(tun, sess, conn)
+		go m.handle(tun, conn)
 	}
 }
 
 // handle proxies one local connection through the agent.
-func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
+func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 
@@ -372,12 +502,44 @@ func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
 	if tun.mode == ModeForward {
 		host, port = tun.host, tun.port
 	} else {
-		h, p, err := socks5Handshake(conn)
+		h, p, err := socks5Handshake(conn, tun.user, tun.password)
 		if err != nil {
 			m.log.Debug("socks5 handshake failed", "tunnel", tun.id, "err", err)
 			return
 		}
 		host, port = h, p
+	}
+	client := conn.RemoteAddr().String()
+	if addr, _, err := net.SplitHostPort(client); err == nil {
+		client = addr
+	}
+	if m.denied(host, port) {
+		m.log.Warn("pivot refused a denied target", "tunnel", tun.id,
+			"host", host, "port", port, "client", client)
+		if tun.mode == ModeSOCKS {
+			_ = socks5Reply(conn, socks5NotAllowed, "0.0.0.0", 0)
+		}
+		m.noteConnection(client, host, port, 0, 0, "denied")
+		m.hub.Emit(hub.Event{Kind: "pivot.denied", AgentID: tun.agentID,
+			Data: map[string]any{"tunnel": tun.id, "host": host, "port": int64(port)}})
+		return
+	}
+	// The name of an internal host must not leave the network it belongs
+	// to: the agent resolves it when the pivot is in the remote mode.
+	if tun.dns == DNSLocal && net.ParseIP(host) == nil {
+		if addrs, err := net.LookupIP(host); err == nil && len(addrs) > 0 {
+			host = addrs[0].String()
+		}
+	}
+
+	sess, err := m.session(tun.agentID)
+	if err != nil {
+		m.log.Warn("pivot has no session", "tunnel", tun.id, "err", err)
+		if tun.mode == ModeSOCKS {
+			_ = socks5Reply(conn, socks5GeneralFailure, "0.0.0.0", 0)
+		}
+		m.noteConnection(client, host, port, 0, 0, "no session")
+		return
 	}
 
 	stream, err := sess.openStream(host, port)
@@ -389,6 +551,7 @@ func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
 		m.hub.Emit(hub.Event{Kind: "pivot.error", AgentID: tun.agentID, Data: map[string]any{
 			"tunnel": tun.id, "host": host, "port": int64(port), "err": err.Error(),
 		}})
+		m.noteConnection(client, host, port, 0, 0, "refused")
 		return
 	}
 	tun.addStream(1)
@@ -404,6 +567,10 @@ func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
 	// allowed to idle.
 	_ = conn.SetDeadline(time.Time{})
 
+	// The bytes of this connection, so the log knows what the client
+	// moved and not only what the tunnel moved in total.
+	var up, down atomic.Int64
+
 	// local -> agent
 	go func() {
 		buf := make([]byte, ChunkSize)
@@ -414,6 +581,7 @@ func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
 					break
 				}
 				tun.addUp(int64(n))
+				up.Add(int64(n))
 			}
 			if err != nil {
 				break
@@ -431,11 +599,13 @@ func (m *Manager) handle(tun *tunnel, sess *tunnelSession, conn net.Conn) {
 				break
 			}
 			tun.addDown(int64(n))
+			down.Add(int64(n))
 		}
 		if err != nil {
 			break
 		}
 	}
+	m.noteConnection(client, host, port, up.Load(), down.Load(), "closed")
 }
 
 // info snapshots a tunnel.
@@ -443,17 +613,21 @@ func (m *Manager) info(tun *tunnel) TunnelInfo {
 	tun.mu.Lock()
 	defer tun.mu.Unlock()
 	return TunnelInfo{
-		Stream:    tun.id,
-		AgentID:   tun.agentID,
-		Mode:      tun.mode,
-		Listen:    tun.listen,
-		Host:      tun.host,
-		Port:      tun.port,
-		Opened:    tun.opened,
-		Streams:   tun.streams,
-		BytesUp:   tun.bytesUp,
-		BytesDown: tun.bytesDown,
-		State:     tun.state,
+		Stream:      tun.id,
+		AgentID:     tun.agentID,
+		Mode:        tun.mode,
+		Listen:      tun.listen,
+		Host:        tun.host,
+		Port:        tun.port,
+		Opened:      tun.opened,
+		Streams:     tun.streams,
+		BytesUp:     tun.bytesUp,
+		BytesDown:   tun.bytesDown,
+		State:       tun.state,
+		Claim:       tun.claim,
+		Through:     tun.through,
+		DNS:         tun.dns,
+		LastActivity: tun.lastActive,
 	}
 }
 
@@ -468,11 +642,22 @@ type tunnel struct {
 	opened   time.Time
 	listener net.Listener
 
-	mu        sync.Mutex
-	streams   int
-	bytesUp   int64
-	bytesDown int64
-	state     string
+	// claim is the name the operator gave to this pivot.
+	claim string
+	// through is the agent this pivot is chained through.
+	through string
+	// dns is "remote" or "local".
+	dns string
+	// user and password are the credentials of the SOCKS5 proxy.
+	user     string
+	password string
+
+	mu         sync.Mutex
+	streams    int
+	bytesUp    int64
+	bytesDown  int64
+	state      string
+	lastActive time.Time
 }
 
 func (t *tunnel) addStream(delta int) {
@@ -484,12 +669,14 @@ func (t *tunnel) addStream(delta int) {
 func (t *tunnel) addUp(n int64) {
 	t.mu.Lock()
 	t.bytesUp += n
+	t.lastActive = time.Now().UTC()
 	t.mu.Unlock()
 }
 
 func (t *tunnel) addDown(n int64) {
 	t.mu.Lock()
 	t.bytesDown += n
+	t.lastActive = time.Now().UTC()
 	t.mu.Unlock()
 }
 

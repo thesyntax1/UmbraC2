@@ -114,7 +114,9 @@ class OperatorClient:
         self._session = result.session
         self.session_id = result.session_id
         self.server_meta = result.meta
-        self._stream.sock.settimeout(None)  # the reader thread owns the socket
+        # The reader thread owns the socket from here on: a request waits in
+        # the inbox, not in the socket, so the write path stays free.
+        self._stream.set_timeout(None)
         # Requests are written by the calling thread today, but routing them
         # through a gate keeps the "seal+write is one step" invariant explicit
         # if a background writer is ever added. See netio.SendGate.
@@ -633,6 +635,32 @@ class OperatorClient:
             raise OperatorError(res.error)
         return int(res.data.get("sessions", 0))
 
+    def pivot_topology(self) -> Dict[str, Any]:
+        """The picture of the reach.
+
+        The same reply that carries the tunnels carries the graph: the
+        agents, the pivots between them, the clients of the proxy and the
+        log of the connections.
+        """
+        res = self.rpc("pivot.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data.get("topology") or {})
+
+    def pivot_claims(self) -> List[Dict[str, Any]]:
+        """The claims of the engagement and the pivots they hold."""
+        res = self.rpc("pivot.claim")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("claims", []))
+
+    def pivot_release(self, claim: str) -> List[str]:
+        """Release a claim: every pivot of it is torn down."""
+        res = self.rpc("pivot.release", {"claim": claim})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("closed", []))
+
     def pivot_open(
         self,
         agent_id: str,
@@ -641,12 +669,23 @@ class OperatorClient:
         host: str = "",
         port: int = 0,
         listen: str = "",
+        dns: str = "",
+        loopback: bool = False,
+        claim: str = "",
+        through: str = "",
+        user: str = "",
+        password: str = "",
     ) -> Dict[str, Any]:
         """Open a pivot through an agent.
 
         ``mode`` is ``socks`` (the client picks the target) or ``forward``
         (``host``/``port`` are fixed). The reply carries the local address the
         tunnel listens on.
+
+        ``dns`` is ``remote`` (the target resolves the name, so the name of
+        an internal host never leaves the network) or ``local``.  ``claim``
+        names the pivot, so the operator can release it as a group.
+        ``loopback`` forces the listener onto the loopback of the server.
         """
         res = self.rpc(
             "pivot.open",
@@ -656,6 +695,12 @@ class OperatorClient:
                 "host": host,
                 "port": int(port),
                 "listen": listen,
+                "dns": dns,
+                "loopback": bool(loopback),
+                "claim": claim,
+                "through": through,
+                "user": user,
+                "password": password,
             },
         )
         if not res.ok:

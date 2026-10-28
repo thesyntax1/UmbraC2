@@ -1229,7 +1229,8 @@ def print_help() -> None:
   kill [agent-id]           tell an agent to exit
   audit [limit]             recent operator actions (audit trail)
   stats                     server statistics
-  pivot [list|open|close]   pivot through an agent (socks5 / port forward)
+  pivot [list|open|close|claims|release]
+                          pivot through an agent (socks5 / port forward)
   vpn [status|peers|alloc]  the layer-3 tunnel
   armory [list|inst|rm|run] the extension store
   alias [list|run]          saved commands
@@ -1644,15 +1645,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- pivoting -------------------------------------------------------
     pivot = sub.add_parser("pivot", help="pivot through an agent (socks5 / port forward)")
-    pivot.add_argument("action", choices=["list", "open", "close"],
-                       help="list the pivots, open one or close one")
+    pivot.add_argument("action", choices=["list", "open", "close", "claims", "release"],
+                       help="list the pivots, open one, close one, list the "
+                            "claims or release one")
     pivot.add_argument("target", nargs="?", default="",
-                       help="agent id (open) or tunnel id (close)")
+                       help="agent id (open), tunnel id (close) or claim (release)")
     pivot.add_argument("--mode", choices=["socks", "forward"], default="socks",
                        help="socks lets the client pick the target, forward fixes it")
     pivot.add_argument("--host", default="", help="remote host (forward mode)")
     pivot.add_argument("--port", type=int, default=0, help="remote port (forward mode)")
     pivot.add_argument("--listen", default="", help="local bind address (default 127.0.0.1:0)")
+    pivot.add_argument("--dns", choices=["remote", "local"], default="remote",
+                       help="who resolves the name of the target: the target "
+                            "(remote) or the server (local)")
+    pivot.add_argument("--loopback", action="store_true",
+                       help="force the listener onto the loopback of the server")
+    pivot.add_argument("--claim", default="",
+                       help="name the pivot, so it can be released as a group")
+    pivot.add_argument("--through", default="",
+                       help="the agent this pivot is chained through")
+    pivot.add_argument("--user", default="",
+                       help="the user the socks5 proxy asks for")
+    pivot.add_argument("--password", default="",
+                       help="the password the socks5 proxy asks for")
 
     # -- layer-3 tunnel --------------------------------------------------
     vpn = sub.add_parser("vpn", help="the layer-3 tunnel between the implants and the server")
@@ -2447,14 +2462,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.action == "list":
                 tunnels = client.pivot_list()
                 sessions = client.pivot_sessions()
+                topology = client.pivot_topology()
                 if args.json:
-                    emit({"tunnels": tunnels, "sessions": sessions})
+                    emit({"tunnels": tunnels, "sessions": sessions,
+                          "topology": topology})
                 else:
-                    print_pivots(tunnels, sessions)
+                    print_pivots(tunnels, sessions, topology)
             elif args.action == "open":
                 if not args.target:
                     print("usage: umbra pivot open <agent> [--mode socks|forward] "
-                          "[--host H --port P] [--listen ADDR]", file=sys.stderr)
+                          "[--host H --port P] [--listen ADDR] [--dns remote|local] "
+                          "[--loopback] [--claim NAME] [--through AGENT]", file=sys.stderr)
                     return 2
                 data = client.pivot_open(
                     args.target,
@@ -2462,12 +2480,39 @@ def main(argv: Optional[List[str]] = None) -> int:
                     host=args.host,
                     port=args.port,
                     listen=args.listen,
+                    dns=args.dns,
+                    loopback=args.loopback,
+                    claim=args.claim,
+                    through=args.through,
+                    user=args.user,
+                    password=args.password,
                 )
                 if args.json:
                     emit(data)
                 else:
                     print(f"pivot {data.get('stream')} open on {data.get('listen')} "
                           f"via {data.get('agent_id')} ({data.get('mode')})")
+                    if data.get("claim"):
+                        print(f"  claim {data.get('claim')}")
+            elif args.action == "claims":
+                claims = client.pivot_claims()
+                if args.json:
+                    emit({"claims": claims})
+                elif not claims:
+                    print("no claim is held")
+                else:
+                    for claim in claims:
+                        print(f"{claim.get('claim')}: "
+                              f"{', '.join(claim.get('tunnels') or [])}")
+            elif args.action == "release":
+                if not args.target:
+                    print("usage: umbra pivot release <claim>", file=sys.stderr)
+                    return 2
+                closed = client.pivot_release(args.target)
+                if args.json:
+                    emit({"claim": args.target, "closed": closed})
+                else:
+                    print(f"released {args.target}: {len(closed)} pivots torn down")
             else:
                 if not args.target:
                     print("usage: umbra pivot close <tunnel-id>", file=sys.stderr)

@@ -53,7 +53,7 @@ main: load config → build keyring → open store → start listeners
 | `link` | transports + handshake | `FrameStream` abstraction shared by TCP/HTTP/WebSocket/DNS; per-operator RPC rate limit |
 | `audit` | operator audit trail | JSON Lines, `fsync` per entry, size rotation, nil-safe |
 | `rbac` | operator roles | one declarative command → minimum-role table; unknown commands are admin-only (fail closed) |
-| `pivot` | agent callback sessions | SOCKS5 proxy and TCP forward; the agent dials back, the server only drives |
+| `pivot` | agent callback sessions | SOCKS5 proxy and TCP forward; the agent dials back, the server only drives; the topology, the accounting, the deny list and the claims live here |
 | `vpn` | layer-3 tunnel | X25519 + HKDF + AES-256-GCM datagrams, 64 packet replay window |
 | `dnstun` | DNS transport | TXT records carry the frames; the session above the transport does not change |
 | `armory` | extension store | Ed25519 signed catalogue; an unsigned catalogue installs nothing |
@@ -163,6 +163,10 @@ known to be gone) does not apply to a timeout (where it is not).
 
 * one goroutine per connection, no shared mutable message state;
 * `session` serialises its own send/recv directions; the stream serialises writes;
+* the operator link is the one connection that reads and writes at the same
+  time (requests below, events above), so the TLS session is entered by one
+  thread at a time: the Go stack allows one reader and one writer, and the
+  Python transport waits for the socket outside of its lock;
 * `store` and `hub` hold short-lived mutexes and never call each other while
   holding one;
 * `hub.Emit` never blocks a transport (bounded channel + drop + warn, with a
@@ -280,6 +284,9 @@ protocol:
   implementation used to generate `contracts/vectors.json`;
 * `client.py` — one reader thread, RPC responses matched by `rid`, events
   delivered through a callback;
+* `netio.py` — the framed stream. One lock per connection keeps the TLS
+  session to one thread at a time, and the wait for the socket happens outside
+  of that lock, so a reader never freezes the writer;
 * `cli.py` — sub-commands for scripting and an interactive shell for live work;
 * `dns.py`, `ws.py` — reference implementations of the DNS tunnel and of the
   WebSocket transport, so both can be exercised without a Go build;
@@ -325,7 +332,9 @@ cancel end-to-end (`TASK_CANCEL` control frames read by both reference implants,
 state preserved when a late result arrives).
 
 Done (pivoting and extensions): agent callback sessions with a SOCKS5 proxy
-and a TCP port forward (`internal/pivot`), peer-to-peer links between implants
+and a TCP port forward (`internal/pivot`), the picture of the reach
+(`internal/pivot/topology.go`: the graph of the pivots, the accounting per
+client, the log of the connections, the deny list and the claims), peer-to-peer links between implants
 (`implant/rust/src/tunnel.rs`), the layer-3 tunnel between the console and the
 beacons (`internal/vpn`, `implant/rust/src/vpn.rs`), the DNS transport
 (`internal/dnstun`, `implant/rust/src/dns.rs`), in-memory COFF execution and

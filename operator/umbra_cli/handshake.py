@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from . import crypto, netio, session, upk, wire
 
@@ -176,6 +176,7 @@ def server_handshake(
     keyring: "Sequence[KeyringEntry]",
     suites: Sequence[int] = (wire.SUITE_AES256_GCM,),
     cfg: Optional[dict] = None,
+    on_peer: Optional[Callable[[str, int, dict], None]] = None,
 ) -> HandshakeResult:
     """Server side of the handshake.
 
@@ -184,6 +185,12 @@ def server_handshake(
     advance, so every (suite, key) pair is tried; the key that authenticates the
     HELLO decides the caller's role, and an operator token only works for the
     identity it was issued to.
+
+    ``on_peer`` is called once the peer is authenticated and *before* the
+    HELLO_ACK goes out.  A server that pushes events to the peer (the
+    operator console) subscribes it there: the console believes it is
+    connected as soon as the HELLO_ACK arrives, so an event that is emitted in
+    the same breath must already have a subscriber.
     """
     raw = stream.recv_frame()
 
@@ -284,6 +291,8 @@ def server_handshake(
         "name": "umbra-server",
         "meta": {"ver": "0.1.0"},
     }
+    if on_peer is not None:
+        on_peer(ident, role, hello.get("meta", {}) or {})
     stream.send_frame(boot.encrypt(wire.MsgType.HELLO_ACK, b"\x02" + upk.encode(ack)))
 
     sess = session.Session(

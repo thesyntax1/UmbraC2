@@ -299,6 +299,22 @@ fn serve_stream(
     let _ = target.set_read_timeout(Some(IO_TIMEOUT));
     let _ = target.set_write_timeout(Some(IO_TIMEOUT));
 
+    // The socket is read by one thread and written by another, so the
+    // reading thread gets its own handle of the same connection.
+    let mut source = match target.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            let value = upk::map(vec![
+                ("stream", upk::s(&id)),
+                ("op", upk::s("result")),
+                ("ok", upk::bool_(false)),
+                ("err", upk::s(&format!("the stream could not be duplicated: {e}"))),
+            ]);
+            let _ = tx.send((wire::MSG_TUNNEL_OPEN, value));
+            return;
+        }
+    };
+
     // The channel that carries the bytes the server sends for this stream.
     let (data_tx, data_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
     if let Ok(mut guard) = registry.lock() {
@@ -319,7 +335,7 @@ fn serve_stream(
     thread::spawn(move || {
         let mut buf = vec![0u8; CHUNK];
         loop {
-            match target.read(&mut buf) {
+            match source.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let value = upk::map(vec![

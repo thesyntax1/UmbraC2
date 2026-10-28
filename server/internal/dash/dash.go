@@ -40,6 +40,10 @@ type Config struct {
 	Token string
 	// ReadOnly refuses the endpoints that change something.
 	ReadOnly bool
+	// Topology returns the picture of the reach: the agents, the pivots
+	// between them and the clients of the proxy.  It is nil when the
+	// server has no pivot manager, and the panel stays empty then.
+	Topology func() any
 }
 
 // indexHTML is the page of the dashboard.
@@ -64,6 +68,7 @@ func New(cfg Config, h *hub.Hub, log *slog.Logger) *Server {
 	s.mux.HandleFunc("/api/events", s.handleEvents)
 	s.mux.HandleFunc("/api/stats", s.handleStats)
 	s.mux.HandleFunc("/api/task", s.handleSubmit)
+	s.mux.HandleFunc("/api/pivot", s.handlePivot)
 	return s
 }
 
@@ -185,6 +190,21 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // handleStats serves the counters of the server.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.hub.Stats())
+}
+
+// handlePivot serves the picture of the reach.
+//
+// The dashboard draws the pivots: which agent is tunnelled through which,
+// what moved through it and when it moved the last time.
+func (s *Server) handlePivot(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Topology == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"nodes": []any{}, "edges": []any{}, "clients": []any{},
+			"connections": []any{}, "claims": map[string]any{},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.cfg.Topology())
 }
 
 // handleSubmit queues a task.

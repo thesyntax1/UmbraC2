@@ -50,7 +50,8 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 		return
 	}
 	stream := NewConnStream(conn)
-	sess, info, err := Handshake(stream, s.Cfg, log, addr)
+	sub := &operatorSubscription{server: s, addr: addr, transport: "tcp/operator"}
+	sess, info, err := Handshake(stream, s.Cfg, log, addr, sub.pre)
 	if err != nil {
 		s.guard.Fail(addr)
 		log.Warn("operator handshake failed", "err", err)
@@ -58,9 +59,42 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 	}
 	if info.Role != crypt.RoleOperator {
 		log.Warn("agent key used on the operator listener")
+		sub.release()
 		return
 	}
-	s.runOperator(stream, conn, sess, info, addr, "tcp/operator", log)
+	s.runOperator(stream, conn, sess, info, addr, "tcp/operator", log, sub.op)
+}
+
+// operatorSubscription subscribes a console to the event stream before the
+// handshake answer is written.
+//
+// The console believes it is connected as soon as the HELLO_ACK arrives, so
+// an event that is emitted in the same breath has to find a subscriber
+// already; otherwise the console misses the first moments of the engagement.
+type operatorSubscription struct {
+	server    *Server
+	addr      string
+	transport string
+	op        *hub.Operator
+}
+
+// pre is the handshake hook: it subscribes the console.
+func (o *operatorSubscription) pre(info *HelloInfo) (func(), error) {
+	if info.Role != crypt.RoleOperator {
+		return nil, nil
+	}
+	role := o.server.Cfg.Keyring.Role(info.ID)
+	o.op = o.server.Hub.Subscribe(info.ID, role, o.addr, o.transport)
+	return o.release, nil
+}
+
+// release takes the console off the subscriber list.
+func (o *operatorSubscription) release() {
+	if o.op == nil {
+		return
+	}
+	o.server.Hub.Unsubscribe(o.op.ID)
+	o.op = nil
 }
 
 // runOperator carries the control channel of an operator that already
@@ -69,19 +103,25 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 // Like runAgent, the handshake lives in the listener: the TLS listener
 // decides by the role in the HELLO whether the peer is an operator or an
 // agent, and only then hands the connection over.
-func (s *Server) runOperator(stream FrameStream, conn net.Conn, sess *session.Session, info *HelloInfo, addr, transport string, log *slog.Logger) {
+func (s *Server) runOperator(stream FrameStream, conn net.Conn, sess *session.Session, info *HelloInfo, addr, transport string, log *slog.Logger, op *hub.Operator) {
 	if !s.claimOperatorSlot() {
 		log.Warn("operator limit reached, rejecting", "operator", info.ID)
+		if op != nil {
+			s.Hub.Unsubscribe(op.ID)
+		}
 		return
 	}
 	defer s.releaseOperatorSlot()
+	if op == nil {
+		// The peer was not subscribed before the handshake; do it now.
+		op = s.Hub.Subscribe(info.ID, s.Cfg.Keyring.Role(info.ID), addr, transport)
+	}
+	defer s.Hub.Unsubscribe(op.ID)
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return
 	}
 
 	role := s.Cfg.Keyring.Role(info.ID)
-	op := s.Hub.Subscribe(info.ID, role, addr, transport)
-	defer s.Hub.Unsubscribe(op.ID)
 	defer s.forgetOperatorRate(info.ID)
 	log.Info("operator connected", "operator", info.ID, "role", role, "suite", wire.SuiteName(info.Suite))
 
@@ -741,20 +781,36 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		out := make([]any, 0, len(tunnels))
 		for _, t := range tunnels {
 			out = append(out, upk.Map{
-				"stream":     t.Stream,
-				"agent_id":   t.AgentID,
-				"mode":       t.Mode,
-				"listen":     t.Listen,
-				"host":       t.Host,
-				"port":       int64(t.Port),
-				"opened":     t.Opened.Unix(),
-				"streams":    int64(t.Streams),
-				"bytes_up":   t.BytesUp,
-				"bytes_down": t.BytesDown,
-				"state":      t.State,
+				"stream":       t.Stream,
+				"agent_id":     t.AgentID,
+				"mode":         t.Mode,
+				"listen":       t.Listen,
+				"host":         t.Host,
+				"port":         int64(t.Port),
+				"opened":       t.Opened.Unix(),
+				"streams":      int64(t.Streams),
+				"bytes_up":     t.BytesUp,
+				"bytes_down":   t.BytesDown,
+				"state":        t.State,
+				"claim":        t.Claim,
+				"through":      t.Through,
+				"dns":          t.DNS,
+				"last_active":  t.LastActivity.Unix(),
 			})
 		}
-		return reply(upk.Map{"tunnels": out, "sessions": int64(sessions)})
+		// The topology is the picture of the reach: the agents, the
+		// pivots between them, the clients of the proxy and the log of
+		// the connections.  The dashboard draws it.
+		topology := upk.Map{"nodes": []any{}, "edges": []any{},
+			"clients": []any{}, "connections": []any{}, "claims": upk.Map{}}
+		if s.Pivot != nil {
+			topology = pivotTopology(s.Pivot.Topology())
+		}
+		return reply(upk.Map{
+			"tunnels":  out,
+			"sessions": int64(sessions),
+			"topology": topology,
+		})
 
 	case "pivot.open":
 		if s.Pivot == nil {
@@ -768,7 +824,24 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		host, _ := args["host"].(string)
 		listen, _ := args["listen"].(string)
 		port, _ := asInt64(args["port"])
-		tun, err := s.Pivot.Open(id, mode, host, int(port), listen)
+		dns, _ := args["dns"].(string)
+		claim, _ := args["claim"].(string)
+		through, _ := args["through"].(string)
+		user, _ := args["user"].(string)
+		password, _ := args["password"].(string)
+		loopback, _ := args["loopback"].(bool)
+		tun, err := s.Pivot.Open(id, pivot.Options{
+			Mode:     mode,
+			Host:     host,
+			Port:     int(port),
+			Listen:   listen,
+			DNS:      dns,
+			Loopback: loopback,
+			Claim:    claim,
+			Through:  through,
+			User:     user,
+			Password: password,
+		})
 		if err != nil {
 			return fail("pivot.open: %v", err)
 		}
@@ -779,6 +852,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"listen":   tun.Listen,
 			"host":     tun.Host,
 			"port":     int64(tun.Port),
+			"claim":    tun.Claim,
+			"through":  tun.Through,
+			"dns":      tun.DNS,
 		})
 
 	case "pivot.close":
@@ -790,6 +866,35 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			return fail("pivot.close: %v", err)
 		}
 		return reply(upk.Map{"stream": stream, "closed": true})
+
+	case "pivot.claim":
+		// The claims of the engagement: the name and the pivots it holds.
+		if s.Pivot == nil {
+			return fail("pivot.claim: pivoting is not enabled on this server")
+		}
+		claims := s.Pivot.Claims()
+		names := make([]string, 0, len(claims))
+		for name := range claims {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		out := make([]any, 0, len(names))
+		for _, name := range names {
+			out = append(out, upk.Map{"claim": name, "tunnels": claims[name]})
+		}
+		return reply(upk.Map{"claims": out, "count": int64(len(out))})
+
+	case "pivot.release":
+		// The end of a claim: every pivot of it is torn down.
+		if s.Pivot == nil {
+			return fail("pivot.release: pivoting is not enabled on this server")
+		}
+		claim, _ := args["claim"].(string)
+		closed, err := s.Pivot.Release(claim)
+		if err != nil {
+			return fail("pivot.release: %v", err)
+		}
+		return reply(upk.Map{"claim": claim, "closed": closed, "count": int64(len(closed))})
 
 	// ---- layer-3 tunnel ----------------------------------------------
 	case "vpn.status":
@@ -1453,6 +1558,82 @@ func agentDataMap(a *store.Agent) map[string]any {
 		// The account the implant runs as, when it is not the account it
 		// started with.
 		"impersonation": a.Impersonation,
+	}
+}
+
+// pivotTopology turns the picture of the reach into the wire form.
+//
+// The dashboard and the console read the same structure, so the shape is
+// decided once, here.
+func pivotTopology(top pivot.Topology) upk.Map {
+	nodes := make([]any, 0, len(top.Nodes))
+	for _, node := range top.Nodes {
+		nodes = append(nodes, upk.Map{
+			"agent_id":  node.AgentID,
+			"role":      node.Role,
+			"transport": node.Transport,
+			"online":    node.Online,
+			"tunnels":   int64(node.Tunnels),
+		})
+	}
+	edges := make([]any, 0, len(top.Edges))
+	for _, edge := range top.Edges {
+		edges = append(edges, upk.Map{
+			"tunnel":      edge.Tunnel,
+			"agent_id":    edge.AgentID,
+			"through":     edge.Through,
+			"mode":        edge.Mode,
+			"listen":      edge.Listen,
+			"host":        edge.Host,
+			"port":        int64(edge.Port),
+			"streams":     int64(edge.Streams),
+			"bytes_up":    edge.BytesUp,
+			"bytes_down":  edge.BytesDown,
+			"last_active": edge.LastActive,
+			"state":       edge.State,
+			"claim":       edge.Claim,
+			"dns":         edge.DNS,
+		})
+	}
+	clients := make([]any, 0, len(top.Clients))
+	for _, client := range top.Clients {
+		clients = append(clients, upk.Map{
+			"address":     client.Address,
+			"connections": client.Connections,
+			"bytes_up":    client.BytesUp,
+			"bytes_down":  client.BytesDown,
+			"first":       client.First.Unix(),
+			"last":        client.Last.Unix(),
+		})
+	}
+	connections := make([]any, 0, len(top.Connections))
+	for _, conn := range top.Connections {
+		connections = append(connections, upk.Map{
+			"client":     conn.Client,
+			"target":     conn.Target,
+			"port":       int64(conn.Port),
+			"bytes_up":   conn.BytesUp,
+			"bytes_down": conn.BytesDown,
+			"at":         conn.At.Unix(),
+			"state":      conn.State,
+		})
+	}
+	claims := upk.Map{}
+	for name, ids := range top.Claims {
+		list := make([]any, 0, len(ids))
+		for _, id := range ids {
+			list = append(list, id)
+		}
+		claims[name] = list
+	}
+	return upk.Map{
+		"nodes":       nodes,
+		"edges":       edges,
+		"clients":     clients,
+		"connections": connections,
+		"claims":      claims,
+		"sessions":    int64(top.Sessions),
+		"tunnels":     int64(top.Tunnels),
 	}
 }
 

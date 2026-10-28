@@ -45,13 +45,24 @@ type candidate struct {
 	role    byte // role this key is allowed to claim
 }
 
+// PreAck runs once the peer is authenticated and before the HELLO_ACK is
+// written.
+//
+// The operator listener uses it to subscribe the console to the event
+// stream: the console believes it is connected as soon as the HELLO_ACK
+// arrives, so an event that is emitted in the same breath has to find a
+// subscriber already.  The function it returns undoes the setup, and the
+// handshake calls it when the handshake fails.  When the handshake succeeds
+// the caller owns the setup and has to release it.
+type PreAck func(info *HelloInfo) (cleanup func(), err error)
+
 // Handshake performs the server side of the protocol handshake.
 //
 // The server cannot know which PSK a peer used before decrypting the HELLO, so
 // it tries every configured key against the offered suites. With a handful of
 // operator tokens this is microseconds; the outer attempt limit keeps it from
 // becoming an oracle.
-func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAddr string) (*session.Session, *HelloInfo, error) {
+func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAddr string, pre ...PreAck) (*session.Session, *HelloInfo, error) {
 	raw, err := stream.ReadFrame()
 	if err != nil {
 		return nil, nil, handshakeErr("read HELLO: %v", err)
@@ -153,17 +164,38 @@ func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAdd
 		"cfg":   upk.Map{"sleep": sleep, "jitter": jitter, "obf": true},
 		"meta":  upk.Map{"ver": hub.Version},
 	}
+	// The peer is authenticated.  A hook may still put the peer in place
+	// before the answer goes out: the console believes it is connected as
+	// soon as the HELLO_ACK arrives, so an event emitted in the same breath
+	// has to find a subscriber already.
+	var undo func()
+	if len(pre) > 0 && pre[0] != nil {
+		cleanup, err := pre[0](info)
+		if err != nil {
+			return nil, nil, handshakeErr("peer setup: %v", err)
+		}
+		undo = cleanup
+	}
 	body := append([]byte{wire.MarkerHelloAck}, mustEncode(ack)...)
 	frame, err := boot.Encrypt(wire.MsgHelloAck, body)
 	if err != nil {
+		if undo != nil {
+			undo()
+		}
 		return nil, nil, handshakeErr("seal HELLO_ACK: %v", err)
 	}
 	if err := stream.WriteFrame(frame); err != nil {
+		if undo != nil {
+			undo()
+		}
 		return nil, nil, handshakeErr("write HELLO_ACK: %v", err)
 	}
 
 	sess, err := session.New(info.Suite, material, true, false, prk)
 	if err != nil {
+		if undo != nil {
+			undo()
+		}
 		return nil, nil, handshakeErr("create session: %v", err)
 	}
 	info.SessionID = sessionID

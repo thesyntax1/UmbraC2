@@ -19,10 +19,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,6 +115,7 @@ func run() error {
 	// The manager is always created, but it only opens a session when an
 	// operator asks for a tunnel.
 	pivotMgr := pivot.New(h, logger)
+	pivotMgr.SetDeny(pivotDenyRules(cfg.Server.PivotDeny))
 	srv.SetPivot(pivotMgr)
 
 	// Extensions: a signed catalogue of post-exploitation modules.
@@ -233,6 +237,9 @@ func run() error {
 				Listen:   cfg.Server.DashboardListen,
 				Token:    token,
 				ReadOnly: cfg.Server.DashboardReadOnly,
+				// The dashboard draws the pivots, so it needs the
+				// picture of the reach.
+				Topology: func() any { return pivotMgr.Topology() },
 			}, h, logger)
 			go func() {
 				if err := dashSrv.Serve(ctx); err != nil {
@@ -344,7 +351,12 @@ func keepSocksOpen(ctx context.Context, mgr *pivot.Manager, cfg *config.Config, 
 	defer ticker.Stop()
 	for {
 		if !socksOpen(mgr, cfg.Server.SocksListen) {
-			tun, err := mgr.Open(cfg.Server.SocksAgent, pivot.ModeSOCKS, "", 0, cfg.Server.SocksListen)
+			tun, err := mgr.Open(cfg.Server.SocksAgent, pivot.Options{
+				Mode:     pivot.ModeSOCKS,
+				Listen:   cfg.Server.SocksListen,
+				User:     cfg.Server.SocksUser,
+				Password: cfg.Server.SocksPassword,
+			})
 			if err != nil {
 				logger.Debug("persistent socks proxy not open yet", "err", err)
 			} else {
@@ -357,6 +369,29 @@ func keepSocksOpen(ctx context.Context, mgr *pivot.Manager, cfg *config.Config, 
 		case <-ticker.C:
 		}
 	}
+}
+
+// pivotDenyRules reads the deny list of the configuration.
+//
+// An entry is "host" or "host:port".  A host without a port refuses every
+// port of it; a port of zero in the rule means the same.
+func pivotDenyRules(entries []string) []pivot.DenyRule {
+	out := make([]pivot.DenyRule, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		host, port := entry, 0
+		if h, p, err := net.SplitHostPort(entry); err == nil {
+			host = h
+			if n, err := strconv.Atoi(p); err == nil {
+				port = n
+			}
+		}
+		out = append(out, pivot.DenyRule{Host: host, Port: port})
+	}
+	return out
 }
 
 // socksOpen reports whether the persistent proxy is already listening.

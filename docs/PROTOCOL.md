@@ -159,6 +159,27 @@ the nonce check and drops the connection. Reusing a nonce under one key is the
 one thing that must never happen, and it is why both the reservation and the
 write are serialised.
 
+**Transport invariant (TLS-ONE-SESSION).** A TLS connection is *one* record
+layer, and that layer keeps its state in the session: the sequence numbers, the
+write buffer, a pending key update. Two threads inside the same session at the
+same time scramble the stream — the peer sees a bad record MAC, or the link
+dies half way through a frame. The operator control channel reads and writes
+the same session at once by design: one thread waits for requests, another
+pushes events. So the transport has to keep them apart.
+
+| implementation | mechanism |
+| --- | --- |
+| Python | `netio.Stream` serialises the session and waits for the socket *outside* the lock |
+| Go (server) | `crypto/tls` allows one reader and one writer; the frames go through `link.Sender` |
+| Rust (beacon) | the beacon speaks plain TCP; one loop owns the session (`&mut self`) |
+| Kotlin (Android) | the beacon speaks plain TCP; one loop owns the session |
+
+The rule is not "one writer": it is *one thread inside the TLS session*. A
+reader that holds the lock while it waits for bytes freezes the writer, so the
+wait happens outside of it. A write that cannot be finished marks the session
+as broken instead of leaving half a frame on the wire, because the peer would
+read the rest of it as the beginning of the next frame.
+
 ## 5. Handshake
 
 ```
@@ -226,6 +247,13 @@ clock skew → suite → HMAC (constant time) → key exchange.
 
 An agent PSK compromise therefore cannot open the operator API, and an operator
 token compromise cannot enrol new implants.
+
+An operator that connects is subscribed to the event stream **before** the
+HELLO_ACK is written. The console believes it is connected as soon as the
+answer arrives, so an event that is emitted in the same breath has to find a
+subscriber already; otherwise the console misses the first moments of the
+engagement — the first check-in of the beacon that just woke up, the first
+message of the colleague who is already there.
 
 ## 6. Session keys, nonces, rotation
 
@@ -475,9 +503,11 @@ Operator RPC commands, with the minimum role each requires:
 | `operators.focus` | operator | announce the agent you are working on |
 | `schedule.remove` | admin | remove a recurring task |
 | `events.test` | admin | emit a synthetic event |
-| `pivot.list` | viewer | open pivots: agent, mode, listener, byte counters |
-| `pivot.open` | operator | open a SOCKS5 proxy or a port forward through an agent |
+| `pivot.list` | viewer | open pivots: agent, mode, listener, byte counters; the reply carries the topology (nodes, edges, clients, connections, claims) |
+| `pivot.open` | operator | open a SOCKS5 proxy or a port forward through an agent; optional `dns`, `loopback`, `claim`, `through`, `user`, `password` |
 | `pivot.close` | operator | close a pivot |
+| `pivot.claim` | viewer | the claims of the engagement and the pivots they hold |
+| `pivot.release` | operator | release a claim: every pivot of it is torn down |
 | `vpn.status` | viewer | tunnel state: listener, network, peer count |
 | `vpn.peers` | viewer | tunnel peers and their addresses |
 | `vpn.allocate` | operator | reserve a tunnel address for an agent |
@@ -891,10 +921,53 @@ Logical streams are multiplexed over that one connection:
 
 Two local listeners sit in front of the streams:
 
-* **SOCKS5** (`pivot.open {id, mode:"socks"}`) — RFC 1928, `CONNECT` only, no
-  authentication, bound to loopback by default. The client picks the target.
+* **SOCKS5** (`pivot.open {id, mode:"socks"}`) — RFC 1928, `CONNECT` only,
+  bound to loopback by default. The client picks the target. When the
+  operator configured `user` and `password`, the proxy asks for them with
+  the username and password method (RFC 1929); without them the proxy is
+  open to everybody who can reach its listener.
 * **port forward** (`pivot.open {id, mode:"forward", host, port}`) — every
   accepted connection is relayed to one fixed `host:port`.
+
+**The reach.** `pivot.list` answers with the tunnels *and* with the
+topology of the engagement: the agents (`nodes`), the pivots between them
+(`edges`), the clients of the proxy (`clients`) and the log of the last
+connections (`connections`).
+
+| key | meaning |
+|---|---|
+| `nodes[].agent_id` | the agent the node stands for |
+| `nodes[].role` | `pivot` when the agent holds a tunnel, `host` otherwise |
+| `nodes[].transport` | the transport the agent speaks |
+| `nodes[].online` | the agent answered recently |
+| `edges[].agent_id` | the agent the pivot runs on |
+| `edges[].through` | the agent this pivot is chained through |
+| `edges[].streams` | the streams that are open right now |
+| `edges[].bytes_up` / `bytes_down` | the bytes that moved through it |
+| `edges[].last_active` | when it moved bytes the last time (unix seconds) |
+| `edges[].dns` | `remote` (the target resolves the name) or `local` |
+| `edges[].claim` | the name the operator gave to this pivot |
+| `clients[].address` | the client of the proxy |
+| `clients[].connections` | how many connections it made |
+| `connections[].target` | where it went |
+| `connections[].state` | `closed`, `denied` or `refused` |
+
+The options of `pivot.open` decide how the pivot behaves:
+
+| option | meaning |
+|---|---|
+| `dns` | `remote` (the default) hands the name to the target, so the name of an internal host never leaves the network; `local` resolves it on the server |
+| `loopback` | forces the listener onto the loopback of the server, whatever the operator asked for |
+| `claim` | names the pivot; `pivot.release` tears every pivot of the claim down |
+| `through` | the agent this pivot is chained through; the topology shows the chain |
+| `user` / `password` | the credentials the SOCKS5 proxy asks for |
+
+A pivot outlives the session it was opened with: the listener stays bound
+and the session of the agent is taken again when the next connection
+arrives, so a forward survives the re-connect of its agent. The server
+also keeps a deny list (`pivot_deny` in the configuration): a target on
+the list is refused with the SOCKS5 "not allowed" answer and the refusal
+is written in the connection log.
 
 **Peer-to-peer** pivoting chains two beacons: the `p2p` task makes one agent
 open a TCP link to another agent (`action:"connect"` with `host`/`port`) or

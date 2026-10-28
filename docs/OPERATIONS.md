@@ -570,6 +570,135 @@ which always fits in one frame with room to spare.  The store lives next to
 the state file (`<data dir>/artifacts`), so a deployment that already gives
 the server a writable data directory needs no extra setup.
 
+## 3e. The reach
+
+A pivot is a door into a network.  The server does not hold the door: the
+agent does, the server only drives it, and the picture of every door is
+written down so the team can see what is open before it is used.
+
+### The picture
+
+```bash
+umbra pivot list                 # every tunnel: agent, mode, listener, target
+umbra pivot list --json          # the same, for a script
+```
+
+The list is a graph, not a table of ports:
+
+| Field | What it says |
+|---|---|
+| `agent_id` | the agent that holds the tunnel |
+| `through` | the agent the tunnel runs through, when it is a chained pivot |
+| `mode` | `socks` (a proxy) or `forward` (a fixed target) |
+| `listen` | the address and port the team connects to |
+| `host` / `port` | the target of a forward |
+| `streams` | how many connections are open through it right now |
+| `bytes_up` / `bytes_down` | what has moved through it |
+| `last_active` | when something last moved (a unix stamp) |
+| `state` | `open`, `closed` or `waiting` |
+| `claim` | the name of the claim the tunnel belongs to |
+| `dns` | `remote` (the agent resolves the name) or `local` (the server does) |
+
+The dashboard draws the same thing: the "reach" panel shows the agents as
+nodes and the pivots as edges, so a chained pivot is visible as a line that
+starts at one agent and ends at another.
+
+### The proxy
+
+```bash
+# a SOCKS5 proxy through one agent, with a name and a password
+umbra pivot open agent-01 --mode socks --claim corp --user alice --password secret
+
+# the proxy answers for the team, the name is resolved by the agent
+curl --socks5-hostname alice:secret@127.0.0.1:1080 http://10.10.0.5/
+```
+
+The proxy speaks SOCKS5 with the username/password method (RFC 1929).  The
+credentials belong to the tunnel, so two proxies can have two different
+pairs and a listener can be closed without touching the others.  The server
+compares them in constant time, so a wrong password does not leak its
+length.
+
+**Where the name is resolved.**  By default the name is handed to the agent
+and resolved there (`--dns remote`): the agent is the one that can see the
+internal resolver, and the server never learns the address.  With `--dns
+local` the server resolves the name first and the agent gets an address.
+
+**What the proxy refuses.**  The list of refused targets is a policy of the
+deployment, not a runtime accident:
+
+```json
+{
+  "pivot_deny": ["10.0.0.5", "10.0.0.0/24:445", "metadata.google.internal:80"]
+}
+```
+
+A rule is `host` or `host:port`; without a port it refuses every port of
+that host.  The host is compared against the name that was asked for, the
+address the name resolves to, and — when the rule is a network — every
+address inside it.  A rule for `10.0.0.5` therefore also covers the name
+that points at it, and `169.254.0.0/16` refuses the whole link-local range
+including the cloud metadata address.  A refused target is answered with
+`0x02` (not allowed by ruleset) and it is written in the connection log, so
+a refusal is visible in the audit trail.
+
+**Who used it.**  Every connection is booked: the client address, the target,
+the bytes in both directions, the time and the outcome.  The accounting is
+per client, the log keeps the last 256 connections, and both are part of
+`pivot.list`.  A proxy nobody used is different from a proxy that is in use,
+and the difference should be visible without reading the packets.
+
+### The forwards
+
+```bash
+# a fixed target
+umbra pivot open agent-01 --mode forward --host 10.10.0.5 --port 445 --claim corp
+
+# a listener that only the console may use
+umbra pivot open agent-01 --mode forward --host 10.10.0.5 --port 445 --loopback
+```
+
+A forward is a listener on the server and a stream through the agent to one
+target.  Several forwards can be open at the same time, each with its own
+listener.  With `--loopback` the listener is bound to `127.0.0.1`: only the
+machine the server runs on may use it, which is the safe default for a
+forward that has no authentication of its own.
+
+A forward survives the agent going away.  The listener stays bound, the
+server waits for the agent to come back, and the next connection that
+arrives is served by the new session.  The team does not have to rebuild the
+forward after a sleep cycle or a network change.
+
+### The claims
+
+A claim is a name for a group of tunnels.  It is the unit of "this belongs
+to the operation on the corporate network" and the unit of "tear it all
+down":
+
+```bash
+umbra pivot open agent-01 --mode socks --claim corp
+umbra pivot open agent-02 --mode forward --host 10.10.0.5 --port 445 --claim corp
+umbra pivot claims                   # what the claims hold
+umbra pivot release corp             # every tunnel of the claim is closed
+```
+
+`pivot.release` closes the listeners, closes the streams and forgets the
+claim; the accounting of what went through stays in the log.  Releasing a
+claim needs the operator role; opening one needs the operator role as well,
+and listing the reach needs only a viewer.
+
+### The server configuration
+
+| Key | What it does |
+|---|---|
+| `socks_listen` | a permanent SOCKS5 proxy through `socks_agent` |
+| `socks_agent` | the agent that proxy runs through |
+| `socks_user` / `socks_password` | the credentials of that proxy (RFC 1929) |
+| `pivot_deny` | the targets the proxies refuse |
+
+The permanent proxy and the pivots opened from the console share the same
+deny list and the same accounting.
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)
@@ -832,6 +961,8 @@ NTP, or raise the limit if you accept the risk.
 - [ ] `http_pad` set, so the length of a request does not tell what it carried
 - [ ] armory signing key offline; the catalogue is signed before it is copied to the server
 - [ ] `socks_listen` and `vpn_listen` bound to an interface only the team can reach
+- [ ] `socks_user` and `socks_password` set on every proxy that is not bound to loopback
+- [ ] `pivot_deny` holds the ranges the operation must not touch (link-local, the metadata address)
 - [ ] rendered stagers deleted after the engagement (they carry the agent key)
 
 ## 8. Upgrades
@@ -858,8 +989,15 @@ NTP, or raise the limit if you accept the risk.
 | `frame too large` | output > 1 MiB or file download > 900 KiB | use `download` chunks / redirect to a file and pull it in pieces |
 | everything works, then stops after a day | keys rotated but a peer missed the `REKEY` frame | should not happen: `REKEY` always precedes `TASK_BATCH` (PROTOCOL.md §6). Look for `session rekeyed` in the beacon log; if it is missing, capture both sides and file a bug |
 | link drops with "nonce mismatch" right as an operator connects or a task completes | two writers sealed and wrote out of order | nothing to fix in the field: a correctly written pair keeps `seal+write` in one critical section (SEND-SERIAL). If it recurs, it is a bug in the writer added last |
+| the operator link dies with a TLS error (a bad record MAC) or answers half a request | two threads were inside the same TLS session at once | nothing to fix in the field: the transport keeps one thread inside the session at a time (TLS-ONE-SESSION, PROTOCOL.md §4). If it recurs, it is a bug in the writer added last |
 | `pivot.open` says the agent never answered | the agent is asleep, or the callback was refused | the agent dials back on its own; check the agent listener is reachable from the agent host and watch the server log for `tunnel callback` |
 | the SOCKS5 proxy refuses a CONNECT | the target is unreachable from the agent, not from the console | test the same target from the agent host; the proxy is only a relay |
+| the SOCKS5 proxy answers `0x02` | the target is on the deny list | the connection log says which rule matched; drop the rule from `pivot_deny` or pick another target |
+| the SOCKS5 proxy answers `0x01` | the agent could not open the stream | the agent is asleep or the session was lost; wait for the next cycle and try again |
+| the proxy asks for a password | the tunnel carries credentials | the pair belongs to the tunnel (`--user` / `--password`) or to the permanent proxy (`socks_user` / `socks_password`) |
+| a forward stops answering after the agent slept | the agent is not back yet | the listener stays bound: the first connection after the agent returns is served by the new session |
+| a name does not resolve through the proxy | the agent cannot resolve that name | the name is resolved by the agent by default; `--dns local` makes the server resolve it instead |
+| `pivot release` says the claim is unknown | the claim was already released, or the tunnel was closed | `umbra pivot claims` shows what is still claimed; the accounting of the released tunnels stays in the log |
 | the DNS tunnel gets no answer | the resolver does not know the tunnel domain, or the agent queries the wrong one | point the agent at the server resolver (`UMBRA_DNS_RESOLVER`) and the domain (`UMBRA_DNS_DOMAIN`), and check the server log for `dns tunnel listening` |
 | the WebSocket beacon refuses to connect | the route is wrong, or a proxy in front does not forward the upgrade | the upgrade happens on the beacon route (`/api/v1/beacon`); the proxy needs `proxy_set_header Upgrade $http_upgrade` |
 | the console says `TLS handshake with ... failed` | the CA does not match, or the name in the certificate does not match `--tls-server-name` | pass the right `--tls-ca`, and use the name the certificate carries |

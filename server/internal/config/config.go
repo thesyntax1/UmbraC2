@@ -88,6 +88,18 @@ type Server struct {
 	SocksListen string `json:"socks_listen"`
 	SocksAgent  string `json:"socks_agent"`
 
+	// SocksUser and SocksPassword are the credentials the SOCKS5 proxy
+	// asks for.  Without them the proxy is open to everybody who can
+	// reach its listener, which is fine on the loopback and not fine
+	// anywhere else.
+	SocksUser     string `json:"socks_user"`
+	SocksPassword string `json:"socks_password"`
+
+	// PivotDeny is the list of targets the proxy refuses.  Each entry is
+	// "host" or "host:port"; a host without a port refuses every port of
+	// it.
+	PivotDeny []string `json:"pivot_deny"`
+
 	// DashboardListen binds the operator's web dashboard, and
 	// DashboardReadOnly keeps it from queueing anything.  The dashboard
 	// accepts the operator tokens, so it is as protected as the console.

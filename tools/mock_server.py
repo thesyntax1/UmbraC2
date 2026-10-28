@@ -145,19 +145,39 @@ def new_id(prefix: str) -> str:
 # the agent dials back, announces the session id in the HELLO metadata and
 # then serves logical streams.
 # ---------------------------------------------------------------------------
-def socks5_connect(conn: socket.socket) -> Tuple[Optional[str], int]:
+def socks5_connect(conn: socket.socket, user: str = "", password: str = "") -> Tuple[Optional[str], int]:
     """Read a SOCKS5 CONNECT request.
 
     Returns ``(host, port)`` or ``(None, 0)`` when the client did not ask
-    for a plain TCP connection.  Only the no-authentication variant and the
-    CONNECT command are supported, exactly like the Go implementation.
+    for a plain TCP connection.  Only the CONNECT command is supported,
+    exactly like the Go implementation; the username and password method
+    (RFC 1929) is used when the operator configured credentials.
     """
     try:
         head = conn.recv(2)
         if len(head) < 2:
             return None, 0
         conn.recv(head[1])  # the offered authentication methods
-        conn.sendall(b"\x05\x00")  # "no authentication required"
+        if user:
+            # The proxy asks for a user and a password.
+            conn.sendall(b"\x05\x02")
+            version = conn.recv(1)
+            if not version or version[0] != 0x01:
+                return None, 0
+            name_len = conn.recv(1)
+            if not name_len:
+                return None, 0
+            name = conn.recv(name_len[0])
+            pass_len = conn.recv(1)
+            if not pass_len:
+                return None, 0
+            secret = conn.recv(pass_len[0])
+            if name.decode("utf-8", "replace") != user or secret.decode("utf-8", "replace") != password:
+                conn.sendall(b"\x01\x01")
+                return None, 0
+            conn.sendall(b"\x01\x00")
+        else:
+            conn.sendall(b"\x05\x00")  # "no authentication required"
         request = conn.recv(4)
         if len(request) < 4 or request[1] != 0x01:
             conn.sendall(b"\x05\x07\x00\x01" + b"\x00" * 6)
@@ -176,10 +196,46 @@ def socks5_connect(conn: socket.socket) -> Tuple[Optional[str], int]:
         raw_port = conn.recv(2)
         if len(raw_port) < 2:
             return None, 0
-        conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
+        # The success answer is not sent here: the caller sends it when
+        # the target is really reachable, and refuses it when the target
+        # is on the deny list.
         return host, int.from_bytes(raw_port, "big")
     except OSError:
         return None, 0
+
+
+def _is_ip(host: str) -> bool:
+    """Whether a target is an address and not a name."""
+    try:
+        socket.inet_aton(host)
+        return True
+    except OSError:
+        return False
+
+
+def _denied(rules: List[str], host: str, port: int) -> bool:
+    """Whether the proxy refuses a target.
+
+    A rule is "host" or "host:port"; a rule without a port refuses every
+    port of the host.
+    """
+    if not host:
+        return False
+    name = host.lower()
+    for rule in rules:
+        rule = str(rule).strip().lower()
+        if not rule:
+            continue
+        want, _, want_port = rule.partition(":")
+        if want_port:
+            try:
+                if int(want_port) != port:
+                    continue
+            except ValueError:
+                pass
+        if want == name:
+            return True
+    return False
 
 
 class TunnelStream:
@@ -326,6 +382,7 @@ class MockServer:
         tls_client_ca: str = "",
         websocket: bool = False,
         alerts: Optional[List[Dict[str, Any]]] = None,
+        pivot_deny: Optional[List[str]] = None,
     ) -> None:
         self.agent_psk = agent_psk
         self.operators = dict(operators)
@@ -381,6 +438,14 @@ class MockServer:
         self.pending_tunnels: Dict[str, Tuple[str, threading.Event]] = {}
         # Open pivots: tunnel id -> description.
         self.pivots: Dict[str, Dict[str, Any]] = {}
+        # The claims of the engagement, the clients of the proxy and the
+        # log of the connections: the same three things the Go server keeps.
+        self.pivot_claims: Dict[str, List[str]] = {}
+        self.pivot_clients: Dict[str, Dict[str, Any]] = {}
+        self.pivot_connections: List[Dict[str, Any]] = []
+        # The targets the proxy refuses, the same list the Go server reads
+        # from "pivot_deny" in the configuration.
+        self.pivot_deny: List[str] = list(pivot_deny or [])
         # The layer-3 tunnel: agent id -> peer record.
         self.vpn_peers: Dict[str, Dict[str, Any]] = {}
         # The extension store.  The test double keeps the blobs in memory; the
@@ -540,6 +605,9 @@ class MockServer:
                 return
             if self._tls_ctx is not None:
                 try:
+                    # The handshake gets its own budget: a peer that opens a
+                    # connection and says nothing must not hold the listener.
+                    conn.settimeout(15)
                     conn = self._tls_ctx.wrap_socket(conn, server_side=True)
                 except (ssl.SSLError, OSError):
                     # A peer that fails the TLS handshake is not a session.
@@ -581,22 +649,64 @@ class MockServer:
                 stream = netio.Stream(conn, timeout=30)
         else:
             stream = netio.Stream(conn, timeout=30)
+        # The operator is subscribed before the handshake answer goes out:
+        # the console believes it is connected as soon as the HELLO_ACK
+        # arrives, so an event emitted in the same breath has to find a
+        # subscriber already.
+        operator_box: Dict[str, Any] = {}
+
+        def on_peer(peer_id: str, role: int, meta: dict) -> None:
+            if peer_id not in self.operators:
+                return
+            inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=512)
+            with self._lock:
+                self.subscribers.append((peer_id, inbox))
+                self.op_sessions[peer_id] = {
+                    "name": peer_id,
+                    "role": self.roles.get(peer_id, "operator"),
+                    "peer": str(addr),
+                    "transport": "tcp/operator",
+                    "since": _now(),
+                    "focus": "",
+                    "focus_at": "",
+                    "last_seen": time.time(),
+                }
+            operator_box["inbox"] = inbox
+            operator_box["peer"] = peer_id
+            self.emit("operator.connected", peer_id)
+
         try:
             result = handshake.server_handshake(
                 stream, keyring=self._keyring(),
-                cfg={"sleep": self.sleep, "jitter": self.jitter, "obf": True}
+                cfg={"sleep": self.sleep, "jitter": self.jitter, "obf": True},
+                on_peer=on_peer,
             )
         except (handshake.HandshakeError, netio.StreamError, OSError):
+            self._drop_operator(operator_box)
             stream.close()
             return
 
         if result.peer_id in self.operators:
-            self._operator_loop(stream, result, str(addr))
+            self._operator_loop(stream, result, str(addr), operator_box.get("inbox"))
         elif result.meta.get("tunnel"):
             # A callback session: the agent dialled back to serve a pivot.
             self._tunnel_loop(stream, result)
         else:
             self._agent_loop(stream, result, str(addr))
+
+    def _drop_operator(self, operator_box: Dict[str, Any]) -> None:
+        """Take an operator off the subscriber list again.
+
+        Used when the handshake fails after the operator was subscribed: the
+        subscription lives in the box, the session in the hub.
+        """
+        inbox = operator_box.get("inbox")
+        if inbox is None:
+            return
+        with self._lock:
+            self.subscribers = [(n, q) for (n, q) in self.subscribers if q is not inbox]
+            self.op_sessions.pop(str(operator_box.get("peer", "")), None)
+        operator_box["inbox"] = None
 
     # -- pivoting -------------------------------------------------------
     def _tunnel_loop(self, stream: netio.Stream, result: handshake.HandshakeResult) -> None:
@@ -619,7 +729,7 @@ class MockServer:
         """Return the callback session of an agent, asking for one if needed."""
         with self._lock:
             ts = self.tunnel_sessions.get(agent_id)
-        if ts is not None and ts.ready.is_set():
+        if ts is not None and ts.ready.is_set() and not ts.done.is_set():
             return ts
         sid = new_id("sid")
         event = threading.Event()
@@ -651,21 +761,31 @@ class MockServer:
     def _pivot_accept(
         self,
         listener: socket.socket,
-        ts: TunnelSession,
         mode: str,
         host: str,
         port: int,
         tunnel_id: str,
         agent_id: str,
+        user: str = "",
+        password: str = "",
+        dns: str = "remote",
+        deny: Optional[List[str]] = None,
     ) -> None:
         while not self._stop.is_set():
             try:
                 conn, _ = listener.accept()
             except OSError:
                 return
+            # The session is taken per connection: when the agent
+            # re-connects, the next connection gets the new session.
+            try:
+                ts = self._tunnel_session(agent_id)
+            except RuntimeError:
+                return
             t = threading.Thread(
                 target=self._pivot_handle,
-                args=(conn, ts, mode, host, port, tunnel_id, agent_id),
+                args=(conn, ts, mode, host, port, tunnel_id, agent_id,
+                      user, password, dns, deny),
                 daemon=True,
             )
             t.start()
@@ -679,20 +799,67 @@ class MockServer:
         port: int,
         tunnel_id: str,
         agent_id: str,
+        user: str = "",
+        password: str = "",
+        dns: str = "remote",
+        deny: Optional[List[str]] = None,
     ) -> None:
         """Turn one local connection into a stream through the agent."""
+        client = ""
+        try:
+            client = conn.getpeername()[0] if conn else ""
+        except OSError:
+            client = ""
+        target_host, target_port = host, port
+        counter = {"up": 0, "down": 0}
+        state = "closed"
         try:
             if mode == "forward":
                 target_host, target_port = host, port
             else:
-                target_host, target_port = socks5_connect(conn)
+                target_host, target_port = socks5_connect(conn, user, password)
                 if not target_host:
                     return
-            st = ts.open_stream(target_host, target_port)
+            if dns == "local" and not _is_ip(target_host):
+                try:
+                    target_host = socket.gethostbyname(target_host)
+                except OSError:
+                    pass
+            if _denied(deny or [], target_host, target_port):
+                self._pivot_note(client, target_host, target_port, 0, 0, "denied")
+                if mode == "socks":
+                    try:
+                        # 0x02 is "not allowed by ruleset".
+                        conn.sendall(b"\x05\x02\x00\x01" + b"\x00" * 6)
+                    except OSError:
+                        pass
+                return
+            try:
+                st = ts.open_stream(target_host, target_port)
+            except RuntimeError:
+                self._pivot_note(client, target_host, target_port, 0, 0, "refused")
+                if mode == "socks":
+                    try:
+                        conn.sendall(b"\x05\x01\x00\x01" + b"\x00" * 6)
+                    except OSError:
+                        pass
+                return
             with self._lock:
                 info = self.pivots.get(tunnel_id)
                 if info is not None:
                     info["streams"] = info.get("streams", 0) + 1
+                    info["last_active"] = _now()
+
+            if mode == "socks":
+                # The target is reachable: the client may talk to it.
+                try:
+                    conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
+                except OSError:
+                    return
+
+            # The local side closed: the stream is over even when the
+            # agent is slow to say so.
+            local_closed = threading.Event()
 
             def pump_in() -> None:
                 try:
@@ -700,10 +867,12 @@ class MockServer:
                         data = conn.recv(32768)
                         if not data:
                             break
+                        counter["up"] += len(data)
                         ts.send(wire.MsgType.TUNNEL_DATA, {"stream": st.id, "data": data})
                 except OSError:
                     pass
                 finally:
+                    local_closed.set()
                     try:
                         ts.send(
                             wire.MsgType.TUNNEL_CLOSE,
@@ -715,7 +884,7 @@ class MockServer:
             t = threading.Thread(target=pump_in, daemon=True)
             t.start()
             while True:
-                if st.closed.is_set():
+                if st.closed.is_set() or local_closed.is_set():
                     break
                 try:
                     chunk = st.data.get(timeout=0.5)
@@ -723,14 +892,103 @@ class MockServer:
                     continue
                 if not chunk:
                     break
+                counter["down"] += len(chunk)
                 conn.sendall(chunk)
+            state = "closed"
         except Exception as exc:
+            state = "refused"
             self.emit("pivot.error", agent_id, data={"tunnel": tunnel_id, "err": str(exc)})
         finally:
+            # The connection is booked whatever happened: a client that
+            # vanished is still a client of the proxy.
+            self._pivot_note(client, target_host, target_port,
+                             counter["up"], counter["down"], state)
             try:
                 conn.close()
             except OSError:
                 pass
+
+    def _pivot_topology(self) -> Dict[str, Any]:
+        """The picture of the reach.
+
+        The same shape the Go server sends: the agents, the pivots between
+        them, the clients of the proxy and the log of the connections.
+        """
+        with self._lock:
+            agents = [dict(a) for a in self.agents.values()]
+            edges = []
+            per_agent: Dict[str, int] = {}
+            for info in self.pivots.values():
+                per_agent[info.get("agent_id", "")] = per_agent.get(info.get("agent_id", ""), 0) + 1
+                edges.append({
+                    "tunnel": info.get("stream", ""),
+                    "agent_id": info.get("agent_id", ""),
+                    "through": info.get("through", ""),
+                    "mode": info.get("mode", ""),
+                    "listen": info.get("listen", ""),
+                    "host": info.get("host", ""),
+                    "port": info.get("port", 0),
+                    "streams": info.get("streams", 0),
+                    "bytes_up": info.get("bytes_up", 0),
+                    "bytes_down": info.get("bytes_down", 0),
+                    "last_active": info.get("last_active", 0),
+                    "state": info.get("state", ""),
+                    "claim": info.get("claim", ""),
+                    "dns": info.get("dns", ""),
+                })
+            nodes = []
+            for agent in agents:
+                count = per_agent.get(agent.get("id", ""), 0)
+                nodes.append({
+                    "agent_id": agent.get("id", ""),
+                    "role": "pivot" if count else "host",
+                    "transport": agent.get("transport", ""),
+                    "online": agent.get("state", "") == "online",
+                    "tunnels": count,
+                })
+            clients = [dict(c) for c in self.pivot_clients.values()]
+            connections = [dict(c) for c in self.pivot_connections]
+            claims = {name: list(ids) for name, ids in self.pivot_claims.items()}
+            sessions = len(self.tunnel_sessions)
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "clients": clients,
+            "connections": connections,
+            "claims": claims,
+            "sessions": sessions,
+            "tunnels": len(edges),
+        }
+
+    def _pivot_note(self, client: str, target: str, port: int,
+                    up: int, down: int, state: str) -> None:
+        """Book one connection of the proxy.
+
+        The log keeps the last 256 connections and the accounting keeps
+        what every client of the proxy has done.
+        """
+        now = _now()
+        with self._lock:
+            self.pivot_connections.append({
+                "client": client,
+                "target": target,
+                "port": port,
+                "bytes_up": up,
+                "bytes_down": down,
+                "at": now,
+                "state": state,
+            })
+            if len(self.pivot_connections) > 256:
+                self.pivot_connections = self.pivot_connections[-256:]
+            entry = self.pivot_clients.get(client)
+            if entry is None:
+                entry = {"address": client, "connections": 0, "bytes_up": 0,
+                         "bytes_down": 0, "first": now, "last": now}
+                self.pivot_clients[client] = entry
+            entry["connections"] += 1
+            entry["bytes_up"] += up
+            entry["bytes_down"] += down
+            entry["last"] = now
 
     # -- agents ----------------------------------------------------------
     def _schedule_loop(self) -> None:
@@ -1224,22 +1482,31 @@ class MockServer:
         self._advance_chain(task_id, raw)
 
     # -- operators -------------------------------------------------------
-    def _operator_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
+    def _operator_loop(
+        self,
+        stream: netio.Stream,
+        result: handshake.HandshakeResult,
+        addr: str,
+        inbox: Optional["queue.Queue[Dict[str, Any]]"] = None,
+    ) -> None:
         sess = result.session
-        inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=512)
-        with self._lock:
-            self.subscribers.append((result.peer_id, inbox))
-            self.op_sessions[result.peer_id] = {
-                "name": result.peer_id,
-                "role": self.roles.get(result.peer_id, "operator"),
-                "peer": addr,
-                "transport": "tcp/operator",
-                "since": _now(),
-                "focus": "",
-                "focus_at": "",
-                "last_seen": time.time(),
-            }
-        self.emit("operator.connected", result.peer_id)
+        if inbox is None:
+            # A caller that did not subscribe the peer first (the tests that
+            # drive the loop directly) still gets a working subscription.
+            inbox = queue.Queue(maxsize=512)
+            with self._lock:
+                self.subscribers.append((result.peer_id, inbox))
+                self.op_sessions[result.peer_id] = {
+                    "name": result.peer_id,
+                    "role": self.roles.get(result.peer_id, "operator"),
+                    "peer": addr,
+                    "transport": "tcp/operator",
+                    "since": _now(),
+                    "focus": "",
+                    "focus_at": "",
+                    "last_seen": time.time(),
+                }
+            self.emit("operator.connected", result.peer_id)
 
         # Both the event pusher and the request handler write to this
         # connection, so they must share one gate: see netio.SendGate.
@@ -1329,6 +1596,8 @@ class MockServer:
         "pivot.list": "viewer",
         "pivot.open": "operator",
         "pivot.close": "operator",
+        "pivot.claim": "viewer",
+        "pivot.release": "operator",
         "vpn.status": "viewer",
         "vpn.peers": "viewer",
         "vpn.allocate": "operator",
@@ -2079,7 +2348,10 @@ class MockServer:
             with self._lock:
                 tunnels = [dict(t) for t in self.pivots.values()]
                 sessions = len(self.tunnel_sessions)
-            return ok({"tunnels": tunnels, "sessions": sessions})
+            # The topology takes the lock itself: it is a picture of
+            # everything the manager knows.
+            topology = self._pivot_topology()
+            return ok({"tunnels": tunnels, "sessions": sessions, "topology": topology})
 
         if cmd == "pivot.open":
             agent_id = str(args.get("id", ""))
@@ -2087,15 +2359,25 @@ class MockServer:
             host = str(args.get("host", ""))
             port = int(args.get("port", 0) or 0)
             listen = str(args.get("listen", "")) or "127.0.0.1:0"
+            dns = str(args.get("dns", "remote")) or "remote"
+            claim = str(args.get("claim", "") or "")
+            through = str(args.get("through", "") or "")
+            user = str(args.get("user", "") or "")
+            password = str(args.get("password", "") or "")
+            loopback = bool(args.get("loopback", False))
             with self._lock:
                 known = agent_id in self.agents
             if not known:
                 return fail(f"unknown agent {agent_id!r}")
-            try:
-                ts = self._tunnel_session(agent_id)
-            except RuntimeError as exc:
-                return fail(str(exc))
+            if dns not in ("remote", "local"):
+                return fail(f"pivot.open: unknown dns mode {dns!r}")
+            # The listener is bound before the agent is asked for a
+            # session: the session is taken when the first connection
+            # arrives, so a forward outlives the session it was opened
+            # with.
             lhost, _, lport = listen.rpartition(":")
+            if loopback:
+                lhost = "127.0.0.1"
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -2116,18 +2398,27 @@ class MockServer:
                     "host": host,
                     "port": port,
                     "opened": _now(),
+                    "last_active": _now(),
                     "streams": 0,
                     "bytes_up": 0,
                     "bytes_down": 0,
                     "state": "open",
+                    "claim": claim,
+                    "through": through,
+                    "dns": dns,
                 }
+                if claim:
+                    self.pivot_claims.setdefault(claim, []).append(tunnel_id)
             t = threading.Thread(
                 target=self._pivot_accept,
-                args=(listener, ts, mode, host, port, tunnel_id, agent_id),
+                args=(listener, mode, host, port, tunnel_id, agent_id,
+                      user, password, dns, list(self.pivot_deny)),
                 daemon=True,
             )
             t.start()
-            self.emit("pivot.opened", agent_id, data={"tunnel": tunnel_id, "listen": address})
+            self.emit("pivot.opened", agent_id, data={"tunnel": tunnel_id,
+                                                       "listen": address,
+                                                       "claim": claim})
             return ok({
                 "stream": tunnel_id,
                 "agent_id": agent_id,
@@ -2135,17 +2426,51 @@ class MockServer:
                 "listen": address,
                 "host": host,
                 "port": port,
+                "claim": claim,
+                "through": through,
+                "dns": dns,
             })
 
         if cmd == "pivot.close":
             tunnel_id = str(args.get("stream", ""))
             with self._lock:
                 info = self.pivots.pop(tunnel_id, None)
+                if info is not None:
+                    claim = str(info.get("claim", "") or "")
+                    if claim and tunnel_id in self.pivot_claims.get(claim, []):
+                        self.pivot_claims[claim] = [
+                            t for t in self.pivot_claims[claim] if t != tunnel_id
+                        ]
+                        if not self.pivot_claims[claim]:
+                            self.pivot_claims.pop(claim, None)
             if info is None:
                 return fail(f"unknown tunnel {tunnel_id!r}")
             info["state"] = "closed"
             self.emit("pivot.closed", str(info.get("agent_id", "")), data={"tunnel": tunnel_id})
             return ok({"stream": tunnel_id, "closed": True})
+
+        if cmd == "pivot.claim":
+            with self._lock:
+                claims = [
+                    {"claim": name, "tunnels": list(ids)}
+                    for name, ids in sorted(self.pivot_claims.items())
+                ]
+            return ok({"claims": claims, "count": len(claims)})
+
+        if cmd == "pivot.release":
+            claim = str(args.get("claim", "") or "").strip()
+            if not claim:
+                return fail("pivot.release: the release needs the name of a claim")
+            with self._lock:
+                ids = list(self.pivot_claims.pop(claim, []))
+                for tunnel_id in ids:
+                    info = self.pivots.pop(tunnel_id, None)
+                    if info is not None:
+                        info["state"] = "closed"
+            for tunnel_id in ids:
+                self.emit("pivot.closed", "", data={"tunnel": tunnel_id,
+                                                    "claim": claim})
+            return ok({"claim": claim, "closed": ids, "count": len(ids)})
 
         # ---- layer-3 tunnel ----------------------------------------------
         if cmd == "vpn.status":
@@ -3367,6 +3692,12 @@ class FakeAgent(threading.Thread):
                     stream_id = str(body.get("stream", ""))
                     target = targets.pop(stream_id, None)
                     if target is not None:
+                        try:
+                            # A close does not wake the thread that reads
+                            # the socket: the shutdown does.
+                            target.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
                         try:
                             target.close()
                         except OSError:
