@@ -30,7 +30,27 @@ jobs:
           set +e
           go test ./... -count=1 > /tmp/go.log 2>&1
           echo "exit: $?"
-          tail -120 /tmp/go.log | while IFS= read -r line; do echo "::error::$line"; done
+          grep -E "^(---|FAIL|panic|\s+.*_test\.go:)" /tmp/go.log | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+          tail -60 /tmp/go.log | while IFS= read -r line; do echo "::error::$line"; done
+          exit 0
+
+  go-implant:
+    name: go implant diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: test
+        working-directory: implant/go
+        run: |
+          set +e
+          go test ./... -count=1 > /tmp/go-implant.log 2>&1
+          echo "exit: $?"
+          grep -E "^(---|FAIL|panic|\s+.*_test\.go:)" /tmp/go-implant.log | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+          tail -60 /tmp/go-implant.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
   rust-macos:
@@ -50,9 +70,11 @@ jobs:
             log="/tmp/$target.log"
             cargo check --all-targets --target "$target" > "$log" 2>&1
             code=$?
-            if [ $code -ne 0 ]; then
-              grep -E "^(error|warning)" "$log" | head -30 | while IFS= read -r line; do echo "::error::$line"; done
-              tail -40 "$log" | while IFS= read -r line; do echo "::error::$line"; done
+            if [ "$code" -ne 0 ]; then
+              echo "::error::the code of $target does not compile"
+              # The output from the first error onwards: the warnings that
+              # come before it are noise.
+              awk '/^error/{found=1} found' "$log" | head -50 | while IFS= read -r line; do echo "::error::$line"; done
             fi
           done
           exit 0
@@ -70,7 +92,9 @@ jobs:
           set +e
           cargo test --all-targets > /tmp/rust.log 2>&1
           echo "exit: $?"
-          tail -120 /tmp/rust.log | while IFS= read -r line; do echo "::error::$line"; done
+          awk '/^error/{found=1} found' /tmp/rust.log | head -50 | while IFS= read -r line; do echo "::error::$line"; done
+          grep -E "^(test result|failures:|---- .* stdout)" /tmp/rust.log | head -30 | while IFS= read -r line; do echo "::error::$line"; done
+          tail -40 /tmp/rust.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
   android:
