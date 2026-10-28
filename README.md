@@ -47,6 +47,8 @@ Added on top of that core:
 | Covert channels | WebSocket and DNS transports, mutual TLS for the console, traffic padding, domain fronting through a configurable `Host` header | [docs/TRANSPORTS.md](docs/TRANSPORTS.md) |
 | The route of an agent | The operator says which transport an agent speaks, in which order it may fall back, and which front domain it hides behind; the beacon follows the route | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-route-of-an-agent) |
 | Reconnaissance | Host facts, BloodHound-style domain edges, and awareness of debuggers and sandboxes | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#reconnaissance) |
+| Reconnaissance profiles | One task runs a named bundle of checks — the users, the shares, the listeners, the WMI subscriptions, the browser data, the cloud credentials, the container escape surface — and answers with the findings, scored | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-profiles) |
+| The map of the domain | The paths from the identity the implant runs as to the domain controller, not the raw edges | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#the-map-of-the-domain) |
 | Operator state | The console keeps its own SQLite notebook: the tasks it ran, their results and the notes it left | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-operators-notebook) |
 | Traffic hygiene | Sleep obfuscation on top of the jitter, and module images wiped from memory once they have run | [docs/SECURITY.md](docs/SECURITY.md) |
 | Inventory and group work | The agent list is filtered by state, transport, OS, architecture, tag and user, hosts carry operator-owned tags, and one task or one policy reaches a whole group | [docs/OPERATIONS.md](docs/OPERATIONS.md#3a-working-on-groups-of-agents) |

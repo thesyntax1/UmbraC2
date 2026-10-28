@@ -414,11 +414,103 @@ edges     :
   `nltest /dclist`.
 
 The Windows implementation talks to the domain through the tools every
-Windows installation carries (`whoami`, `net`, `nltest`). Those tools speak
+Windows installation carries (`whoami`, `net`, `nltest`). These tools speak
 the same protocols as the API and use the credentials of the logged on user,
 so the implant inherits exactly the access the operator already has — and
 nothing more. On a unix host the module reports the Kerberos realm, the
 resolver search domain, the groups of the process and the logged on users.
+
+### The profiles
+
+The report above answers "where am I". The questions that come next are
+many and small: who are the users, which groups do they belong to, what
+shares are there, what listens, what runs every night, what software is
+installed, what did the browser keep, what cloud credentials are lying
+around, is this a container and can I get out of it. One question, one
+round trip, ten minutes.
+
+A **profile** is a named bundle of those checks. One task runs the bundle
+and answers with one structured report:
+
+```
+$ umbra recon agent-1 --profile windows
+profile : windows
+checks  : 13 run, 1 skipped
+findings: 19
+
+[high  ] user         Administrator
+         the built-in account of the host
+         at net user
+[medium] share        \\corp\finance
+         disk share on C:\finance
+         at net share
+[high  ] wmi          __EventFilter
+         a WMI event filter: SELECT * FROM __InstanceModificationEvent
+         at root\subscription
+```
+
+| profile | the checks |
+|---|---|
+| `host` | users, groups, shares, listeners, scheduled tasks, services, software, browser data, ssh keys, shell history, recent files |
+| `windows` | the host profile, the WMI subscriptions and the drivers |
+| `linux` | the host profile, the kernel modules and the eBPF programs |
+| `cloud` | the cloud CLI configuration |
+| `container` | the container escape surface |
+| `all` | everything |
+
+The operator may name the checks one by one instead — the list wins over
+the profile:
+
+```
+$ umbra recon agent-1 --checks users,cloud,container
+```
+
+Every finding is a record with a kind, a name, a detail, a severity
+(`info`, `low`, `medium`, `high`) and the place it was found. The findings
+travel with the answer, so the server keeps them and the operator can
+filter them.
+
+Two rules hold everywhere in the profiles: **a check never reports a
+secret** — the cloud configuration is reported by name and by path, never by
+content — and **a check never writes to the host**. A profile reads; it
+never leaves a mark.
+
+### The map of the domain
+
+The edges above are the raw material. What an operator asks for is the
+*path*: how do I get from who I am to the domain controller.
+
+```
+$ umbra domain-map agent-1
+domain    : corp.example
+identity  : CORP\admin@corp.example
+controller: dc01.corp.example
+paths     : 1
+  path 1: CORP\admin@corp.example -[MemberOf]-> CORP\Domain Admins@corp.example -[AdminTo]-> dc01.corp.example
+```
+
+The search walks the edges in their own direction, so every path is a chain
+the graph really allows, and it comes back breadth first: the shortest path
+first. The target may be named (`--target web01.corp.example`); without a
+target the goal is the domain controller.
+
+### What could be tried next
+
+The framework collects the facts and scores them; the decision stays with
+the operator. `recon.suggest` takes the findings (the ones of an earlier
+recon, or the ones it collects itself) and answers with the suggestions:
+
+```
+$ umbra suggest agent-1 --profile cloud
+suggestions: 1
+
+  [ 80] a cloud credential is on the machine
+        the credential opens the cloud account of the user
+        try: download read /root/.aws/credentials
+```
+
+Every suggestion carries the title, the reason, a score between 0 and 100,
+and the task that would try it — so the operator can queue it as it is.
 
 ---
 

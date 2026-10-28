@@ -208,7 +208,8 @@ main → Config (compile-time defaults + env/flags) → Beacon::run
 | `post` | reflective loading, injection, token work and privilege escalation |
 | `creds` | the credential collection: one record per piece of material, with a kind, a source and a confidence |
 | `remote` | the remote execution through the pivots: wmi, smb, winrm, dcom, ldap and ssh |
-| `domain` | active directory reconnaissance, BloodHound-style edges |
+| `domain` | active directory reconnaissance, BloodHound-style edges, and the paths from the identity of the implant to a target |
+| `profile` | the reconnaissance profiles: the named bundles of checks, the findings and the scored suggestions |
 | `evade` | the posture engine: the environment, the schedule and the kill switch |
 | `hygiene` | the memory and the process hygiene |
 | `persist` | the persistence manager and its technique catalogue |

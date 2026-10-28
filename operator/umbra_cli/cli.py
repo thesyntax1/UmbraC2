@@ -1205,6 +1205,38 @@ class Console:
                 task_id = self.client.submit(agent, "inject", task_args)
                 self.note_task(task_id, agent, "inject:migrate", task_args)
                 print(f"queued {task_id} for {agent}")
+            elif cmd in ("recon", "domain-map", "suggest"):
+                if len(rest) < 1:
+                    print(f"usage: {cmd} <agent> [--profile NAME] [--target NAME]")
+                    return True
+                parts = {}
+                for token in rest[1:]:
+                    if token.startswith("--") and "=" in token:
+                        key, _, value = token[2:].partition("=")
+                        parts[key.replace("-", "_")] = value
+                if cmd == "recon":
+                    task_args = {}
+                    if parts.get("profile"):
+                        task_args["profile"] = parts["profile"]
+                    checks = [c.strip() for c in parts.get("checks", "").split(",")
+                              if c.strip()]
+                    if checks:
+                        task_args["checks"] = checks
+                    kind = "recon"
+                elif cmd == "domain-map":
+                    task_args = {}
+                    if parts.get("target"):
+                        task_args["target"] = parts["target"]
+                    kind = "domain.map"
+                else:
+                    task_args = {}
+                    if parts.get("profile"):
+                        task_args["profile"] = parts["profile"]
+                    kind = "recon.suggest"
+                agent = self._resolve(rest[1])
+                task_id = self.client.submit(agent, kind, task_args)
+                self.note_task(task_id, agent, kind, task_args)
+                print(f"queued {task_id} for {agent}")
             elif cmd == "stager":
                 parts = dict()
                 for token in rest:
@@ -1349,6 +1381,9 @@ def print_help() -> None:
   alias [list|run]          saved commands
   team-sync                 one snapshot of the team
   migrate <agent>           move the work of an agent into another process
+  recon <agent>             run a reconnaissance profile on an agent
+  domain-map <agent>        the paths from the identity of an agent to a target
+  suggest <agent>           what could be tried next, given the findings
   stager [options]          render a stager script
   db [action] [value]       the local notebook (stats|tasks|results|notes|search|note)
   raw <cmd> [json]          send a raw RPC
@@ -1854,6 +1889,32 @@ def build_parser() -> argparse.ArgumentParser:
                          help="task arguments as JSON (the payload lives here)")
     migrate.add_argument("--wait", action="store_true")
     migrate.add_argument("--timeout", type=float, default=120.0)
+
+    # -- reconnaissance ----------------------------------------------------
+    recon = sub.add_parser("recon", help="run a reconnaissance profile on an agent")
+    recon.add_argument("agent")
+    recon.add_argument("--profile", default="host",
+                       help="host, windows, linux, cloud, container or all")
+    recon.add_argument("--checks", default="",
+                       help="the checks to run, comma separated (wins over the profile)")
+    recon.add_argument("--wait", action="store_true")
+    recon.add_argument("--timeout", type=float, default=120.0)
+
+    domain_map = sub.add_parser("domain-map",
+                                help="the paths from the identity of an agent to a target")
+    domain_map.add_argument("agent")
+    domain_map.add_argument("--target", default="",
+                            help="the node of the graph to reach (the controller by default)")
+    domain_map.add_argument("--wait", action="store_true")
+    domain_map.add_argument("--timeout", type=float, default=120.0)
+
+    suggest = sub.add_parser("suggest",
+                             help="what could be tried next, given the findings")
+    suggest.add_argument("agent")
+    suggest.add_argument("--profile", default="host",
+                         help="the profile the findings come from")
+    suggest.add_argument("--wait", action="store_true")
+    suggest.add_argument("--timeout", type=float, default=120.0)
 
     # -- stagers ----------------------------------------------------------
     stager = sub.add_parser("stager", help="render a stager script")
@@ -3203,6 +3264,54 @@ def main(argv: Optional[List[str]] = None) -> int:
             console.note_task(task_id, args.agent, "inject:migrate", task_args)
             if args.json and not args.wait:
                 emit({"task_id": task_id, "agent": args.agent, "kind": "inject"})
+            else:
+                print(f"queued {task_id}")
+            if args.wait:
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
+                emit(result) if args.json else print_task_result(result)
+        elif args.cmd == "recon":
+            task_args = {}
+            if args.profile:
+                task_args["profile"] = args.profile
+            checks = [c.strip() for c in (args.checks or "").split(",") if c.strip()]
+            if checks:
+                task_args["checks"] = checks
+            task_id = client.submit(args.agent, "recon", task_args)
+            console.note_task(task_id, args.agent, "recon", task_args)
+            if args.json and not args.wait:
+                emit({"task_id": task_id, "agent": args.agent, "kind": "recon",
+                      "args": task_args})
+            else:
+                print(f"queued {task_id}")
+            if args.wait:
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
+                emit(result) if args.json else print_task_result(result)
+        elif args.cmd == "domain-map":
+            task_args = {}
+            if args.target:
+                task_args["target"] = args.target
+            task_id = client.submit(args.agent, "domain.map", task_args)
+            console.note_task(task_id, args.agent, "domain.map", task_args)
+            if args.json and not args.wait:
+                emit({"task_id": task_id, "agent": args.agent, "kind": "domain.map",
+                      "args": task_args})
+            else:
+                print(f"queued {task_id}")
+            if args.wait:
+                result = client.wait_for_result(task_id, timeout=args.timeout)
+                console.note_result(task_id, result)
+                emit(result) if args.json else print_task_result(result)
+        elif args.cmd == "suggest":
+            task_args = {}
+            if args.profile:
+                task_args["profile"] = args.profile
+            task_id = client.submit(args.agent, "recon.suggest", task_args)
+            console.note_task(task_id, args.agent, "recon.suggest", task_args)
+            if args.json and not args.wait:
+                emit({"task_id": task_id, "agent": args.agent, "kind": "recon.suggest",
+                      "args": task_args})
             else:
                 print(f"queued {task_id}")
             if args.wait:

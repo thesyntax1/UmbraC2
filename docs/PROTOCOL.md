@@ -359,6 +359,9 @@ Task kinds understood by the reference implants:
 | `shell` | `cmd`, optional `timeout` (s) | stdout+stderr, exit code |
 | `sysinfo` | — | text report |
 | `recon` | — | host report, environment findings (debugger, sandbox) and domain edges |
+| `recon` | optional `profile` (`host`/`windows`/`linux`/`cloud`/`container`/`all`), optional `checks` (list, wins over the profile) | the findings of the profile: one record per finding (kind, name, detail, severity, source) |
+| `recon.suggest` | optional `profile`, optional `findings` (list, the findings of an earlier recon) | what could be tried next: one record per suggestion (title, why, score, kind, args) |
+| `domain.map` | optional `target` (a node of the graph; the domain controller by default) | the paths from the identity of the implant to the target: one record per path |
 | `ls` | `path` | directory listing |
 | `download` | `path`, optional `offset`, `limit` | file bytes (≤ 900 KiB per task) + transfer metadata (§7.1) |
 | `upload` | `path`, `data` (bin), optional `offset`, `eof` | confirmation text + transfer metadata (§7.1) |
@@ -979,6 +982,68 @@ stream survives the move: the tasks the operator queued while the move was
 happening are delivered to the new process.  The answer of the migration
 travels before the implant leaves, and it carries `migrated`, `migrate_pid`,
 `migrate_spawned`, `migrate_threads` and `migrate_agent`.
+
+### 7.2k The reconnaissance profiles, the domain map and the suggestions
+
+`recon` answers in two ways.  Without arguments it is what it always was:
+the host facts, the environment findings and the domain edges in one
+report.  With a `profile` it runs a **profile** — a named bundle of checks —
+and answers with the findings of the bundle.
+
+| profile | the checks it runs |
+|---|---|
+| `host` | users, groups, shares, listeners, scheduled tasks, services, software, browser data, ssh keys, shell history, recent files |
+| `windows` | the host profile and the windows only checks (the WMI subscriptions) and the drivers |
+| `linux` | the host profile and the kernel modules and the eBPF programs |
+| `cloud` | the cloud CLI configuration |
+| `container` | the container escape surface |
+| `all` | every check there is |
+
+The operator may name the checks one by one instead; the list wins over
+the profile:
+
+```json
+{"kind": "recon", "args": {"checks": ["users", "cloud", "container"]}}
+```
+
+Every finding is a record:
+
+| field | meaning |
+|---|---|
+| `kind` | what the finding is about: `user`, `group`, `share`, `listener`, `scheduled`, `service`, `software`, `browser`, `sshkey`, `history`, `recent`, `wmi`, `module`, `ebpf`, `cloud`, `container` |
+| `name` | the name of the thing that was found |
+| `detail` | what is worth knowing about it |
+| `severity` | `info`, `low`, `medium` or `high` |
+| `source` | where it was found: a path, a command or a socket |
+
+Two rules hold everywhere: **a check never reports a secret** (the cloud
+configuration is reported by name and by path, never by content) and **a
+check never writes to the host**.
+
+The findings travel with the answer of the task, under `recon`, and the
+count travels under `recon_total`.  The operator may send them back to the
+implant with `recon.suggest`, and the implant scores them and says what
+could be tried next:
+
+```json
+{"kind": "recon.suggest", "args": {"findings": [{"kind": "cloud", "name": "/root/.aws/credentials", "severity": "high"}]}}
+```
+
+The answer of `recon.suggest` is a list of suggestions: a title, the reason
+(`why`), a score between 0 and 100, the task that would try it (`kind` and
+`args`) and the action in words.  The framework collects and scores; the
+decision stays with the operator.
+
+`domain.map` walks the graph of the domain and answers with the **paths**
+from the identity the implant runs as to a target.  The target is the name
+of a node of the graph; an empty target means the domain controller.  Every
+path is the chain of the edges in the order they have to be walked:
+
+```
+CORP\admin@corp.example -[MemberOf]-> CORP\Domain Admins@corp.example -[AdminTo]-> dc01.corp.example
+```
+
+The paths travel under `domain_map` and their number under `domain_paths`.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

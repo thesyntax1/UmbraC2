@@ -92,6 +92,20 @@ impl Value {
             .map(|b| b.to_vec())
             .unwrap_or_else(|| default.to_vec())
     }
+    /// The strings of an array under a key.
+    ///
+    /// A single string is read as a list of one, so an operator may write
+    /// `checks: "users"` as well as `checks: ["users"]`.
+    pub fn str_list(&self, key: &str) -> Vec<String> {
+        match self.get(key) {
+            Some(Value::Arr(items)) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            Some(Value::Str(single)) => vec![single.clone()],
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Build a canonical map value from key/value pairs.

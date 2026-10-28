@@ -52,6 +52,7 @@ pub mod netinfo;
 pub mod persist;
 pub mod post;
 pub mod proc;
+pub mod profile;
 pub mod registry;
 pub mod remote;
 pub mod s3;

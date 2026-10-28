@@ -366,6 +366,8 @@ object TaskRunner {
             "evade.shape" -> unsupported("evade.shape", "the traffic shaping needs the desktop implant")
             "hygiene.process" -> unsupported("hygiene.process", "the process hygiene needs the desktop implant")
             "scan" -> unsupported("scan", "network scanning needs the desktop implant")
+            "recon.suggest" -> unsupported("recon.suggest", "the suggestions need the desktop implant")
+            "domain.map" -> unsupported("domain.map", "the domain map needs the desktop implant")
             "wmi.exec" -> unsupported("wmi.exec", "the remote execution needs the desktop implant")
             "smb.exec" -> unsupported("smb.exec", "the remote execution needs the desktop implant")
             "winrm.exec" -> unsupported("winrm.exec", "the remote execution needs the desktop implant")

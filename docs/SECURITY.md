@@ -173,7 +173,27 @@ listed here with the guard that keeps them from becoming the weakest link.
 * The `offline` mode carries the beacon inside the stager. The script is
   then as secret as the beacon: treat it like the key.
 
-### 3.8 The operator's notebook (`umbra_cli/db.py`)
+### 3.8 The reconnaissance profiles (`implant/rust/src/profile.rs`)
+
+* A profile **reads**. No check writes to the host, no check installs
+  anything, and no check leaves a file behind. The worst a profile does is
+  run the tools the operating system already carries (`net user`,
+  `schtasks`, `sc query`, `wmic`, `driverquery`) with the rights of the
+  account the implant runs as.
+* A profile **never reports a secret**. The cloud configuration is reported
+  by name and by path (`/root/.aws/credentials`, `AZURE_CLIENT_ID`), never
+  by content: the value of a credential does not travel to the operator and
+  does not travel to the server either. The same holds for the browser
+  data and for the key files.
+* The findings are the most sensitive part of a report: they say what the
+  machine holds. They travel inside the result of the task, which is
+  encrypted per frame and kept in the server's state like every other
+  result. The operator's notebook keeps them too, so the notebook is a
+  secret when the profile is a deep one.
+* The suggestions name a path and a task. They do not run anything: the
+  decision, and the task, stay with the operator.
+
+### 3.9 The operator's notebook (`umbra_cli/db.py`)
 
 * The console writes the tasks it submitted, their results and its own notes
   into a local SQLite file (`~/.umbra/state.db` by default).

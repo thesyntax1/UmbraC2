@@ -37,6 +37,7 @@ from umbra_cli import crypto, handshake, netio, peer, session, upk, wire, ws  # 
 
 import batch_transports  # noqa: E402
 import module_runtime  # noqa: E402
+import recon_runtime  # noqa: E402
 import vpn_transport  # noqa: E402
 
 
@@ -71,6 +72,9 @@ AGENT_CAPS = [
     "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
     "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
     "ldap.query", "ssh.exec",
+    # The reconnaissance of the profiles, the map of the domain and the
+    # suggestions that follow from the findings.
+    "recon.suggest", "domain.map",
     # The loaders of the module ecosystem and the crypto the scripts and
     # the webassembly modules use.
     "wasm", "script", "shellcode", "crypto",
@@ -5089,13 +5093,62 @@ class FakeAgent(threading.Thread):
             # Mirrors the Rust beacon's recon report: the host facts, the
             # environment findings and the domain edges, in that order.
             report = "\n".join(f"{k}: {v}" for k, v in sorted(self.meta.items()))
-            lines = [
-                report,
-                "environment: nothing unusual",
-                "domain    : (not in a domain)",
-                "edges     : none",
-            ]
-            return 0, ("\n".join(lines) + "\n").encode(), "", {}
+            profile = str(args.get("profile", "") or "")
+            checks = args.get("checks")
+            if isinstance(checks, str):
+                checks = [checks]
+            elif not isinstance(checks, (list, tuple)):
+                checks = []
+            checks = [str(c) for c in checks]
+            if not profile and not checks:
+                lines = [
+                    report,
+                    "environment: nothing unusual",
+                    "domain    : (not in a domain)",
+                    "edges     : none",
+                ]
+                return 0, ("\n".join(lines) + "\n").encode(), "", {}
+            # With a profile the task runs the bundle and answers with the
+            # findings of the bundle.
+            try:
+                bundle = recon_runtime.run(profile, checks)
+            except ValueError as exc:
+                return 1, b"", str(exc), {}
+            return (0, recon_runtime.text(bundle).encode(), "",
+                    {"recon": bundle, "recon_total": len(bundle["findings"])})
+        if kind == "recon.suggest":
+            # The findings may travel with the task, or the implant collects
+            # them now.
+            findings = args.get("findings")
+            if not isinstance(findings, (list, tuple)):
+                findings = []
+            findings = [f for f in findings if isinstance(f, dict)]
+            if not findings:
+                try:
+                    bundle = recon_runtime.run(str(args.get("profile", "host")))
+                except ValueError as exc:
+                    return 1, b"", str(exc), {}
+                findings = bundle["findings"]
+            items = recon_runtime.suggest(findings)
+            return (0, recon_runtime.suggestions_text(items).encode(), "",
+                    {"suggestions": {"suggestions": items, "total": len(items)}})
+        if kind == "domain.map":
+            # The path from the identity of the agent to the target.
+            target = str(args.get("target", "") or "")
+            found = recon_runtime.domain_paths(
+                recon_runtime.DOMAIN_EDGES, recon_runtime.DOMAIN_ME,
+                target, recon_runtime.DOMAIN_CONTROLLER)
+            paths = []
+            for steps in found:
+                paths.append({
+                    "text": recon_runtime.path_text(steps),
+                    "steps": steps,
+                })
+            report = recon_runtime.domain_report(
+                recon_runtime.DOMAIN_EDGES, recon_runtime.DOMAIN_ME,
+                target, recon_runtime.DOMAIN_CONTROLLER)
+            return 0, report.encode(), "", {"domain_map": paths,
+                                            "domain_paths": len(paths)}
         if kind in ("exit", "kill"):
             # The exit takes the persistence entries with it: the last word
             # of the operator leaves the target the way it was found, and

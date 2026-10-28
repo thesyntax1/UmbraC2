@@ -6335,3 +6335,206 @@ def test_the_stagers_and_the_migration_are_in_every_implementation():
 
     protocol = read_text("docs/PROTOCOL.md")
     assert "| `inject` |" in protocol
+
+
+def test_a_recon_profile_answers_with_the_findings():
+    """One profile runs a bundle of checks and answers with the findings."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-recon-profile-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-profile")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The profile runs the bundle and answers with the findings.
+        task_id = client.submit("agent-profile", "recon", {"profile": "windows"})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        report = result["out"].decode()
+        assert "profile : windows" in report, report
+        assert "findings:" in report, report
+        assert "[high  ]" in report, report
+
+        # The findings travel with the answer, one record per finding.
+        findings = (result.get("meta") or {}).get("recon", {}).get("findings", [])
+        assert findings, result
+        kinds = {finding["kind"] for finding in findings}
+        assert "user" in kinds, kinds
+        assert "wmi" in kinds, kinds
+        for finding in findings:
+            assert finding["name"], finding
+            assert finding["severity"] in ("info", "low", "medium", "high"), finding
+        assert (result.get("meta") or {}).get("recon_total") == len(findings), result
+
+        # The checks may be named one by one, and the list wins over the
+        # profile.
+        task_id = client.submit("agent-profile", "recon",
+                                {"profile": "windows", "checks": ["cloud"]})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        only_cloud = (result.get("meta") or {}).get("recon", {}).get("findings", [])
+        assert only_cloud, result
+        assert {f["kind"] for f in only_cloud} == {"cloud"}, only_cloud
+
+        # A profile that is not known is refused.
+        task_id = client.submit("agent-profile", "recon", {"profile": "nonsense"})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "failed", result
+        assert result["code"] != 0, result
+        assert b"nonsense" in result["out"] + result.get("err", "").encode(), result
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_domain_map_finds_the_path_to_the_controller():
+    """The map answers with the path from the identity to the controller."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-domain-map-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-map")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task_id = client.submit("agent-map", "domain.map", {})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        report = result["out"].decode()
+        assert "identity  : CORP\\admin@corp.example" in report, report
+        assert "paths     :" in report, report
+
+        paths = (result.get("meta") or {}).get("domain_map", [])
+        assert paths, result
+        assert (result.get("meta") or {}).get("domain_paths") == len(paths), result
+        first = paths[0]
+        assert "MemberOf" in first["text"], first
+        assert "dc01.corp.example" in first["text"], first
+        assert first["steps"][0]["kind"] == "MemberOf", first
+
+        # A named target is reached by its own path.
+        task_id = client.submit("agent-map", "domain.map",
+                                {"target": "web01.corp.example"})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        paths = (result.get("meta") or {}).get("domain_map", [])
+        assert paths, result
+        assert paths[0]["steps"][-1]["target"] == "web01.corp.example", paths
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_suggestions_follow_the_findings():
+    """The framework scores the findings and says what could be tried."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-suggest-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-suggest")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The findings may travel with the task: the operator already has
+        # them and does not have to collect them twice.
+        task_id = client.submit("agent-suggest", "recon.suggest", {
+            "findings": [
+                {"kind": "cloud", "name": "/root/.aws/credentials",
+                 "severity": "high", "detail": "", "source": ""},
+                {"kind": "listener", "name": "0.0.0.0:22",
+                 "severity": "info", "detail": "", "source": ""},
+            ],
+        })
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        items = (result.get("meta") or {}).get("suggestions", {}).get("suggestions", [])
+        assert items, result
+        assert items[0]["kind"] == "download", items
+        assert items[0]["score"] >= 70, items
+        for item in items:
+            assert item["title"], item
+            assert item["why"], item
+            assert 0 <= item["score"] <= 100, item
+            assert item["kind"], item
+
+        # Without findings the implant collects them itself.
+        task_id = client.submit("agent-suggest", "recon.suggest",
+                                {"profile": "cloud"})
+        result = client.wait_for_result(task_id, timeout=10, poll=0.05)
+        assert result["state"] == "done", result
+        items = (result.get("meta") or {}).get("suggestions", {}).get("suggestions", [])
+        assert items, result
+        assert items[0]["kind"] == "download", items
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_reconnaissance_is_in_every_implementation():
+    """The profiles, the map and the suggestions are in the code of every side."""
+    profile = read_text("implant/rust/src/profile.rs")
+    for marker in ("pub fn run", "pub fn suggest", "pub fn profile_groups",
+                   "pub struct Finding", "pub struct Suggestion"):
+        assert marker in profile, marker
+    for check in ("users", "groups", "shares", "listeners", "scheduled",
+                  "services", "software", "browser", "sshkeys", "history",
+                  "recent", "wmi", "kernel", "ebpf", "cloud", "container"):
+        assert '"%s"' % check in profile, check
+
+    domain = read_text("implant/rust/src/domain.rs")
+    assert "pub fn paths" in domain
+    assert "pub fn map_report" in domain
+
+    task = read_text("implant/rust/src/task.rs")
+    assert '"recon.suggest"' in task
+    assert '"domain.map"' in task
+    assert "crate::profile::run" in task
+
+    twin = read_text("tools/recon_runtime.py")
+    assert "def profile_groups" in twin
+    assert "def suggest" in twin
+    assert "def domain_paths" in twin
+
+    console = read_text("operator/umbra_cli/cli.py")
+    assert '"recon"' in console
+    assert '"domain-map"' in console
+    assert '"suggest"' in console
+
+    protocol = read_text("docs/PROTOCOL.md")
+    assert "| `recon.suggest` |" in protocol
+    assert "| `domain.map` |" in protocol
+    assert "### 7.2k" in protocol

