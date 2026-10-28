@@ -16,7 +16,7 @@ import (
 // vectorsPath resolves contracts/vectors.json from any package directory.
 func vectorsPath(t *testing.T) string {
 	t.Helper()
-	p, err := filepath.Abs(filepath.Join("..", "..", "..", "contracts", "vectors.json"))
+	p, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "contracts", "vectors.json"))
 	if err != nil {
 		t.Fatalf("resolve vectors: %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/thesyntax1/UmbraC2/implant/go/internal/crypt"
@@ -120,6 +121,11 @@ func toValue(t *testing.T, v any) any {
 				return i
 			}
 			return uint64(i)
+		}
+		// The biggest unsigned integer does not fit in a signed one, and
+		// it must not become a float on the way.
+		if u, err := strconv.ParseUint(x.String(), 10, 64); err == nil {
+			return u
 		}
 		f, err := x.Float64()
 		if err != nil {
@@ -333,6 +339,11 @@ func TestFramesMatchVectors(t *testing.T) {
 			t.Fatalf("a vector is not a map")
 		}
 		suite := byte(numAt(t, caseMap, "suite"))
+		if !crypt.SuiteSupported(suite) {
+			// This build speaks one suite only.  The vector of the
+			// other one is checked by the build that has it.
+			continue
+		}
 		key := unhex(t, caseMap, "key")
 		prefix := unhex(t, caseMap, "prefix")
 		counter := numAt(t, caseMap, "counter")

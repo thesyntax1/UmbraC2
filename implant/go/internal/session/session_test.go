@@ -39,7 +39,7 @@ type vectorFile struct {
 
 func loadVectors(t *testing.T) vectorFile {
 	t.Helper()
-	path, err := filepath.Abs(filepath.Join("..", "..", "..", "contracts", "vectors.json"))
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "contracts", "vectors.json"))
 	if err != nil {
 		t.Fatalf("resolve vectors: %v", err)
 	}

@@ -72,9 +72,10 @@ jobs:
             code=$?
             if [ "$code" -ne 0 ]; then
               echo "::error::the code of $target does not compile"
-              # The output from the first error onwards: the warnings that
-              # come before it are noise.
-              awk '/^error/{found=1} found' "$log" | head -50 | while IFS= read -r line; do echo "::error::$line"; done
+              # The colours are stripped first, because the compiler puts
+              # them in front of the word error, and the output starts at
+              # the first error: the warnings before it are noise.
+              sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '/^error/{found=1} found' | head -50 | while IFS= read -r line; do echo "::error::$line"; done
             fi
           done
           exit 0
@@ -92,9 +93,10 @@ jobs:
           set +e
           cargo test --all-targets > /tmp/rust.log 2>&1
           echo "exit: $?"
-          awk '/^error/{found=1} found' /tmp/rust.log | head -50 | while IFS= read -r line; do echo "::error::$line"; done
-          grep -E "^(test result|failures:|---- .* stdout)" /tmp/rust.log | head -30 | while IFS= read -r line; do echo "::error::$line"; done
-          tail -40 /tmp/rust.log | while IFS= read -r line; do echo "::error::$line"; done
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/rust.log > /tmp/rust.clean.log
+          awk '/^error/{found=1} found' /tmp/rust.clean.log | head -50 | while IFS= read -r line; do echo "::error::$line"; done
+          grep -E "^(test result|failures:|---- .* stdout)" /tmp/rust.clean.log | head -30 | while IFS= read -r line; do echo "::error::$line"; done
+          tail -40 /tmp/rust.clean.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 0
 
   android:
