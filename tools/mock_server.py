@@ -47,6 +47,10 @@ ARTIFACT_CHUNK = 256 * 1024
 # beacon does, so the server's capability check has something to work with:
 # a task kind that is not in the list is refused the same way it would be
 # refused against the real implant.
+# The transports the framework knows.  The route of an agent names one of
+# them; an unknown name is refused instead of being pushed to the beacon.
+TRANSPORTS = ("tcp", "http", "dns", "ws")
+
 AGENT_CAPS = [
     "shell", "exec", "sysinfo", "recon", "pwd", "cwd", "ls", "tail", "hash",
     "download", "cat", "upload", "ps", "proc.kill", "sleep", "exit", "kill",
@@ -408,6 +412,32 @@ class TunnelSession:
 # ---------------------------------------------------------------------------
 # server
 # ---------------------------------------------------------------------------
+def _peek_first(conn: socket.socket, count: int) -> Tuple[bytes, bytes]:
+    """Look at the first bytes of a connection.
+
+    A plain socket peeks at itself and gives nothing away.  A TLS socket
+    cannot: OpenSSL refuses the peek flag, so the bytes are read and
+    handed back to the caller, which puts them in front of the stream.
+    """
+    if not isinstance(conn, ssl.SSLSocket):
+        try:
+            return conn.recv(count, socket.MSG_PEEK), b""
+        except OSError:
+            return b"", b""
+    buf = bytearray()
+    try:
+        while len(buf) < count:
+            chunk = conn.recv(count - len(buf))
+            if not chunk:
+                break
+            buf += chunk
+    except OSError:
+        return b"", b""
+    # The bytes were taken off the socket, so they are handed back: the
+    # caller puts them in front of whatever reads the connection next.
+    return bytes(buf), bytes(buf)
+
+
 class MockServer:
     """Minimal threaded umbra/v1 server used for tests and local development."""
 
@@ -490,6 +520,9 @@ class MockServer:
         self.pivot_deny: List[str] = list(pivot_deny or [])
         # The layer-3 tunnel: agent id -> peer record.
         self.vpn_peers: Dict[str, Dict[str, Any]] = {}
+        # The route of every agent the operator gave one: the transport it
+        # speaks, the order it may fall back in and the front domain.
+        self.routes: Dict[str, Dict[str, Any]] = {}
         # The extension store.  The test double keeps the blobs in memory; the
         # Go server keeps them on disk and verifies their signature.
         self.armory: Dict[str, Dict[str, Any]] = {}
@@ -674,12 +707,13 @@ class MockServer:
             # every umbra frame travels in a binary WebSocket frame.  A peer
             # that does not ask for an upgrade (the operator console) is
             # served the plain protocol, exactly like the Go server does.
-            try:
-                head = conn.recv(4, socket.MSG_PEEK)
-            except OSError:
-                return
+            head, leftover = _peek_first(conn, 4)
             if head.startswith(b"GET "):
-                server = ws.WebSocketServer(conn)
+                if isinstance(conn, ssl.SSLSocket):
+                    # The TLS handshake had its own budget; the session may
+                    # wait as long as it wants.
+                    conn.settimeout(None)
+                server = ws.WebSocketServer(conn, pending=leftover)
                 try:
                     if not server.handshake():
                         server.close()
@@ -689,6 +723,9 @@ class MockServer:
                 stream = ws.WebSocketStream(server)
             else:
                 stream = netio.Stream(conn, timeout=30)
+                # The bytes the look at the connection took are put back in
+                # front of the stream: nothing is lost.
+                stream.push_back(leftover)
         else:
             stream = netio.Stream(conn, timeout=30)
         # The operator is subscribed before the handshake answer goes out:
@@ -728,13 +765,18 @@ class MockServer:
             stream.close()
             return
 
-        if result.peer_id in self.operators:
-            self._operator_loop(stream, result, str(addr), operator_box.get("inbox"))
-        elif result.meta.get("tunnel"):
-            # A callback session: the agent dialled back to serve a pivot.
-            self._tunnel_loop(stream, result)
-        else:
-            self._agent_loop(stream, result, str(addr))
+        try:
+            if result.peer_id in self.operators:
+                self._operator_loop(stream, result, str(addr), operator_box.get("inbox"))
+            elif result.meta.get("tunnel"):
+                # A callback session: the agent dialled back to serve a pivot.
+                self._tunnel_loop(stream, result)
+            else:
+                self._agent_loop(stream, result, str(addr))
+        except (netio.StreamError, ws.WebSocketError, OSError):
+            # The peer went away in the middle of the session: that is a
+            # normal end, not a failure of the server.
+            self._drop_operator(operator_box)
 
     def _drop_operator(self, operator_box: Dict[str, Any]) -> None:
         """Take an operator off the subscriber list again.
@@ -1114,7 +1156,7 @@ class MockServer:
                     "user": meta.get("user", "?"),
                     "pid": meta.get("pid", 0),
                     "version": meta.get("ver", "?"),
-                    "transport": "tcp",
+                    "transport": str(meta.get("transport", "") or "tcp"),
                     "addr": addr,
                     "state": "online",
                     # The capability list is what the beacon said it can
@@ -1160,6 +1202,7 @@ class MockServer:
                         sleep = int(record.get("sleep", self.sleep))
                         jitter = int(record.get("jitter", self.jitter))
                         obfuscate = bool(record.get("obfuscate", True))
+                        route = self.routes.get(agent_id)
                     body = {
                         "tasks": batch,
                         "sleep": sleep,
@@ -1167,6 +1210,18 @@ class MockServer:
                         "obf": obfuscate,
                         "server_time": _now(),
                     }
+                    # The route of the agent travels with the batch: the
+                    # beacon learns which transport it speaks and in which
+                    # order it may fall back.
+                    if route:
+                        body["route"] = {
+                            "primary": route.get("primary", ""),
+                            "fallback": list(route.get("fallback") or []),
+                            "front": route.get("front", ""),
+                            "inspect": bool(route.get("inspect", False)),
+                            "http_path": route.get("http_path", ""),
+                            "ws_path": route.get("ws_path", ""),
+                        }
                     # Rotation order is part of the protocol: the REKEY frame is
                     # sealed with the OLD key set, written first, and only then
                     # does the server switch. The peer sees REKEY at the old
@@ -1696,6 +1751,11 @@ class MockServer:
         "artifact.push": "operator",
         # A panic ends the engagement on the target side.
         "agents.panic": "admin",
+        # The route of an agent: reading it is harmless, changing it
+        # changes how the implant reaches the server.
+        "transport.get": "viewer",
+        "transport.list": "viewer",
+        "transport.set": "operator",
         "pivot.list": "viewer",
         "pivot.open": "operator",
         "pivot.close": "operator",
@@ -2456,6 +2516,74 @@ class MockServer:
             topology = self._pivot_topology()
             return ok({"tunnels": tunnels, "sessions": sessions, "topology": topology})
 
+        if cmd == "transport.set":
+            agent = str(args.get("agent", "") or "").strip()
+            if not agent:
+                return fail("transport.set: the agent is missing")
+            with self._lock:
+                known = agent in self.agents
+            if not known:
+                return fail(f"transport.set: unknown agent {agent!r}")
+            primary = str(args.get("primary", "") or "").strip().lower()
+            if not primary:
+                return fail("transport.set: the primary transport is missing")
+            if primary not in TRANSPORTS:
+                return fail(
+                    f"transport.set: {primary!r} is not a transport the framework knows"
+                )
+            fallback = []
+            for name in args.get("fallback") or []:
+                name = str(name).strip().lower()
+                if name and name not in TRANSPORTS:
+                    return fail(
+                        f"transport.set: {name!r} is not a transport the framework knows"
+                    )
+                if name:
+                    fallback.append(name)
+            route = {
+                "primary": primary,
+                "fallback": fallback,
+                "front": str(args.get("front", "") or "").strip(),
+                "inspect": bool(args.get("inspect", False)),
+                "http_path": str(args.get("http_path", "") or "").strip(),
+                "ws_path": str(args.get("ws_path", "") or "").strip(),
+            }
+            with self._lock:
+                self.routes[agent] = route
+            self.emit("agent.route", agent, data={
+                "primary": route["primary"],
+                "fallback": ",".join(route["fallback"]),
+                "front": route["front"],
+                "inspect": route["inspect"],
+            })
+            out = dict(route)
+            out["agent"] = agent
+            return ok(out)
+
+        if cmd == "transport.get":
+            agent = str(args.get("agent", "") or "").strip()
+            if not agent:
+                return fail("transport.get: the agent is missing")
+            with self._lock:
+                route = self.routes.get(agent)
+            if route is None:
+                return fail(f"transport.get: the agent {agent!r} has no route")
+            out = dict(route)
+            out["agent"] = agent
+            return ok(out)
+
+        if cmd == "transport.list":
+            with self._lock:
+                routes = {
+                    agent: dict(route) for agent, route in self.routes.items()
+                }
+            out = []
+            for agent in sorted(routes):
+                item = routes[agent]
+                item["agent"] = agent
+                out.append(item)
+            return ok({"routes": out})
+
         if cmd == "pivot.open":
             agent_id = str(args.get("id", ""))
             mode = str(args.get("mode", "socks")) or "socks"
@@ -2922,6 +3050,9 @@ class FakeAgent(threading.Thread):
         self.websocket = websocket
         self.meta = transport_meta or {
             "host": "lab-host",
+            # The transport the beacon speaks: it changes when the
+            # operator gives the agent a different route.
+            "transport": "ws" if websocket else "tcp",
             "os": sys.platform,
             "arch": "x86_64",
             "user": os.environ.get("USER", "lab"),
@@ -2943,6 +3074,9 @@ class FakeAgent(threading.Thread):
         self.cancels_received: List[str] = []
         # The last policy the server pushed (sleep, jitter, obfuscation).
         self.policy: Dict[str, Any] = {}
+        # The route the server pushed: the transport this beacon speaks and
+        # the order it may fall back in.
+        self.route: Dict[str, Any] = {}
         # The interactive sessions the agent has open.
         self.sessions: Dict[str, Dict[str, Any]] = {}
         # What the operator installed on this host.  The desktop beacon
@@ -3110,6 +3244,21 @@ class FakeAgent(threading.Thread):
                         "jitter": batch.get("jitter"),
                         "obf": batch.get("obf"),
                     }
+                    # The route of the agent: the transport it speaks and
+                    # the order it may fall back in.  The operator knows
+                    # the network of the target; the beacon does not.
+                    route = batch.get("route")
+                    if isinstance(route, dict) and route.get("primary"):
+                        self.route = {
+                            "primary": str(route.get("primary")),
+                            "fallback": [str(f) for f in route.get("fallback") or []],
+                            "front": str(route.get("front") or ""),
+                            "inspect": bool(route.get("inspect")),
+                        }
+                        # The transport changes with the next cycle: the
+                        # beacon dials the road the operator named.
+                        self.websocket = self.route["primary"] == "ws"
+                        self.meta["transport"] = "ws" if self.websocket else "tcp"
                     break
                 return
             if not batch:

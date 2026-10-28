@@ -604,6 +604,32 @@ The dashboard draws the same thing: the "reach" panel shows the agents as
 nodes and the pivots as edges, so a chained pivot is visible as a line that
 starts at one agent and ends at another.
 
+### The route of an agent
+
+The operator knows the network of the target; the beacon does not.  "This
+agent only speaks DNS", "that one goes through a front domain", "the third
+one sits behind a proxy that reads the traffic" is written down as the
+*route* of the agent, and the server pushes it with the task batch.
+
+```bash
+# this agent speaks DNS first and falls back to TCP
+umbra transport set agent-01 --primary dns --fallback tcp
+
+# this one speaks WebSocket through a front domain
+umbra transport set agent-02 --primary ws --fallback http,tcp --front cdn.example.com
+
+# the proxy in front of it reads the traffic
+umbra transport set agent-03 --primary tcp --inspect
+
+umbra transport get agent-02      # the route of one agent
+umbra transport list              # the routes of every agent that has one
+```
+
+The beacon follows the route from the next cycle on: the transport it
+speaks is the one the operator named, and the fallback order is the one the
+operator wrote.  A transport the framework does not know is refused at the
+console, not pushed to the beacon.
+
 ### The chain
 
 A pivot can run through other pivots.  The operator names the far end; the

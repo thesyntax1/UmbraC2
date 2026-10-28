@@ -782,6 +782,98 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return reply(upk.Map{"emitted": true})
 
 	// ---- pivoting ----------------------------------------------------
+	case "transport.set":
+		// The route of an agent: the transport it speaks and the order it
+		// may fall back in.  The operator knows the network of the target;
+		// the beacon does not.
+		agent, _ := args["agent"].(string)
+		agent = strings.TrimSpace(agent)
+		if agent == "" {
+			return fail("transport.set: the agent is missing")
+		}
+		if _, ok := s.Hub.Store().Agent(agent); !ok {
+			return fail("transport.set: unknown agent %q", agent)
+		}
+		primary, _ := args["primary"].(string)
+		primary = strings.ToLower(strings.TrimSpace(primary))
+		if primary == "" {
+			return fail("transport.set: the primary transport is missing")
+		}
+		var fallback []string
+		if raw, ok := args["fallback"].([]any); ok {
+			for _, item := range raw {
+				if name, ok := item.(string); ok && strings.TrimSpace(name) != "" {
+					fallback = append(fallback, strings.ToLower(strings.TrimSpace(name)))
+				}
+			}
+		}
+		front, _ := args["front"].(string)
+		inspect, _ := args["inspect"].(bool)
+		httpPath, _ := args["http_path"].(string)
+		wsPath, _ := args["ws_path"].(string)
+		route := &store.TransportPolicy{
+			Primary:  primary,
+			Fallback: fallback,
+			Front:    strings.TrimSpace(front),
+			Inspect:  inspect,
+			HTTPPath: strings.TrimSpace(httpPath),
+			WSSPath:  strings.TrimSpace(wsPath),
+		}
+		if err := s.Hub.SetRoute(agent, route); err != nil {
+			return fail("transport.set: %v", err)
+		}
+		return reply(upk.Map{
+			"agent":     agent,
+			"primary":   route.Primary,
+			"fallback":  pathAny(route.Fallback),
+			"front":     route.Front,
+			"inspect":   route.Inspect,
+			"http_path": route.HTTPPath,
+			"ws_path":   route.WSSPath,
+		})
+
+	case "transport.get":
+		agent, _ := args["agent"].(string)
+		agent = strings.TrimSpace(agent)
+		if agent == "" {
+			return fail("transport.get: the agent is missing")
+		}
+		route, ok := s.Hub.Route(agent)
+		if !ok {
+			return fail("transport.get: the agent %q has no route", agent)
+		}
+		return reply(upk.Map{
+			"agent":     agent,
+			"primary":   route.Primary,
+			"fallback":  pathAny(route.Fallback),
+			"front":     route.Front,
+			"inspect":   route.Inspect,
+			"http_path": route.HTTPPath,
+			"ws_path":   route.WSSPath,
+		})
+
+	case "transport.list":
+		routes := s.Hub.Routes()
+		out := make([]any, 0, len(routes))
+		ids := make([]string, 0, len(routes))
+		for id := range routes {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			route := routes[id]
+			out = append(out, upk.Map{
+				"agent":     id,
+				"primary":   route.Primary,
+				"fallback":  pathAny(route.Fallback),
+				"front":     route.Front,
+				"inspect":   route.Inspect,
+				"http_path": route.HTTPPath,
+				"ws_path":   route.WSSPath,
+			})
+		}
+		return reply(upk.Map{"routes": out})
+
 	case "pivot.list":
 		tunnels := []pivot.TunnelInfo{}
 		sessions := 0

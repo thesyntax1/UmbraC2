@@ -43,6 +43,7 @@ Added on top of that core:
 | Stagers | One-line PowerShell and Bash stagers with the agent key baked in | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#stagers) |
 | Team work | Focus/presence, task claims, directed chat, and one `team.sync` snapshot of the whole team | [docs/PROTOCOL.md](docs/PROTOCOL.md#operator-rpcs) |
 | Covert channels | WebSocket and DNS transports, mutual TLS for the console, traffic padding, domain fronting through a configurable `Host` header | [docs/TRANSPORTS.md](docs/TRANSPORTS.md) |
+| The route of an agent | The operator says which transport an agent speaks, in which order it may fall back, and which front domain it hides behind; the beacon follows the route | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-route-of-an-agent) |
 | Reconnaissance | Host facts, BloodHound-style domain edges, and awareness of debuggers and sandboxes | [docs/EXTENSIONS.md](docs/EXTENSIONS.md#reconnaissance) |
 | Operator state | The console keeps its own SQLite notebook: the tasks it ran, their results and the notes it left | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-operators-notebook) |
 | Traffic hygiene | Sleep obfuscation on top of the jitter, and module images wiped from memory once they have run | [docs/SECURITY.md](docs/SECURITY.md) |

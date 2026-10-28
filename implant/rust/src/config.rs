@@ -85,6 +85,33 @@ pub enum Transport {
     Ws,
 }
 
+impl Transport {
+    /// The transport of a name, as the server writes it.
+    ///
+    /// An unknown name has no transport: the route of the server may name
+    /// a transport this beacon does not speak, and then the beacon keeps
+    /// the one it has.
+    pub fn parse(name: &str) -> Option<Transport> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "tcp" => Some(Transport::Tcp),
+            "http" | "https" => Some(Transport::Http),
+            "dns" => Some(Transport::Dns),
+            "ws" | "websocket" => Some(Transport::Ws),
+            _ => None,
+        }
+    }
+
+    /// The name of the transport, as the server writes it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Transport::Tcp => "tcp",
+            Transport::Http => "http",
+            Transport::Dns => "dns",
+            Transport::Ws => "ws",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server: String,

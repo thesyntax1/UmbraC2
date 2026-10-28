@@ -717,6 +717,55 @@ class OperatorClient:
         if not res.ok:
             raise OperatorError(res.error)
 
+    # -- the route of an agent -------------------------------------------
+    def transport_set(
+        self,
+        agent_id: str,
+        *,
+        primary: str,
+        fallback: Optional[List[str]] = None,
+        front: str = "",
+        inspect: bool = False,
+        http_path: str = "",
+        ws_path: str = "",
+    ) -> Dict[str, Any]:
+        """Set the route of an agent.
+
+        The route tells the beacon which transport it speaks and in which
+        order it may fall back.  The operator knows the network of the
+        target: this one only speaks DNS, that one goes through a front
+        domain, the third one sits behind a proxy that reads the traffic.
+        """
+        res = self.rpc(
+            "transport.set",
+            {
+                "agent": agent_id,
+                "primary": primary,
+                "fallback": list(fallback or []),
+                "front": front,
+                "inspect": bool(inspect),
+                "http_path": http_path,
+                "ws_path": ws_path,
+            },
+        )
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def transport_get(self, agent_id: str) -> Dict[str, Any]:
+        """The route of one agent."""
+        res = self.rpc("transport.get", {"agent": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data
+
+    def transport_list(self) -> List[Dict[str, Any]]:
+        """The routes of every agent that has one."""
+        res = self.rpc("transport.list", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("routes", []))
+
     # -- layer-3 tunnel --------------------------------------------------
     def vpn_status(self) -> Dict[str, Any]:
         res = self.rpc("vpn.status")

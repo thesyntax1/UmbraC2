@@ -503,6 +503,9 @@ Operator RPC commands, with the minimum role each requires:
 | `operators.focus` | operator | announce the agent you are working on |
 | `schedule.remove` | admin | remove a recurring task |
 | `events.test` | admin | emit a synthetic event |
+| `transport.get` | viewer | the route of one agent: the transport it speaks, the fallback order, the front domain |
+| `transport.list` | viewer | the routes of every agent that has one |
+| `transport.set` | operator | set the route of one agent: `agent`, `primary`, `fallback`, `front`, `inspect`, `http_path`, `ws_path` |
 | `pivot.list` | viewer | open pivots: agent, mode, listener, byte counters; the reply carries the topology (nodes, edges, clients, connections, claims) |
 | `pivot.open` | operator | open a SOCKS5 proxy or a port forward through an agent; optional `dns`, `loopback`, `claim`, `through`, `user`, `password` |
 | `pivot.close` | operator | close a pivot |
@@ -970,6 +973,30 @@ arrives, so a forward survives the re-connect of its agent. The server
 also keeps a deny list (`pivot_deny` in the configuration): a target on
 the list is refused with the SOCKS5 "not allowed" answer and the refusal
 is written in the connection log.
+
+### 7.3c The route of an agent
+
+The route tells a beacon how to reach the team server.  The operator knows
+the network of the target, so the operator writes the route down and the
+server pushes it with the task batch.
+
+```
+route = {primary: "ws", fallback: ["tcp"], front: "cdn.example.com",
+         inspect: true, http_path: "", ws_path: "/api/v1/beacon"}
+```
+
+| key | meaning |
+|---|---|
+| `primary` | the transport the beacon uses first: `tcp`, `http`, `dns` or `ws` |
+| `fallback` | the order the beacon tries when the primary fails |
+| `front` | the domain the beacon puts in the `Host` header |
+| `inspect` | the proxy in front of the beacon reads the traffic |
+| `http_path` / `ws_path` | the routes of the HTTP and WebSocket transports |
+
+The route is per agent: `transport.set` writes it, `transport.get` and
+`transport.list` read it, and it travels with the `TASK_BATCH` frame.  A
+beacon that cannot speak the named transport keeps the one it has, and the
+next one of the fallback order is tried.
 
 ### 7.3a The peer link
 

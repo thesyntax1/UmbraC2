@@ -104,6 +104,47 @@ const MaxSchedules = 256
 // MaxTasks bounds the in-memory history.
 const MaxTasks = 20000
 
+// TransportPolicy is how one agent has to reach the team server.
+//
+// The operator knows the network of the target: this one only speaks DNS,
+// that one goes through a front domain, the third one sits behind a proxy
+// that inspects the traffic.  The policy tells the beacon which road to
+// take and in which order it may fall back.
+type TransportPolicy struct {
+	// Primary is the transport the beacon uses first.
+	Primary string `json:"primary"`
+	// Fallback is the order the beacon tries when the primary fails.
+	Fallback []string `json:"fallback,omitempty"`
+	// Front is the domain the beacon puts in the Host header: the request
+	// goes to the server, but it looks like it went to the front.
+	Front string `json:"front,omitempty"`
+	// Inspect tells the beacon that the proxy in front of it reads the
+	// traffic.
+	Inspect bool `json:"inspect,omitempty"`
+	// HTTPPath and WSSPath are the routes of the HTTP and WebSocket
+	// transports, when they differ from the default.
+	HTTPPath string `json:"http_path,omitempty"`
+	WSSPath  string `json:"ws_path,omitempty"`
+}
+
+// Valid reports whether the policy names transports the framework knows.
+//
+// An unknown name is refused instead of being pushed to the beacon: a
+// beacon that cannot speak the transport would answer nothing, and the
+// operator would wait for an answer that never comes.
+func (p TransportPolicy) Valid() bool {
+	known := map[string]bool{"tcp": true, "http": true, "dns": true, "ws": true}
+	if !known[p.Primary] {
+		return false
+	}
+	for _, name := range p.Fallback {
+		if !known[name] {
+			return false
+		}
+	}
+	return true
+}
+
 // Agent is the persisted view of a beacon.
 type Agent struct {
 	ID        string    `json:"id"`
@@ -120,6 +161,9 @@ type Agent struct {
 	// another beacon (or the server) can dial in to carry a pivot
 	// through this host.
 	P2P string `json:"p2p,omitempty"`
+	// Route is how this agent has to reach the team server: the operator
+	// says which transport it speaks and in which order it may fall back.
+	Route *TransportPolicy `json:"route,omitempty"`
 	Sleep     int       `json:"sleep"`
 	Jitter    int       `json:"jitter"`
 	// What the beacon last reported, kept apart from the cadence the
@@ -1044,6 +1088,49 @@ func (s *Store) CredentialCount() int {
 }
 
 // SetImpersonation records the account an agent runs as, or clears it.
+// SetRoute records the route of an agent.
+//
+// The route is what the operator knows about the network of the target:
+// the transport the beacon speaks, the order it may fall back in and the
+// front domain it hides behind.
+func (s *Store) SetRoute(agentID string, route *TransportPolicy) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok {
+		return false
+	}
+	a.Route = route
+	return true
+}
+
+// Route returns the route of an agent.
+//
+// The second value tells whether the agent has one: an agent without a
+// route uses the transport it was built with.
+func (s *Store) Route(agentID string) (TransportPolicy, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.agents[agentID]
+	if !ok || a.Route == nil {
+		return TransportPolicy{}, false
+	}
+	return *a.Route, true
+}
+
+// Routes returns the routes of every agent that has one.
+func (s *Store) Routes() map[string]TransportPolicy {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]TransportPolicy)
+	for id, a := range s.agents {
+		if a.Route != nil {
+			out[id] = *a.Route
+		}
+	}
+	return out
+}
+
 // SetPeerAddress records the address of the peer listener of an agent.
 //
 // The address is where another beacon (or the server) dials in to carry a

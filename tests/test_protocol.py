@@ -2963,6 +2963,158 @@ def test_websocket_frames_round_trip():
         server.close()
 
 
+def test_the_websocket_transport_works_over_tls(tmp_path):
+    """A TLS-inspecting proxy in front of the server changes nothing.
+
+    The WebSocket upgrade travels inside the TLS session, so the server
+    has to look at the first bytes of the *decrypted* stream: OpenSSL
+    refuses to peek at a socket, and the bytes have to be read and kept.
+    """
+    import ssl
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli import ws
+
+    certs = _write_certificates(str(tmp_path))
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        websocket=True,
+    )
+    server.start()
+    try:
+        host, _, port = server.address.rpartition(":")
+        context = ssl.create_default_context(cafile=certs["ca"])
+        client = ws.WebSocketClient(
+            host, int(port), path="/ws", timeout=15,
+            ssl_context=context, server_hostname="localhost",
+        )
+        client.connect()
+        stream = ws.WebSocketStream(client)
+        result = handshake.client_handshake(
+            stream,
+            psk=AGENT_PSK,
+            role=crypto.ROLE_AGENT,
+            ident="agent-tls-ws",
+            meta={"host": "lab-host", "os": "linux", "arch": "x86_64"},
+        )
+        assert result.session is not None
+        # The session works: a check-in is answered.
+        stream.send_frame(result.session.encrypt(
+            wire.MsgType.CHECKIN, {"ts": int(time.time()), "n": 0}))
+        msg_type, _ = result.session.decrypt_message(stream.recv_frame())
+        assert msg_type == wire.MsgType.TASK_BATCH
+    finally:
+        server.stop()
+
+
+def test_the_operator_can_tell_an_agent_which_transport_it_speaks():
+    """The transport matrix: the operator knows the network of the target.
+
+    "This agent only speaks DNS, that one goes through a front domain" is
+    knowledge the server has and the beacon does not.  The route travels
+    with the task batch, and the beacon follows it: the agent that was
+    told to speak WebSocket dials with WebSocket from then on.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-route-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token}, websocket=True)
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-route", interval=0.3)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        # The operator names the road: WebSocket first, TCP as the
+        # fallback, and a front domain to hide behind.
+        route = client.transport_set(
+            "agent-route",
+            primary="ws",
+            fallback=["tcp"],
+            front="cdn.example.com",
+            inspect=True,
+        )
+        assert route["primary"] == "ws"
+        assert route["fallback"] == ["tcp"]
+        assert route["front"] == "cdn.example.com"
+        assert route["inspect"] is True
+
+        # The route is readable again, and the list knows about it.
+        got = client.transport_get("agent-route")
+        assert got["primary"] == "ws"
+        assert got["front"] == "cdn.example.com"
+        routes = client.transport_list()
+        assert any(r["agent"] == "agent-route" for r in routes)
+
+        # The beacon follows the route: it dials with WebSocket now.
+        deadline = time.time() + 15
+        while time.time() < deadline and not agent.websocket:
+            time.sleep(0.05)
+        assert agent.websocket, "the agent never followed the route"
+        assert agent.route["primary"] == "ws"
+        assert agent.route["front"] == "cdn.example.com"
+
+        # And the switch did not break the session: it still answers.
+        task_id = client.submit("agent-route", "shell", {"cmd": "echo umbra-route"})
+        result = client.wait_for_result(task_id, timeout=20, poll=0.05)
+        assert b"umbra-route" in result["out"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_route_that_names_an_unknown_transport_is_refused():
+    """A typo in the route must not reach the beacon.
+
+    The server refuses a transport it does not know: a beacon that cannot
+    speak the transport would answer nothing, and the operator would wait
+    for an answer that never comes.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-badroute-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-badroute", interval=0.3)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient, OperatorError
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        with pytest.raises(OperatorError):
+            client.transport_set("agent-badroute", primary="carrier-pigeon")
+        with pytest.raises(OperatorError):
+            client.transport_set("agent-badroute", primary="tcp", fallback=["smoke"])
+        with pytest.raises(OperatorError):
+            client.transport_set("agent-nobody", primary="tcp")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
 def test_websocket_transport_carries_a_full_session():
     """The reference agent speaks WebSocket to the same server."""
     sys.path.insert(0, os.path.join(ROOT, "tools"))

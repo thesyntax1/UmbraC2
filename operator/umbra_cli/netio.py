@@ -58,6 +58,9 @@ class Stream:
         # Set when a write could not be finished: the frame on the wire is
         # half written, so the session cannot carry anything else.
         self._broken = False
+        # The bytes that were read but not asked for.  A TLS socket cannot
+        # peek at itself, so the peek reads them and keeps them here.
+        self._buf = bytearray()
         self._tls = isinstance(sock, ssl.SSLSocket)
         if self._tls:
             # The socket itself never blocks: the waiting happens in select(),
@@ -116,12 +119,40 @@ class Stream:
     # -- reading ---------------------------------------------------------
     def _read_exact(self, n: int) -> bytes:
         buf = bytearray()
+        while len(self._buf) > 0 and len(buf) < n:
+            take = min(n - len(buf), len(self._buf))
+            buf += self._buf[:take]
+            del self._buf[:take]
         while len(buf) < n:
             chunk = self._recv(n - len(buf))
             if not chunk:
                 raise StreamError("connection closed by peer")
             buf += chunk
         return bytes(buf)
+
+    def push_back(self, data: bytes) -> None:
+        """Put bytes in front of the stream.
+
+        A caller that had to read the first bytes of the connection (a TLS
+        socket cannot peek at itself) hands them over here, so the stream
+        reads them before the socket.
+        """
+        if data:
+            self._buf = bytearray(data) + self._buf
+
+    def peek(self, n: int) -> bytes:
+        """Look at the next bytes without consuming them.
+
+        A plain socket peeks at itself.  A TLS socket cannot: OpenSSL
+        refuses the peek flag, so the bytes are read into the buffer of
+        the stream and handed out again by the next read.
+        """
+        if not self._tls:
+            return self.sock.recv(n, socket.MSG_PEEK)
+        if len(self._buf) < n:
+            chunk = self._recv(n - len(self._buf))
+            self._buf += chunk
+        return bytes(self._buf[:n])
 
     def _recv(self, n: int) -> bytes:
         """Read up to n bytes.  An empty result means the peer closed."""

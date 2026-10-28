@@ -126,6 +126,14 @@ var requirements = map[string]string{
 	// Focus is presence: which agent this console is looking at.
 	"operators.focus": Operator,
 
+	// ---- the route of an agent ------------------------------------------
+	// The route tells a beacon which transport it speaks.  Reading it is
+	// harmless; changing it changes how the implant reaches the server,
+	// so it is an operator action.
+	"transport.get":  Viewer,
+	"transport.list": Viewer,
+	"transport.set":  Operator,
+
 	// ---- pivoting ------------------------------------------------------
 	// Opening a pivot reaches into a network the operator console cannot
 	// see, so it is an operator action; listing them is harmless.

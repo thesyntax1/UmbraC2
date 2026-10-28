@@ -30,7 +30,7 @@ import hashlib
 import os
 import socket
 import struct
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # The GUID of RFC 6455 that turns the client key into the accept value.
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -160,13 +160,18 @@ class WebSocketClient:
     """A WebSocket client for the umbra transport."""
 
     def __init__(self, host: str, port: int, path: str = "/", host_header: str = "",
-                 extra_headers: Optional[Dict[str, str]] = None, timeout: float = 30.0) -> None:
+                 extra_headers: Optional[Dict[str, str]] = None, timeout: float = 30.0,
+                 ssl_context: Optional[Any] = None, server_hostname: str = "") -> None:
         self.host = host
         self.port = port
         self.path = path or "/"
         self.host_header = host_header or f"{host}:{port}"
         self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
+        # The TLS context, when the transport goes through TLS: a proxy
+        # that inspects the traffic changes nothing about the frames.
+        self.ssl_context = ssl_context
+        self.server_hostname = server_hostname or host
         self._sock: Optional[socket.socket] = None
         # Bytes of the handshake response that belong to the frame reader.
         self._pending = b""
@@ -175,6 +180,9 @@ class WebSocketClient:
         """Open the connection and perform the opening handshake."""
         sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         sock.settimeout(self.timeout)
+        if self.ssl_context is not None:
+            sock = self.ssl_context.wrap_socket(
+                sock, server_hostname=self.server_hostname)
         key = client_key()
         lines = [
             f"GET {self.path} HTTP/1.1",
@@ -292,12 +300,22 @@ class WebSocketServer:
     the same handshake on its own HTTP listener.
     """
 
-    def __init__(self, sock: socket.socket, path: str = "/") -> None:
+    def __init__(self, sock: socket.socket, path: str = "/",
+                 pending: bytes = b"") -> None:
         self.sock = sock
         self.path = path
         # Bytes that arrived with the upgrade request and belong to the
-        # frame reader.
-        self._pending = b""
+        # frame reader.  A caller that had to look at the request before
+        # it decided to serve it hands those bytes over here.
+        self._pending = pending
+
+    def _read_some(self) -> bytes:
+        """Read what is there, pending bytes first."""
+        if self._pending:
+            out = self._pending
+            self._pending = b""
+            return out
+        return self.sock.recv(4096)
 
     def _read(self, count: int) -> bytes:
         pending = self._pending
@@ -317,7 +335,9 @@ class WebSocketServer:
         """
         head = b""
         while b"\r\n\r\n" not in head:
-            block = self.sock.recv(4096)
+            # The bytes that a caller looked at before it decided to serve
+            # the request come first: they are part of the request line.
+            block = self._read_some()
             if not block:
                 return False
             head += block

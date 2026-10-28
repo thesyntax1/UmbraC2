@@ -374,6 +374,41 @@ func (h *Hub) UnregisterAgent(agentID string) {
 //
 // The beacon says it in the check-in, so the inventory shows the truth
 // instead of the account the implant started with.
+// SetRoute changes the route of one agent.
+//
+// The route tells the beacon which transport it speaks and in which order
+// it may fall back: the operator knows the network of the target, the
+// beacon does not.
+func (h *Hub) SetRoute(agentID string, route *store.TransportPolicy) error {
+	if route == nil || !route.Valid() {
+		return errors.New("the route names a transport the framework does not know")
+	}
+	if !h.store.SetRoute(agentID, route) {
+		return ErrNoSuchAgent
+	}
+	h.Emit(Event{Kind: "agent.route", AgentID: agentID, Data: map[string]any{
+		"primary":  route.Primary,
+		"fallback": strings.Join(route.Fallback, ","),
+		"front":    route.Front,
+		"inspect":  route.Inspect,
+	}})
+	h.store.SaveAsync()
+	return nil
+}
+
+// Route returns the route of one agent.
+//
+// The second value tells whether the agent has one: an agent without a
+// route speaks the transport it was built with.
+func (h *Hub) Route(agentID string) (store.TransportPolicy, bool) {
+	return h.store.Route(agentID)
+}
+
+// Routes returns the routes of every agent that has one.
+func (h *Hub) Routes() map[string]store.TransportPolicy {
+	return h.store.Routes()
+}
+
 // SetPeerAddress records the address of the peer listener of an agent.
 func (h *Hub) SetPeerAddress(agentID, addr string) {
 	if h.store.SetPeerAddress(agentID, addr) {
@@ -1519,7 +1554,7 @@ func (h *Hub) Stats() map[string]any {
 }
 
 func agentData(a *store.Agent) map[string]any {
-	return map[string]any{
+	d := map[string]any{
 		"id":         a.ID,
 		"host":       a.Host,
 		"os":         a.OS,
@@ -1550,4 +1585,21 @@ func agentData(a *store.Agent) map[string]any {
 		// What the implant thinks of the host.
 		"posture": a.Posture,
 	}
+	// The route of the agent: the transport it speaks and the order it may
+	// fall back in.  It is only there when the operator gave one.
+	if a.Route != nil {
+		fallback := make([]any, 0, len(a.Route.Fallback))
+		for _, name := range a.Route.Fallback {
+			fallback = append(fallback, name)
+		}
+		d["route"] = map[string]any{
+			"primary":   a.Route.Primary,
+			"fallback":  fallback,
+			"front":     a.Route.Front,
+			"inspect":   a.Route.Inspect,
+			"http_path": a.Route.HTTPPath,
+			"ws_path":   a.Route.WSSPath,
+		}
+	}
+	return d
 }

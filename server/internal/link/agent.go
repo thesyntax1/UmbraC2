@@ -132,6 +132,23 @@ func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 	if n, ok := number(msg["n"]); ok {
 		body["pending"] = n
 	}
+	// The route of the agent travels with the batch: the beacon learns
+	// which transport it speaks and in which order it may fall back.  The
+	// operator knows the network of the target; the beacon does not.
+	if route, ok := l.Hub.Route(l.AgentID); ok && route.Primary != "" {
+		fallback := make([]any, 0, len(route.Fallback))
+		for _, name := range route.Fallback {
+			fallback = append(fallback, name)
+		}
+		body["route"] = upk.Map{
+			"primary":   route.Primary,
+			"fallback":  fallback,
+			"front":     route.Front,
+			"inspect":   route.Inspect,
+			"http_path": route.HTTPPath,
+			"ws_path":   route.WSSPath,
+		}
+	}
 	// Rotate keys proactively once a session has carried enough traffic.
 	//
 	// Ordering matters and is easy to get wrong: the REKEY frame must be sealed

