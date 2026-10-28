@@ -892,9 +892,15 @@ impl Beacon {
                     // does not keep a lie after the engagement.
                     let empty = upk::map(vec![("method", upk::s("all"))]);
                     let _ = crate::persist::remove(&empty);
-                    let report = crate::persist::list(&Value::Null);
+                    // The list is what the implant removed: an empty
+                    // record when the host cannot be read, so the server
+                    // is told the truth instead of a guess.
+                    let entries = match crate::persist::list(&Value::Null) {
+                        Ok(report) => report.entries,
+                        Err(_) => Vec::new(),
+                    };
                     let outcome = task::run(&self.context(), &kind, &args)
-                        .with("persist", upk::arr(report.entries))
+                        .with("persist", upk::arr(entries))
                         .with("persist_total", upk::u(0))
                         .with("persist_broken", upk::u(0));
                     self.send_result(&id, outcome)?;

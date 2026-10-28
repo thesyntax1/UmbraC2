@@ -431,7 +431,13 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		MaxHeaderBytes:    16 << 10,
 	}
 	s.httpSrv = srv
-	s.Log.Info("http transport listening", "addr", addr, "path", s.httpPath(),
+	// The listener is one of the server's listeners: the address it was
+	// given may be a port zero, and the operator (and the tests) need
+	// the address the host really listens on.
+	s.mu.Lock()
+	s.listeners = append(s.listeners, ln)
+	s.mu.Unlock()
+	s.Log.Info("http transport listening", "addr", ln.Addr().String(), "path", s.httpPath(),
 		"tls", s.Cfg.Server.HTTPTLSCert != "")
 
 	go func() {
