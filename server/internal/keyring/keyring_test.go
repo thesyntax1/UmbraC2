@@ -83,8 +83,7 @@ func TestTheScopesNarrowTheRoleAndNeverWidenIt(t *testing.T) {
 		time.Time{}, []byte("bob-token-0123456789")); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	op, _ := ring.Operator("bob")
-	if ring.Allowed(op, "agents.kill") {
+	if ring.Allowed("bob", "agents.kill") {
 		t.Fatal("the scope widened the role")
 	}
 	// The wildcard means "no narrowing": the role decides.
@@ -92,11 +91,10 @@ func TestTheScopesNarrowTheRoleAndNeverWidenIt(t *testing.T) {
 		time.Time{}, nil); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	op, _ = ring.Operator("bob")
-	if !ring.Allowed(op, "agents.kill") {
+	if !ring.Allowed("bob", "agents.kill") {
 		t.Fatal("the wildcard did not leave the role in charge")
 	}
-	if ring.Allowed(op, "keys.rotate") {
+	if ring.Allowed("bob", "keys.rotate") {
 		t.Fatal("the operator may rotate the keys of the server")
 	}
 }
@@ -119,16 +117,14 @@ func TestATokenThatExpiredIsRefused(t *testing.T) {
 
 func TestTheScopesNarrowTheRole(t *testing.T) {
 	ring := testRing()
-	op, _ := ring.Operator("bob")
-	if !ring.Allowed(op, "agents.list") {
+	if !ring.Allowed("bob", "agents.list") {
 		t.Fatal("the scoped command was refused")
 	}
-	if ring.Allowed(op, "agents.kill") {
+	if ring.Allowed("bob", "agents.kill") {
 		t.Fatal("a command outside the scopes was allowed")
 	}
 	// An operator without scopes is judged by the role alone.
-	admin, _ := ring.Operator("alice")
-	if !ring.Allowed(admin, "agents.kill") {
+	if !ring.Allowed("alice", "agents.kill") {
 		t.Fatal("the admin was refused")
 	}
 }

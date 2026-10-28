@@ -412,8 +412,12 @@ func (k *Keyring) RemoveOperator(name string) bool {
 //
 // An operator without scopes is judged by the role alone, which is how a
 // deployment that never heard of scopes keeps working.
-func (k *Keyring) Allowed(op *Operator, cmd string) bool {
-	if op == nil {
+//
+// The answer comes from the live keyring, so a scope that was narrowed a
+// minute ago is already in force.
+func (k *Keyring) Allowed(name string, cmd string) bool {
+	op, ok := k.Operator(name)
+	if !ok {
 		return false
 	}
 	return Permits(op.Role, op.Scopes, cmd)

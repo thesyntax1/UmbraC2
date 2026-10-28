@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,9 +79,10 @@ func TestTheStoreRefusesTheWrongKey(t *testing.T) {
 	}
 	// The store refuses to open with another key: it does not pretend to
 	// be empty and it does not hand out garbage.
-	wrong, err := OpenEncrypted(dir, []byte("another key entirely"))
-	if err == nil {
+	if _, err := OpenEncrypted(dir, []byte("another key entirely")); err == nil {
 		t.Fatal("the store opened with the wrong key")
+	} else if !errors.Is(err, ErrWrongKey) {
+		t.Fatalf("the error is not the wrong-key error: %v", err)
 	}
 	if !strings.Contains(err.Error(), "key") {
 		t.Fatalf("the error does not mention the key: %v", err)

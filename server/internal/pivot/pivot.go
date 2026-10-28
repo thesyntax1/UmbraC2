@@ -375,7 +375,8 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 		"host": opt.Host, "port": int64(opt.Port), "claim": tun.claim,
 		"through": tun.through, "dns": dns, "path": tun.path, "pipe": tun.pipe,
 	}})
-	return m.info(tun), nil
+	info := m.info(tun)
+	return &info, nil
 }
 
 // peerAddr returns the peer address of an agent: where its peer listener
@@ -766,7 +767,7 @@ func (m *Manager) handle(tun *tunnel, conn net.Conn) {
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
-				if werr := stream.Write(buf[:n]); werr != nil {
+				if _, werr := stream.Write(buf[:n]); werr != nil {
 					break
 				}
 				tun.addUp(int64(n))
@@ -818,7 +819,7 @@ func (m *Manager) info(tun *tunnel) TunnelInfo {
 		Path:         append([]string(nil), tun.path...),
 		DNS:          tun.dns,
 		Pipe:         tun.pipe,
-		LastActivity: tun.lastActivity,
+		LastActivity: tun.lastActive,
 	}
 }
 

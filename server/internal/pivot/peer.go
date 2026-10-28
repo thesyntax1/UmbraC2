@@ -357,7 +357,7 @@ func (ps *peerSession) maybeRekey() error {
 		return nil
 	}
 	seed := make([]byte, 32)
-	if _, err := crypt.RandomBytes(seed); err != nil {
+	if _, err := crypt.RandomBytes(len(seed)); err != nil {
 		return err
 	}
 	frame, err := ps.sess.Encrypt(wire.MsgRekey, upk.Map{"seed": seed})
