@@ -98,6 +98,8 @@ Added on top of that core:
 | The pivot on a named pipe | On a Windows server the pivot may listen on a named pipe: no port, no firewall rule, nothing a scanner would see | [docs/PIVOTING.md](docs/PIVOTING.md#the-named-pipe) |
 | The layer-3 tunnel, finished | The peers have their addresses, the networks behind them are routed to them, the operator can ask a peer whether it is there, and a peer behind another agent joins its relay | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-layer-3-tunnel) |
 | The Go implant | A fourth implementation of the protocol, in the standard library of Go and with nothing else: it checks in, runs the sixteen task kinds it advertises and answers the ones it does not know with an error instead of a silence | [implant/go/README.md](implant/go/README.md) |
+| The phone | The Android implant is not a toy: a real foreground service with a notification, the persistence of the phone (boot receiver, foreground service, alarm) that is verified and can be taken away again, the tunnel, and a capability list that says what the phone can do | [docs/OPERATIONS.md](docs/OPERATIONS.md#3f-the-implants) |
+| The mac as a first-class target | The persistence, the registry equivalents (property lists, the defaults of a domain, the jobs of launchd) and the desktop (the screen, the clipboard, the keys) work on a mac as well | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-mac-is-a-first-class-target) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 TLS inside the implant binaries.

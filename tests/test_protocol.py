@@ -78,6 +78,34 @@ def read_text(relative: str) -> str:
         return fh.read()
 
 
+def wait_until(predicate, timeout: float = 10.0, poll: float = 0.02) -> bool:
+    """Wait for a condition instead of sleeping and hoping.
+
+    The suite must not depend on how fast the machine is: a test that
+    sleeps a fixed time is a test that is slow on a slow machine and
+    flaky on a fast one.  This waits for the thing it wants.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
+
+
+def wait_for(action, timeout: float = 10.0, poll: float = 0.05):
+    """Run an action until it stops raising, and return what it returned."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return action()
+        except Exception:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(poll)
+
+
 def test_upk_map_keys_are_sorted_and_unique():
     encoded = upk.encode({"z": 1, "a": 2, "m": 3})
     decoded = upk.decode_exact(encoded)
@@ -2158,7 +2186,8 @@ def test_the_proxy_refuses_a_denied_target():
         assert reply[1] == 0x02, reply
         conn.close()
 
-        time.sleep(0.3)
+        wait_until(lambda: any(c["state"] == "denied"
+                                for c in client.pivot_topology().get("connections", [])))
         topology = client.pivot_topology()
         connections = topology.get("connections", [])
         assert any(c["state"] == "denied" for c in connections), connections
@@ -2203,15 +2232,21 @@ def test_a_forward_survives_the_reconnect_of_its_agent():
             session = server.tunnel_sessions.get("agent-reach")
         assert session is not None
         session.close()
-        time.sleep(0.2)
 
         # The listener is still there and the next connection works: the
-        # session of the agent is taken again.
-        conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
-                               "127.0.0.1", target_port)
-        conn.sendall(b"second")
-        assert conn.recv(64) == b"second"
-        conn.close()
+        # session of the agent is taken again.  The agent needs a moment
+        # to notice that its session is gone, so the connection is retried
+        # until it goes through.
+        def _second_roundtrip():
+            conn = _socks5_connect(*tunnel["listen"].rsplit(":", 1),
+                                   "127.0.0.1", target_port)
+            try:
+                conn.sendall(b"second")
+                assert conn.recv(64) == b"second"
+            finally:
+                conn.close()
+
+        wait_for(_second_roundtrip, timeout=10)
         assert b"first" in seen and b"second" in seen
     finally:
         client.close()
@@ -4331,8 +4366,8 @@ def test_the_console_writes_a_report_about_an_agent():
         deadline = time.time() + 5
         while time.time() < deadline and not client.agents():
             time.sleep(0.05)
-        client.submit("agent-report", "sysinfo", {})
-        time.sleep(0.6)
+        report_task = client.submit("agent-report", "sysinfo", {})
+        client.wait_for_result(report_task, timeout=10, poll=0.05)
         text = build_report(client, "agent-report", 20)
         assert text.startswith("# agent-report")
         assert "## The host" in text
@@ -4362,7 +4397,7 @@ def test_the_journal_keeps_what_a_console_missed():
         while time.time() < deadline and not client.agents():
             time.sleep(0.05)
         client.submit("agent-journal", "sysinfo", {})
-        time.sleep(0.6)
+        wait_until(lambda: client.events(0, 200).get("events"))
 
         res = client.events(0, 200)
         rows = res.get("events") or []
@@ -4490,7 +4525,7 @@ def test_the_engagement_can_be_wiped_at_the_end():
         while time.time() < deadline and not client.agents():
             time.sleep(0.05)
         client.submit("agent-wipe", "sysinfo", {})
-        time.sleep(0.4)
+        wait_until(lambda: client.tasks("agent-wipe", 10))
         assert client.agents()
         assert client.tasks("agent-wipe", 10)
 
@@ -4580,8 +4615,8 @@ def test_the_console_writes_the_report_of_the_whole_engagement():
         deadline = time.time() + 5
         while time.time() < deadline and not client.agents():
             time.sleep(0.05)
-        client.submit("agent-engagement", "sysinfo", {})
-        time.sleep(0.6)
+        engagement_task = client.submit("agent-engagement", "sysinfo", {})
+        client.wait_for_result(engagement_task, timeout=10, poll=0.05)
         text = build_engagement_report(client, 20)
         assert text.startswith("# The engagement")
         assert "## The hosts" in text
@@ -6772,8 +6807,8 @@ def test_the_handover_document_tells_the_whole_story():
         while time.time() < deadline and not client.agents():
             time.sleep(0.05)
 
-        client.submit("agent-handover", "recon", {"profile": "windows"})
-        time.sleep(0.5)
+        handover_task = client.submit("agent-handover", "recon", {"profile": "windows"})
+        client.wait_for_result(handover_task, timeout=20, poll=0.05)
 
         payload = client.team_handover()
         assert payload["by"] == "alice", payload
@@ -7978,3 +8013,161 @@ def test_the_macos_path_is_not_a_windows_story():
     assert "screencapture" in desktop
     assert "pbpaste" in desktop
     assert "CGEventTapCreate" in desktop
+
+
+# ---------------------------------------------------------------------------
+# 13. The standard the suite holds itself to
+# ---------------------------------------------------------------------------
+def _run_tool(name: str) -> tuple:
+    """Run one of the tools of the repository and report what it said."""
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "tools", name)],
+        capture_output=True, text=True, timeout=180,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _checker_module(name: str):
+    """Load one of the checkers, so the tests can ask it a question."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name.replace(".", "_"), os.path.join(ROOT, "tools", name)
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_three_checkers_agree_on_the_tree():
+    """The static checks are part of the suite.
+
+    The invariants between the implementations are not a thing the CI
+    remembers to run: they are checked by the same run that proves the
+    behaviour, so a drift cannot pass the suite and fail the pipeline.
+    """
+    for name in ("check_consistency.py", "check_symbols.py", "check_go_symbols.py"):
+        code, out = _run_tool(name)
+        assert code == 0, f"{name} says no:\n{out}"
+
+
+def test_every_documented_rpc_answers_on_the_mock_server():
+    """The whole RPC surface answers.
+
+    Every command the protocol document lists is sent to the reference
+    server.  A command may be refused -- the arguments of the test are
+    empty -- but it has to say why, and it has to answer at all: a
+    command that is silently ignored is a command the operator cannot
+    trust.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    commands = _checker_module("check_consistency.py").doc_rpc_commands()
+    assert len(commands) >= 80, "the protocol document lost its commands"
+
+    token = b"operator-token-surface-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = None
+    try:
+        client = OperatorClient(server.address, token.decode(), "alice", timeout=20)
+        client.connect()
+        for cmd in sorted(commands):
+            res = client.rpc(cmd, {})
+            if not res.ok:
+                assert res.error, f"{cmd} failed without a reason"
+    finally:
+        if client is not None:
+            client.close()
+        server.stop()
+
+
+def test_the_mock_server_refuses_what_the_role_may_not_do():
+    """The refusal path: a viewer is refused, and the refusal says why."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    admin_token = b"operator-token-admin-0123456789ab"
+    viewer_token = b"operator-token-viewer-0123456789a"
+    server = MockServer(
+        AGENT_PSK,
+        {"admin": admin_token, "viewer": viewer_token},
+        roles={"admin": "admin", "viewer": "viewer"},
+    )
+    server.start()
+    client = None
+    try:
+        client = OperatorClient(server.address, viewer_token.decode(), "viewer", timeout=20)
+        client.connect()
+        res = client.rpc("agents.kill", {"id": "nobody"})
+        assert not res.ok
+        assert "permission denied" in res.error
+        # A command a viewer may run still works.
+        res = client.rpc("whoami", {})
+        assert res.ok
+        assert res.data.get("role") == "viewer"
+    finally:
+        if client is not None:
+            client.close()
+        server.stop()
+
+
+def test_no_test_in_the_suite_asserts_nothing():
+    """A test that asserts nothing is a test that always passes.
+
+    The suite is the proof of the mandate, so a test that cannot fail is
+    worse than no test at all: it looks like evidence and it is not.
+    """
+    import ast
+
+    tree = ast.parse(read_text("tests/test_protocol.py"))
+    empty = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        asserted = any(isinstance(n, ast.Assert) for n in ast.walk(node))
+        expected = any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "raises"
+            for n in ast.walk(node)
+        )
+        if not (asserted or expected):
+            empty.append(node.name)
+    assert not empty, f"tests that assert nothing: {empty}"
+
+
+def test_the_suite_waits_for_what_it_wants():
+    """The suite does not sleep and hope.
+
+    A fixed sleep before a check is a test that is slow on a slow
+    machine and flaky on a fast one.  The only sleep that is left is the
+    one that widens a window on purpose.
+    """
+    import ast
+
+    tree = ast.parse(read_text("tests/test_protocol.py"))
+    inside_loops = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.While, ast.For)):
+            for sub in ast.walk(node):
+                inside_loops.add(id(sub))
+    strays = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "sleep":
+            continue
+        if id(node) in inside_loops:
+            continue
+        # The one sleep that is not a wait: it widens the window of a
+        # race on purpose.
+        if "widen the window on purpose" in read_text("tests/test_protocol.py").splitlines()[node.lineno - 1]:
+            continue
+        strays.append(node.lineno)
+    assert not strays, f"sleeps that wait for nothing: {strays}"
