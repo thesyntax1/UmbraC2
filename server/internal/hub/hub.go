@@ -63,6 +63,9 @@ type Operator struct {
 	Transport string
 	// Role is the authorisation level resolved from the keyring.
 	Role string
+	// Scopes are the commands this operator may call.  An empty list
+	// means the role decides; a list narrows it.
+	Scopes []string
 	// Focus is the agent this console is currently working on. It is how a
 	// team avoids three operators reading the same shell history at once.
 	Focus   string
@@ -96,6 +99,9 @@ type OperatorInfo struct {
 	Stale bool `json:"stale"`
 	// ExpiresAt is when the presence of this console expires.
 	ExpiresAt string `json:"expires_at,omitempty"`
+	// Scopes are the commands this console may call.  An empty list means
+	// the role decides; a list narrows it.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // Live describes a currently connected agent.
@@ -323,11 +329,11 @@ func (h *Hub) Chat(limit int) []ChatMessage {
 // New creates a hub.
 func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Hub {
 	return &Hub{
-		cfg:     cfg,
-		store:   st,
-		log:     log,
-		live:    make(map[string]*Live),
-		subs:    make(map[int64]*Operator),
+		cfg:        cfg,
+		store:      st,
+		log:        log,
+		live:       make(map[string]*Live),
+		subs:       make(map[int64]*Operator),
 		cancels:    make(map[string][]string),
 		chains:     make(map[string]*Chain),
 		chainTasks: make(map[string]string),
@@ -1278,7 +1284,7 @@ func containsString(list []string, value string) bool {
 }
 
 // Subscribe registers an operator event stream.
-func (h *Hub) Subscribe(name, role, peer, transport string) *Operator {
+func (h *Hub) Subscribe(name, role, peer, transport string, scopes ...string) *Operator {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.nextSub++
@@ -1290,6 +1296,7 @@ func (h *Hub) Subscribe(name, role, peer, transport string) *Operator {
 		Peer:      peer,
 		Transport: transport,
 		Role:      role,
+		Scopes:    append([]string(nil), scopes...),
 		LastSeen:  time.Now().UTC(),
 	}
 	h.subs[op.ID] = op
@@ -1573,6 +1580,7 @@ func (h *Hub) Operators() []OperatorInfo {
 			ID:        op.ID,
 			Name:      op.Name,
 			Role:      op.Role,
+			Scopes:    append([]string(nil), op.Scopes...),
 			Peer:      op.Peer,
 			Transport: op.Transport,
 			Since:     op.Since.Format(time.RFC3339),
@@ -1809,16 +1817,16 @@ func (h *Hub) Stats() map[string]any {
 
 func agentData(a *store.Agent) map[string]any {
 	d := map[string]any{
-		"id":         a.ID,
-		"host":       a.Host,
-		"os":         a.OS,
-		"arch":       a.Arch,
-		"user":       a.User,
-		"pid":        a.PID,
-		"version":    a.Version,
-		"integrity":  a.Integrity,
-		"transport":  a.Transport,
-		"addr":       a.Addr,
+		"id":        a.ID,
+		"host":      a.Host,
+		"os":        a.OS,
+		"arch":      a.Arch,
+		"user":      a.User,
+		"pid":       a.PID,
+		"version":   a.Version,
+		"integrity": a.Integrity,
+		"transport": a.Transport,
+		"addr":      a.Addr,
 		// The peer address of the beacon: where a chained pivot can
 		// reach it.
 		"p2p":        a.P2P,

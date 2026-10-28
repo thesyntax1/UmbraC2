@@ -242,7 +242,7 @@ func (s *Server) handleBeaconWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream := &wsStream{conn: conn, br: brw.Reader}
-	sess, info, err := Handshake(stream, s.Cfg, log, addr)
+	sess, info, err := Handshake(stream, s.Cfg, s.Keys, log, addr)
 	if err != nil {
 		s.guard.Fail(addr)
 		log.Warn("handshake failed", "err", err)

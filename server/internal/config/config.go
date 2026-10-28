@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,6 +133,12 @@ type Server struct {
 	VaultKey    string `json:"vault_key"`
 	VaultKeyEnv string `json:"vault_key_env"`
 
+	// ArtifactKey encrypts the blobs of the artifact store at rest.
+	// Without it the store keeps the files in the clear, which is the
+	// historical behaviour and is fine for a lab.
+	ArtifactKey    string `json:"artifact_key"`
+	ArtifactKeyEnv string `json:"artifact_key_env"`
+
 	DataFile string `json:"data_file"`
 	// AuditFile receives one JSON line per operator command. Empty disables
 	// auditing; keep it enabled anywhere a human can type.
@@ -231,6 +238,15 @@ type Keyring struct {
 	// with a token but no role gets DefaultOperatorRole, which is the
 	// least-surprising thing for an existing deployment.
 	Roles map[string]string
+	// Scopes maps operator identity -> the commands it may call.
+	//
+	// An empty list means the role decides.  A list narrows the role: the
+	// operator may call what is in the list and nothing else.  It is the
+	// difference between "an operator" and "an operator who may only look
+	// at the inventory".
+	Scopes map[string][]string
+	// Expires maps operator identity -> when the token stops working.
+	Expires map[string]time.Time
 }
 
 // DefaultOperatorRole is used when a token is configured without a role.
@@ -261,6 +277,7 @@ func Default() *Config {
 		AgentPSK:        "UMBRA_AGENT_PSK",
 		OperatorToken:   []string{"UMBRA_OPERATOR_TOKENS"},
 		VaultKeyEnv:     "UMBRA_VAULT_KEY",
+		ArtifactKeyEnv:  "UMBRA_ARTIFACT_KEY",
 		DataFile:        "data/state.json",
 		AuditFile:       "data/audit.jsonl",
 		AuditMaxSizeMB:  8,
@@ -277,7 +294,7 @@ func Default() *Config {
 		TaskTimeoutSec:  300,
 		MaxTaskBatch:    DefaultMaxTaskBatch,
 		MaxQueuedTasks:  DefaultMaxQueuedTasks,
-		Queue: Queue{
+		Queue:           Queue{
 			MaxInFlightPerAgent:         DefaultMaxInFlightPerAgent,
 			MaxDeliverPerMinutePerAgent: DefaultMaxDeliverPerMinutePerAgent,
 			MaxDeliverPerSecond:         DefaultMaxDeliverPerSecond,
@@ -285,8 +302,8 @@ func Default() *Config {
 			BreakerThreshold:            DefaultBreakerThreshold,
 			BreakerCooldownSec:          DefaultBreakerCooldownSec,
 		},
-		MaxClockSkewS:   300,
-		SessionTimeout:  300,
+		MaxClockSkewS:  300,
+		SessionTimeout: 300,
 	}}
 }
 
@@ -311,6 +328,8 @@ func Load(path string) (*Config, error) {
 func (c *Config) loadKeys() error {
 	c.Keyring.Operators = map[string][]byte{}
 	c.Keyring.Roles = map[string]string{}
+	c.Keyring.Scopes = map[string][]string{}
+	c.Keyring.Expires = map[string]time.Time{}
 
 	agentPSK := os.Getenv(c.Server.AgentPSK)
 	if agentPSK == "" && c.Server.PSKFile != "" {
@@ -330,6 +349,12 @@ func (c *Config) loadKeys() error {
 		c.Server.VaultKey = strings.TrimSpace(os.Getenv(c.Server.VaultKeyEnv))
 	}
 
+	// The artifact key: from the environment or from the configuration
+	// itself.  It protects the files the operator stored on the server.
+	if c.Server.ArtifactKey == "" && c.Server.ArtifactKeyEnv != "" {
+		c.Server.ArtifactKey = strings.TrimSpace(os.Getenv(c.Server.ArtifactKeyEnv))
+	}
+
 	for _, envName := range c.Server.OperatorToken {
 		raw := os.Getenv(envName)
 		for _, pair := range strings.Split(raw, ",") {
@@ -338,15 +363,34 @@ func (c *Config) loadKeys() error {
 				continue
 			}
 			// Accepted forms:
-			//   name:token              role defaults to operator
-			//   name:role:token         role is admin/operator/viewer
-			fields := strings.SplitN(pair, ":", 3)
+			//   name:token                    role defaults to operator
+			//   name:role:token               role is admin/operator/viewer
+			//   name:role:scopes:token        the scopes narrow the role
+			//   name:role:scopes:expires:token   and the token may expire
+			//
+			// The scopes are a comma separated list of command names (or
+			// "*" for "whatever the role allows"), and the expiry is a
+			// unix time in seconds.
+			fields := strings.SplitN(pair, ":", 5)
 			name, role, token := "", DefaultOperatorRole, ""
+			var scopes []string
+			var expires time.Time
 			switch len(fields) {
 			case 2:
 				name, token = fields[0], fields[1]
 			case 3:
 				name, role, token = fields[0], fields[1], fields[2]
+			case 4:
+				name, role, token = fields[0], fields[1], fields[3]
+				scopes = splitScopes(fields[2])
+			case 5:
+				name, role, token = fields[0], fields[1], fields[4]
+				scopes = splitScopes(fields[2])
+				seconds, err := strconv.ParseInt(strings.TrimSpace(fields[3]), 10, 64)
+				if err != nil {
+					return fmt.Errorf("config: %s entry %q has an expiry that is not a unix time", envName, pair)
+				}
+				expires = time.Unix(seconds, 0).UTC()
 			default:
 				return fmt.Errorf("config: %s entry %q must be name:token or name:role:token", envName, pair)
 			}
@@ -357,11 +401,38 @@ func (c *Config) loadKeys() error {
 				return fmt.Errorf("config: %s operator %q has unknown role %q (want one of %v)",
 					envName, name, role, rbac.Roles)
 			}
+			for _, scope := range scopes {
+				if scope == "*" {
+					continue
+				}
+				if !rbac.Known(scope) {
+					return fmt.Errorf("config: %s operator %q has the unknown scope %q", envName, name, scope)
+				}
+			}
 			c.Keyring.Operators[name] = []byte(token)
 			c.Keyring.Roles[name] = role
+			if len(scopes) > 0 {
+				c.Keyring.Scopes[name] = scopes
+			}
+			if !expires.IsZero() {
+				c.Keyring.Expires[name] = expires
+			}
 		}
 	}
 	return nil
+}
+
+// splitScopes splits a comma separated list of command names.
+func splitScopes(raw string) []string {
+	out := make([]string, 0, 4)
+	for _, scope := range strings.Split(raw, ",") {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			continue
+		}
+		out = append(out, scope)
+	}
+	return out
 }
 
 // Validate checks invariants that would otherwise fail at runtime.

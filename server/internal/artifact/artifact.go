@@ -18,6 +18,10 @@
 package artifact
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,7 +56,20 @@ var (
 	ErrOffset         = errors.New("artifact: chunk is out of order")
 	ErrBadName        = errors.New("artifact: bad name")
 	ErrStoreFull      = errors.New("artifact: the store is full")
+	// ErrWrongKey is what a store says when the key does not fit the
+	// data.  It is a refusal, not a guess: the store would rather say
+	// nothing than hand out garbage.
+	ErrWrongKey = errors.New("artifact: the key does not open this store")
 )
+
+// envelope is the magic that starts every encrypted blob.
+//
+// A file that does not start with it is either a plain store or somebody
+// else's file, and both are refused rather than misread.
+const envelope = "UMB1"
+
+// nonceSize is the size of the nonce of the envelope.
+const nonceSize = 12
 
 // Entry describes one stored artifact.
 type Entry struct {
@@ -82,8 +99,19 @@ type upload struct {
 }
 
 // Store keeps artifacts on disk.
+//
+// The store can keep its blobs in the clear or sealed with a key.  When a
+// key is set, every blob is written as an authenticated envelope: the
+// bytes are encrypted with AES-256-GCM under a key derived from the
+// configured one, and a blob that does not authenticate is refused.  A
+// wrong key never returns garbage: it returns an error.
 type Store struct {
 	dir string
+
+	// key is the seal key, empty when the store is in the clear.
+	key []byte
+	// aead is the cipher built from the key.
+	aead cipher.AEAD
 
 	mu      sync.RWMutex
 	entries map[string]Entry
@@ -91,7 +119,27 @@ type Store struct {
 }
 
 // Open opens (and creates) a store rooted at dir.
+//
+// The store keeps its files in the clear; use OpenEncrypted when the
+// operator asked for the files to be sealed.
 func Open(dir string) (*Store, error) {
+	return openStore(dir, nil)
+}
+
+// OpenEncrypted opens a store whose blobs are sealed with key.
+//
+// The key is the one from the configuration.  It is stretched into a
+// 256-bit key with SHA-256, which is what the server does with the vault
+// key as well: one passphrase, one derivation, no ambiguity.
+func OpenEncrypted(dir string, key []byte) (*Store, error) {
+	if len(key) == 0 {
+		return nil, errors.New("artifact: no key")
+	}
+	return openStore(dir, key)
+}
+
+// openStore opens a store, optionally sealed.
+func openStore(dir string, key []byte) (*Store, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("artifact: no directory")
 	}
@@ -107,23 +155,60 @@ func Open(dir string) (*Store, error) {
 		entries: make(map[string]Entry),
 		pending: make(map[string]*upload),
 	}
-	s.load()
+	if len(key) > 0 {
+		derived := sha256.Sum256(key)
+		block, err := aes.NewCipher(derived[:])
+		if err != nil {
+			return nil, fmt.Errorf("artifact: %w", err)
+		}
+		aead, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, fmt.Errorf("artifact: %w", err)
+		}
+		s.key = append([]byte(nil), derived[:]...)
+		s.aead = aead
+	}
+	if err := s.load(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
+
+// Encrypted reports whether the store seals its blobs.
+func (s *Store) Encrypted() bool { return s != nil && s.aead != nil }
 
 // Dir returns the directory the store lives in.
 func (s *Store) Dir() string { return s.dir }
 
-// load reads the index from disk. A missing or broken index is not fatal:
-// the store starts empty and the blobs on disk stay where they are.
-func (s *Store) load() {
+// load reads the index from disk.
+//
+// A missing or broken index is not fatal for a store in the clear: the
+// store starts empty and the blobs on disk stay where they are.  A sealed
+// store is different: if the index is there and the key does not open it,
+// the store refuses to open at all.  A store that cannot be read must not
+// pretend it is empty.
+func (s *Store) load() error {
 	raw, err := os.ReadFile(s.indexPath())
 	if err != nil {
-		return
+		return nil
+	}
+	if s.aead != nil {
+		plain, err := s.open(raw)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrWrongKey, err)
+		}
+		raw = plain
+	} else if bytes.HasPrefix(raw, []byte(envelope)) {
+		// The index is sealed and this store has no key: refusing is the
+		// only honest answer.
+		return fmt.Errorf("%w: the index is sealed", ErrWrongKey)
 	}
 	var idx index
 	if err := json.Unmarshal(raw, &idx); err != nil {
-		return
+		if s.aead != nil {
+			return fmt.Errorf("artifact: the index is broken: %w", err)
+		}
+		return nil
 	}
 	for _, e := range idx.Artifacts {
 		if e.Name == "" || e.SHA256 == "" {
@@ -131,6 +216,7 @@ func (s *Store) load() {
 		}
 		s.entries[e.Name] = e
 	}
+	return nil
 }
 
 // save writes the index. The caller holds the lock.
@@ -148,11 +234,55 @@ func (s *Store) save() {
 	if err != nil {
 		return
 	}
+	if s.aead != nil {
+		raw, err = s.seal(raw)
+		if err != nil {
+			return
+		}
+	}
 	tmp := s.indexPath() + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o640); err != nil {
 		return
 	}
 	_ = os.Rename(tmp, s.indexPath())
+}
+
+// seal encrypts bytes into the envelope.
+func (s *Store) seal(plain []byte) ([]byte, error) {
+	if s.aead == nil {
+		return plain, nil
+	}
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("artifact: no randomness: %w", err)
+	}
+	out := make([]byte, 0, len(envelope)+len(nonce)+len(plain)+16)
+	out = append(out, envelope...)
+	out = append(out, nonce...)
+	return s.aead.Seal(out, nonce, plain, nil), nil
+}
+
+// open decrypts an envelope.
+//
+// A blob that does not authenticate is refused: the caller gets an error,
+// never the bytes it thinks it decrypted.
+func (s *Store) open(sealed []byte) ([]byte, error) {
+	if s.aead == nil {
+		return sealed, nil
+	}
+	if len(sealed) < len(envelope)+nonceSize+16 {
+		return nil, ErrWrongKey
+	}
+	if string(sealed[:len(envelope)]) != envelope {
+		return nil, fmt.Errorf("%w: the file is not a sealed artifact", ErrWrongKey)
+	}
+	nonce := sealed[len(envelope) : len(envelope)+nonceSize]
+	body := sealed[len(envelope)+nonceSize:]
+	plain, err := s.aead.Open(nil, nonce, body, nil)
+	if err != nil {
+		return nil, ErrWrongKey
+	}
+	return plain, nil
 }
 
 func (s *Store) indexPath() string { return filepath.Join(s.dir, "index.json") }
@@ -192,6 +322,15 @@ func (s *Store) Read(name string) ([]byte, Entry, error) {
 	raw, err := os.ReadFile(s.blobPath(e.SHA256))
 	if err != nil {
 		return nil, Entry{}, fmt.Errorf("artifact: %w", err)
+	}
+	if s.aead != nil {
+		plain, err := s.open(raw)
+		if err != nil {
+			return nil, Entry{}, err
+		}
+		raw = plain
+	} else if bytes.HasPrefix(raw, []byte(envelope)) {
+		return nil, Entry{}, fmt.Errorf("%w: the blob is sealed", ErrWrongKey)
 	}
 	return raw, e, nil
 }
@@ -371,6 +510,13 @@ func (s *Store) writeBlob(digest string, data []byte) error {
 	path := s.blobPath(digest)
 	if _, err := os.Stat(path); err == nil {
 		return nil
+	}
+	if s.aead != nil {
+		sealed, err := s.seal(data)
+		if err != nil {
+			return err
+		}
+		data = sealed
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o640); err != nil {

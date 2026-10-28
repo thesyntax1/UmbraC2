@@ -77,7 +77,7 @@ func (s *Server) HandleBatch(agentID, transport string, in []byte) ([]byte, erro
 	if bs == nil {
 		stream := &batchStream{in: rest}
 		log := s.Log.With("peer", agentID, "transport", transport)
-		sess, info, err := Handshake(stream, s.Cfg, log, agentID)
+		sess, info, err := Handshake(stream, s.Cfg, s.Keys, log, agentID)
 		if err != nil {
 			return nil, err
 		}

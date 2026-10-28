@@ -1326,6 +1326,48 @@ A host that is still on the first version does not send heartbeats, so
 the inventory shows no heartbeat for it.  That is the only difference
 an operator sees.
 
+## 5j. Rotating the credentials without a restart
+
+The credentials of the server can be replaced while it runs.  The old one
+keeps working for thirty minutes, so nothing that is asleep is locked out.
+
+```bash
+# The key the beacons authenticate with.  The answer holds the new key.
+umbra --server 127.0.0.1:4002 --operator alice keys rotate
+
+# A key the operator brings, from a key management system.  The file
+# keeps the secret out of the process list.
+umbra --server 127.0.0.1:4002 --operator alice keys rotate \
+    --psk-file /etc/umbra/agent.psk
+
+# The token of one operator, narrowed to what it may do.
+umbra --server 127.0.0.1:4002 --operator alice tokens rotate bob \
+    --role operator --scope agents.list --scope server.stats
+
+# The state of every token: the role, the scopes, the expiry, the last use.
+umbra --server 127.0.0.1:4002 --operator alice tokens list
+```
+
+**The order of a rotation.**  The new agent key has to reach the beacons:
+write it into their configuration (or into the route the server pushes) and
+let them check in again.  The old key works until the overlap is over, so
+there is no rush — but the old key must not stay in the configuration of
+the fleet for longer than the overlap.
+
+**The scopes are a promise.**  A token with scopes may call what is in
+the list and what its role allows, and nothing else.  Give an analyst
+the scopes `agents.list`, `task.list` and `audit.tail`, and nothing
+else.  The scopes are read on every call, so taking one away takes
+effect at once — the console that is already connected loses it too.
+
+**The expiry.**  `tokens.rotate` takes a unix time; a token that has
+expired is refused at the handshake, not at the first call.
+
+**The role is not changed by accident.**  `tokens.rotate` without a
+`--role` keeps the role the operator already had.  A rotation that
+quietly demoted an admin to an operator would be a surprise of the
+worst kind.
+
 ## 6. Monitoring
 
 ```bash

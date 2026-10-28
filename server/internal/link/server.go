@@ -18,8 +18,9 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
-	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
+	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
@@ -30,6 +31,12 @@ type Server struct {
 	Cfg *config.Config
 	Hub *hub.Hub
 	Log *slog.Logger
+
+	// Keys is the runtime keyring: the credentials the server accepts and
+	// the ones it accepts while a rotation is settling.  It is built out
+	// of the configuration at start-up and rotated by the `keys.rotate`
+	// and `tokens.rotate` commands, without a restart.
+	Keys *keyring.Keyring
 
 	guard *guard
 	audit *audit.Logger
@@ -80,6 +87,7 @@ func New(cfg *config.Config, h *hub.Hub, log *slog.Logger) *Server {
 		Cfg:           cfg,
 		Hub:           h,
 		Log:           log,
+		Keys:          keyring.FromConfig(cfg.Keyring),
 		guard:         newGuard(4096, 10*time.Minute),
 		httpSessions:  make(map[string]*httpSession),
 		batchSessions: make(map[string]*batchSession),

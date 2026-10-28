@@ -59,6 +59,134 @@ func Clip(s string) string {
 	return string(r[:MaxFieldLen]) + "…"
 }
 
+// Redacted is what a secret looks like in the log.
+const Redacted = "[redacted]"
+
+// secretNames are the argument names whose value is a secret.
+//
+// The list is by name, not by value: the audit trail must be able to say
+// *that* a credential was stored without saying what it was, and a value
+// that looks like a secret is not a reliable signal (a password can be
+// "x", a note can look like a token).
+var secretNames = map[string]bool{
+	"token":         true,
+	"tokens":        true,
+	"psk":           true,
+	"password":      true,
+	"pass":          true,
+	"secret":        true,
+	"secrets":       true,
+	"credential":    true,
+	"credentials":   true,
+	"key":           true,
+	"keys":          true,
+	"api_key":       true,
+	"private_key":   true,
+	"session_key":   true,
+	"vault_key":     true,
+	"enc_key":       true,
+	"encryption":    true,
+	"content":       true,
+	"contents":      true,
+	"data":          true,
+	"body":          true,
+	"value":         true,
+	"auth":          true,
+	"authorization": true,
+	"nonce":         true,
+}
+
+// secretKinds are the task kinds whose arguments are secret in full.
+//
+// A task that reads a file or stores a credential carries its material in
+// an argument whose name nobody can guess, so the whole argument map is
+// redacted for them.
+var secretKinds = map[string]bool{
+	"creds.add":    true,
+	"creds.import": true,
+	"cred.add":     true,
+	"file.read":    true,
+	"file.write":   true,
+	"upload":       true,
+	"exfil":        true,
+}
+
+// Redact returns a copy of the arguments with the secrets removed.
+//
+// It is used for the audit trail, and it is deliberately conservative: a
+// secret is never written to the log, even when the log is the only place
+// the operator would look for it.
+func Redact(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		if secretNames[strings.ToLower(k)] {
+			out[k] = Redacted
+			continue
+		}
+		out[k] = redactValue(v)
+	}
+	return out
+}
+
+// redactValue redacts the secret-bearing parts of a nested value.
+func redactValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return Redact(x)
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, item := range x {
+			out = append(out, redactValue(item))
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// RedactArgs redacts the arguments of a command.
+//
+// The command may be an RPC ("task.submit") or a task kind ("creds.add").
+// Both are known: the secret kinds are the ones whose arguments carry
+// material in full, and a task submitted through "task.submit" is
+// redacted as a whole when its kind is one of them.
+func RedactArgs(cmd string, args map[string]any) map[string]any {
+	kind := strings.TrimSpace(cmd)
+	if secretKinds[kind] {
+		// The whole argument map is secret: only the keys survive, so
+		// the log still says what was attempted.
+		return redactAll(args)
+	}
+	out := Redact(args)
+	// A task that is queued carries its own arguments, and the kind
+	// that says whether they are secret in full.
+	if taskKind, ok := args["kind"].(string); ok && secretKinds[strings.TrimSpace(taskKind)] {
+		if inner, ok := args["args"].(map[string]any); ok {
+			out["args"] = redactAll(inner)
+		} else if _, present := args["args"]; present {
+			// The arguments are not a map: they are still the
+			// material of a secret task, so they go away whole.
+			out["args"] = Redacted
+		}
+	}
+	return out
+}
+
+// redactAll redacts every value of a map and keeps the keys.
+func redactAll(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k := range args {
+		out[k] = Redacted
+	}
+	return out
+}
+
 // Logger appends entries to a file. A nil *Logger is valid and does nothing,
 // so callers never need to check whether auditing is enabled.
 type Logger struct {

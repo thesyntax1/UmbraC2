@@ -518,7 +518,7 @@ Operator RPC commands, with the minimum role each requires:
 | `server.stats` | viewer | counters, including `events_dropped` |
 | `agents.list` | viewer | inventory; optional filters: `state`, `transport`, `os`, `arch`, `tag`, `user` |
 | `agents.info` | viewer | one agent and its recent tasks |
-| `operators.list` | viewer | connected consoles: focus agent, idle time, queue depth |
+| `operators.list` | viewer | connected consoles: role, scopes, focus agent, idle time, queue depth |
 | `task.get` | viewer | one task |
 | `task.list` | viewer | tasks; optional filters: `id` (agent), `kind`, `state` |
 | `audit.tail` | viewer | recent operator actions |
@@ -594,6 +594,9 @@ Operator RPC commands, with the minimum role each requires:
 | `workflow.remove` | operator | take a workflow out of the catalogue |
 | `workflow.run` | operator | start a workflow: `name`, `params`; the run happens on the server and the answer is a run id |
 | `workflow.status` | viewer | the state of one run: the steps, their answers and the report they wrote |
+| `keys.rotate` | admin | replace the key the beacons authenticate with: `target` (`agent`), optional `psk` (a key the operator brings, at least 16 characters); the new key is in the answer, the previous one keeps working for the overlap |
+| `tokens.rotate` | admin | replace the token of one operator: `operator`, optional `role`, `scopes` (the commands it may call), `expires_at` (a unix time) and optional `token` (generated when empty) |
+| `tokens.list` | viewer | the operator tokens and their state: the role, the scopes, the expiry, the last use; never the token itself |
 
 ### 7.2a Selecting agents
 
@@ -1308,6 +1311,63 @@ cycle, never between the `CHECKIN` and the batch.  The server may rotate
 the session keys right after the check-in (§6), and a frame that is sent
 in between is sealed with the old keys — the server cannot read it, and
 the session is over.
+
+### 7.2q The credentials of the server
+
+The server holds three kinds of credential: the agent PSK, the operator
+tokens and the TLS key pair.  All three can be replaced while the server
+runs, and the replacement never locks the fleet out.
+
+**The overlap.**  A rotation does not throw the old credential away: it
+keeps working for a while (thirty minutes by default).  The reason is
+practical — a beacon may sleep for five minutes and a console may have
+been closed since the night before.  The old credential is accepted until
+the overlap is over, and then it is not.
+
+**The agent PSK.**  `keys.rotate {target: "agent"}` replaces the key the
+beacons authenticate with.  The answer holds the new key; the operator
+writes it into the configuration of the beacons (or into the route the
+server pushes) and the fleet catches up on its own.  Until then the old
+key still works.
+
+The new key is a **text**: the random bytes are hex encoded, so what the
+operator copies is exactly the bytes the server checks.  The optional
+`psk` argument replaces the key with one the operator brings — a key
+management system that hands it out — instead of a generated one; it
+must be at least 16 characters.
+
+**The operator tokens.**  `tokens.rotate {operator, role, scopes,
+expires_at}` replaces the token of one operator.  The scopes are the
+commands the token may call and the expiry is a unix time in seconds; the
+new token is in the answer and the old one keeps working for the
+overlap.  An operator that does not exist yet is created, so a new
+analyst can be given a token without restarting the server.
+
+**The scopes.**  A token without scopes is judged by its role alone
+(`admin`, `operator`, `viewer`), which is the historical behaviour.  A
+token with scopes is judged by both: it may call what is in the list
+**and** what its role allows, and nothing else.  The scopes narrow the
+role; they never widen it.  The scope `*` means "no narrowing", so the
+role alone decides.  A scope that names a command nobody has heard of is
+refused when it is set, not silently ignored later.
+
+The scopes are read from the keyring on every call, so narrowing the
+scopes of a token takes effect immediately: a console that is already
+connected loses the permission the moment it is taken away.
+
+`tokens.list` shows the state of the tokens — the role, the scopes, the
+expiry, the last use and when they were rotated — and never the tokens
+themselves.
+
+**The last use.**  Every token carries the moment it was last used: the
+last time it authenticated, or the last time it made a call.  A call
+that was refused does not count.  A token that has not been used in a
+month is a token nobody needs.
+
+**The TLS key pair.**  The certificate of the mutual TLS listener is read
+from the files at every handshake, so a renewed certificate is in use
+after the next connection.  A file that is half written is refused and
+the certificate that is already in use stays.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

@@ -1685,6 +1685,21 @@ class Console:
             elif cmd == "queue":
                 print_queue(self.client.queue())
                 return True
+            elif cmd == "keys":
+                # The key of the beacons, replaced while the server runs.
+                # A second argument is a file the key is read from, so a
+                # key that must not be typed does not have to be.
+                target = rest[0] if rest else "agent"
+                psk = read_secret("", rest[1]) if len(rest) > 1 else ""
+                answer = self.client.rotate_keys(target, psk)
+                print(f"the new agent key is {answer.get('psk', '')}")
+                print(f"the previous key works for {answer.get('overlap', 0)} seconds")
+                return True
+            elif cmd == "tokens":
+                # The tokens of the operators and their state.
+                rows = self.client.tokens()
+                print_tokens(rows)
+                return True
             elif cmd == "priority" and len(rest) >= 2:
                 answer = self.client.set_priority(rest[0], int(rest[1]))
                 print(f"task {answer.get('task_id', '')} has priority "
@@ -2094,6 +2109,23 @@ def print_queue(payload: Dict[str, Any]) -> None:
                  for row in dead]))
 
 
+def print_tokens(rows: List[Dict[str, Any]]) -> None:
+    """Render the operator tokens: who has one, what it may do, until when."""
+    if not rows:
+        print("there is no operator token")
+        return
+    table_rows = []
+    for row in rows:
+        expires = int(row.get("expires", 0) or 0)
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(expires)) if expires else "never"
+        last = int(row.get("last_used", 0) or 0)
+        seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else "never"
+        scopes = ",".join(row.get("scopes") or []) or "the role decides"
+        state = "expired" if row.get("expired") else row.get("role", "")
+        table_rows.append([str(row.get("operator", "")), state, scopes, when, seen])
+    print(table(["OPERATOR", "STATE", "SCOPES", "EXPIRES", "LAST USED"], table_rows))
+
+
 def print_db_findings(rows: List[Dict[str, Any]]) -> None:
     """Render the findings of the notebook."""
     if not rows:
@@ -2254,6 +2286,22 @@ def read_token(args: argparse.Namespace) -> str:
     raise SystemExit("no operator token (use --token, --token-file or $UMBRA_OPERATOR_TOKEN)")
 
 
+def read_secret(value: str, path: str) -> str:
+    """Read a secret from a value or from a file.
+
+    A secret that is typed on the command line is a secret that is in the
+    process list of every other program on the machine.  The file is the
+    better way, and it is the one this helper prefers.
+    """
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError as exc:
+            raise SystemExit(f"cannot read secret file: {exc}")
+    return (value or "").strip()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="umbra",
@@ -2351,6 +2399,35 @@ def build_parser() -> argparse.ArgumentParser:
     queue = sub.add_parser("queue", help="the state of the queue")
     queue.add_argument("--dead", action="store_true",
                        help="show only the dead letter queue")
+
+    keys = sub.add_parser("keys", help="the credentials of the server")
+    keys_sub = keys.add_subparsers(dest="keys_cmd")
+    keys_rotate = keys_sub.add_parser("rotate", help="replace the key of the beacons")
+    keys_rotate.add_argument("--target", default="agent",
+                             help="what to rotate (agent)")
+    keys_rotate.add_argument("--psk", default="",
+                             dest="rotate_psk",
+                             help="use this key instead of a generated one")
+    keys_rotate.add_argument("--psk-file", default="",
+                             dest="rotate_psk_file",
+                             help="read the key from a file (keeps it out of argv)")
+
+    tokens = sub.add_parser("tokens", help="the operator tokens")
+    tokens_sub = tokens.add_subparsers(dest="tokens_cmd")
+    tokens_sub.add_parser("list", help="the tokens and their state")
+    token_rotate = tokens_sub.add_parser("rotate", help="replace the token of an operator")
+    token_rotate.add_argument("operator", help="the identity of the operator")
+    token_rotate.add_argument("--role", default="", help="admin, operator or viewer")
+    token_rotate.add_argument("--scope", action="append", default=[],
+                              help="a command the token may call (repeatable)")
+    token_rotate.add_argument("--expires", type=int, default=0,
+                              help="the unix time the token expires")
+    token_rotate.add_argument("--token", default="",
+                              dest="rotate_token",
+                              help="the token itself (generated when empty)")
+    token_rotate.add_argument("--token-file", default="",
+                              dest="rotate_token_file",
+                              help="read the token from a file (keeps it out of argv)")
 
     priority = sub.add_parser("priority", help="say how urgent a task is")
     priority.add_argument("task_id")
@@ -3185,6 +3262,35 @@ def main(argv: Optional[List[str]] = None) -> int:
                 emit(answer)
             else:
                 print_queue(answer)
+        elif args.cmd == "keys":
+            if getattr(args, "keys_cmd", "") != "rotate":
+                print("umbra keys rotate --target agent")
+                return
+            answer = client.rotate_keys(args.target,
+                                        read_secret(args.rotate_psk,
+                                                    args.rotate_psk_file))
+            if args.json:
+                emit(answer)
+            else:
+                print(f"the new agent key is {answer.get('psk', '')}")
+                print(f"the previous key works for {answer.get('overlap', 0)} seconds")
+                print("give the new key to the beacons")
+        elif args.cmd == "tokens":
+            if getattr(args, "tokens_cmd", "") == "rotate":
+                answer = client.rotate_token(args.operator, args.role,
+                                             list(args.scope or []),
+                                             args.expires,
+                                             read_secret(args.rotate_token,
+                                                         args.rotate_token_file))
+                if args.json:
+                    emit(answer)
+                else:
+                    print(f"the new token of {args.operator} is {answer.get('token', '')}")
+                    if answer.get("scopes"):
+                        print("the scopes: " + ", ".join(answer.get("scopes") or []))
+            else:
+                rows = client.tokens()
+                emit(rows) if args.json else print_tokens(rows)
         elif args.cmd == "priority":
             answer = client.set_priority(args.task_id, args.priority)
             if args.json:

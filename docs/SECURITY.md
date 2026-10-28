@@ -347,8 +347,117 @@ the old keys cannot be read.
 * PSK/token minimum length enforced at start-up: 16 bytes.
 * Private keys (the TLS key, the armory signing key) are read from files with
   `0600` and are never logged.
-* Rotate on personnel change: remove the entry from `UMBRA_OPERATOR_TOKENS`,
-  restart, and delete the agent PSK if implants are retired.
+* Rotate on personnel change: `tokens.rotate` replaces the token without a
+  restart (the old one works for the overlap), and the entry can be removed
+  from `UMBRA_OPERATOR_TOKENS` for the next start.  The same for the agent
+  PSK: `keys.rotate` replaces it while the server runs.
+* The rotation answers hold the new secret: they are shown once and are not
+  written to the audit trail.
+
+## 4.1 The credentials of the server, and how they are rotated
+
+The server keeps three credentials: the agent PSK, the operator tokens and
+the TLS key pair.  All three can be replaced while the server runs.
+
+**The rotation has an overlap.**  A rotation does not throw the old
+credential away at once: the old one keeps working for thirty minutes.
+The reason is the fleet — a beacon may sleep for five minutes, a console
+may have been closed since the night before.  After the overlap the old
+credential is not accepted at all.
+
+* `keys.rotate {target: "agent"}` replaces the agent PSK.  The answer
+  holds the new key; the old one works until the overlap is over.
+* `tokens.rotate {operator, role, scopes, expires_at}` replaces the token
+  of one operator.  The scopes are the commands the token may call, the
+  expiry is a unix time.
+* `tokens.list` shows the role, the scopes, the expiry, the last use and
+  the moment of the last rotation of every token — and never the tokens.
+
+**The scopes are a second axis.**  A token without scopes is judged by
+its role alone.  A token with scopes is judged by both: it may call what
+is in the list **and** what its role allows, and nothing else.  The
+scopes narrow the role; they never widen it.  A scope that names a
+command nobody has heard of is refused when it is set, so a typo in a
+scope does not quietly become an open door.
+
+The scopes are read from the keyring on every call, so taking a
+permission away takes effect at once — a console that is already
+connected loses it the moment it is taken away.
+
+**The keys are texts.**  A generated key is hex encoded, so the operator
+can type it, copy it into the configuration of a beacon and paste it into
+a ticket.  What the operator sees is exactly the bytes the server
+checks; there is no "decode it first" step to get wrong.
+
+**The comparison is constant time.**  A token is a secret, and the time
+the server takes to refuse it says something about it.
+
+**The TLS certificate is read at every handshake.**  A renewed certificate
+is in use after the next connection, with no restart.  A file that is
+half written is refused and the certificate that is already in use stays.
+
+## 4.2 The secrets that never reach the disk in the clear
+
+**The audit trail is redacted.**  Every operator action is written to
+`audit_file`, and the arguments are redacted before they are written: the
+secret-bearing names (`token`, `password`, `secret`, `key`, `content`,
+`data`, …) become `[redacted]`, and the arguments of the tasks that carry
+material in full (`creds.add`, `file.read`, `upload`, …) are redacted as a
+whole.  A task queued through `task.submit` is redacted as a whole when
+its kind is one of those, so the payload never reaches the disk.  The log
+still says *what* was attempted; it never says *with what*.
+
+**The secrets are not in the process list.**  A secret that is typed on
+the command line is a secret that every other program on the machine can
+read out of `/proc`.  The console therefore takes the operator token
+from `--token-file` or `$UMBRA_OPERATOR_TOKEN`, and the two commands that
+hand out credentials (`keys rotate`, `tokens rotate`) take a file as well
+(`--psk-file`, `--token-file`).  The value can still be given on the
+command line for a lab; the file is the way to do it in earnest.
+
+**The artifact store can be sealed.**  With `artifact_key` (or
+`UMBRA_ARTIFACT_KEY`) the blobs and the index of the file store are
+encrypted at rest with AES-256-GCM under a key derived from it.  A store
+that cannot be opened with the key **refuses to open**: it does not
+pretend to be empty, and it never hands out bytes it could not
+authenticate.  A blob that does not authenticate is an error, not
+garbage.
+
+## 4.3 The limits of the server, one by one
+
+This is the hardening pass over the server: what every limit is, where it
+lives and what happens when it is reached.
+
+| limit | value | what happens when it is reached |
+|---|---|---|
+| the frame body | 1 MiB (`wire.MaxBody`) | the frame is refused; the connection is not trusted with more |
+| the frame in total | 1 MiB + header + tag | the same |
+| the bytes one connection may send | 64 MiB (`max_frame_bytes_per_conn`) | the session is closed: a peer that floods is not a peer |
+| the upk payload | 4 MiB (`upk.MaxTotal`) | the encoding fails; the value never reaches the wire |
+| the items of one upk array or map | 1 Mi (`upk.MaxItems`) | the same |
+| the length of one string | 1 Mi (`upk.MaxString`) | the same |
+| the handshake | 15 s (`handshake_timeout_s`) | the connection is dropped before the first frame |
+| an idle session | 120 s (`idle_timeout_s`) | the session is closed |
+| the agents at the same time | 512 (`max_agents`) | the new agent is refused |
+| the consoles at the same time | 16 (`max_operators`) | the new console is refused |
+| the calls of one operator | 40/s, burst 120 | the call is refused; it is still audited |
+| the tasks in flight for one host | 4 | the host is not given more work |
+| the deliveries to one host | 60/min | the host is not given more work |
+| the deliveries in the whole server | 200/s | the queue waits |
+| the attempts of one task | 3 | the task goes to the dead letter queue |
+| the failures of one host | 5 | the breaker of the host opens and the work is parked |
+| the audit field | 512 runes | the field is cut and marked with `…` |
+| the operator token | 16 bytes | the configuration is refused at start-up |
+| the agent PSK | 16 bytes | the configuration is refused at start-up |
+| the skew of the clock | 300 s | the handshake is refused |
+| the artifact | 256 MiB | the upload is refused |
+| the chunk of an artifact | 256 KiB | the chunk is refused |
+| the entries of the artifact index | 4096 | the store is full |
+
+Two rules hold everywhere: **a limit that is not set falls back to the
+default** (a configuration that says nothing never means "no limit"), and
+**a refused call is still audited** — "the operator tried to flood" is
+exactly the kind of thing the log exists to show.
 
 ## 5. Known limitations (v0.1)
 

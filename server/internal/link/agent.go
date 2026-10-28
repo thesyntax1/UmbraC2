@@ -381,7 +381,7 @@ func (s *Server) serveAgentTCP(conn net.Conn) {
 		return
 	}
 	stream := NewConnStream(conn)
-	sess, info, err := Handshake(stream, s.Cfg, log, addr)
+	sess, info, err := Handshake(stream, s.Cfg, s.Keys, log, addr)
 	if err != nil {
 		s.guard.Fail(addr)
 		log.Warn("handshake failed", "err", err)

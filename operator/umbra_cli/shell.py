@@ -23,10 +23,10 @@ COMMANDS = [
     "get", "handover", "help", "inbox", "info", "kill", "operators", "panic",
     "persist", "persist-health", "persist-list", "persist-migrate",
     "persist-report", "persist-verify", "plan", "policy", "priority", "put",
-    "quiet", "queue", "quit",
+    "keys", "quiet", "queue", "quit",
     "raw", "recon", "releases", "report", "resolve", "result", "retry", "rpc",
     "run", "scan", "schedule", "session", "sessions", "sleep", "stats",
-    "suggest", "tag", "tasks", "triage", "unpersist", "update", "upload",
+    "suggest", "tag", "tasks", "tokens", "triage", "unpersist", "update", "upload",
     "use", "watch", "whoami", "workflow", "wipe",
 ]
 

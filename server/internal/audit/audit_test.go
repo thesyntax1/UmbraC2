@@ -198,3 +198,123 @@ func TestClipShortensLongFields(t *testing.T) {
 		t.Error("Clip changed a short string")
 	}
 }
+
+func TestTheSecretsAreRedactedBeforeTheyReachTheLog(t *testing.T) {
+	args := map[string]any{
+		"token":    "the-operator-token",
+		"password": "the-password",
+		"agent":    "host-1",
+		"cmd":      "id",
+	}
+	got := audit.Redact(args)
+	if got["token"] != audit.Redacted {
+		t.Errorf("the token was not redacted: %v", got["token"])
+	}
+	if got["password"] != audit.Redacted {
+		t.Errorf("the password was not redacted: %v", got["password"])
+	}
+	if got["agent"] != "host-1" {
+		t.Errorf("a harmless argument was changed: %v", got["agent"])
+	}
+	if got["cmd"] != "id" {
+		t.Errorf("a harmless argument was changed: %v", got["cmd"])
+	}
+	// The original map is untouched: the redaction copies.
+	if args["token"] != "the-operator-token" {
+		t.Error("the redaction changed the caller's map")
+	}
+}
+
+func TestTheArgumentsOfASecretTaskAreRedactedInFull(t *testing.T) {
+	args := map[string]any{
+		"host": "server-1",
+		"path": "/etc/shadow",
+	}
+	got := audit.RedactArgs("creds.add", args)
+	for key, value := range got {
+		if value != audit.Redacted {
+			t.Errorf("the argument %q of a secret task survived: %v", key, value)
+		}
+	}
+}
+
+func TestAQueuedSecretTaskIsRedactedInFull(t *testing.T) {
+	// The command is "task.submit" and the secret is in the arguments of
+	// the task it carries: the redaction has to look inside.
+	args := map[string]any{
+		"id":   "server-1",
+		"kind": "creds.add",
+		"args": map[string]any{
+			"name":     "the-domain-admin",
+			"password": "the-password",
+		},
+	}
+	got := audit.RedactArgs("task.submit", args)
+	inner, ok := got["args"].(map[string]any)
+	if !ok {
+		t.Fatalf("the arguments of the task are gone: %v", got["args"])
+	}
+	for key, value := range inner {
+		if value != audit.Redacted {
+			t.Errorf("the argument %q of a secret task survived: %v", key, value)
+		}
+	}
+	// The name of the host is not a secret: it stays, so the trail says
+	// what was attempted.
+	if got["id"] != "server-1" {
+		t.Errorf("a harmless argument was changed: %v", got["id"])
+	}
+}
+
+func TestAnOrdinaryTaskKeepsItsArguments(t *testing.T) {
+	args := map[string]any{
+		"id":   "server-1",
+		"kind": "shell",
+		"args": map[string]any{
+			"cmd": "whoami",
+		},
+	}
+	got := audit.RedactArgs("task.submit", args)
+	inner, ok := got["args"].(map[string]any)
+	if !ok {
+		t.Fatalf("the arguments of the task are gone: %v", got["args"])
+	}
+	if inner["cmd"] != "whoami" {
+		t.Errorf("a harmless argument was changed: %v", inner["cmd"])
+	}
+}
+
+func TestTheNestedValuesAreRedacted(t *testing.T) {
+	args := map[string]any{
+		"options": map[string]any{"secret": "the-secret", "name": "the-name"},
+	}
+	got := audit.Redact(args)
+	nested, ok := got["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("the nested map is gone: %v", got["options"])
+	}
+	if nested["secret"] != audit.Redacted {
+		t.Errorf("the nested secret was not redacted: %v", nested["secret"])
+	}
+	if nested["name"] != "the-name" {
+		t.Errorf("a harmless nested value was changed: %v", nested["name"])
+	}
+}
+
+func TestASecretTaskWhoseArgumentsAreNotAMapIsRedactedWhole(t *testing.T) {
+	// The arguments of a task are usually a map, but a script may send
+	// them as a list or as a string.  Whatever they are, they are the
+	// material of a secret task, so they do not reach the log.
+	args := map[string]any{
+		"id":   "server-1",
+		"kind": "file.read",
+		"args": []any{"/etc/shadow"},
+	}
+	got := audit.RedactArgs("task.submit", args)
+	if got["args"] != audit.Redacted {
+		t.Errorf("the arguments of a secret task survived: %v", got["args"])
+	}
+	if got["id"] != "server-1" {
+		t.Errorf("a harmless argument was changed: %v", got["id"])
+	}
+}

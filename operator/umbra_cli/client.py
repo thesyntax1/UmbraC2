@@ -1046,6 +1046,53 @@ class OperatorClient:
             raise OperatorError(res.error)
         return dict(res.data)
 
+    # -- the credentials of the server ------------------------------------
+    def rotate_keys(self, target: str = "agent", psk: str = "") -> Dict[str, Any]:
+        """Replace the key the beacons authenticate with.
+
+        The new key is accepted immediately and the old one keeps working
+        for the overlap, so the hosts that are asleep are not locked out.
+        The answer holds the new key: it is shown once.
+
+        A key the caller brings is used as it is; without one the server
+        generates a key.
+        """
+        payload: Dict[str, Any] = {"target": target}
+        if psk:
+            payload["psk"] = psk
+        res = self.rpc("keys.rotate", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def rotate_token(self, operator: str, role: str = "", scopes: Optional[List[str]] = None,
+                     expires_at: int = 0, token: str = "") -> Dict[str, Any]:
+        """Replace the token of one operator, and narrow what it may do.
+
+        The scopes are the commands the token may call; an empty list
+        leaves the role in charge.  The expiry is a unix time in seconds.
+        """
+        payload: Dict[str, Any] = {"operator": operator}
+        if role:
+            payload["role"] = role
+        if scopes:
+            payload["scopes"] = list(scopes)
+        if expires_at:
+            payload["expires_at"] = int(expires_at)
+        if token:
+            payload["token"] = token
+        res = self.rpc("tokens.rotate", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def tokens(self) -> List[Dict[str, Any]]:
+        """The operator tokens and their state: never the tokens themselves."""
+        res = self.rpc("tokens.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("tokens") or [])
+
     def set_priority(self, task_id: str, priority: int) -> Dict[str, Any]:
         """Say how urgent a task is; the queue delivers the urgent one first."""
         res = self.rpc("task.priority", {"task_id": task_id, "priority": int(priority)})

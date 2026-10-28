@@ -17,6 +17,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
@@ -53,7 +54,7 @@ func (s *Server) serveOperatorTCP(conn net.Conn) {
 	}
 	stream := NewConnStream(conn)
 	sub := &operatorSubscription{server: s, addr: addr, transport: "tcp/operator"}
-	sess, info, err := Handshake(stream, s.Cfg, log, addr, sub.pre)
+	sess, info, err := Handshake(stream, s.Cfg, s.Keys, log, addr, sub.pre)
 	if err != nil {
 		s.guard.Fail(addr)
 		log.Warn("operator handshake failed", "err", err)
@@ -85,8 +86,8 @@ func (o *operatorSubscription) pre(info *HelloInfo) (func(), error) {
 	if info.Role != crypt.RoleOperator {
 		return nil, nil
 	}
-	role := o.server.Cfg.Keyring.Role(info.ID)
-	o.op = o.server.Hub.Subscribe(info.ID, role, o.addr, o.transport)
+	role, scopes := o.server.operatorAccess(info.ID)
+	o.op = o.server.Hub.Subscribe(info.ID, role, o.addr, o.transport, scopes...)
 	return o.release, nil
 }
 
@@ -116,14 +117,15 @@ func (s *Server) runOperator(stream FrameStream, conn net.Conn, sess *session.Se
 	defer s.releaseOperatorSlot()
 	if op == nil {
 		// The peer was not subscribed before the handshake; do it now.
-		op = s.Hub.Subscribe(info.ID, s.Cfg.Keyring.Role(info.ID), addr, transport)
+		role, scopes := s.operatorAccess(info.ID)
+		op = s.Hub.Subscribe(info.ID, role, addr, transport, scopes...)
 	}
 	defer s.Hub.Unsubscribe(op.ID)
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return
 	}
 
-	role := s.Cfg.Keyring.Role(info.ID)
+	role, _ := s.operatorAccess(info.ID)
 	defer s.forgetOperatorRate(info.ID)
 	log.Info("operator connected", "operator", info.ID, "role", role, "suite", wire.SuiteName(info.Suite))
 
@@ -271,15 +273,18 @@ func (s *Server) record(op *hub.Operator, cmd string, args map[string]any, ok bo
 	// Sorted key=value rather than %v of a map: the audit log is diffed and
 	// grepped, and Go randomises map iteration order.
 	detail := ""
-	if len(args) > 0 {
-		keys := make([]string, 0, len(args))
-		for k := range args {
+	// The arguments are redacted before they are written: a secret that
+	// goes into the audit trail is a secret that is on disk forever.
+	safe := audit.RedactArgs(cmd, args)
+	if len(safe) > 0 {
+		keys := make([]string, 0, len(safe))
+		for k := range safe {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
-			parts = append(parts, fmt.Sprintf("%s=%v", k, args[k]))
+			parts = append(parts, fmt.Sprintf("%s=%v", k, safe[k]))
 		}
 		detail = audit.Clip(strings.Join(parts, " "))
 	}
@@ -329,10 +334,19 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	// Authorisation comes first: an unauthorised call must not consume the
 	// rate budget (a viewer polling a denied command should not lock itself
 	// out of the commands it *can* run) and must be visible in the audit log.
-	if !rbac.Allowed(op.Role, strings.TrimSpace(cmd)) {
-		return fail("permission denied: %q requires role %s (you are %s)",
-			strings.TrimSpace(cmd), rbac.MinRole(strings.TrimSpace(cmd)), op.Role)
+	role, scopes := s.operatorIdentity(op)
+	if len(scopes) > 0 && !keyring.ScopeNames(scopes, strings.TrimSpace(cmd)) {
+		return fail("permission denied: %q is not in your scopes (role %s)",
+			strings.TrimSpace(cmd), role)
 	}
+	if !rbac.Allowed(role, strings.TrimSpace(cmd)) {
+		return fail("permission denied: %q requires role %s (you are %s)",
+			strings.TrimSpace(cmd), rbac.MinRole(strings.TrimSpace(cmd)), role)
+	}
+	// The last use of a token is the last time it made a call: it is what
+	// tells an admin which of the tokens nobody needs any more.  A call
+	// that was refused does not count: the token was not used.
+	s.touchOperator(op.Name)
 
 	// The limiter sits inside the handler so a rate-limited call is still
 	// audited: "operator tried to flood" is exactly the kind of thing the log
@@ -349,21 +363,46 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return reply(upk.Map{"pong": time.Now().Unix()})
 
 	case "whoami":
-		caps := rbac.CapabilitiesFor(op.Role)
+		caps := rbac.CapabilitiesFor(role)
+		// The scopes narrow the list: a console must not offer a button
+		// the server would refuse.
+		if len(scopes) > 0 {
+			scoped := make([]string, 0, len(scopes))
+			for _, c := range caps {
+				if keyring.ScopeNames(scopes, c) {
+					scoped = append(scoped, c)
+				}
+			}
+			caps = scoped
+		}
 		sort.Strings(caps)
 		out := make([]any, 0, len(caps))
 		for _, c := range caps {
 			out = append(out, c)
 		}
+		scopeOut := make([]any, 0, len(scopes))
+		for _, scope := range scopes {
+			scopeOut = append(scopeOut, scope)
+		}
 		return reply(upk.Map{
 			"name":         op.Name,
-			"role":         op.Role,
+			"role":         role,
+			"scopes":       scopeOut,
 			"peer":         op.Peer,
 			"transport":    op.Transport,
 			"since":        op.Since.Format(time.RFC3339),
 			"focus":        op.Focus,
 			"capabilities": out,
 		})
+
+	case "keys.rotate":
+		return s.handleKeysRotate(op, args, reply, fail)
+
+	case "tokens.rotate":
+		return s.handleTokensRotate(op, args, reply, fail)
+
+	case "tokens.list":
+		return s.handleTokensList(reply, fail)
 
 	case "operators.focus":
 		id, _ := args["id"].(string)
@@ -445,19 +484,19 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		metrics := s.Hub.Metrics()
 		return reply(upk.Map{
-			"pending":      int64(metrics.TasksPending),
-			"done":         int64(metrics.TasksDone),
-			"failed":       int64(metrics.TasksFailed),
-			"dead":         int64(metrics.TasksDead),
-			"quiet":        bool(metrics.Quiet),
+			"pending":       int64(metrics.TasksPending),
+			"done":          int64(metrics.TasksDone),
+			"failed":        int64(metrics.TasksFailed),
+			"dead":          int64(metrics.TasksDead),
+			"quiet":         bool(metrics.Quiet),
 			"breakers_open": int64(metrics.BreakersOpen),
 
-			"max_in_flight_per_agent":        int64(policy.MaxInFlightPerAgent),
+			"max_in_flight_per_agent":          int64(policy.MaxInFlightPerAgent),
 			"max_deliver_per_minute_per_agent": int64(policy.MaxDeliverPerMinutePerAgent),
-			"max_deliver_per_second":          int64(policy.MaxDeliverPerSecond),
-			"max_attempts":                    int64(policy.MaxAttempts),
-			"breaker_threshold":               int64(policy.BreakerThreshold),
-			"breaker_cooldown_s":              int64(policy.BreakerCooldown / time.Second),
+			"max_deliver_per_second":           int64(policy.MaxDeliverPerSecond),
+			"max_attempts":                     int64(policy.MaxAttempts),
+			"breaker_threshold":                int64(policy.BreakerThreshold),
+			"breaker_cooldown_s":               int64(policy.BreakerCooldown / time.Second),
 
 			"dead_letter":       deadRows,
 			"dead_letter_count": int64(len(deadRows)),
@@ -608,9 +647,26 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		ops := s.Hub.Operators()
 		out := make([]any, 0, len(ops))
 		for _, o := range ops {
+			// The role and the scopes are the live ones: a console
+			// whose scopes were narrowed a minute ago is listed with
+			// the scopes it has now, not the ones it had when it
+			// connected.
+			role, scopes := o.Role, o.Scopes
+			if s.Keys != nil {
+				if live, ok := s.Keys.Operator(o.Name); ok {
+					role = live.Role
+					scopes = live.Scopes
+				}
+			}
+			scopeOut := make([]any, 0, len(scopes))
+			for _, scope := range scopes {
+				scopeOut = append(scopeOut, scope)
+			}
 			out = append(out, upk.Map{
 				"id":        o.ID,
 				"name":      o.Name,
+				"role":      role,
+				"scopes":    scopeOut,
 				"peer":      o.Peer,
 				"transport": o.Transport,
 				"since":     o.Since,
@@ -695,8 +751,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		out := make([]any, 0, len(rules))
 		for _, rule := range rules {
 			out = append(out, upk.Map{
-				"name": rule.Name, "event": rule.Event, "tag": rule.Tag,
-				"agent": rule.Agent, "task_kind": rule.TaskKind,
+				"name":       rule.Name, "event": rule.Event, "tag": rule.Tag,
+				"agent":      rule.Agent, "task_kind": rule.TaskKind,
 				"cooldown_s": int64(rule.CooldownSec),
 			})
 		}
@@ -748,7 +804,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{
 			"chain_id": chain.ID, "task_id": task.ID, "agent_id": chain.AgentID,
-			"stages": len(chain.Stages), "state": task.State,
+			"stages":   len(chain.Stages), "state": task.State,
 		})
 
 	case "task.claim":
@@ -759,7 +815,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{
 			"task_id": t.ID, "agent_id": t.AgentID, "claimed_by": t.ClaimedBy,
-			"state": t.State,
+			"state":   t.State,
 		})
 
 	case "task.release":
@@ -796,7 +852,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			return fail("task.retry: %v", err)
 		}
 		return reply(upk.Map{
-			"task_id": nt.ID,
+			"task_id":  nt.ID,
 			"agent_id": nt.AgentID,
 			"kind":     nt.Kind,
 			"retried":  old.ID,
@@ -1044,22 +1100,22 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		out := make([]any, 0, len(tunnels))
 		for _, t := range tunnels {
 			out = append(out, upk.Map{
-				"stream":       t.Stream,
-				"agent_id":     t.AgentID,
-				"mode":         t.Mode,
-				"listen":       t.Listen,
-				"host":         t.Host,
-				"port":         int64(t.Port),
-				"opened":       t.Opened.Unix(),
-				"streams":      int64(t.Streams),
-				"bytes_up":     t.BytesUp,
-				"bytes_down":   t.BytesDown,
-				"state":        t.State,
-				"claim":        t.Claim,
-				"through":      t.Through,
-				"path":         pathAny(t.Path),
-				"dns":          t.DNS,
-				"last_active":  t.LastActivity.Unix(),
+				"stream":      t.Stream,
+				"agent_id":    t.AgentID,
+				"mode":        t.Mode,
+				"listen":      t.Listen,
+				"host":        t.Host,
+				"port":        int64(t.Port),
+				"opened":      t.Opened.Unix(),
+				"streams":     int64(t.Streams),
+				"bytes_up":    t.BytesUp,
+				"bytes_down":  t.BytesDown,
+				"state":       t.State,
+				"claim":       t.Claim,
+				"through":     t.Through,
+				"path":        pathAny(t.Path),
+				"dns":         t.DNS,
+				"last_active": t.LastActivity.Unix(),
 			})
 		}
 		// The topology is the picture of the reach: the agents, the
@@ -1410,9 +1466,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			return fail("armory.import: %v", err)
 		}
 		return reply(upk.Map{
-			"source":  cat.Source,
-			"entries": len(cat.Entries),
-			"url":     url,
+			"source":   cat.Source,
+			"entries":  len(cat.Entries),
+			"url":      url,
 			"verified": cat.Verified,
 		})
 
@@ -1893,13 +1949,13 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		agentRows := make([]any, 0, len(agents))
 		for _, a := range agents {
 			row := upk.Map{
-				"id":      a.ID,
-				"host":    a.Host,
-				"os":      a.OS,
-				"arch":    a.Arch,
-				"user":    a.User,
-				"last":    a.LastSeen.Unix(),
-				"state":   a.State,
+				"id":    a.ID,
+				"host":  a.Host,
+				"os":    a.OS,
+				"arch":  a.Arch,
+				"user":  a.User,
+				"last":  a.LastSeen.Unix(),
+				"state": a.State,
 			}
 			if len(a.Tags) > 0 {
 				row["tags"] = stringsToAny(a.Tags)

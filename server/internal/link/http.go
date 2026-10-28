@@ -132,7 +132,7 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream, out := NewHTTPStream(body)
-	sess, info, err := Handshake(stream, s.Cfg, s.Log.With("peer", addr, "transport", "http"), addr)
+	sess, info, err := Handshake(stream, s.Cfg, s.Keys, s.Log.With("peer", addr, "transport", "http"), addr)
 	if err != nil {
 		s.guard.Fail(addr)
 		s.Log.Warn("http handshake failed", "peer", addr, "err", err)

@@ -2,8 +2,8 @@ package session_test
 
 import (
 	"encoding/hex"
-	"errors"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"

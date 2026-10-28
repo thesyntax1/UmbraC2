@@ -54,7 +54,7 @@ func (s *Server) serveTLS(conn net.Conn) {
 	}
 	stream := NewConnStream(conn)
 	sub := &operatorSubscription{server: s, addr: addr, transport: "tls/operator"}
-	sess, info, err := Handshake(stream, s.Cfg, log, addr, sub.pre)
+	sess, info, err := Handshake(stream, s.Cfg, s.Keys, log, addr, sub.pre)
 	if err != nil {
 		s.guard.Fail(addr)
 		log.Warn("handshake failed", "err", err)

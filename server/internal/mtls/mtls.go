@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Options describes the material of one listener.
@@ -64,6 +65,10 @@ func Load(opts Options) (*Server, error) {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
 	}
+	// The certificate is read from the files at every handshake, so a
+	// renewed certificate is picked up without a restart.  The pair is
+	// cached until one of the files changes.
+	cfg.GetCertificate = rotatingCertificate(opts.CertFile, opts.KeyFile, cert)
 	switch opts.MinVersion {
 	case "1.3":
 		cfg.MinVersion = tls.VersionTLS13
@@ -87,6 +92,53 @@ func Load(opts Options) (*Server, error) {
 		}
 	}
 	return &Server{Config: cfg, Certificate: &cert}, nil
+}
+
+// rotatingCertificate returns a callback that keeps the certificate in
+// step with the files on disk.
+//
+// The callback is called by crypto/tls for every handshake.  It stats the
+// two files; when neither changed it hands back the pair it already has,
+// and when one of them changed it reads the pair again.  A certificate
+// that was renewed on the server is therefore in use after the next
+// handshake, with no restart and no dropped connection.
+//
+// The old certificate is kept when the new one cannot be read: a file that
+// is half written must not take the listener down.
+func rotatingCertificate(certFile, keyFile string, current tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	var (
+		mu       sync.Mutex
+		cert     = current
+		certTime = fileStamp(certFile)
+		keyTime  = fileStamp(keyFile)
+	)
+	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		newCertTime := fileStamp(certFile)
+		newKeyTime := fileStamp(keyFile)
+		if newCertTime == certTime && newKeyTime == keyTime {
+			return &cert, nil
+		}
+		fresh, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			// The files are not usable yet: keep what we have.
+			return &cert, nil
+		}
+		cert = fresh
+		certTime, keyTime = newCertTime, newKeyTime
+		return &cert, nil
+	}
+}
+
+// fileStamp is the moment and the size of a file, or the zero time when
+// the file cannot be read.
+func fileStamp(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.ModTime().UnixNano() ^ info.Size()
 }
 
 // loadCA reads a PEM bundle of certificate authorities.

@@ -836,6 +836,17 @@ class MockServer:
         # Roles mirror server/internal/rbac: everything defaults to admin so
         # existing tests keep working, and `roles=` narrows a specific console.
         self.roles = {name: (roles or {}).get(name, "admin") for name in self.operators}
+        # The runtime keyring, mirrored from server/internal/keyring: the
+        # previous credential keeps working for the overlap after a rotation,
+        # so a console that was closed is not locked out.
+        self.previous_agent_psk: Optional[bytes] = None
+        self.previous_agent_until = 0.0
+        self.previous_operators: Dict[str, tuple] = {}
+        self.token_scopes: Dict[str, List[str]] = {}
+        self.token_expires: Dict[str, float] = {}
+        self.token_last_used: Dict[str, float] = {}
+        self.token_rotated: Dict[str, float] = {}
+        self.key_overlap = 1800.0
         # Test hook: force a key rotation once a session has sent this many
         # frames in either direction (real servers use REKEY_AFTER).
         self.rekey_after = rekey_after
@@ -1597,9 +1608,77 @@ class MockServer:
 
     def _keyring(self) -> List[handshake.KeyringEntry]:
         ring = [handshake.KeyringEntry("agent", self.agent_psk, crypto.ROLE_AGENT)]
+        # The previous agent key still works while the fleet catches up.
+        if self.previous_agent_psk and self.previous_agent_until > time.time():
+            ring.append(
+                handshake.KeyringEntry("agent", self.previous_agent_psk, crypto.ROLE_AGENT)
+            )
         for name, token in self.operators.items():
             ring.append(handshake.KeyringEntry(name, token, crypto.ROLE_OPERATOR))
+        # And the previous operator tokens work for the overlap.
+        for name, (token, until) in self.previous_operators.items():
+            if until > time.time():
+                ring.append(handshake.KeyringEntry(name, token, crypto.ROLE_OPERATOR))
         return ring
+
+    def rotate_agent_psk(self, psk: Optional[str] = None) -> str:
+        """Replace the agent PSK; the old one keeps working for the overlap.
+
+        The new key is a *text*, hex encoded, exactly like the Go server:
+        the operator copies it into the configuration of the beacons, so it
+        has to be typeable and it has to be the same bytes the server uses.
+        """
+        fresh = psk or secrets.token_hex(32)
+        if len(fresh) < 16:
+            raise ValueError("the agent PSK must be at least 16 characters")
+        self.previous_agent_psk = self.agent_psk
+        self.previous_agent_until = time.time() + self.key_overlap
+        self.agent_psk = fresh.encode()
+        return fresh
+
+    def rotate_token(self, name: str, role: Optional[str] = None,
+                     scopes: Optional[List[str]] = None,
+                     expires: Optional[float] = None,
+                     token: Optional[str] = None) -> str:
+        """Replace the token of one operator and narrow its scopes.
+
+        The old token keeps working for the overlap whether the new one is
+        generated or brought by the operator: a rotation is a rotation.  An
+        operator that does not exist yet is created, so a new analyst can
+        be given a token without restarting the server.
+        """
+        fresh = token or secrets.token_hex(32)
+        if name in self.operators:
+            self.previous_operators[name] = (self.operators[name],
+                                             time.time() + self.key_overlap)
+        self.operators[name] = fresh.encode()
+        if role:
+            self.roles[name] = role
+        else:
+            self.roles.setdefault(name, "operator")
+        self.token_scopes[name] = list(scopes or [])
+        self.token_expires[name] = float(expires or 0.0)
+        self.token_rotated[name] = time.time()
+        return fresh
+
+    def token_state(self) -> List[Dict[str, Any]]:
+        """The state of every operator token: no token itself, only its shape."""
+        now = time.time()
+        rows: List[Dict[str, Any]] = []
+        for name in sorted(self.operators):
+            expires = self.token_expires.get(name, 0.0)
+            rows.append(
+                {
+                    "operator": name,
+                    "role": self.roles.get(name, "operator"),
+                    "scopes": list(self.token_scopes.get(name, [])),
+                    "expires": int(expires),
+                    "expired": bool(expires and now > expires),
+                    "last_used": int(self.token_last_used.get(name, 0.0)),
+                    "rotated": int(self.token_rotated.get(name, 0.0)),
+                }
+            )
+        return rows
 
     def _serve(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
         if self.websocket:
@@ -1637,6 +1716,8 @@ class MockServer:
         def on_peer(peer_id: str, role: int, meta: dict) -> None:
             if peer_id not in self.operators:
                 return
+            # The last use of a token is the last time it authenticated.
+            self.token_last_used[peer_id] = time.time()
             inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=512)
             with self._lock:
                 self.subscribers.append((peer_id, inbox))
@@ -2863,6 +2944,10 @@ class MockServer:
         # The quiet window is an admin decision; reading the queue is
         # harmless; the priority of a task is the operator's call.
         "server.quiet": "admin",
+        # The credentials of the server itself.
+        "keys.rotate": "admin",
+        "tokens.rotate": "admin",
+        "tokens.list": "viewer",
         "server.queue": "viewer",
         "task.priority": "operator",
         "schedule.remove": "admin",
@@ -3019,20 +3104,93 @@ class MockServer:
             return resp
 
         role = self.roles.get(operator, "operator")
+        scopes = self.token_scopes.get(operator, [])
+        # The scopes narrow the role; they never widen it.  The wildcard
+        # means "no narrowing", so the role alone decides.
+        if scopes and cmd not in scopes and "*" not in scopes:
+            return fail(
+                f"permission denied: {cmd!r} is not in your scopes (role {role})"
+            )
         if not self.allowed(role, cmd):
             return fail(
                 f"permission denied: {cmd!r} requires role {self.min_role(cmd)} (you are {role})"
             )
+        self.token_last_used[operator] = time.time()
 
         if cmd == "ping":
             return ok({"pong": _now()})
 
+        if cmd == "keys.rotate":
+            target = str(args.get("target", "agent") or "agent").strip()
+            if target not in ("agent", "agent_psk", "psk"):
+                return fail(
+                    f"keys.rotate: unknown target {target!r} "
+                    "(want agent, or use tokens.rotate for an operator)"
+                )
+            try:
+                fresh = self.rotate_agent_psk(
+                    str(args.get("psk", "") or "") or None
+                )
+            except ValueError as exc:
+                return fail(f"keys.rotate: {exc}")
+            self.emit("keys.rotated", operator,
+                      data={"target": "agent", "overlap": int(self.key_overlap)})
+            return ok({
+                "target": "agent",
+                # The new key is a text: the operator copies it into the
+                # configuration of the beacons.
+                "psk": fresh,
+                "overlap": int(self.key_overlap),
+                "note": "the previous key still works for the overlap; "
+                        "give the new key to the beacons",
+            })
+
+        if cmd == "tokens.rotate":
+            name = str(args.get("operator", "") or args.get("name", "") or "").strip()
+            if not name:
+                return fail("tokens.rotate: an operator is required")
+            # The role is only changed when the caller says so.
+            role = str(args.get("role", "") or self.roles.get(name, "operator"))
+            if role not in self.ROLE_RANK:
+                return fail(f"tokens.rotate: unknown role {role!r}")
+            scopes = args.get("scopes") or []
+            if isinstance(scopes, str):
+                scopes = [s.strip() for s in scopes.split(",") if s.strip()]
+            scopes = sorted({str(s) for s in scopes})
+            for scope in scopes:
+                if scope != "*" and scope not in self.REQUIREMENTS:
+                    return fail(f"tokens.rotate: unknown command {scope!r} in the scopes")
+            expires = float(args.get("expires_at", 0) or 0)
+            token = str(args.get("token", "") or "")
+            if token and len(token) < 16:
+                return fail("tokens.rotate: the token must be at least 16 characters")
+            fresh = self.rotate_token(name, role, scopes, expires, token or None)
+            self.emit("token.rotated", operator,
+                      data={"target": name, "role": role})
+            return ok({
+                "operator": name,
+                "role": role,
+                "scopes": scopes,
+                "expires": int(expires),
+                "token": fresh,
+                "overlap": int(self.key_overlap),
+                "note": "the previous token still works for the overlap",
+            })
+
+        if cmd == "tokens.list":
+            rows = self.token_state()
+            return ok({"tokens": rows, "count": len(rows)})
+
         if cmd == "whoami":
+            scopes = self.token_scopes.get(operator, [])
             caps = sorted(c for c in self.REQUIREMENTS if self.allowed(role, c))
+            if scopes:
+                caps = sorted(c for c in caps if c in scopes or "*" in scopes)
             return ok(
                 {
                     "name": operator,
                     "role": role,
+                    "scopes": list(scopes),
                     "peer": "127.0.0.1:0",
                     "transport": "tcp/operator",
                     "since": _now(),
@@ -3171,6 +3329,8 @@ class MockServer:
                             "id": i + 1,
                             "name": name,
                             "role": live.get("role", ""),
+                            # The scopes of the token, when it has any.
+                            "scopes": list(self.token_scopes.get(name, [])),
                             "peer": live.get("peer", ""),
                             "transport": live.get("transport", ""),
                             "since": live.get("since", ""),

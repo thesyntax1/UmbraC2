@@ -7594,3 +7594,293 @@ def test_the_protocol_documents_the_new_frame_and_the_versions():
     assert "| `0x1D` | HEARTBEAT |" in text, "the heartbeat frame is not documented"
     assert "### 5.1 The handshake versions" in text, "the matrix is missing"
     assert "### 7.2p The heartbeat" in text, "the heartbeat is not documented"
+
+
+def test_the_key_of_the_beacons_can_be_rotated_while_the_server_runs():
+    """The agent PSK is replaced without a restart, and the old one still works."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-keys-0123456789a"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        answer = client.rotate_keys("agent")
+        # The new key is a *text*: the operator copies it into the
+        # configuration of the beacons, so it has to be typeable and it
+        # has to be the exact bytes the server accepts.
+        fresh = answer["psk"]
+        assert isinstance(fresh, str) and len(fresh) >= 16, answer
+        assert fresh.encode() != AGENT_PSK, "the key did not change"
+        assert answer["overlap"] > 0, answer
+
+        # The new key is the one the server accepts from now on.
+        assert server.agent_psk == fresh.encode(), server.agent_psk
+
+        # A beacon that still has the old key is still served: the
+        # overlap is what keeps the fleet from falling apart.
+        old = FakeAgent(server.address, AGENT_PSK, "agent-old-key")
+        old.start()
+        try:
+            deadline = time.time() + 5
+            while time.time() < deadline and not server.agents:
+                time.sleep(0.05)
+            assert "agent-old-key" in server.agents, list(server.agents)
+        finally:
+            old.stop()
+
+        # And a beacon with the new key is served too.
+        new = FakeAgent(server.address, fresh.encode(), "agent-new-key")
+        new.start()
+        try:
+            deadline = time.time() + 5
+            while time.time() < deadline and "agent-new-key" not in server.agents:
+                time.sleep(0.05)
+            assert "agent-new-key" in server.agents, list(server.agents)
+        finally:
+            new.stop()
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_a_token_can_be_rotated_and_narrowed():
+    """The token of an operator is replaced, and the scopes say what it may do."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-scopes-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": b"operator-token-bob-0123456789"})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        answer = client.rotate_token("bob", "viewer", ["agents.list", "server.stats"])
+        assert answer["token"], answer
+        assert answer["scopes"] == ["agents.list", "server.stats"], answer
+
+        # The new token is the one bob connects with.
+        bob = OperatorClient(server.address, answer["token"], "bob")
+        try:
+            bob.connect()
+            # The state of the tokens is visible: the scopes, the expiry
+            # and the last use, but never the token itself.
+            rows = client.tokens()
+            by_name = {row["operator"]: row for row in rows}
+            assert "bob" in by_name, rows
+            assert by_name["bob"]["scopes"] == ["agents.list", "server.stats"], rows
+            assert by_name["bob"]["last_used"], rows
+            assert "token" not in by_name["bob"], rows
+        finally:
+            bob.close()
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_scopes_of_a_token_refuse_what_they_do_not_name():
+    """A token that may only look may not act."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-scope-check-01234"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": b"operator-token-bob-0123456789"})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        rotated = client.rotate_token("bob", "admin", ["agents.list"])
+
+        # A console with the narrow token may read the inventory.
+        narrow = OperatorClient(server.address, rotated["token"], "bob")
+        try:
+            narrow.connect()
+            answer = narrow.rpc("agents.list")
+            assert answer.ok, answer.error
+            # But the narrow token may not do what is not in its scopes:
+            # the server judges the identity of the console, and bob is
+            # scoped.
+            answer = narrow.rpc("server.stats")
+            assert not answer.ok, "the scope did not narrow the token"
+            assert "scope" in answer.error.lower(), answer.error
+        finally:
+            narrow.close()
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_keys_are_in_every_implementation():
+    """The rotation of the credentials is in the Go server, the mock and the docs."""
+    go = read_text("server/internal/keyring/keyring.go")
+    assert "func (k *Keyring) RotateAgentPSK() ([]byte, error)" in go, go[:200]
+    assert "func (k *Keyring) RotateOperator(name string) ([]byte, error)" in go, go[:200]
+    mock = read_text("tools/mock_server.py")
+    assert "def rotate_agent_psk" in mock, "the mock cannot rotate the agent key"
+    assert "def rotate_token" in mock, "the mock cannot rotate an operator token"
+    docs = read_text("docs/PROTOCOL.md")
+    assert "| `keys.rotate` | admin |" in docs, "the rotation is not documented"
+    assert "| `tokens.rotate` | admin |" in docs, "the rotation is not documented"
+    assert "| `tokens.list` | viewer |" in docs, "the token state is not documented"
+    # The scopes are honoured by the role table of the server and by the
+    # mock, and both agree on the three commands.
+    rbac = read_text("server/internal/rbac/rbac.go")
+    for cmd in ("keys.rotate", "tokens.rotate", "tokens.list"):
+        assert f'"{cmd}"' in rbac, f"{cmd} has no role"
+    # The secrets are redacted before they reach the log.
+    audit = read_text("server/internal/audit/audit.go")
+    assert "func RedactArgs(" in audit, "the audit log does not redact"
+    assert "[redacted]" in audit, "the audit log does not redact"
+
+
+def test_the_scopes_never_widen_the_role():
+    """A scope list narrows what a token may do; it never grants more."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-narrow-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": b"operator-token-bob-0123456789"})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        # Bob is a viewer with the scope of an admin command.  The scope
+        # may not make him an admin: the role still has the last word.
+        rotated = client.rotate_token("bob", "viewer", ["agents.kill"])
+        narrow = OperatorClient(server.address, rotated["token"], "bob")
+        try:
+            narrow.connect()
+            answer = narrow.rpc("agents.kill")
+            assert not answer.ok, "the scope widened the role"
+            assert "role" in answer.error.lower(), answer.error
+        finally:
+            narrow.close()
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_a_rotation_does_not_change_the_role_by_accident():
+    """Rotating a token without a role keeps the role the operator had."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-role-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": b"operator-token-bob-0123456789"},
+                        roles={"bob": "admin"})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        rotated = client.rotate_token("bob")
+        assert rotated["role"] == "admin", rotated
+        rows = client.tokens()
+        by_name = {row["operator"]: row for row in rows}
+        assert by_name["bob"]["role"] == "admin", rows
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_last_use_of_a_token_is_stamped():
+    """A token that was used says when; a token that was not says nothing."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-lastuse-012345"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": b"operator-token-bob-0123456789"})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        rows = client.tokens()
+        by_name = {row["operator"]: row for row in rows}
+        # Alice authenticated, so her token has a last use.
+        assert by_name["alice"]["last_used"], rows
+        # Bob never authenticated, so his token has none.
+        assert not by_name["bob"]["last_used"], rows
+        # And the moment it was rotated is remembered too.
+        assert by_name["alice"]["rotated"] == 0, rows
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_operator_can_bring_its_own_key():
+    """A key the operator brings is used as it is, not replaced by a generated one."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    token = b"operator-token-bring-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        brought = "0123456789abcdef0123456789abcdef"
+        answer = client.rotate_keys("agent", brought)
+        assert answer["psk"] == brought, answer
+        assert server.agent_psk == brought.encode(), server.agent_psk
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_secrets_never_reach_the_audit_trail():
+    """The redaction is in the server, and it knows the task kinds."""
+    audit = read_text("server/internal/audit/audit.go")
+    # The whole argument map of a secret task is redacted.
+    assert "secretKinds" in audit
+    assert '"creds.add"' in audit
+    assert '"file.read"' in audit
+    # The names of the secret-bearing arguments are redacted too.
+    assert '"password"' in audit
+    assert '"token"' in audit
+    assert '"psk"' in audit
+    # And the redaction is used by the RPC path, not only by a helper.
+    operator = read_text("server/internal/link/operator.go")
+    assert "audit.RedactArgs(cmd, args)" in operator
+    # The caller's map is not modified: the redaction copies.
+    assert "func Redact(args map[string]any) map[string]any" in audit
+
+
+def test_the_artifact_store_refuses_the_wrong_key():
+    """A sealed store does not open with the wrong key; it never guesses."""
+    artifact = read_text("server/internal/artifact/artifact.go")
+    assert "func OpenEncrypted(dir string, key []byte) (*Store, error)" in artifact
+    assert "ErrWrongKey" in artifact
+    # The key comes from the configuration, not from the code.
+    config = read_text("server/internal/config/config.go")
+    assert "ArtifactKeyEnv" in config
+    assert "UMBRA_ARTIFACT_KEY" in config
+    # And the server opens the store with it.
+    main = read_text("server/cmd/umbra-server/main.go")
+    assert "artifact.OpenEncrypted(" in main
+    # The certificate is reloaded at every handshake, so a renewed one is
+    # in use without a restart.
+    mtls = read_text("server/internal/mtls/mtls.go")
+    assert "GetCertificate" in mtls
+    assert "rotatingCertificate" in mtls

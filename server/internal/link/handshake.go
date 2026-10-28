@@ -9,6 +9,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
@@ -82,19 +83,26 @@ type PreAck func(info *HelloInfo) (cleanup func(), err error)
 // it tries every configured key against the offered suites. With a handful of
 // operator tokens this is microseconds; the outer attempt limit keeps it from
 // becoming an oracle.
-func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAddr string, pre ...PreAck) (*session.Session, *HelloInfo, error) {
+func Handshake(stream FrameStream, cfg *config.Config, ring *keyring.Keyring, log *slog.Logger, peerAddr string, pre ...PreAck) (*session.Session, *HelloInfo, error) {
 	raw, err := stream.ReadFrame()
 	if err != nil {
 		return nil, nil, handshakeErr("read HELLO: %v", err)
 	}
 
-	cands := make([]candidate, 0, 4*(1+len(cfg.Keyring.Operators)))
+	// The candidates come from the runtime keyring, not from the
+	// configuration: a rotation that happened while the server runs has to
+	// be honoured, and the previous key has to keep working while the
+	// fleet catches up.
+	ring = ensureKeyring(ring, cfg)
+	agentKeys := ring.AgentCandidates()
+	operatorKeys := ring.OperatorCandidates()
+	cands := make([]candidate, 0, 4*(1+len(operatorKeys)))
 	for _, suite := range crypt.ServerSuites() {
-		if len(cfg.Keyring.AgentPSK) > 0 {
-			cands = append(cands, candidate{suite: suite, psi: cfg.Keyring.AgentPSK, keyName: "agent", role: crypt.RoleAgent})
+		for _, psi := range agentKeys {
+			cands = append(cands, candidate{suite: suite, psi: psi, keyName: "agent", role: crypt.RoleAgent})
 		}
-		for name, tok := range cfg.Keyring.Operators {
-			cands = append(cands, candidate{suite: suite, psi: tok, keyName: name, role: crypt.RoleOperator})
+		for _, op := range operatorKeys {
+			cands = append(cands, candidate{suite: suite, psi: op.Token, keyName: op.Name, role: crypt.RoleOperator})
 		}
 	}
 
@@ -143,6 +151,12 @@ func Handshake(stream FrameStream, cfg *config.Config, log *slog.Logger, peerAdd
 		return nil, nil, err
 	}
 	info.ClientIP = peerAddr
+	// The last use of an operator token is stamped here: the moment it
+	// authenticated is the moment it was used, and an admin who wants to
+	// know which of the tokens nobody needs any more asks the keyring.
+	if info.Role == crypt.RoleOperator {
+		ring.Touch(info.ID)
+	}
 
 	serverKP, err := crypt.NewX25519Keypair()
 	if err != nil {
@@ -322,6 +336,22 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 	}, nil
 }
 
+// ensureKeyring returns the keyring to use, building one out of the
+// configuration when the caller has none.
+//
+// A server that was wired up before the keyring existed still works: the
+// keyring is built from the configuration and the commands that rotate
+// the keys need a real one.
+func ensureKeyring(ring *keyring.Keyring, cfg *config.Config) *keyring.Keyring {
+	if ring != nil {
+		return ring
+	}
+	if cfg == nil {
+		return keyring.New(nil, "", nil, "")
+	}
+	return keyring.FromConfig(cfg.Keyring)
+}
+
 // queueLimits is what the server tells a beacon about the queue.
 //
 // A beacon that knows the limits can pace itself: it does not have to
@@ -350,7 +380,7 @@ func queueLimits(cfg *config.Config) upk.Map {
 		attempts = config.DefaultMaxAttempts
 	}
 	return upk.Map{
-		"max_in_flight_per_agent":         uint64(inFlight),
+		"max_in_flight_per_agent":          uint64(inFlight),
 		"max_deliver_per_minute_per_agent": uint64(perMinute),
 		"max_deliver_per_second":           uint64(perSecond),
 		"max_attempts":                     uint64(attempts),

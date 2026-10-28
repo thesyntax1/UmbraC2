@@ -76,12 +76,12 @@ var requirements = map[string]string{
 	"alerts.list":    Viewer,
 
 	// ---- state-changing on a host -------------------------------------
-	"task.submit":  Operator,
-	"events.list":  Viewer,
+	"task.submit":     Operator,
+	"events.list":     Viewer,
 	"engagement.wipe": Admin,
-	"sessions.list": Viewer,
-	"task.cancel":  Operator,
-	"task.retry":   Operator,
+	"sessions.list":   Viewer,
+	"task.cancel":     Operator,
+	"task.retry":      Operator,
 	// A bulk task reaches every agent the filter selects, so it is an
 	// operator action like a single task: the difference is the reach, not
 	// the privilege.
@@ -123,8 +123,8 @@ var requirements = map[string]string{
 	// ---- coordinating a shared engagement -----------------------------
 	// A claim orders human work; it never touches a host, so a junior
 	// operator may take and drop one.
-	"task.claim":      Operator,
-	"task.release":    Operator,
+	"task.claim":   Operator,
+	"task.release": Operator,
 	// Handing a task to a colleague orders human work as well.
 	"task.assign":     Operator,
 	// Focus is presence: which agent this console is looking at.
@@ -182,6 +182,12 @@ var requirements = map[string]string{
 	// The quiet window stops the traffic of the server: it is an admin
 	// decision, like burning an engagement.
 	"server.quiet": Admin,
+	// The keys of the server itself: the agent PSK and the operator
+	// tokens.  Rotating a credential is the one thing that can lock the
+	// whole engagement out, so it belongs to the admin.
+	"keys.rotate":   Admin,
+	"tokens.rotate": Admin,
+	"tokens.list":   Viewer,
 	// Reading the queue is harmless.
 	"server.queue": Viewer,
 	// The priority of a task is the operator's call.
@@ -216,6 +222,16 @@ func MinRole(cmd string) string {
 		return role
 	}
 	return Admin
+}
+
+// Known reports whether cmd is a command of the protocol.
+//
+// The scopes of an operator name commands, and a scope that names a
+// command nobody has heard of is a mistake: it is refused when the
+// scope is set, not silently ignored later.
+func Known(cmd string) bool {
+	_, ok := requirements[cmd]
+	return ok
 }
 
 // Allowed reports whether role may call cmd.

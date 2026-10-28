@@ -69,7 +69,7 @@ func (s *Server) ServeDNS(agentID string, ch *dnstun.Channel) {
 	defer ch.Close()
 
 	stream := &dnsStream{ch: ch}
-	sess, info, err := Handshake(stream, s.Cfg, log, agentID)
+	sess, info, err := Handshake(stream, s.Cfg, s.Keys, log, agentID)
 	if err != nil {
 		log.Warn("handshake failed", "err", err)
 		return

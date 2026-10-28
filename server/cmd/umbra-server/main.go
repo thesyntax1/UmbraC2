@@ -140,12 +140,16 @@ func run() error {
 	// pushes it to every host that needs it.  It lives next to the state
 	// file, so a deployment that already gives the server a writable data
 	// directory needs no extra setup.
-	artifactStore, err := artifact.Open(artifactDir(cfg.Server.DataFile))
+	//
+	// The store is sealed when the configuration gives a key: the files
+	// the operator stored on the server are then encrypted at rest, and
+	// a store that cannot be opened with the key refuses to open at all.
+	artifactStore, err := openArtifactStore(cfg)
 	if err != nil {
 		return err
 	}
 	srv.SetArtifact(artifactStore)
-	logger.Info("artifact store ready", "dir", artifactStore.Dir())
+	logger.Info("artifact store ready", "dir", artifactStore.Dir(), "encrypted", artifactStore.Encrypted())
 
 	// The runtime command namespace: named task templates.  The built-in
 	// ones are the one-liners everybody types; the team can replace them.
@@ -279,7 +283,7 @@ func run() error {
 				Topology: func() any { return pivotMgr.Topology() },
 				// The dashboard runs the operator commands with the
 				// role of the operator it belongs to.
-				Role:    dashboardRole(cfg),
+				Role:     dashboardRole(cfg),
 				Dispatch: srv.DispatchOperator,
 			}, h, logger)
 			go func() {
@@ -382,6 +386,17 @@ func dashboardRole(cfg *config.Config) string {
 		}
 	}
 	return rbac.Viewer
+}
+
+// openArtifactStore opens the artifact store, sealed when the
+// configuration asks for it.
+func openArtifactStore(cfg *config.Config) (*artifact.Store, error) {
+	dir := artifactDir(cfg.Server.DataFile)
+	key := strings.TrimSpace(cfg.Server.ArtifactKey)
+	if key == "" {
+		return artifact.Open(dir)
+	}
+	return artifact.OpenEncrypted(dir, []byte(key))
 }
 
 // artifactDir is where the server-side file store lives.
