@@ -1263,6 +1263,53 @@ The transport, the pivot and the scan are the three places where an address
 travels from the operator to the host, and all three keep the family. A host
 on an IPv6-only network is reachable with the same commands.
 
+### 8.2 The mail transport
+
+A network where nothing but the mail server gets through is a network the
+framework has to work in.  The beacon then mails its frames out and picks
+the answer up from its own mailbox.
+
+| step | protocol | what travels |
+|---|---|---|
+| the beacon sends | SMTP (RFC 5321) | one mail: the headers, an empty line, the frames in base64 |
+| the server answers | POP3 (RFC 1939) | one message per batch, the frames in base64 |
+| the beacon deletes | POP3 `DELE` | the message is gone, so it is not delivered twice |
+
+The two protocols are the ones a mail server speaks, so the transport works
+wherever mail works.  The credentials of an agent are derived from the team
+key: the user name is the id of the agent and the password is
+`HMAC-SHA256(team key, "umbra/v1/mail/secret" || 0 || id)`, so a password
+that leaks does not open the mailbox of another agent.
+
+The mail transport has no connection to keep, so the frames of a cycle
+travel in batches: the check-in is one batch, the answer of the server is
+the next one.  The session of the agent lives on the server between the
+batches, and a batch that begins with a HELLO starts a new one.
+
+### 8.3 The object transport
+
+The beacon reads its work from one bucket and writes its results into
+another, the way a program that talks to an object store does.
+
+| bucket | who writes | what it holds |
+|---|---|---|
+| `umbra-tasks` | the server | the work of the agents |
+| `umbra-results` | the beacons | what the agents answer |
+
+The requests carry an AWS Signature Version 4 header
+(`AWS4-HMAC-SHA256`), so the same beacon can talk to a real S3 endpoint.
+The access key is the id of the agent and the secret key is the password
+of the mail transport, so one agent cannot read the work of another.
+
+| request | what it does |
+|---|---|
+| `PUT /umbra-results/<n>` | the batch of frames of the beacon |
+| `GET /umbra-tasks/<agent>` | the work of the agent, empty when there is none |
+| `GET /umbra-tasks?list-type=2` | the listing of the bucket, in the XML of S3 |
+
+The signature covers the method, the path, the headers and the body, so a
+body that was changed on the way no longer verifies.
+
 ## 9. Failure handling
 
 | Condition | Result |

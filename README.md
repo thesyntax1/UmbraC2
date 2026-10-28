@@ -74,10 +74,11 @@ Added on top of that core:
 | The remote execution | A command that runs on a far host over WinRM, WMI, DCOM, SMB, LDAP or SSH, driven from the agent that holds the path to it | [docs/OPERATIONS.md](docs/OPERATIONS.md#running-a-command-on-a-far-host) |
 | The reach | Every pivot drawn as a graph: the agents, the tunnels between them, the bytes that moved, the clients of the proxy, the targets it refuses and the claims that tear a group of tunnels down | [docs/OPERATIONS.md](docs/OPERATIONS.md#3e-the-reach) |
 | IPv6 | The transports, the pivot, the scan and the peer link keep the family of the address: a host on an IPv6-only network is reached with the same commands | [docs/OPERATIONS.md](docs/OPERATIONS.md#ipv6) |
+| The transports that keep no connection | The beacon mails its frames out and polls its mailbox, or reads its work from one bucket and writes its results into another: two transports for the networks where nothing else gets through | [docs/TRANSPORTS.md](docs/TRANSPORTS.md#10-the-transports-without-a-connection) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
-S3 and SMTP transports, named-pipe pivots, a WASM sandbox for task modules,
-TLS inside the implant binaries, and a Go implant.
+named-pipe pivots, a WASM sandbox for task modules, TLS inside the implant
+binaries, and a Go implant.
 
 ## Quick start (5 commands, no Go/Rust needed)
 

@@ -228,6 +228,31 @@ func run() error {
 		return err
 	}
 
+	// The mail transport: the beacon mails its frames to the SMTP listener
+	// and fetches the answer from its mailbox with POP3.  It is the
+	// transport for a network where the mail server is the only thing
+	// that gets through.
+	if cfg.Server.SMTPListen != "" {
+		mailSrv := link.NewMailServer(srv, cfg.Keyring.AgentPSK, cfg.Server.MailDomain)
+		if err := mailSrv.Start(ctx, cfg.Server.SMTPListen, cfg.Server.POP3Listen); err != nil {
+			return err
+		}
+		logger.Info("mail transport enabled",
+			"smtp", cfg.Server.SMTPListen, "pop3", cfg.Server.POP3Listen)
+	}
+
+	// The object transport: the beacon reads its work from one bucket and
+	// writes its results into another.
+	if cfg.Server.S3Listen != "" {
+		s3Srv := link.NewS3Server(srv, cfg.Keyring.AgentPSK, cfg.Server.S3Region)
+		s3Srv.TasksBucket = cfg.Server.S3TasksBucket
+		s3Srv.ResultsBucket = cfg.Server.S3ResultsBucket
+		if err := s3Srv.Start(ctx, cfg.Server.S3Listen); err != nil {
+			return err
+		}
+		defer func() { s3Srv.Close() }()
+	}
+
 	// The operator's web dashboard: the inventory, the tasks and the event
 	// stream on a second screen.  It accepts the operator tokens, so it is
 	// as protected as the console, and it can be told to be read-only.

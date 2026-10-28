@@ -3120,6 +3120,126 @@ def test_the_pivot_reaches_an_ipv6_target():
         target.close()
 
 
+def test_the_beacon_can_talk_over_the_mail_transport():
+    """The mail transport: the frames are mailed out and the answer comes
+    back from the mailbox.
+
+    A network where nothing but the mail server gets through is a network
+    the framework has to work in, so the beacon mails its check-in, picks
+    the work up from its own mailbox and mails the answer back.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-mail-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(
+        server.address, AGENT_PSK, "agent-mail", interval=0.3,
+        transport="smtp", mail_addr=server.mail_addr, pop3_addr=server.pop3_addr,
+    )
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        task_id = client.submit("agent-mail", "shell", {"cmd": "echo umbra-mail"})
+        result = client.wait_for_result(task_id, timeout=30, poll=0.05)
+        assert b"umbra-mail" in result["out"]
+
+        # The mailbox is empty again: the mail was delivered and deleted.
+        with server._lock:
+            left = len(server.mailboxes.get("agent-mail", []))
+        assert left == 0, left
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_beacon_can_talk_over_the_object_transport():
+    """The object transport: the work is read from one bucket and the
+    answer is written into another.
+
+    The beacon talks to the object store the way a program does: it puts
+    its batch into the results bucket and reads the work of the agent
+    from the tasks bucket.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-s3-01234567890"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(
+        server.address, AGENT_PSK, "agent-s3", interval=0.3,
+        transport="s3", s3_addr=server.s3_addr,
+    )
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        task_id = client.submit("agent-s3", "shell", {"cmd": "echo umbra-s3"})
+        result = client.wait_for_result(task_id, timeout=30, poll=0.05)
+        assert b"umbra-s3" in result["out"]
+
+        # The work of the agent is gone from the task bucket: it was
+        # picked up.
+        with server._lock:
+            left = len(server.objects.get("umbra-tasks", {}))
+        assert left == 0, left
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_signed_object_request_that_was_changed_is_refused():
+    """The signature of an object request covers the body.
+
+    A request whose body was changed on the way no longer verifies, so
+    the store refuses it instead of taking the frames of somebody else.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import batch_transports  # noqa: WPS433
+
+    headers = batch_transports.sign_request(
+        "PUT", "/umbra-results/1", b"the frames", "127.0.0.1:9000",
+        "agent-one", batch_transports.agent_secret(b"team-key-0123456789ab", "agent-one"),
+    )
+    lowered = {name.lower(): value for name, value in headers.items()}
+    secret_of = lambda agent: batch_transports.agent_secret(  # noqa: E731
+        b"team-key-0123456789ab", agent
+    )
+    assert batch_transports.verify_request(
+        "PUT", "/umbra-results/1", "", lowered, b"the frames", secret_of
+    ) == "agent-one"
+    # The body was changed: the signature does not hold any more.
+    assert batch_transports.verify_request(
+        "PUT", "/umbra-results/1", "", lowered, b"other frames", secret_of
+    ) is None
+    # Another agent cannot sign for this one.
+    assert batch_transports.verify_request(
+        "PUT", "/umbra-results/1", "", lowered, b"the frames",
+        lambda agent: "another secret",
+    ) is None
+
+
 def test_the_operator_can_tell_an_agent_which_transport_it_speaks():
     """The transport matrix: the operator knows the network of the target.
 
@@ -3180,6 +3300,45 @@ def test_the_operator_can_tell_an_agent_which_transport_it_speaks():
         task_id = client.submit("agent-route", "shell", {"cmd": "echo umbra-route"})
         result = client.wait_for_result(task_id, timeout=20, poll=0.05)
         assert b"umbra-route" in result["out"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_route_may_name_a_transport_without_a_connection():
+    """The operator may put an agent on the mail or the object transport.
+
+    The two transports keep no connection, so the operator names them
+    like any other transport and the route carries the name to the
+    beacon.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-batch-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-batch", interval=0.3)
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        route = client.transport_set("agent-batch", primary="smtp", fallback=["tcp"])
+        assert route["primary"] == "smtp"
+        assert route["fallback"] == ["tcp"]
+        route = client.transport_set("agent-batch", primary="s3")
+        assert route["primary"] == "s3"
+        got = client.transport_get("agent-batch")
+        assert got["primary"] == "s3"
     finally:
         client.close()
         agent.stop()

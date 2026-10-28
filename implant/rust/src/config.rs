@@ -83,6 +83,11 @@ pub enum Transport {
     Dns,
     /// The WebSocket transport: the frames travel in binary WebSocket frames.
     Ws,
+    /// The mail transport: the frames are mailed out and the answer is
+    /// picked up from the mailbox.
+    Smtp,
+    /// The object transport: the frames travel through an object store.
+    S3,
 }
 
 impl Transport {
@@ -97,6 +102,8 @@ impl Transport {
             "http" | "https" => Some(Transport::Http),
             "dns" => Some(Transport::Dns),
             "ws" | "websocket" => Some(Transport::Ws),
+            "smtp" | "mail" => Some(Transport::Smtp),
+            "s3" | "object" => Some(Transport::S3),
             _ => None,
         }
     }
@@ -108,6 +115,8 @@ impl Transport {
             Transport::Http => "http",
             Transport::Dns => "dns",
             Transport::Ws => "ws",
+            Transport::Smtp => "smtp",
+            Transport::S3 => "s3",
         }
     }
 }
@@ -150,6 +159,18 @@ pub struct Config {
     /// The beacon binds it, tells the server where it waits, and serves
     /// the pivots that are chained through this host.
     pub peer_listen: String,
+    /// The SMTP server of the mail transport: "host:port".
+    pub smtp_addr: String,
+    /// The POP3 server of the mail transport: "host:port".
+    pub pop3_addr: String,
+    /// The endpoint of the object store: "host:port".
+    pub s3_endpoint: String,
+    /// The region of the buckets of the object store.
+    pub s3_region: String,
+    /// The bucket the work of the agents waits in.
+    pub s3_tasks_bucket: String,
+    /// The bucket the answers of the agents go into.
+    pub s3_results_bucket: String,
 }
 
 /// The address of a host and a port.
@@ -206,7 +227,13 @@ impl Config {
             "http" | "https" => Transport::Http,
             "dns" => Transport::Dns,
             "ws" | "websocket" => Transport::Ws,
-            other => return Err(format!("unknown transport {other:?} (tcp|http|dns|ws)")),
+            "smtp" | "mail" => Transport::Smtp,
+            "s3" | "object" => Transport::S3,
+            other => {
+                return Err(format!(
+                    "unknown transport {other:?} (tcp|http|dns|ws|smtp|s3)"
+                ))
+            }
         };
 
         let psk_raw = pick("UMBRA_PSK", COMPILED_PSK);
@@ -268,6 +295,12 @@ impl Config {
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),
             peer_listen: pick("UMBRA_PEER_LISTEN", COMPILED_PEER_LISTEN),
+            smtp_addr: pick("UMBRA_SMTP_ADDR", ""),
+            pop3_addr: pick("UMBRA_POP3_ADDR", ""),
+            s3_endpoint: pick("UMBRA_S3_ENDPOINT", ""),
+            s3_region: pick("UMBRA_S3_REGION", "us-east-1"),
+            s3_tasks_bucket: pick("UMBRA_S3_TASKS_BUCKET", "umbra-tasks"),
+            s3_results_bucket: pick("UMBRA_S3_RESULTS_BUCKET", "umbra-results"),
         })
     }
 }

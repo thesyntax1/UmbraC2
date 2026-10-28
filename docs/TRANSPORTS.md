@@ -244,7 +244,31 @@ off.
 | the operator console may be remote | mutual TLS |
 | a lot of traffic through a middlebox | HTTP or WebSocket with padding |
 
-## 10. IPv6
+## 10. The transports without a connection
+
+Two of the transports keep no connection at all: the mail transport and the
+object transport.  Both deliver a *batch* of frames and take the answer
+out of the next exchange.
+
+| transport | sends | fetches | notes |
+|---|---|---|---|
+| SMTP + POP3 | a mail | the mailbox | the protocols of a mail server; the body is base64 |
+| S3 | `PUT /umbra-results/<n>` | `GET /umbra-tasks/<agent>` | AWS Signature Version 4; a real bucket works too |
+
+The consequence for the operator is the same for both: the transport needs
+two ports (the mail transport) or one HTTP port (the object transport),
+and the beacon has to be told which one it speaks:
+
+```
+umbra transport set <agent> --primary smtp
+umbra transport set <agent> --primary s3
+```
+
+The server keeps the session of an agent between the batches, and a batch
+that starts with a HELLO begins a new session, exactly like a new
+connection does on the other transports.
+
+## 11. IPv6
 
 Every transport dials a host and a port, and the family of the host is
 carried by the address itself:
@@ -264,7 +288,7 @@ A beacon that is told to listen (the peer link) binds an IPv6 socket when
 it is given an IPv6 address, and the address it reports to the server is
 bracketed, so the server can chain a pivot through it without guessing.
 
-## 11. What is deliberately not here
+## 12. What is deliberately not here
 
 * **No TLS in the beacon.** The Rust beacon carries no TLS stack: it would
   add a dependency and a few kilobytes to every implant. The operator

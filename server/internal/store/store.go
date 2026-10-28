@@ -133,7 +133,10 @@ type TransportPolicy struct {
 // beacon that cannot speak the transport would answer nothing, and the
 // operator would wait for an answer that never comes.
 func (p TransportPolicy) Valid() bool {
-	known := map[string]bool{"tcp": true, "http": true, "dns": true, "ws": true}
+	known := map[string]bool{
+		"tcp": true, "http": true, "dns": true, "ws": true,
+		"smtp": true, "s3": true,
+	}
 	if !known[p.Primary] {
 		return false
 	}

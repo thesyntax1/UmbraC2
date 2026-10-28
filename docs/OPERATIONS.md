@@ -753,6 +753,37 @@ and listing the reach needs only a viewer.
 The permanent proxy and the pivots opened from the console share the same
 deny list and the same accounting.
 
+### The transports that keep no connection
+
+Two transports do not keep a connection at all, and they are the answer to
+a network where nothing else gets through:
+
+| transport | the server needs | the beacon needs |
+|---|---|---|
+| `smtp` | `smtp_listen` and `pop3_listen` | the address of both |
+| `s3` | `s3_listen` | the address of the endpoint |
+
+```
+{
+  "smtp_listen": "0.0.0.0:25",
+  "pop3_listen": "0.0.0.0:110",
+  "s3_listen": "0.0.0.0:9000"
+}
+```
+
+The operator then tells the agent which one it speaks:
+
+```
+umbra transport set <agent> --primary smtp
+umbra transport set <agent> --primary s3
+```
+
+The mail transport uses the team key: the id of the agent is the user name
+and the password is derived from the key, so nothing has to be configured
+per agent.  The object transport uses the same password as the secret key
+of the request and signs every request with AWS Signature Version 4, so the
+same beacon can talk to a real bucket.
+
 ### IPv6
 
 A pivot may be opened on an IPv6 address, and a proxy may run on one:

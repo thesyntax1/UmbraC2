@@ -13,13 +13,16 @@ It is also imported by the test-suite:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import queue
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -28,8 +31,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "operator"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from umbra_cli import crypto, handshake, netio, peer, session, upk, wire, ws  # noqa: E402
+
+import batch_transports  # noqa: E402
 
 
 # How long an agent stays online after its last check-in.  Mirrors
@@ -49,7 +55,7 @@ ARTIFACT_CHUNK = 256 * 1024
 # refused against the real implant.
 # The transports the framework knows.  The route of an agent names one of
 # them; an unknown name is refused instead of being pushed to the beacon.
-TRANSPORTS = ("tcp", "http", "dns", "ws")
+TRANSPORTS = ("tcp", "http", "dns", "ws", "smtp", "s3")
 
 AGENT_CAPS = [
     "shell", "exec", "sysinfo", "recon", "pwd", "cwd", "ls", "tail", "hash",
@@ -499,6 +505,22 @@ class MockServer:
         # in a binary WebSocket frame.
         self.websocket = websocket
         self._sock: Optional[socket.socket] = None
+        # The batch transports have listeners of their own: the mail
+        # transport needs an SMTP and a POP3 port, the object transport
+        # needs an HTTP port.
+        self._mail_sock: Optional[socket.socket] = None
+        self._pop3_sock: Optional[socket.socket] = None
+        self._s3_sock: Optional[socket.socket] = None
+        self.mail_addr = ""
+        self.pop3_addr = ""
+        self.s3_addr = ""
+        # The mailbox of every agent of the mail transport.
+        self.mailboxes: Dict[str, List[bytes]] = {}
+        # The objects of the buckets of the object transport.
+        self.objects: Dict[str, Dict[str, bytes]] = {}
+        # The sessions of the agents that talk a batch transport: they have
+        # no connection to keep the session in.
+        self.batch_sessions: Dict[str, Dict[str, Any]] = {}
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
         self._lock = threading.Lock()
@@ -653,13 +675,50 @@ class MockServer:
         t = threading.Thread(target=self._accept_loop, name="mock-accept", daemon=True)
         t.start()
         self._threads.append(t)
+
+        # The mail transport: the SMTP listener and the POP3 listener.
+        self._mail_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._mail_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._mail_sock.bind((self.host, 0))
+        self._mail_sock.listen(16)
+        self._mail_sock.settimeout(0.2)
+        mail_host, mail_port = self._mail_sock.getsockname()
+        self.mail_addr = f"{mail_host}:{mail_port}"
+        mail = threading.Thread(target=self._accept_mail, name="mock-mail", daemon=True)
+        mail.start()
+        self._threads.append(mail)
+
+        self._pop3_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._pop3_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._pop3_sock.bind((self.host, 0))
+        self._pop3_sock.listen(16)
+        self._pop3_sock.settimeout(0.2)
+        pop3_host, pop3_port = self._pop3_sock.getsockname()
+        self.pop3_addr = f"{pop3_host}:{pop3_port}"
+        pop3 = threading.Thread(target=self._accept_pop3, name="mock-pop3", daemon=True)
+        pop3.start()
+        self._threads.append(pop3)
+
+        # The object transport: one HTTP listener for both buckets.
+        self._s3_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._s3_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._s3_sock.bind((self.host, 0))
+        self._s3_sock.listen(16)
+        self._s3_sock.settimeout(0.2)
+        s3_host, s3_port = self._s3_sock.getsockname()
+        self.s3_addr = f"{s3_host}:{s3_port}"
+        objects = threading.Thread(target=self._accept_objects, name="mock-s3", daemon=True)
+        objects.start()
+        self._threads.append(objects)
         return self.host, self.port
 
     def stop(self) -> None:
         self._stop.set()
-        if self._sock:
+        for sock in (self._sock, self._mail_sock, self._pop3_sock, self._s3_sock):
+            if not sock:
+                continue
             try:
-                self._sock.close()
+                sock.close()
             except OSError:
                 pass
         for t in self._threads:
@@ -717,6 +776,379 @@ class MockServer:
             t = threading.Thread(target=self._serve, args=(conn, addr), daemon=True)
             t.start()
             self._threads.append(t)
+
+    # -- the batch transports --------------------------------------------
+
+    def _accept_mail(self) -> None:
+        """Wait for the mail and the mailbox connections."""
+        assert self._mail_sock is not None
+        while not self._stop.is_set():
+            try:
+                conn, addr = self._mail_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            t = threading.Thread(target=self._serve_mail, args=(conn, addr), daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    def _accept_pop3(self) -> None:
+        """Wait for the mailbox connections."""
+        assert self._pop3_sock is not None
+        while not self._stop.is_set():
+            try:
+                conn, addr = self._pop3_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            t = threading.Thread(target=self._serve_pop3_conn, args=(conn,), daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    def _serve_pop3_conn(self, conn: socket.socket) -> None:
+        """One mailbox session."""
+        try:
+            conn.settimeout(60)
+            self._serve_pop3(conn, conn.makefile("rb"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _accept_objects(self) -> None:
+        """Wait for the object store requests."""
+        assert self._s3_sock is not None
+        while not self._stop.is_set():
+            try:
+                conn, addr = self._s3_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            t = threading.Thread(target=self._serve_object, args=(conn, addr), daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    def _mail_secret(self, agent_id: str) -> str:
+        """The password of an agent on the mail and the object transport."""
+        return batch_transports.agent_secret(self.agent_psk, agent_id)
+
+        try:
+            conn.settimeout(60)
+            self._serve_smtp(conn, conn.makefile("rb"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+    def _serve_mail(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
+        """One session of the mail transport.
+
+        The first line of a POP3 session says which mailbox the client
+        wants; an SMTP session is the other way round.  The port tells the
+        two apart, and the client is the one that opens the connection.
+        """
+        try:
+            conn.settimeout(60)
+            self._serve_smtp(conn, conn.makefile("rb"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _serve_smtp(self, conn: socket.socket, reader: Any) -> None:
+        """One SMTP session: the beacon mails its frames in."""
+        conn.sendall(b"220 umbra.local ESMTP umbra\r\n")
+        agent_id = ""
+        while not self._stop.is_set():
+            line = reader.readline()
+            if not line:
+                return
+            text = line.decode("latin-1").strip()
+            verb = text.split(" ", 1)[0].upper()
+            if verb == "EHLO":
+                conn.sendall(b"250-umbra.local greets the beacon\r\n")
+                conn.sendall(b"250-AUTH PLAIN\r\n")
+                conn.sendall(b"250 8BITMIME\r\n")
+            elif verb == "HELO":
+                conn.sendall(b"250 umbra.local\r\n")
+            elif verb == "AUTH":
+                payload = text.split(" ", 2)[2].strip() if len(text.split(" ", 2)) > 2 else ""
+                if not payload:
+                    conn.sendall(b"334 \r\n")
+                    challenge = reader.readline()
+                    payload = challenge.decode("latin-1").strip() if challenge else ""
+                name = self._check_auth(payload)
+                if name is None:
+                    conn.sendall(b"535 authentication failed\r\n")
+                    continue
+                agent_id = name
+                conn.sendall(f"235 authenticated as {agent_id}\r\n".encode())
+            elif verb in ("MAIL", "RCPT"):
+                conn.sendall(b"250 ok\r\n")
+            elif verb == "DATA":
+                if not agent_id:
+                    conn.sendall(b"530 authentication required\r\n")
+                    continue
+                conn.sendall(b"354 end the data with <CRLF>.<CRLF>\r\n")
+                body = self._read_dot_stuffed(reader)
+                try:
+                    frames = batch_transports.decode_body(
+                        batch_transports.split_message(body)
+                    )
+                except Exception:
+                    conn.sendall(b"554 the body is not a frame batch\r\n")
+                    continue
+                answer = self.handle_batch(agent_id, "smtp", frames)
+                if answer:
+                    with self._lock:
+                        self.mailboxes.setdefault(agent_id, []).append(answer)
+                conn.sendall(b"250 message accepted\r\n")
+            elif verb in ("RSET", "NOOP"):
+                conn.sendall(b"250 ok\r\n")
+            elif verb == "QUIT":
+                conn.sendall(b"221 bye\r\n")
+                return
+            else:
+                conn.sendall(b"502 command not implemented\r\n")
+
+    def _check_auth(self, payload: str) -> Optional[str]:
+        """Check the AUTH PLAIN payload of a session."""
+        try:
+            raw = base64.b64decode(payload.strip())
+        except Exception:
+            return None
+        parts = raw.split(b"\x00")
+        if len(parts) != 3:
+            return None
+        user = parts[1].decode("latin-1", "replace")
+        password = parts[2].decode("latin-1", "replace")
+        if not user or not hmac.compare_digest(self._mail_secret(user), password):
+            return None
+        return user
+
+    def _read_dot_stuffed(self, reader: Any) -> bytes:
+        """Read the body of a mail: it ends with a line that holds a dot."""
+        body = bytearray()
+        while True:
+            line = reader.readline()
+            if not line:
+                return bytes(body)
+            text = line.rstrip(b"\r\n")
+            if text == b".":
+                return bytes(body)
+            if text.startswith(b".."):
+                text = text[1:]
+            body += text + b"\r\n"
+
+    def _serve_pop3(self, conn: socket.socket, reader: Any) -> None:
+        """One POP3 session: the beacon picks its answer up."""
+        conn.sendall(b"+OK umbra POP3 ready\r\n")
+        agent_id = ""
+        authed = False
+        deleted: List[int] = []
+        while not self._stop.is_set():
+            line = reader.readline()
+            if not line:
+                return
+            text = line.decode("latin-1").strip()
+            verb = text.split(" ", 1)[0].upper()
+            argument = text[len(verb) :].strip()
+            if verb == "USER":
+                agent_id = argument
+                conn.sendall(b"+OK send the password\r\n")
+            elif verb == "PASS":
+                if not agent_id or not hmac.compare_digest(
+                    self._mail_secret(agent_id), argument
+                ):
+                    agent_id = ""
+                    conn.sendall(b"-ERR authentication failed\r\n")
+                    continue
+                authed = True
+                conn.sendall(b"+OK the mailbox is ready\r\n")
+            elif not authed:
+                conn.sendall(b"-ERR authenticate first\r\n")
+            elif verb == "STAT":
+                with self._lock:
+                    messages = list(self.mailboxes.get(agent_id, []))
+                conn.sendall(f"+OK {len(messages)} {sum(len(m) for m in messages)}\r\n".encode())
+            elif verb == "LIST":
+                with self._lock:
+                    messages = list(self.mailboxes.get(agent_id, []))
+                conn.sendall(f"+OK {len(messages)} messages\r\n".encode())
+                for index, message in enumerate(messages, 1):
+                    conn.sendall(f"{index} {len(message)}\r\n".encode())
+                conn.sendall(b".\r\n")
+            elif verb == "RETR":
+                index = int(argument or "0")
+                with self._lock:
+                    messages = list(self.mailboxes.get(agent_id, []))
+                if index < 1 or index > len(messages):
+                    conn.sendall(b"-ERR no such message\r\n")
+                    continue
+                body = self._mail_body(agent_id, messages[index - 1])
+                conn.sendall(f"+OK {len(body)} octets\r\n".encode())
+                conn.sendall(body + b"\r\n.\r\n")
+            elif verb == "DELE":
+                deleted.append(int(argument or "0"))
+                conn.sendall(b"+OK message deleted\r\n")
+            elif verb == "NOOP":
+                conn.sendall(b"+OK\r\n")
+            elif verb == "QUIT":
+                with self._lock:
+                    kept = [
+                        message
+                        for number, message in enumerate(self.mailboxes.get(agent_id, []), 1)
+                        if number not in deleted
+                    ]
+                    self.mailboxes[agent_id] = kept
+                conn.sendall(b"+OK bye\r\n")
+                return
+            else:
+                conn.sendall(b"-ERR command not implemented\r\n")
+
+    def _mail_body(self, agent_id: str, frames: bytes) -> bytes:
+        """Render the frames of a batch as a mail."""
+        body = batch_transports.encode_body(frames)
+        return (
+            f"From: umbra@umbra.local\r\n"
+            f"To: {agent_id}@umbra.local\r\n"
+            f"Subject: umbra {len(frames)} bytes\r\n"
+            "Content-Transfer-Encoding: base64\r\n"
+            "\r\n" + body + "\r\n"
+        ).encode()
+
+    def _serve_object(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
+        """One request of the object store."""
+        try:
+            conn.settimeout(60)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            head, _, rest = data.partition(b"\r\n\r\n")
+            lines = head.decode("latin-1").split("\r\n")
+            parts = lines[0].split(" ")
+            if len(parts) < 2:
+                return
+            method, target = parts[0].upper(), parts[1]
+            headers: Dict[str, str] = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    name, _, value = line.partition(":")
+                    headers[name.strip().lower()] = value.strip()
+            length = int(headers.get("content-length", "0") or 0)
+            body = rest
+            while len(body) < length:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+            path, _, query = target.partition("?")
+            agent_id = batch_transports.verify_request(
+                method, path, query, headers, body, self._mail_secret
+            )
+            if agent_id is None:
+                conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                return
+            bucket, _, key = path.lstrip("/").partition("/")
+            if method == "PUT":
+                if bucket != batch_transports.RESULTS_BUCKET:
+                    conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    return
+                answer = self.handle_batch(agent_id, "s3", body)
+                with self._lock:
+                    if answer:
+                        self.objects.setdefault(batch_transports.TASKS_BUCKET, {})[
+                            agent_id
+                        ] = answer
+                    else:
+                        self.objects.get(batch_transports.TASKS_BUCKET, {}).pop(agent_id, None)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                return
+            if method == "GET":
+                if bucket != batch_transports.TASKS_BUCKET:
+                    conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    return
+                with self._lock:
+                    object_bytes = self.objects.get(bucket, {}).get(key)
+                if object_bytes is None:
+                    conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    return
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                    + f"Content-Length: {len(object_bytes)}\r\n\r\n".encode()
+                    + object_bytes
+                )
+                return
+            conn.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n")
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def handle_batch(self, agent_id: str, transport: str, data: bytes) -> bytes:
+        """Feed a batch of frames into the session of an agent.
+
+        The first batch carries the HELLO, the handshake runs over it, and
+        the session it creates is kept for the batches that follow.
+        """
+        with self._lock:
+            state = self.batch_sessions.get(agent_id)
+        # A batch that starts with a HELLO begins a new session: the
+        # beacon starts every cycle with a fresh handshake, and a batch
+        # transport has no connection that would tell the two apart.
+        if data and len(data) >= wire.PRELUDE_LEN and data[4] == wire.MsgType.HELLO:
+            with self._lock:
+                self.batch_sessions.pop(agent_id, None)
+            state = None
+        if state is None:
+            stream = batch_transports.BufferStream(data)
+            try:
+                result = handshake.server_handshake(
+                    stream,
+                    keyring=self._keyring(),
+                    cfg={"sleep": self.sleep, "jitter": self.jitter, "obf": True},
+                )
+            except (handshake.HandshakeError, netio.StreamError, OSError, ValueError):
+                return b""
+            state = {
+                "sess": result.session,
+                "peer_id": result.peer_id,
+                "meta": result.meta,
+            }
+            with self._lock:
+                self.batch_sessions[agent_id] = state
+            self._register_agent(result.peer_id, result.meta, f"{transport}:{agent_id}")
+            rest = stream
+        else:
+            rest = batch_transports.BufferStream(data)
+        sess = state["sess"]
+        peer_id = state["peer_id"]
+        try:
+            while True:
+                raw = rest.recv_frame()
+                msg_type, msg = sess.decrypt_message(raw)
+                if not self._agent_frame(rest, sess, peer_id, msg_type, msg):
+                    break
+        except (netio.StreamError, session.SessionError, ValueError):
+            pass
+        return bytes(rest.out)
 
     def _keyring(self) -> List[handshake.KeyringEntry]:
         ring = [handshake.KeyringEntry("agent", self.agent_psk, crypto.ROLE_AGENT)]
@@ -1170,10 +1602,12 @@ class MockServer:
                 pass
             self._stop.wait(0.1)
 
-    def _agent_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
-        sess = result.session
-        agent_id = result.peer_id
-        meta = result.meta
+    def _register_agent(self, agent_id: str, meta: Dict[str, Any], addr: str) -> None:
+        """Put an agent into the inventory.
+
+        The socket transports and the batch transports register the same
+        way, so the inventory does not know which road an agent took.
+        """
         with self._lock:
             is_new = agent_id not in self.agents
             record = self.agents.setdefault(agent_id, {})
@@ -1208,81 +1642,15 @@ class MockServer:
             )
         self.emit("agent.new" if is_new else "agent.online", agent_id, data={"host": record["host"], "os": record["os"]})
 
+    def _agent_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
+        sess = result.session
+        agent_id = result.peer_id
+        self._register_agent(agent_id, result.meta, addr)
         try:
             while not self._stop.is_set():
                 raw = stream.recv_frame()
                 msg_type, msg = sess.decrypt_message(raw)
-                if msg_type == wire.MsgType.CHECKIN:
-                    # The implant says who it is running as: the inventory
-                    # has to show the truth, not the account it started with.
-                    identity = ""
-                    if isinstance(msg.get("impersonation"), str):
-                        identity = str(msg.get("impersonation") or "")
-                    with self._lock:
-                        record = self.agents.get(agent_id)
-                        if record is not None:
-                            record["last_seen"] = _now()
-                            record["state"] = "online"
-                            record["impersonation"] = identity
-                    batch = self._take_tasks(agent_id)
-                    # The cadence the server pushes is the one the operator
-                    # configured for this agent.
-                    with self._lock:
-                        record = self.agents.get(agent_id) or {}
-                        sleep = int(record.get("sleep", self.sleep))
-                        jitter = int(record.get("jitter", self.jitter))
-                        obfuscate = bool(record.get("obfuscate", True))
-                        route = self.routes.get(agent_id)
-                    body = {
-                        "tasks": batch,
-                        "sleep": sleep,
-                        "jitter": jitter,
-                        "obf": obfuscate,
-                        "server_time": _now(),
-                    }
-                    # The route of the agent travels with the batch: the
-                    # beacon learns which transport it speaks and in which
-                    # order it may fall back.
-                    if route:
-                        body["route"] = {
-                            "primary": route.get("primary", ""),
-                            "fallback": list(route.get("fallback") or []),
-                            "front": route.get("front", ""),
-                            "inspect": bool(route.get("inspect", False)),
-                            "http_path": route.get("http_path", ""),
-                            "ws_path": route.get("ws_path", ""),
-                        }
-                    # Rotation order is part of the protocol: the REKEY frame is
-                    # sealed with the OLD key set, written first, and only then
-                    # does the server switch. The peer sees REKEY at the old
-                    # counter, applies it, resets to 0 and opens TASK_BATCH with
-                    # the new key set as its first frame.
-                    if self.rekey_after and sess.needs_rekey(self.rekey_after):
-                        seed = crypto.random_bytes(32)
-                        stream.send_frame(sess.encrypt(wire.MsgType.REKEY, {"seed": seed}))
-                        sess.apply_rekey(seed)
-                    # Cancels sit between REKEY and TASK_BATCH: they are sealed
-                    # with whatever keys are current, and must arrive before the
-                    # batch whose tasks they refer to.
-                    with self._lock:
-                        cancels = self.pending_cancels.pop(agent_id, [])
-                    for task_id in cancels:
-                        stream.send_frame(sess.encrypt(wire.MsgType.TASK_CANCEL, {"id": task_id}))
-                    stream.send_frame(sess.encrypt(wire.MsgType.TASK_BATCH, body))
-                elif msg_type == wire.MsgType.RESULT:
-                    self._complete_task(msg)
-                elif msg_type == wire.MsgType.BYE:
-                    break
-                elif msg_type == wire.MsgType.PING:
-                    stream.send_frame(sess.encrypt(wire.MsgType.PONG, {"ts": msg.get("ts", 0)}))
-                elif msg_type == wire.MsgType.REKEY:
-                    seed = msg.get("seed", b"")
-                    if isinstance(seed, (bytes, bytearray)) and len(seed) == 32:
-                        sess.apply_rekey(bytes(seed))
-                elif msg_type == wire.MsgType.PADDING:
-                    # Padding frames carry random bytes and are ignored.
-                    pass
-                else:
+                if not self._agent_frame(stream, sess, agent_id, msg_type, msg):
                     break
         except (netio.StreamError, session.SessionError, OSError, ValueError):
             pass
@@ -1301,6 +1669,88 @@ class MockServer:
             if went_offline:
                 self.emit("agent.offline", agent_id)
             stream.close()
+
+    def _agent_frame(self, stream: Any, sess: Any, agent_id: str,
+                     msg_type: int, msg: Dict[str, Any]) -> bool:
+        """Handle one frame of an agent.  False ends the session.
+
+        The loop of the socket transport and the batch of the mail and the
+        object transport share this, so an agent behaves the same way on
+        every transport.
+        """
+        if msg_type == wire.MsgType.CHECKIN:
+            # The implant says who it is running as: the inventory
+            # has to show the truth, not the account it started with.
+            identity = ""
+            if isinstance(msg.get("impersonation"), str):
+                identity = str(msg.get("impersonation") or "")
+            with self._lock:
+                record = self.agents.get(agent_id)
+                if record is not None:
+                    record["last_seen"] = _now()
+                    record["state"] = "online"
+                    record["impersonation"] = identity
+            batch = self._take_tasks(agent_id)
+            # The cadence the server pushes is the one the operator
+            # configured for this agent.
+            with self._lock:
+                record = self.agents.get(agent_id) or {}
+                sleep = int(record.get("sleep", self.sleep))
+                jitter = int(record.get("jitter", self.jitter))
+                obfuscate = bool(record.get("obfuscate", True))
+                route = self.routes.get(agent_id)
+            body = {
+                "tasks": batch,
+                "sleep": sleep,
+                "jitter": jitter,
+                "obf": obfuscate,
+                "server_time": _now(),
+            }
+            # The route of the agent travels with the batch: the
+            # beacon learns which transport it speaks and in which
+            # order it may fall back.
+            if route:
+                body["route"] = {
+                    "primary": route.get("primary", ""),
+                    "fallback": list(route.get("fallback") or []),
+                    "front": route.get("front", ""),
+                    "inspect": bool(route.get("inspect", False)),
+                    "http_path": route.get("http_path", ""),
+                    "ws_path": route.get("ws_path", ""),
+                }
+            # Rotation order is part of the protocol: the REKEY frame is
+            # sealed with the OLD key set, written first, and only then
+            # does the server switch. The peer sees REKEY at the old
+            # counter, applies it, resets to 0 and opens TASK_BATCH with
+            # the new key set as its first frame.
+            if self.rekey_after and sess.needs_rekey(self.rekey_after):
+                seed = crypto.random_bytes(32)
+                stream.send_frame(sess.encrypt(wire.MsgType.REKEY, {"seed": seed}))
+                sess.apply_rekey(seed)
+            # Cancels sit between REKEY and TASK_BATCH: they are sealed
+            # with whatever keys are current, and must arrive before the
+            # batch whose tasks they refer to.
+            with self._lock:
+                cancels = self.pending_cancels.pop(agent_id, [])
+            for task_id in cancels:
+                stream.send_frame(sess.encrypt(wire.MsgType.TASK_CANCEL, {"id": task_id}))
+            stream.send_frame(sess.encrypt(wire.MsgType.TASK_BATCH, body))
+        elif msg_type == wire.MsgType.RESULT:
+            self._complete_task(msg)
+        elif msg_type == wire.MsgType.BYE:
+            return False
+        elif msg_type == wire.MsgType.PING:
+            stream.send_frame(sess.encrypt(wire.MsgType.PONG, {"ts": msg.get("ts", 0)}))
+        elif msg_type == wire.MsgType.REKEY:
+            seed = msg.get("seed", b"")
+            if isinstance(seed, (bytes, bytearray)) and len(seed) == 32:
+                sess.apply_rekey(bytes(seed))
+        elif msg_type == wire.MsgType.PADDING:
+            # Padding frames carry random bytes and are ignored.
+            pass
+        else:
+            return False
+        return True
 
     PERSIST_KINDS = (
         "persist", "unpersist", "persist.list", "persist.verify",
@@ -3072,6 +3522,10 @@ class FakeAgent(threading.Thread):
         websocket: bool = False,
         peer_listen: str = "",
         peer_psk: Optional[bytes] = None,
+        transport: str = "",
+        mail_addr: str = "",
+        pop3_addr: str = "",
+        s3_addr: str = "",
     ) -> None:
         super().__init__(daemon=True, name="mock-agent")
         self.server = server
@@ -3087,6 +3541,13 @@ class FakeAgent(threading.Thread):
         # The WebSocket transport talks to the same server, but through an
         # HTTP upgrade instead of a raw socket.
         self.websocket = websocket
+        # The transports without a connection: the mail transport and the
+        # object transport.  Their addresses are the ones of the mock
+        # server, which listens on ports of its own.
+        self.transport = transport
+        self.mail_addr = mail_addr
+        self.pop3_addr = pop3_addr
+        self.s3_addr = s3_addr
         self.meta = transport_meta or {
             "host": "lab-host",
             # The transport the beacon speaks: it changes when the
@@ -3140,7 +3601,10 @@ class FakeAgent(threading.Thread):
                              daemon=True).start()
         while not self._stop.is_set():
             try:
-                self._cycle()
+                if self.transport in ("smtp", "s3"):
+                    self._batch_cycle()
+                else:
+                    self._cycle()
             except Exception:  # pragma: no cover - dev helper
                 pass
             self._stop.wait(self.interval)
@@ -3233,15 +3697,34 @@ class FakeAgent(threading.Thread):
         finally:
             stream.close()
 
-    def _cycle(self) -> None:
-        host, _, port = self.server.rpartition(":")
-        if self.websocket:
-            client = ws.WebSocketClient(host, int(port), path="/ws", timeout=5)
-            client.connect()
-            stream = ws.WebSocketStream(client)
+    def _batch_cycle(self) -> None:
+        """One cycle of a transport without a connection.
+
+        The mail transport and the object transport deliver a batch of
+        frames and take the answer out of it, so the cycle is the same as
+        the one of the socket transports with another stream under it.
+        """
+        secret = batch_transports.agent_secret(self.psk, self.agent_id)
+        if self.transport == "smtp":
+            backend: Any = batch_transports.MailBackend(
+                self.mail_addr, self.pop3_addr, self.agent_id, secret
+            )
         else:
-            sock = socket.create_connection((host, int(port)), timeout=5)
-            stream = netio.Stream(sock, timeout=5)
+            backend = batch_transports.S3Backend(
+                self.s3_addr, self.agent_id, secret
+            )
+        self._cycle(batch_transports.BatchStream(backend))
+
+    def _cycle(self, stream: Any = None) -> None:
+        if stream is None:
+            host, _, port = self.server.rpartition(":")
+            if self.websocket:
+                client = ws.WebSocketClient(host, int(port), path="/ws", timeout=5)
+                client.connect()
+                stream = ws.WebSocketStream(client)
+            else:
+                sock = socket.create_connection((host, int(port)), timeout=5)
+                stream = netio.Stream(sock, timeout=5)
         try:
             result = handshake.client_handshake(
                 stream,
@@ -3296,8 +3779,18 @@ class FakeAgent(threading.Thread):
                         }
                         # The transport changes with the next cycle: the
                         # beacon dials the road the operator named.
-                        self.websocket = self.route["primary"] == "ws"
-                        self.meta["transport"] = "ws" if self.websocket else "tcp"
+                        primary = self.route["primary"]
+                        if primary == "smtp" and self.mail_addr:
+                            self.transport = primary
+                            self.websocket = False
+                            self.meta["transport"] = primary
+                        elif primary == "s3" and self.s3_addr:
+                            self.transport = primary
+                            self.websocket = False
+                            self.meta["transport"] = primary
+                        else:
+                            self.websocket = primary == "ws"
+                            self.meta["transport"] = "ws" if self.websocket else "tcp"
                     break
                 return
             if not batch:

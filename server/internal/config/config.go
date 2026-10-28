@@ -77,6 +77,21 @@ type Server struct {
 	DNSListen string `json:"dns_listen"`
 	DNSDomain string `json:"dns_domain"`
 
+	// The mail transport: the beacon mails its frames to the SMTP
+	// listener and fetches the answer from its mailbox with POP3.  Both
+	// addresses are needed.
+	SMTPListen string `json:"smtp_listen"`
+	POP3Listen string `json:"pop3_listen"`
+	// MailDomain is the domain the mails carry.
+	MailDomain string `json:"mail_domain"`
+
+	// The object transport: the beacon reads its work from one bucket and
+	// writes its results into another.
+	S3Listen        string `json:"s3_listen"`
+	S3Region        string `json:"s3_region"`
+	S3TasksBucket   string `json:"s3_tasks_bucket"`
+	S3ResultsBucket string `json:"s3_results_bucket"`
+
 	// VPNListen binds the layer-3 tunnel, VPNAddr is the address the
 	// beacons and consoles connect to, VPNNetwork is the tunnel network.
 	VPNListen  string `json:"vpn_listen"`
@@ -206,6 +221,10 @@ func Default() *Config {
 		LogLevel:        "info",
 		VPNNetwork:      "10.77.0.0/24",
 		DNSDomain:       "umbra.local",
+		MailDomain:      "umbra.local",
+		S3Region:        "us-east-1",
+		S3TasksBucket:   "umbra-tasks",
+		S3ResultsBucket: "umbra-results",
 		ArmoryDir:       "data/armory",
 		Beacon:          Beacon{Sleep: 5, Jitter: 20},
 		Limits:          Limits{MaxAgents: 512, MaxOperators: 16, HandshakeTimeoutSec: 15, IdleTimeoutSec: 120, MaxFrameBytesPerConn: 64 << 20},
@@ -362,6 +381,9 @@ func (c *Config) Validate() error {
 	}
 	if s.SocksListen != "" && s.SocksAgent == "" {
 		return errors.New("config: socks_agent must be set when socks_listen is used")
+	}
+	if (s.SMTPListen == "") != (s.POP3Listen == "") {
+		return errors.New("config: smtp_listen and pop3_listen must be set together")
 	}
 	return nil
 }

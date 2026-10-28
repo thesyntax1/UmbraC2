@@ -386,6 +386,89 @@ impl Channel for HttpChannel {
     }
 }
 
+/// A transport that has no connection to keep.
+///
+/// The mail transport and the object transport post a batch of frames and
+/// the server answers with a batch of frames.  The backend is the part that
+/// speaks the protocol; the channel above it is the same for every batch
+/// transport.
+pub trait BatchBackend: Send {
+    /// Deliver the frames and return the frames of the answer.
+    fn exchange(&mut self, frames: &[u8]) -> io::Result<Vec<u8>>;
+}
+
+/// A channel that carries a batch of frames in each direction.
+///
+/// The frames the beacon writes are collected until it reads: the read
+/// delivers the batch to the server and takes the answer out of it.  The
+/// server answers every batch, so the read always has something to give
+/// back.
+pub struct BatchChannel {
+    backend: Box<dyn BatchBackend>,
+    pending: Vec<u8>,
+    inbox: std::collections::VecDeque<Vec<u8>>,
+}
+
+impl BatchChannel {
+    /// Create a channel over a backend.
+    pub fn new(backend: Box<dyn BatchBackend>) -> Self {
+        BatchChannel {
+            backend,
+            pending: Vec::new(),
+            inbox: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Deliver the frames that wait and take the answer in.
+    fn pump(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let frames = std::mem::take(&mut self.pending);
+        let answer = self.backend.exchange(&frames)?;
+        for frame in crate::wire::split_frames(&answer)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?
+        {
+            self.inbox.push_back(frame);
+        }
+        Ok(())
+    }
+}
+
+impl Channel for BatchChannel {
+    fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+        self.pending.extend_from_slice(frame);
+        Ok(())
+    }
+
+    fn read_frame(&mut self) -> io::Result<Vec<u8>> {
+        if self.inbox.is_empty() {
+            self.pump()?;
+        }
+        match self.inbox.pop_front() {
+            Some(frame) => Ok(frame),
+            None => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the batch transport has no answer",
+            )),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.pump()
+    }
+
+    fn close(&mut self) {
+        let _ = self.pump();
+        self.pending.clear();
+        self.inbox.clear();
+    }
+
+    fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+}
+
 /// Send one request on an open connection and read its response.
 ///
 /// Returns `(status, body, reusable)`; `reusable` is false when the server

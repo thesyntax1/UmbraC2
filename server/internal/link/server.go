@@ -56,6 +56,11 @@ type Server struct {
 	httpSessions map[string]*httpSession
 	httpSrv      *http.Server
 
+	// The batch transports (mail and objects) keep the session of an agent
+	// here: they have no connection to keep it in.
+	batchMu       sync.Mutex
+	batchSessions map[string]*batchSession
+
 	mu        sync.Mutex
 	listeners []net.Listener
 	wg        sync.WaitGroup
@@ -72,12 +77,13 @@ type Server struct {
 // New creates a link server.
 func New(cfg *config.Config, h *hub.Hub, log *slog.Logger) *Server {
 	return &Server{
-		Cfg:          cfg,
-		Hub:          h,
-		Log:          log,
-		guard:        newGuard(4096, 10*time.Minute),
-		httpSessions: make(map[string]*httpSession),
-		opRate:       make(map[string]*tokenBucket),
+		Cfg:           cfg,
+		Hub:           h,
+		Log:           log,
+		guard:         newGuard(4096, 10*time.Minute),
+		httpSessions:  make(map[string]*httpSession),
+		batchSessions: make(map[string]*batchSession),
+		opRate:        make(map[string]*tokenBucket),
 	}
 }
 
