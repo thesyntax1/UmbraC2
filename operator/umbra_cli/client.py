@@ -795,6 +795,40 @@ class OperatorClient:
             raise OperatorError(res.error)
         return str(res.data.get("address", ""))
 
+    def vpn_routes(self) -> List[Dict[str, Any]]:
+        """The routing table of the tunnel."""
+        res = self.rpc("vpn.routes")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return list(res.data.get("routes", []))
+
+    def vpn_route(self, peer: str, network: str, *, remove: bool = False) -> Dict[str, Any]:
+        """Send the traffic of a network to a peer, or forget it.
+
+        A peer may be the gateway of a whole network: the server routes
+        the packets of that network to the peer, and the peer forwards
+        them.
+        """
+        res = self.rpc("vpn.route", {
+            "peer": peer,
+            "network": network,
+            "remove": bool(remove),
+        })
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def vpn_ping(self, peer: str, timeout_ms: int = 5000) -> Dict[str, Any]:
+        """Ask a peer of the tunnel whether it is there.
+
+        The question travels through the tunnel and comes back through it,
+        so the answer says more than the bookkeeping of the server.
+        """
+        res = self.rpc("vpn.ping", {"peer": peer, "timeout_ms": int(timeout_ms)})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
     # -- extension store -------------------------------------------------
     def armory_list(self) -> Dict[str, Any]:
         res = self.rpc("armory.list")

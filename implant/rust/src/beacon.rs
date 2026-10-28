@@ -630,6 +630,7 @@ impl Beacon {
     /// The context the tasks get: identity, key and C2 address.
     fn context(&self) -> task::Context {
         task::Context {
+            vpn_addr: self.cfg.vpn_addr.clone(),
             psk: self.cfg.psk.clone(),
             agent_id: self.cfg.agent_id.clone(),
             server: self.cfg.server.clone(),
@@ -1071,6 +1072,7 @@ mod tests {
             proxy: String::new(),
             servers: Vec::new(),
             peer_listen: String::new(),
+            vpn_addr: String::new(),
             smtp_addr: String::new(),
             pop3_addr: String::new(),
             s3_endpoint: String::new(),
@@ -1113,6 +1115,7 @@ mod tests {
             proxy: String::new(),
             servers: Vec::new(),
             peer_listen: String::new(),
+            vpn_addr: String::new(),
             smtp_addr: String::new(),
             pop3_addr: String::new(),
             s3_endpoint: String::new(),

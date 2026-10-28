@@ -76,6 +76,7 @@ Added on top of that core:
 | IPv6 | The transports, the pivot, the scan and the peer link keep the family of the address: a host on an IPv6-only network is reached with the same commands | [docs/OPERATIONS.md](docs/OPERATIONS.md#ipv6) |
 | The transports that keep no connection | The beacon mails its frames out and polls its mailbox, or reads its work from one bucket and writes its results into another: two transports for the networks where nothing else gets through | [docs/TRANSPORTS.md](docs/TRANSPORTS.md#10-the-transports-without-a-connection) |
 | The pivot on a named pipe | On a Windows server the pivot may listen on a named pipe: no port, no firewall rule, nothing a scanner would see | [docs/PIVOTING.md](docs/PIVOTING.md#the-named-pipe) |
+| The layer-3 tunnel, finished | The peers have their addresses, the networks behind them are routed to them, the operator can ask a peer whether it is there, and a peer behind another agent joins its relay | [docs/OPERATIONS.md](docs/OPERATIONS.md#the-layer-3-tunnel) |
 
 Not in this version (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)):
 a WASM sandbox for task modules, TLS inside the implant binaries, and a Go

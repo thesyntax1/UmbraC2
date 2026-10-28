@@ -62,6 +62,11 @@ pub const COMPILED_PROXY: &str = match option_env!("UMBRA_PROXY") {
     Some(v) => v,
     None => "",
 };
+pub const COMPILED_VPN_ADDR: &str = match option_env!("UMBRA_VPN_ADDR") {
+    Some(v) => v,
+    None => "",
+};
+
 pub const COMPILED_PEER_LISTEN: &str = match option_env!("UMBRA_PEER_LISTEN") {
     Some(v) => v,
     None => "",
@@ -159,6 +164,11 @@ pub struct Config {
     /// The beacon binds it, tells the server where it waits, and serves
     /// the pivots that are chained through this host.
     pub peer_listen: String,
+    /// The endpoint of the layer-3 tunnel: "host:port".
+    ///
+    /// The tunnel is a transport of its own, so it has an address of its
+    /// own: the beacon joins it with the key it already has.
+    pub vpn_addr: String,
     /// The SMTP server of the mail transport: "host:port".
     pub smtp_addr: String,
     /// The POP3 server of the mail transport: "host:port".
@@ -295,6 +305,7 @@ impl Config {
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),
             peer_listen: pick("UMBRA_PEER_LISTEN", COMPILED_PEER_LISTEN),
+            vpn_addr: pick("UMBRA_VPN_ADDR", COMPILED_VPN_ADDR),
             smtp_addr: pick("UMBRA_SMTP_ADDR", ""),
             pop3_addr: pick("UMBRA_POP3_ADDR", ""),
             s3_endpoint: pick("UMBRA_S3_ENDPOINT", ""),

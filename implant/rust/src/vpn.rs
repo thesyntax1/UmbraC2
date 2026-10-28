@@ -27,9 +27,19 @@ use crate::crypto;
 pub const TYPE_INIT: u8 = 1;
 pub const TYPE_RESP: u8 = 2;
 pub const TYPE_DATA: u8 = 3;
+/// The question of the server and the answer of the peer.  Both travel
+/// through the tunnel like the data packets, so the answer proves that
+/// the whole path is alive.
+pub const TYPE_PING: u8 = 4;
+pub const TYPE_PONG: u8 = 5;
 
 /// The size of the data packet header.
 pub const HEADER_LEN: usize = 9;
+
+/// The length of the authentication tag of a handshake packet.  The tag
+/// is the first bytes of an HMAC, so it is short enough for a packet and
+/// long enough to be unforgeable.
+const MAC_LEN: usize = 16;
 
 /// The label of the INIT transcript.
 const LABEL_INIT: &[u8] = b"umbra/v1/vpn/init";
@@ -146,29 +156,135 @@ impl Tunnel {
 
     /// Receive and decrypt one IPv4 packet.
     pub fn recv_packet(&mut self) -> Result<Vec<u8>, String> {
+        let (kind, plain) = self.recv_sealed()?;
+        if kind != TYPE_DATA {
+            return Err("vpn: the packet is not data".to_string());
+        }
+        Ok(plain)
+    }
+
+    /// Receive and decrypt one packet of any kind.
+    ///
+    /// The kind and the payload come back, so the caller can tell a
+    /// question from an answer.
+    pub fn recv_sealed(&mut self) -> Result<(u8, Vec<u8>), String> {
         let mut buf = vec![0u8; 2048];
         let (n, _) = self
             .socket
             .recv(&mut buf)
             .map_err(|e| format!("vpn: receive: {e}"))?;
-        if n < HEADER_LEN + 16 || buf[0] != TYPE_DATA {
+        if n < HEADER_LEN + 16 {
             return Err("vpn: malformed packet".to_string());
         }
+        let kind = buf[0];
         let counter = u64::from_be_bytes([
             buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8],
         ]);
         let mut nonce = [0u8; 12];
         nonce[..4].copy_from_slice(&self.recv_prefix);
         nonce[4..].copy_from_slice(&counter.to_be_bytes());
-        crypto::aead_decrypt(
+        let plain = crypto::aead_decrypt(
             wire_suite(),
             &self.recv_key,
             &nonce,
             &buf[..HEADER_LEN],
             &buf[HEADER_LEN..n],
         )
-        .map_err(|e| format!("vpn: decrypt: {e}"))
+        .map_err(|e| format!("vpn: decrypt: {e}"))?;
+        Ok((kind, plain))
     }
+
+    /// Send a control packet: a question or an answer.
+    pub fn send_control(&mut self, kind: u8, payload: &[u8]) -> Result<(), String> {
+        let counter = self.counter;
+        self.counter += 1;
+        let mut header = [0u8; HEADER_LEN];
+        header[0] = kind;
+        header[1..9].copy_from_slice(&counter.to_be_bytes());
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&self.send_prefix);
+        nonce[4..].copy_from_slice(&counter.to_be_bytes());
+        let sealed = crypto::aead_encrypt(
+            wire_suite(),
+            &self.send_key,
+            &nonce,
+            &header,
+            payload,
+        )
+        .map_err(|e| format!("vpn: seal: {e}"))?;
+        let mut out = Vec::with_capacity(header.len() + sealed.len());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(&sealed);
+        self.socket
+            .send(&out)
+            .map_err(|e| format!("vpn: send: {e}"))
+    }
+
+    /// Answer the question of the server.
+    ///
+    /// The question and the answer are sealed like the data packets, so
+    /// only the peer can read the question and only the server can tell
+    /// that the answer is the answer.
+    pub fn answer_ping(&mut self) -> Result<(), String> {
+        let (kind, payload) = self.recv_sealed()?;
+        if kind != TYPE_PING || payload.len() < 17 {
+            return Err("vpn: the packet is not a question".to_string());
+        }
+        let mut answer = Vec::with_capacity(17);
+        answer.push(2); // the kind of the answer
+        answer.extend_from_slice(&payload[1..9]); // the nonce
+        answer.extend_from_slice(&payload[9..17]); // the timestamp
+        self.send_control(TYPE_PONG, &answer)
+    }
+}
+
+/// Relay the packets of the tunnel to the server.
+///
+/// A peer that can only be reached through another agent joins the relay
+/// of that agent instead of the server.  The relay hands the datagrams to
+/// the server and back, so the keys of the session stay between the peer
+/// and the server: the relay sees nothing but ciphertext.
+pub fn relay(server: &str, listen: &str, verbose: bool) -> Result<String, String> {
+    let socket = UdpSocket::bind(listen).map_err(|e| format!("vpn: bind: {e}"))?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .map_err(|e| format!("vpn: timeout: {e}"))?;
+    let upstream = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("vpn: bind: {e}"))?;
+    upstream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .map_err(|e| format!("vpn: timeout: {e}"))?;
+    let peer: std::net::SocketAddr = resolve(server)?;
+    let local = socket
+        .local_addr()
+        .map_err(|e| format!("vpn: address: {e}"))?
+        .to_string();
+    if verbose {
+        eprintln!("[umbra] vpn relay on {local} towards {peer}");
+    }
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 2048];
+        let mut client: Option<std::net::SocketAddr> = None;
+        loop {
+            // The peer talks to the relay.
+            match socket.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    client = Some(from);
+                    let _ = upstream.send_to(&buf[..n], peer);
+                }
+                Err(_) => {}
+            }
+            // The server talks to the peer.
+            match upstream.recv_from(&mut buf) {
+                Ok((n, _)) => {
+                    if let Some(target) = client {
+                        let _ = socket.send_to(&buf[..n], target);
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    });
+    Ok(local)
 }
 
 /// Build the INIT packet.
@@ -184,12 +300,14 @@ fn build_init(psk: &[u8], ident: &str, ts: u64, pubkey: &[u8; 32]) -> Vec<u8> {
 }
 
 /// The authentication tag of an INIT packet.
-fn init_mac(psk: &[u8], ident: &str, ts: u64, pubkey: &[u8]) -> [u8; 32] {
+fn init_mac(psk: &[u8], ident: &str, ts: u64, pubkey: &[u8]) -> [u8; MAC_LEN] {
     let mut msg = LABEL_INIT.to_vec();
     msg.extend_from_slice(ident.as_bytes());
     msg.extend_from_slice(&ts.to_be_bytes());
     msg.extend_from_slice(pubkey);
-    crypto::hmac_sha256(psk, &msg)
+    let mut mac = [0u8; MAC_LEN];
+    mac.copy_from_slice(&crypto::hmac_sha256(psk, &msg)[..MAC_LEN]);
+    mac
 }
 
 /// The authentication tag of a RESP packet.
@@ -200,14 +318,16 @@ fn resp_mac(
     pubkey: &[u8],
     eph: &[u8],
     now: u64,
-) -> [u8; 32] {
+) -> [u8; MAC_LEN] {
     let mut msg = LABEL_RESP.to_vec();
     msg.extend_from_slice(ident.as_bytes());
     msg.extend_from_slice(&ts.to_be_bytes());
     msg.extend_from_slice(pubkey);
     msg.extend_from_slice(eph);
     msg.extend_from_slice(&now.to_be_bytes());
-    crypto::hmac_sha256(psk, &msg)
+    let mut mac = [0u8; MAC_LEN];
+    mac.copy_from_slice(&crypto::hmac_sha256(psk, &msg)[..MAC_LEN]);
+    mac
 }
 
 /// The AEAD suite the tunnel uses.

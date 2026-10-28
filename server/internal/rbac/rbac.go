@@ -147,6 +147,9 @@ var requirements = map[string]string{
 	"vpn.status":   Viewer,
 	"vpn.peers":    Viewer,
 	"vpn.allocate": Operator,
+	"vpn.routes":   Viewer,
+	"vpn.route":    Operator,
+	"vpn.ping":     Operator,
 
 	// ---- extensions ----------------------------------------------------
 	"armory.list":    Viewer,

@@ -71,6 +71,9 @@ fn run() -> Result<(), String> {
     if let Some(v) = cli.peer_listen.take() {
         cfg.peer_listen = v;
     }
+    if let Some(v) = cli.vpn_addr.take() {
+        cfg.vpn_addr = v;
+    }
     if let Some(v) = cli.smtp_addr.take() {
         cfg.smtp_addr = v;
     }
@@ -195,6 +198,7 @@ struct Cli {
     jitter: Option<u32>,
     cycles: Option<u64>,
     peer_listen: Option<String>,
+    vpn_addr: Option<String>,
     peer_connect: Option<String>,
     verbose: bool,
     check: bool,
@@ -218,6 +222,7 @@ impl Cli {
             jitter: None,
             cycles: None,
             peer_listen: None,
+            vpn_addr: None,
             peer_connect: None,
             verbose: false,
             check: false,
@@ -245,6 +250,7 @@ impl Cli {
                 "--jitter" => cli.jitter = Some(next(&mut i)?.parse().map_err(|_| "--jitter: integer")?),
                 "--cycles" => cli.cycles = Some(next(&mut i)?.parse().map_err(|_| "--cycles: integer")?),
                 "--peer-listen" => cli.peer_listen = Some(next(&mut i)?),
+                "--vpn" => cli.vpn_addr = Some(next(&mut i)?),
                 "--peer-connect" => cli.peer_connect = Some(next(&mut i)?),
                 "--once" => cli.cycles = Some(1),
                 "--verbose" | "-v" => cli.verbose = true,
@@ -280,6 +286,8 @@ OPTIONS:
         --jitter <percent>     jitter percentage (0-90)
         --cycles <n>           stop after n beacon cycles
         --once                 same as --cycles 1
+        --vpn <addr>           the endpoint of the layer-3 tunnel (a UDP address
+                               of its own)
         --peer-listen <addr>   serve the peer link on this address (a pivot can be
                                chained through this host); the address is reported
                                to the server

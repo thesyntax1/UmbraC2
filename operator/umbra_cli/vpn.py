@@ -58,6 +58,27 @@ def print_vpn_peers(peers: List[Dict[str, Any]]) -> None:
     print(_table(["ID", "ADDRESS", "AGENT", "STATE", "IN", "OUT"], rows))
 
 
+def print_vpn_routes(routes: List[Dict[str, Any]]) -> None:
+    """Print the routing table of the tunnel.
+
+    A route is a network that lies behind a peer: the server sends the
+    packets of that network to the peer, and the peer forwards them.
+    """
+    if not routes:
+        print("the routing table is empty")
+        return
+    rows = [
+        [
+            r.get("network", "?"),
+            r.get("peer", "?"),
+            r.get("packets", 0),
+            r.get("bytes", 0),
+        ]
+        for r in routes
+    ]
+    print(_table(["NETWORK", "PEER", "PACKETS", "BYTES"], rows))
+
+
 def print_pivots(tunnels: List[Dict[str, Any]], sessions: int = 0,
                  topology: Optional[Dict[str, Any]] = None) -> None:
     """Print the open pivots, the graph of the reach and the clients.

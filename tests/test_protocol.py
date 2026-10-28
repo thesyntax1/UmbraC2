@@ -2270,9 +2270,16 @@ def test_vpn_status_peers_and_allocation():
         peers = client.vpn_peers()
         assert any(p["address"] == address for p in peers)
 
-        # A second allocation must not hand out the same address.
-        other = client.vpn_allocate("agent-vpn")
-        assert other != address
+        # The reservation is stable: an agent that is given an address
+        # keeps it, so the rules that point at it do not have to follow
+        # it around.
+        again = client.vpn_allocate("agent-vpn")
+        assert again == address, (again, address)
+
+        # The reservation shows up in the table of the peers, so the
+        # operator sees the address before the agent joins.
+        peers = client.vpn_peers()
+        assert any(p["address"] == address for p in peers), peers
     finally:
         client.close()
         agent.stop()
@@ -3118,6 +3125,85 @@ def test_the_pivot_reaches_an_ipv6_target():
         agent.stop()
         server.stop()
         target.close()
+
+
+def test_the_tunnel_answers_a_ping_and_routes_a_network():
+    """The layer-3 tunnel, finished: the address, the routing table, the
+    ping and the counters.
+
+    The tunnel is a transport of its own: the beacon joins it with the
+    key it already has, the server hands out the address and keeps the
+    routing table, and the operator can ask a peer whether it is there.
+    The question travels through the tunnel and comes back through it, so
+    the answer says more than the bookkeeping of the server.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-vpn-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-vpn", interval=0.3,
+                      vpn_addr=server.vpn.address())
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 10
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+        assert client.agents(), "the agent never checked in"
+
+        # The beacon joins the tunnel with the key it already has.
+        task_id = client.submit("agent-vpn", "vpn", {"action": "start"})
+        deadline = time.time() + 15
+        state = ""
+        while time.time() < deadline:
+            row = client.task(task_id)
+            state = row.get("state", "")
+            if state in ("done", "failed"):
+                break
+            time.sleep(0.1)
+        assert state == "done", (state, client.task(task_id))
+
+        # The peer is in the table with the address the server gave it.
+        deadline = time.time() + 10
+        peers: list = []
+        while time.time() < deadline:
+            peers = client.vpn_peers()
+            if peers:
+                break
+            time.sleep(0.1)
+        assert peers, "the peer never joined the tunnel"
+        peer = peers[0]
+        assert peer["id"] == "agent-vpn", peer
+        assert peer["address"].startswith("10.77."), peer
+        assert peer["live"] is True, peer
+
+        # The question goes through the tunnel and comes back through it.
+        answer = client.vpn_ping("agent-vpn", timeout_ms=5000)
+        assert answer["peer"] == "agent-vpn", answer
+        assert answer["rtt_ms"] >= 0, answer
+
+        # A network behind the peer is routed to it.
+        route = client.vpn_route("agent-vpn", "192.168.5.0/24")
+        assert route["peer"] == "agent-vpn", route
+        assert route["network"] == "192.168.5.0/24", route
+        routes = client.vpn_routes()
+        assert [r["network"] for r in routes] == ["192.168.5.0/24"], routes
+
+        # The counters of the tunnel move.
+        status = client.vpn_status()
+        assert status["enabled"] is True, status
+        assert status["peers"] >= 1, status
+        assert status["routes"] == 1, status
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
 
 
 def test_the_pivot_may_listen_on_a_named_pipe():

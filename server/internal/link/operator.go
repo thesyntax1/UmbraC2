@@ -1063,6 +1063,70 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"id": id, "address": ip.String()})
 
+	case "vpn.routes":
+		if s.VPN == nil {
+			return reply(upk.Map{"routes": []any{}})
+		}
+		routes := s.VPN.Routes()
+		out := make([]any, 0, len(routes))
+		for _, r := range routes {
+			out = append(out, upk.Map{
+				"peer":    r.Peer,
+				"network": r.Network,
+				"bytes":   r.Bytes,
+				"packets": r.Packets,
+			})
+		}
+		return reply(upk.Map{"routes": out, "count": int64(len(out))})
+
+	case "vpn.route":
+		if s.VPN == nil {
+			return fail("vpn.route: the tunnel is not enabled on this server")
+		}
+		peer, _ := args["peer"].(string)
+		network, _ := args["network"].(string)
+		if peer == "" || network == "" {
+			return fail("vpn.route needs a peer and a network")
+		}
+		if remove, _ := args["remove"].(bool); remove {
+			if !s.VPN.RemoveRoute(network) {
+				return fail("vpn.route: no route for %q", network)
+			}
+			return reply(upk.Map{"removed": true, "network": network})
+		}
+		route, err := s.VPN.SetRoute(peer, network)
+		if err != nil {
+			return fail("vpn.route: %v", err)
+		}
+		return reply(upk.Map{
+			"peer":    route.Peer,
+			"network": route.Network,
+			"bytes":   route.Bytes,
+			"packets": route.Packets,
+		})
+
+	case "vpn.ping":
+		if s.VPN == nil {
+			return fail("vpn.ping: the tunnel is not enabled on this server")
+		}
+		peer, _ := args["peer"].(string)
+		if peer == "" {
+			return fail("vpn.ping needs a peer")
+		}
+		timeout := 5 * time.Second
+		if ms, ok := asInt64(args["timeout_ms"]); ok && ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+		rtt, err := s.VPN.Ping(peer, timeout)
+		if err != nil {
+			return fail("vpn.ping: %v", err)
+		}
+		return reply(upk.Map{
+			"peer":     peer,
+			"rtt_ms":   rtt.Milliseconds(),
+			"rtt_text": rtt.String(),
+		})
+
 	// ---- extensions ---------------------------------------------------
 	case "armory.list":
 		if s.Armory == nil {

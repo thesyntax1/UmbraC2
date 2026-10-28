@@ -784,6 +784,49 @@ per agent.  The object transport uses the same password as the secret key
 of the request and signs every request with AWS Signature Version 4, so the
 same beacon can talk to a real bucket.
 
+### The layer-3 tunnel
+
+The tunnel is a transport of its own: a UDP socket, its own keys and its
+own replay protection.  It keeps working when the beaconing channel does
+not, so a host that can only send UDP out is still reachable.
+
+The beacon joins the tunnel with the key it already has, so there is
+nothing to distribute:
+
+```
+umbra vpn status
+umbra vpn peers
+```
+
+The server hands out the addresses of the tunnel, and the operator may
+send a whole network to one peer — the peer is then the gateway of it:
+
+```
+umbra vpn route laptop-1 192.168.5.0/24
+umbra vpn routes
+```
+
+The counters of every route and every peer are in the same tables.
+
+A peer that can only be reached through another agent joins the relay of
+that agent instead of the server.  The relay carries the datagrams, and
+the keys of the session stay between the peer and the server:
+
+```
+# on the agent that is in the middle
+umbra vpn relay <agent> --
+
+# on the peer that is behind it
+umbra vpn start --addr <the relay of the agent in the middle>
+```
+
+The question of the operator travels through the tunnel and comes back
+through it, so the answer says more than the bookkeeping of the server:
+
+```
+umbra vpn ping laptop-1
+```
+
 ### A pivot on a named pipe
 
 On a Windows server the pivot may listen on a named pipe instead of a TCP

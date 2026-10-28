@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from umbra_cli import crypto, handshake, netio, peer, session, upk, wire, ws  # noqa: E402
 
 import batch_transports  # noqa: E402
+import vpn_transport  # noqa: E402
 
 
 # How long an agent stays online after its last check-in.  Mirrors
@@ -594,6 +595,13 @@ class MockServer:
         self.pivot_deny: List[str] = list(pivot_deny or [])
         # The layer-3 tunnel: agent id -> peer record.
         self.vpn_peers: Dict[str, Dict[str, Any]] = {}
+        # The layer-3 tunnel: the same handshake and the same keys as the
+        # Go server and the Rust beacon.
+        self.vpn = vpn_transport.VpnServer(
+            "10.77.0.0/24",
+            agent_keys=(agent_psk,),
+            operator_keys=tuple(operators.values()),
+        )
         # The route of every agent the operator gave one: the transport it
         # speaks, the order it may fall back in and the front domain.
         self.routes: Dict[str, Dict[str, Any]] = {}
@@ -705,6 +713,10 @@ class MockServer:
         t.start()
         self._threads.append(t)
 
+        # The layer-3 tunnel: a socket of its own, so it keeps working
+        # when the beaconing channel is blocked.
+        self.vpn.start()
+
         # The mail transport: the SMTP listener and the POP3 listener.
         self._mail_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._mail_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -743,6 +755,7 @@ class MockServer:
 
     def stop(self) -> None:
         self._stop.set()
+        self.vpn.stop()
         for sock in (self._sock, self._mail_sock, self._pop3_sock, self._s3_sock):
             if not sock:
                 continue
@@ -2273,6 +2286,9 @@ class MockServer:
         "vpn.status": "viewer",
         "vpn.peers": "viewer",
         "vpn.allocate": "operator",
+        "vpn.routes": "viewer",
+        "vpn.route": "operator",
+        "vpn.ping": "operator",
         "armory.list": "viewer",
         "armory.install": "operator",
         "armory.run": "operator",
@@ -3250,22 +3266,74 @@ class MockServer:
 
         # ---- layer-3 tunnel ----------------------------------------------
         if cmd == "vpn.status":
-            with self._lock:
-                peers = list(self.vpn_peers.values())
-            return ok({
-                "enabled": True,
-                "listen": "127.0.0.1:0",
-                "network": "10.77.0.0/24",
-                "peers": len(peers),
-                "allocated": len(peers),
-                "bytes_in": sum(int(p.get("bytes_in", 0)) for p in peers),
-                "bytes_out": sum(int(p.get("bytes_out", 0)) for p in peers),
-            })
+            status = self.vpn.status()
+            status["listen"] = self.vpn.address()
+            peers = self.vpn.peers()
+            status["bytes_in"] = sum(int(p.get("bytes_in", 0)) for p in peers)
+            status["bytes_out"] = sum(int(p.get("bytes_out", 0)) for p in peers)
+            return ok(status)
 
         if cmd == "vpn.peers":
-            with self._lock:
-                peers = [dict(p) for p in self.vpn_peers.values()]
+            peers = self.vpn.peers()
             return ok({"peers": peers, "count": len(peers)})
+
+        if cmd == "vpn.routes":
+            routes = self.vpn.routes()
+            return ok({
+                "routes": [
+                    {
+                        "peer": r["peer"],
+                        "network": r["network"],
+                        "bytes": r["bytes"],
+                        "packets": r["packets"],
+                    }
+                    for r in routes
+                ],
+                "count": len(routes),
+            })
+
+        if cmd == "vpn.route":
+            peer = str(args.get("peer", ""))
+            network = str(args.get("network", ""))
+            if not peer or not network:
+                return fail("vpn.route needs a peer and a network")
+            if bool(args.get("remove", False)):
+                if not self.vpn.remove_route(network):
+                    return fail(f"vpn.route: no route for {network!r}")
+                return ok({"removed": True, "network": network})
+            try:
+                route = self.vpn.set_route(peer, network)
+            except KeyError:
+                return fail(f"vpn.route: unknown peer {peer!r}")
+            except ValueError as exc:
+                return fail(f"vpn.route: {exc}")
+            return ok({
+                "peer": route["peer"],
+                "network": route["network"],
+                "bytes": route["bytes"],
+                "packets": route["packets"],
+            })
+
+        if cmd == "vpn.ping":
+            peer = str(args.get("peer", ""))
+            if not peer:
+                return fail("vpn.ping needs a peer")
+            timeout = 5.0
+            try:
+                timeout = max(0.1, int(args.get("timeout_ms", 5000)) / 1000.0)
+            except (TypeError, ValueError):
+                pass
+            try:
+                rtt = self.vpn.ping(peer, timeout=timeout)
+            except KeyError:
+                return fail(f"vpn.ping: unknown peer {peer!r}")
+            except TimeoutError:
+                return fail("vpn.ping: the peer did not answer")
+            return ok({
+                "peer": peer,
+                "rtt_ms": int(rtt * 1000),
+                "rtt_text": f"{rtt * 1000:.3f}ms",
+            })
 
         if cmd == "vpn.allocate":
             agent_id = str(args.get("id", ""))
@@ -3273,22 +3341,7 @@ class MockServer:
                 known = agent_id in self.agents
             if not known:
                 return fail(f"unknown agent {agent_id!r}")
-            with self._lock:
-                used = {p["address"] for p in self.vpn_peers.values()}
-                index = 2
-                while f"10.77.0.{index}" in used:
-                    index += 1
-                address = f"10.77.0.{index}"
-                self.vpn_peers[agent_id] = {
-                    "id": agent_id,
-                    "address": address,
-                    "endpoint": "",
-                    "agent": agent_id,
-                    "live": False,
-                    "bytes_in": 0,
-                    "bytes_out": 0,
-                    "last_seen": _now(),
-                }
+            address = self.vpn.allocate(agent_id)
             return ok({"id": agent_id, "address": address})
 
         # ---- extension store ----------------------------------------------
@@ -3575,6 +3628,7 @@ class FakeAgent(threading.Thread):
         mail_addr: str = "",
         pop3_addr: str = "",
         s3_addr: str = "",
+        vpn_addr: str = "",
     ) -> None:
         super().__init__(daemon=True, name="mock-agent")
         self.server = server
@@ -3597,6 +3651,9 @@ class FakeAgent(threading.Thread):
         self.mail_addr = mail_addr
         self.pop3_addr = pop3_addr
         self.s3_addr = s3_addr
+        # The endpoint of the layer-3 tunnel.  It is a socket of its own,
+        # so it has an address of its own.
+        self.vpn_addr = vpn_addr
         self.meta = transport_meta or {
             "host": "lab-host",
             # The transport the beacon speaks: it changes when the
@@ -3643,6 +3700,9 @@ class FakeAgent(threading.Thread):
 
     def stop(self) -> None:
         self._stop.set()
+        peer = getattr(self, "vpn_peer", None)
+        if peer is not None:
+            peer.close()
 
     def run(self) -> None:
         if self.peer_listen:
@@ -4574,9 +4634,62 @@ class FakeAgent(threading.Thread):
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process"):
             return self._evasion(kind, args)
-        if kind in ("vpn", "p2p"):
+        if kind == "vpn":
+            return self._vpn(args)
+        if kind == "p2p":
             return 0, f"the mock agent cannot run {kind!r}\n".encode(), "", {}
         return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}
+
+    # -- the layer-3 tunnel (mirrors implant/rust/src/vpn.rs) --------------
+    def _vpn(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """Join the layer-3 tunnel, the way the Rust beacon does."""
+        action = str(args.get("action", "start") or "start")
+        if action == "relay":
+            # The relay carries the packets of a peer that can only be
+            # reached through this agent.  The keys of the session stay
+            # between the peer and the server.
+            listen = str(args.get("listen", "") or "127.0.0.1:0")
+            host, _, port = listen.rpartition(":")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind((host or "127.0.0.1", int(port or 0)))
+            sock.settimeout(0.2)
+            bound = sock.getsockname()
+            address = f"{bound[0]}:{bound[1]}"
+            threading.Thread(target=self._vpn_relay, args=(sock, address),
+                             daemon=True).start()
+            return 0, f"vpn relay on {address}\n".encode(), "", {"listen": address}
+        server = str(args.get("addr", "") or "")
+        if not server:
+            server = self.vpn_addr
+        peer = vpn_transport.VpnPeer(server, self.psk, self.agent_id)
+        try:
+            address = peer.join()
+        except Exception as exc:  # noqa: BLE001 - the task reports the error
+            return 1, b"", f"vpn: {exc}", {}
+        self.vpn_peer = peer
+        return 0, f"vpn tunnel joined as {address}\n".encode(), "", {"address": address}
+
+    def _vpn_relay(self, sock: socket.socket, address: str) -> None:
+        """Hand the datagrams of the peer to the server and back."""
+        upstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        upstream.bind(("127.0.0.1", 0))
+        upstream.settimeout(0.2)
+        host, _, port = self.server.vpn.address().rpartition(":")
+        target = (host, int(port or 0))
+        client: Optional[Tuple[str, int]] = None
+        while not self._stop.is_set():
+            try:
+                data, addr = sock.recvfrom(4096)
+                client = addr
+                upstream.sendto(data, target)
+            except (socket.timeout, OSError):
+                pass
+            try:
+                data, _ = upstream.recvfrom(4096)
+                if client is not None:
+                    sock.sendto(data, client)
+            except (socket.timeout, OSError):
+                pass
 
     # -- pivoting (mirrors implant/rust/src/tunnel.rs) --------------------
     def _tunnel(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:

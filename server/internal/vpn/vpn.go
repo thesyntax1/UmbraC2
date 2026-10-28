@@ -46,6 +46,12 @@ const (
 	TypeInit byte = 1
 	TypeResp byte = 2
 	TypeData byte = 3
+	// TypePing and TypePong carry a question and an answer through the
+	// tunnel.  They are sealed like the data packets, so only the peer
+	// can read the question and only the server can tell that the answer
+	// is the answer.
+	TypePing byte = 4
+	TypePong byte = 5
 )
 
 // Sizes.
@@ -58,6 +64,10 @@ const (
 	TagLen = 16
 	// HeaderLen is the length of the data packet header.
 	HeaderLen = 9
+	// MacLen is the length of the authentication tag of a handshake
+	// packet.  The tag is the first bytes of an HMAC, so it is short
+	// enough for a packet and long enough to be unforgeable.
+	MacLen = 16
 	// MaxPacket is the largest accepted datagram.
 	MaxPacket = 1600
 	// MaxPayload is the largest plaintext an IP packet may carry.
@@ -129,6 +139,9 @@ type Peer struct {
 	lastSeen    time.Time
 	bytesIn     int64
 	bytesOut    int64
+	// pongs carries the answers of the peer to the questions of the
+	// server.
+	pongs chan time.Duration
 }
 
 // PeerInfo is the operator-visible view of a peer.
@@ -152,6 +165,8 @@ type Server struct {
 	peers    map[string]*Peer
 	byAddr   map[uint32]*Peer
 	reserved map[string]uint32
+	// routes are the networks that lie behind a peer.
+	routes []*Route
 	base     uint32
 	mask     uint32
 	next     uint32
@@ -302,11 +317,26 @@ func (s *Server) Peers() []PeerInfo {
 	for _, p := range s.peers {
 		peers = append(peers, p)
 	}
+	// The reservations are peers that have an address but have not
+	// joined yet.  The operator has to see them, because the rules that
+	// point at the address are already in place.
+	reserved := make([]PeerInfo, 0, len(s.reserved))
+	for id, addr := range s.reserved {
+		if _, joined := s.peers[id]; joined {
+			continue
+		}
+		reserved = append(reserved, PeerInfo{
+			ID:      id,
+			Address: u32ToIP(addr).String(),
+			Live:    false,
+		})
+	}
 	s.mu.Unlock()
-	out := make([]PeerInfo, 0, len(peers))
+	out := make([]PeerInfo, 0, len(peers)+len(reserved))
 	for _, p := range peers {
 		out = append(out, p.info())
 	}
+	out = append(out, reserved...)
 	return out
 }
 
@@ -318,6 +348,7 @@ func (s *Server) Status() map[string]any {
 		peers = append(peers, p)
 	}
 	reserved := len(s.reserved)
+	routes := len(s.routes)
 	addr := s.cfg.listen
 	if s.conn != nil {
 		addr = s.conn.LocalAddr().String()
@@ -336,6 +367,7 @@ func (s *Server) Status() map[string]any {
 		"peers":     len(peers),
 		"live":      live,
 		"reserved":  reserved,
+		"routes":    routes,
 	}
 }
 
@@ -369,6 +401,8 @@ func (s *Server) handle(pkt []byte, addr *net.UDPAddr) {
 		s.handleInit(pkt, addr)
 	case TypeData:
 		s.handleData(pkt, addr)
+	case TypePong:
+		s.handlePong(pkt, addr)
 	default:
 		// Unknown types are ignored: a future protocol version must not be
 		// able to crash the tunnel.
@@ -413,7 +447,7 @@ func (s *Server) handleInit(pkt []byte, addr *net.UDPAddr) {
 	}
 	peer, exists := s.peers[id]
 	if !exists {
-		peer = &Peer{ID: id}
+		peer = &Peer{ID: id, pongs: make(chan time.Duration, 4)}
 		s.peers[id] = peer
 	}
 	addrValue, reserved := s.reserved[id]
@@ -531,6 +565,12 @@ func (s *Server) handleData(pkt []byte, addr *net.UDPAddr) {
 
 	s.mu.Lock()
 	target := s.byAddr[dst]
+	var route *Route
+	if target == nil {
+		// The packet belongs to a network that lies behind one of the
+		// peers: the peer is the gateway of it.
+		target, route = s.routePeer(dst)
+	}
 	s.mu.Unlock()
 	if target == nil || target == peer {
 		return
@@ -542,6 +582,12 @@ func (s *Server) handleData(pkt []byte, addr *net.UDPAddr) {
 	peer.bytesIn += int64(len(plain))
 	peer.lastSeen = time.Now().UTC()
 	peer.mu.Unlock()
+	if route != nil {
+		s.mu.Lock()
+		route.Bytes += int64(len(plain))
+		route.Packets++
+		s.mu.Unlock()
+	}
 }
 
 // send encrypts a payload for a peer and writes it out.
@@ -630,6 +676,9 @@ func (s *Server) matchMAC(id string, ts uint64, eph, mac []byte) ([]byte, bool, 
 }
 
 // initMAC builds the authentication tag of an INIT packet.
+//
+// The tag is the first sixteen bytes of the HMAC: a tag that short is
+// still unforgeable, and the packet stays small.
 func initMAC(key []byte, id string, ts uint64, eph []byte) []byte {
 	msg := make([]byte, 0, len(LabelInit)+len(id)+8+32)
 	msg = append(msg, LabelInit...)
@@ -638,7 +687,7 @@ func initMAC(key []byte, id string, ts uint64, eph []byte) []byte {
 	binary.BigEndian.PutUint64(tsBuf[:], ts)
 	msg = append(msg, tsBuf[:]...)
 	msg = append(msg, eph...)
-	return crypt.HMACSHA256(key, msg)
+	return crypt.HMACSHA256(key, msg)[:MacLen]
 }
 
 // respMAC builds the authentication tag of a RESP packet.
@@ -653,7 +702,7 @@ func respMAC(key []byte, id string, ts uint64, eph, respEph []byte, now uint64) 
 	msg = append(msg, respEph...)
 	binary.BigEndian.PutUint64(tsBuf[:], now)
 	msg = append(msg, tsBuf[:]...)
-	return crypt.HMACSHA256(key, msg)
+	return crypt.HMACSHA256(key, msg)[:MacLen]
 }
 
 // acceptCounter implements the replay window.

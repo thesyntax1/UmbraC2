@@ -24,7 +24,13 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__, crypto, db, image, netio, wire
 from .client import CHUNK_MAX, OperatorClient, OperatorError
-from .vpn import _table, print_pivots, print_vpn_peers, print_vpn_status
+from .vpn import (
+    _table,
+    print_pivots,
+    print_vpn_peers,
+    print_vpn_routes,
+    print_vpn_status,
+)
 
 BANNER = r"""
   _   _ __  __ ___  ____      _    ____
@@ -1082,8 +1088,17 @@ class Console:
                     print_vpn_peers(self.client.vpn_peers())
                 elif sub_cmd == "allocate" and len(rest) >= 2:
                     print(f"{rest[1]} -> {self.client.vpn_allocate(rest[1])}")
+                elif sub_cmd == "routes":
+                    print_vpn_routes(self.client.vpn_routes())
+                elif sub_cmd == "route" and len(rest) >= 3:
+                    data = self.client.vpn_route(rest[1], rest[2])
+                    print(f"{data.get('network')} -> {data.get('peer')}")
+                elif sub_cmd == "ping" and len(rest) >= 2:
+                    data = self.client.vpn_ping(rest[1])
+                    print(f"{rest[1]} answered in {data.get('rtt_text', '?')}")
                 else:
-                    print("usage: vpn [status | peers | allocate <agent>]")
+                    print("usage: vpn [status | peers | allocate <agent> | "
+                          "routes | route <peer> <network> | ping <peer>]")
             elif cmd == "armory":
                 sub_cmd = rest[0] if rest else "list"
                 if sub_cmd == "list":
@@ -1242,7 +1257,7 @@ def print_help() -> None:
   stats                     server statistics
   pivot [list|open|close|claims|release]
                           pivot through an agent (socks5 / port forward)
-  vpn [status|peers|alloc]  the layer-3 tunnel
+  vpn [status|peers|alloc|routes|route|ping]  the layer-3 tunnel
   armory [list|inst|rm|run] the extension store
   alias [list|run]          saved commands
   team-sync                 one snapshot of the team
@@ -1710,8 +1725,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- layer-3 tunnel --------------------------------------------------
     vpn = sub.add_parser("vpn", help="the layer-3 tunnel between the implants and the server")
-    vpn.add_argument("action", choices=["status", "peers", "allocate"])
+    vpn.add_argument("action", choices=["status", "peers", "allocate", "routes",
+                                        "route", "ping"])
     vpn.add_argument("target", nargs="?", default="", help="agent id (allocate)")
+    vpn.add_argument("network", nargs="?", default="", help="the network of the route")
 
     # -- extension store -------------------------------------------------
     armory = sub.add_parser("armory", help="the extension store")
@@ -2623,6 +2640,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             elif args.action == "peers":
                 peers = client.vpn_peers()
                 emit(peers) if args.json else print_vpn_peers(peers)
+            elif args.action == "routes":
+                routes = client.vpn_routes()
+                emit(routes) if args.json else print_vpn_routes(routes)
+            elif args.action == "route":
+                if not args.target or not args.network:
+                    print("usage: umbra vpn route <peer> <network>", file=sys.stderr)
+                    return 2
+                data = client.vpn_route(args.target, args.network)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"{data.get('network')} -> {data.get('peer')}")
+            elif args.action == "ping":
+                if not args.target:
+                    print("usage: umbra vpn ping <peer>", file=sys.stderr)
+                    return 2
+                data = client.vpn_ping(args.target)
+                emit(data) if args.json else print(
+                    f"{args.target} answered in {data.get('rtt_text', '?')}")
             else:
                 if not args.target:
                     print("usage: umbra vpn allocate <agent>", file=sys.stderr)

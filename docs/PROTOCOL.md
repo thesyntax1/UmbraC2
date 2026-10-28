@@ -514,6 +514,9 @@ Operator RPC commands, with the minimum role each requires:
 | `vpn.status` | viewer | tunnel state: listener, network, peer count |
 | `vpn.peers` | viewer | tunnel peers and their addresses |
 | `vpn.allocate` | operator | reserve a tunnel address for an agent |
+| `vpn.routes` | viewer | the routing table of the tunnel: the networks behind the peers |
+| `vpn.route` | operator | send the traffic of a network to a peer; `remove` forgets it |
+| `vpn.ping` | operator | ask a peer of the tunnel whether it is there; the answer carries the round trip |
 | `armory.list` | viewer | catalogue and installed extensions |
 | `armory.install` | operator | fetch, verify and install an extension |
 | `armory.remove` | admin | delete an installed extension |
@@ -1088,6 +1091,31 @@ over it, and the server routes them by tunnel address (`10.77.0.0/24` by
 default). The handshake MAC is keyed with a secret both sides already hold
 (the agent PSK or an operator token), so no additional key distribution is
 needed.
+
+The tag of the handshake is the first sixteen bytes of the HMAC over the
+transcript; the packet carries sixteen bytes, so the tag of the two ends has
+to be sixteen bytes long as well.
+
+**The routing table.** A peer may be the gateway of a whole network: the
+operator names the network and the peer (`vpn.route`), and the server sends
+the packets of that network to the peer, which forwards them. The longest
+prefix wins, so a small network inside a large one is reached the way the
+operator meant it. Every route carries its own counters: the packets and the
+bytes that went through it.
+
+**The ping.** The question of the operator travels through the tunnel like a
+data packet: it is sealed with the keys of the session, so only the peer can
+read it and only the server can tell that the answer is the answer. The
+answer carries the timestamp of the question, so the round trip is measured
+by the server and not guessed. The kinds of the control packets are `PING`
+(`0x04`) and `PONG` (`0x05`); the payload is the kind, a nonce of eight
+bytes and the timestamp of the question.
+
+**The peer behind another peer.** A peer that can only be reached through
+another agent joins the relay of that agent instead of the server
+(`vpn` with `action=relay`). The relay hands the datagrams to the server
+and back, so the keys of the session stay between the peer and the server:
+the relay sees nothing but ciphertext.
 
 ### 7.4 Traffic shaping
 
