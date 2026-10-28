@@ -267,6 +267,46 @@ command the server knows, with the role of the operator attached. It is not
 a way around the role table: the server checks the role of the command,
 not the shape of the request.
 
+## 3.12 The queue, the breakers and the maintenance window
+
+The queue is a security boundary as much as a convenience: it decides
+what the server does with a host that misbehaves, and it is the part an
+attacker would try to abuse.
+
+**The limits are a defence.** The per-host rate, the per-host work in
+flight and the global throughput cap mean a beacon that has been turned
+into a spam amplifier cannot make the server hand out work faster than
+the fleet can take it.  The values are in the configuration and they are
+validated: a negative limit is a configuration error and the server
+refuses to start.
+
+**The circuit breaker is a defence.** A host that fails in a row is taken
+out of the rotation, so a dead host cannot make the server burn its
+whole budget on a host that is not there.  The breaker opens after five
+failures in a row, one probe goes through after the cooldown, and the
+state of every breaker is visible to the operator.
+
+**The maintenance window is a defence.** `server.quiet` stops the traffic
+without stopping the server: the beacons keep checking in and get
+nothing, which is what a host under maintenance should see.  The window
+is an admin decision, it is an event and an audit line, and it ends by
+itself at the moment the operator gave.
+
+**The dead letter queue is a defence.** A task that failed too often is
+parked instead of being retried for ever, so a task that never succeeds
+cannot keep a worker busy.  A parked task is not run again without a
+decision.
+
+**The trace is a defence.** Every task carries a trace id, and the trace
+is in the record, in the events and in the audit trail.  A task that a
+host received without an answer can be followed without guessing, which
+is what makes an incident review possible.
+
+**What the queue does not do.** The limits are per server, not per
+operator: a console that queues a thousand tasks occupies the queue, and
+the operator's own rate limit (`rate limited` in a response) is what
+stops a single console from looping.
+
 ## 4. Secret handling
 
 * Secrets come from environment variables or `0600` files, never from the JSON

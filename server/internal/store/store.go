@@ -64,6 +64,9 @@ const (
 	TaskDone      = "done"
 	TaskFailed    = "failed"
 	TaskCancelled = "cancelled"
+	// TaskDead is the dead letter queue: the task failed too many times
+	// and nobody will run it again without a decision.
+	TaskDead = "dead"
 )
 
 // Schedule is a recurring task: "run this kind on this agent every N seconds".
@@ -359,6 +362,15 @@ type Task struct {
 	// Stage is its position in that chain (0 is the first stage).
 	ChainID string `json:"chain_id,omitempty"`
 	Stage   int    `json:"stage,omitempty"`
+	// Priority orders the queue: the higher the number, the sooner the
+	// task is delivered.  Zero is the normal priority.
+	Priority int `json:"priority,omitempty"`
+	// Attempts counts how many times the task was delivered.  A task that
+	// keeps failing goes to the dead letter queue.
+	Attempts int `json:"attempts,omitempty"`
+	// TraceID follows the task from the RPC that queued it to the result
+	// that came back, so an operator can grep for it.
+	TraceID string `json:"trace_id,omitempty"`
 	Created   time.Time `json:"created"`
 	Delivered time.Time      `json:"delivered,omitempty"`
 	Completed time.Time      `json:"completed,omitempty"`
@@ -489,6 +501,44 @@ const snapshotVersion = 3
 // the last successful save.
 func backupPath(path string) string { return path + ".bak" }
 
+// BackupGenerations is how many generations of the snapshot are kept.
+//
+// The current file is the newest generation; the backup is the one before
+// it; the older ones are kept so a file that was corrupted twice (a disk
+// that lies, a restore from a bad copy) does not take the state with it.
+const BackupGenerations = 3
+
+// backupPaths returns the backup generations, newest first.
+func backupPaths(path string) []string {
+	out := make([]string, 0, BackupGenerations)
+	for i := 0; i < BackupGenerations; i++ {
+		if i == 0 {
+			out = append(out, backupPath(path))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s.%d", backupPath(path), i))
+	}
+	return out
+}
+
+// rotateBackups moves the generations one step down before the new
+// snapshot is put in place.
+//
+// The oldest generation is dropped: an unbounded pile of snapshots is a
+// pile of disk that nobody reads.
+func rotateBackups(path string) error {
+	paths := backupPaths(path)
+	for i := len(paths) - 1; i > 0; i-- {
+		if _, err := os.Stat(paths[i]); err != nil {
+			continue
+		}
+		if err := os.Rename(paths[i], paths[i+1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Store is the concurrency-safe data store.
 type Store struct {
 	mu     sync.RWMutex
@@ -553,7 +603,8 @@ func (s *Store) SetSaveErrorHandler(fn func(error)) {
 // engagement history.
 func loadSnapshot(path string) (*snapshot, string, error) {
 	var firstErr error
-	for _, candidate := range []string{path, backupPath(path)} {
+	candidates := append([]string{path}, backupPaths(path)...)
+	for _, candidate := range candidates {
 		raw, err := os.ReadFile(candidate)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -585,7 +636,14 @@ func loadSnapshot(path string) (*snapshot, string, error) {
 	// deployment, not a failure.
 	if firstErr == nil {
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			if _, err := os.Stat(backupPath(path)); errors.Is(err, os.ErrNotExist) {
+			found := false
+			for _, candidate := range backupPaths(path) {
+				if _, err := os.Stat(candidate); err == nil {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return &snapshot{}, "", nil
 			}
 		}
@@ -955,22 +1013,143 @@ func (s *Store) AddTask(t *Task) *Task {
 
 // Pending marks all queued tasks of an agent as delivered and returns them.
 func (s *Store) Pending(agentID string, max int) []*Task {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*Task, 0, 4)
+	candidates := s.Candidates(agentID, max)
+	ids := make([]string, 0, len(candidates))
+	for _, t := range candidates {
+		ids = append(ids, t.ID)
+	}
+	return s.MarkDelivered(ids)
+}
+
+// Candidates returns the queued tasks of one agent, in the order they
+// should be delivered.
+//
+// The queue is ordered by priority first and by age second: the work the
+// operator marked as important goes first, and the rest keeps its order,
+// so nothing starves behind a flood of low priority work.
+func (s *Store) Candidates(agentID string, limit int) []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	candidates := make([]*Task, 0, 8)
 	for _, id := range s.order {
-		if len(out) >= max {
-			break
-		}
 		t := s.tasks[id]
-		if t.AgentID != agentID || t.State != TaskQueued {
+		if t == nil || t.AgentID != agentID || t.State != TaskQueued {
 			continue
 		}
-		t.State = TaskDelivered
-		t.Delivered = time.Now().UTC()
+		candidates = append(candidates, t)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Priority != candidates[j].Priority {
+			return candidates[i].Priority > candidates[j].Priority
+		}
+		return candidates[i].Created.Before(candidates[j].Created)
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	out := make([]*Task, 0, len(candidates))
+	for _, t := range candidates {
 		out = append(out, t.Clone())
 	}
 	return out
+}
+
+// MarkDelivered marks the given tasks as delivered to their agent.
+//
+// The tasks are counted: a task that keeps failing goes to the dead letter
+// queue after a few attempts, instead of being delivered forever.
+func (s *Store) MarkDelivered(ids []string) []*Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	out := make([]*Task, 0, len(ids))
+	for _, id := range ids {
+		t, ok := s.tasks[id]
+		if !ok || t.State != TaskQueued {
+			continue
+		}
+		t.State = TaskDelivered
+		t.Delivered = now
+		t.Attempts++
+		out = append(out, t.Clone())
+	}
+	return out
+}
+
+// InFlight returns how many tasks of one agent are running right now.
+//
+// The queue does not deliver more work to a host that is already busy:
+// the limit is per agent, so one slow host does not hold the queue.
+func (s *Store) InFlight(agentID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, t := range s.tasks {
+		if t != nil && t.AgentID == agentID && t.State == TaskDelivered {
+			n++
+		}
+	}
+	return n
+}
+
+// DeadLetter moves a task into the dead letter queue.
+//
+// The task failed too many times: it is not queued again and not run
+// again, because a task that may have run must not run a second time
+// without a decision.  It stays visible, with the reason, until the
+// operator looks at it.
+func (s *Store) DeadLetter(taskID, reason string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return false
+	}
+	if t.State != TaskFailed && t.State != TaskDelivered && t.State != TaskQueued {
+		return false
+	}
+	t.State = TaskDead
+	t.Err = reason
+	t.Completed = time.Now().UTC()
+	return true
+}
+
+// DeadTasks returns the tasks in the dead letter queue.
+func (s *Store) DeadTasks(limit int) []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	out := make([]*Task, 0, 8)
+	for _, id := range s.order {
+		t := s.tasks[id]
+		if t == nil || t.State != TaskDead {
+			continue
+		}
+		out = append(out, t.Clone())
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// SetPriority changes the priority of a task.
+//
+// The operator decides what is urgent; the queue only reads it.
+func (s *Store) SetPriority(taskID string, priority int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return false
+	}
+	if priority < -100 || priority > 100 {
+		return false
+	}
+	t.Priority = priority
+	return true
 }
 
 // QueuedCount returns how many tasks are still waiting for an agent.
@@ -1515,12 +1694,23 @@ func (s *Store) Save() error {
 	// Keep the generation we are about to replace. If the machine dies between
 	// this rename and the next one, Open falls back to the backup instead of
 	// starting empty.
-	if _, statErr := os.Stat(s.path); statErr == nil {
-		if err := os.Rename(s.path, backupPath(s.path)); err != nil {
-			_ = os.Remove(tmp)
-			return err
+		if _, statErr := os.Stat(s.path); statErr == nil {
+			// The generations are rotated first, so the file that is
+			// about to be replaced is still there when the rename of
+			// the new snapshot fails.
+			if err := rotateBackups(s.path); err != nil {
+				s.asyncMu.Lock()
+				handler := s.onError
+				s.asyncMu.Unlock()
+				if handler != nil {
+					handler(fmt.Errorf("store: the backup generations could not be rotated: %w", err))
+				}
+			}
+			if err := os.Rename(s.path, backupPath(s.path)); err != nil {
+				_ = os.Remove(tmp)
+				return err
+			}
 		}
-	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)
 		return err

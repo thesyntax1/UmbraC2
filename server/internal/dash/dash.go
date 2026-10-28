@@ -86,6 +86,8 @@ func New(cfg Config, h *hub.Hub, log *slog.Logger) *Server {
 	s.mux.HandleFunc("/api/operators", s.handleOperators)
 	s.mux.HandleFunc("/api/output", s.handleOutput)
 	s.mux.HandleFunc("/api/rpc", s.handleRPC)
+	s.mux.HandleFunc("/metrics", s.handleMetrics)
+	s.mux.HandleFunc("/api/queue", s.handleQueue)
 	return s
 }
 
@@ -126,6 +128,16 @@ func (s *Server) Serve(ctx context.Context) error {
 // bookmark.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The health check is the one endpoint that needs no token: it
+		// says that the process is alive and nothing else.
+		if r.URL != nil && r.URL.Path == "/healthz" {
+			uptime, _ := s.hub.Stats()["uptime_s"].(int)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":       true,
+				"uptime_s": uptime,
+			})
+			return
+		}
 		got := ""
 		if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
 			got = strings.TrimPrefix(header, "Bearer ")
@@ -207,6 +219,36 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // handleStats serves the counters of the server.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.hub.Stats())
+}
+
+// handleQueue serves the state of the queue.
+//
+// The panel answers the question an operator asks when the work piles up:
+// what is the policy, how deep is the queue, which hosts have an open
+// breaker and what is waiting in the dead letter queue.
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	metrics := s.hub.Metrics()
+	dead := make([]any, 0, 8)
+	for _, task := range s.hub.Store().DeadTasks(50) {
+		dead = append(dead, map[string]any{
+			"task_id":  task.ID,
+			"agent_id": task.AgentID,
+			"kind":     task.Kind,
+			"attempts": task.Attempts,
+			"err":      task.Err,
+			"trace_id": task.TraceID,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"policy":      s.hub.QueuePolicy(),
+		"quiet":       metrics.Quiet,
+		"pending":     metrics.TasksPending,
+		"done":        metrics.TasksDone,
+		"failed":      metrics.TasksFailed,
+		"dead":        metrics.TasksDead,
+		"breakers":    metrics.BreakersOpen,
+		"dead_letter": dead,
+	})
 }
 
 // handlePivot serves the picture of the reach.
@@ -437,6 +479,113 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": rows, "count": len(rows)})
+}
+
+// handleMetrics serves the counters of the server in the Prometheus text
+// format.
+//
+// The format is the one a scraper expects: one "name value" per line, the
+// histogram buckets with their "le" label, and a "# HELP" and a "# TYPE"
+// line above each family.  The endpoint needs the operator token like
+// every other one: the numbers of an engagement are not public.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	m := s.hub.Metrics()
+	var b strings.Builder
+
+	family := func(name, help, kind string) {
+		b.WriteString("# HELP " + name + " " + help + "\n")
+		b.WriteString("# TYPE " + name + " " + kind + "\n")
+	}
+	line := func(name string, value any, labels ...string) {
+		b.WriteString(name)
+		if len(labels) > 0 {
+			b.WriteString("{")
+			for i, label := range labels {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString(label)
+			}
+			b.WriteString("}")
+		}
+		b.WriteString(" ")
+		switch v := value.(type) {
+		case int:
+			b.WriteString(strconv.Itoa(v))
+		case int64:
+			b.WriteString(strconv.FormatInt(v, 10))
+		case uint64:
+			b.WriteString(strconv.FormatUint(v, 10))
+		case float64:
+			b.WriteString(strconv.FormatFloat(v, 'f', -1, 64))
+		case bool:
+			if v {
+				b.WriteString("1")
+			} else {
+				b.WriteString("0")
+			}
+		default:
+			b.WriteString("0")
+		}
+		b.WriteString("\n")
+	}
+
+	family("umbra_agents", "The hosts the server knows.", "gauge")
+	line("umbra_agents", m.AgentsTotal)
+	line("umbra_agents_online", m.AgentsOnline)
+
+	family("umbra_tasks", "The tasks of the engagement.", "gauge")
+	line("umbra_tasks_total", m.TasksTotal)
+	line("umbra_tasks_pending", m.TasksPending)
+	line("umbra_tasks_done", m.TasksDone)
+	line("umbra_tasks_failed", m.TasksFailed)
+	line("umbra_tasks_dead_letter", m.TasksDead)
+
+	family("umbra_task_latency_seconds",
+		"How long a task took between the delivery and the result.", "histogram")
+	for i, bound := range hub.LatencyBuckets {
+		line("umbra_task_latency_seconds_bucket", m.LatencyBuckets[i],
+			"le=\""+strconv.FormatFloat(bound.Seconds(), 'f', -1, 64)+"\"")
+	}
+	line("umbra_task_latency_seconds_bucket", m.LatencyCount, "le=\"+inf\"")
+	line("umbra_task_latency_seconds_sum", m.LatencySum)
+	line("umbra_task_latency_seconds_count", m.LatencyCount)
+
+	family("umbra_checkins_total", "The check-ins the beacons made.", "counter")
+	line("umbra_checkins_total", m.Checkins)
+
+	family("umbra_agents_by_transport",
+		"The hosts per transport.", "gauge")
+	for _, name := range m.TransportNames() {
+		line("umbra_agents_by_transport", m.Transports[name],
+			"transport=\""+name+"\"")
+	}
+
+	family("umbra_bytes_total", "The bytes that moved through the server.", "counter")
+	line("umbra_bytes_in_total", m.BytesIn)
+	line("umbra_bytes_out_total", m.BytesOut)
+
+	family("umbra_operators", "The operator consoles that are connected.", "gauge")
+	line("umbra_operators", m.Operators)
+
+	family("umbra_events_dropped_total",
+		"The events a console missed because its queue was full.", "counter")
+	line("umbra_events_dropped_total", m.EventsDropped)
+
+	family("umbra_breakers_open",
+		"The hosts whose circuit breaker is open.", "gauge")
+	line("umbra_breakers_open", m.BreakersOpen)
+
+	family("umbra_quiet", "One when the server is in its maintenance window.", "gauge")
+	line("umbra_quiet", m.Quiet)
+
+	family("umbra_uptime_seconds", "How long the server has been running.", "gauge")
+	line("umbra_uptime_seconds", m.Uptime.Seconds())
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(b.String()))
 }
 
 // handleRPC runs one operator command from the dashboard.

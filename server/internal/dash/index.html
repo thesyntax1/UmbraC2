@@ -167,6 +167,17 @@
   </section>
 
   <section>
+    <h2>queue</h2>
+    <div class="scroll">
+      <table id="queue">
+        <thead><tr><th>task</th><th>agent</th><th>kind</th><th>attempts</th><th>reason</th><th>trace</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note" id="queueNote">the dead letter queue: the work that failed too often</div>
+  </section>
+
+  <section>
     <h2>alert rules</h2>
     <div class="scroll">
       <table id="alerts">
@@ -318,6 +329,30 @@
       document.getElementById("stats").textContent =
         "agents " + (s.agents || 0) + " · tasks " + (s.tasks || 0) +
         " · operators " + (s.operators || 0) + " · up " + (s.uptime_s || 0) + "s";
+    });
+  }
+
+  // The state of the queue: how deep it is, which hosts have an open
+  // breaker and what is waiting in the dead letter queue.
+  function refreshQueue() {
+    return api("/api/queue").then(function (data) {
+      var policy = data.policy || {};
+      var note = document.getElementById("queueNote");
+      note.textContent =
+        "pending " + (data.pending || 0) +
+        " \u00b7 dead " + (data.dead || 0) +
+        " \u00b7 breakers " + (data.breakers || 0) +
+        (data.quiet ? " \u00b7 quiet" : "") +
+        " \u00b7 in flight per host " + (policy.max_in_flight_per_agent || 0) +
+        " \u00b7 per host " + (policy.max_deliver_per_minute_per_agent || 0) + "/min";
+      var body = document.querySelector("#queue tbody");
+      body.textContent = "";
+      (data.dead_letter || []).forEach(function (row) {
+        var tr = el("tr");
+        [row.task_id, row.agent_id, row.kind, row.attempts, row.err, row.trace_id]
+          .forEach(function (value) { tr.appendChild(el("td", value)); });
+        body.appendChild(tr);
+      });
     });
   }
 
@@ -554,7 +589,7 @@
     refreshAgents().then(refreshTasks).then(refreshStats).then(refreshEvents)
       .then(refreshReach).then(refreshPersistence).then(refreshCredentials)
       .then(refreshOperators).then(refreshWorkflows).then(refreshAlerts)
-      .then(refreshOutput).catch(function (err) {
+      .then(refreshQueue).then(refreshOutput).catch(function (err) {
         state.textContent = "error: " + err.message;
         state.className = "off";
       });

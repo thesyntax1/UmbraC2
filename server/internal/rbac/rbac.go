@@ -178,6 +178,15 @@ var requirements = map[string]string{
 	"alias.add":    Operator,
 	"alias.remove": Operator,
 
+	// ---- the queue and the maintenance window ---------------------------
+	// The quiet window stops the traffic of the server: it is an admin
+	// decision, like burning an engagement.
+	"server.quiet": Admin,
+	// Reading the queue is harmless.
+	"server.queue": Viewer,
+	// The priority of a task is the operator's call.
+	"task.priority": Operator,
+
 	// ---- the workflow layer --------------------------------------------
 	// A workflow is a named sequence of steps: writing one is operator
 	// work, running one is operator work too (it queues tasks), and

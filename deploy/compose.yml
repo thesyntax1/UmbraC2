@@ -1,0 +1,77 @@
+# The team server and its reverse proxy, in one compose file.
+#
+# The server listens on the loopback of the container; the proxy is the
+# only thing that faces the network.  The secrets come from the host:
+#
+#   umbra-secrets.env   (mode 0600)
+#     UMBRA_AGENT_PSK=<32 bytes of hex>
+#     UMBRA_OPERATOR_TOKENS=alice:<token>
+#     UMBRA_VAULT_KEY=<32 bytes of hex>
+#
+#   docker compose --env-file umbra-secrets.env -f deploy/compose.yml up -d
+#
+# The state is on a named volume, so the container can be replaced without
+# losing the engagement.
+
+services:
+  umbra:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: umbra-server:latest
+    container_name: umbra
+    restart: unless-stopped
+    # The configuration is read-only and comes from the host; the state is
+    # the only thing the container may write.
+    volumes:
+      - ./server.prod.json:/etc/umbra/server.json:ro
+      - umbra-state:/var/lib/umbra
+    environment:
+      UMBRA_AGENT_PSK: ${UMBRA_AGENT_PSK}
+      UMBRA_OPERATOR_TOKENS: ${UMBRA_OPERATOR_TOKENS}
+      UMBRA_VAULT_KEY: ${UMBRA_VAULT_KEY}
+    # The agent listener and the operator listener.  The operator listener
+    # is not published by default: the console reaches it through the
+    # tunnel or through the proxy, not from the open internet.
+    expose:
+      - "4001"
+      - "4002"
+      - "4003"
+    networks:
+      - umbra
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/umbra-server", "-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # The container runs as the unprivileged user of the image; the
+    # capabilities it does not need are taken away.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: umbra-proxy
+    restart: unless-stopped
+    depends_on:
+      - umbra
+    volumes:
+      - ./nginx-http-transport.conf:/etc/nginx/conf.d/default.conf:ro
+      - umbra-certs:/etc/nginx/certs:ro
+    ports:
+      - "443:443"
+    networks:
+      - umbra
+
+volumes:
+  umbra-state:
+  umbra-certs:
+
+networks:
+  umbra:
+    driver: bridge

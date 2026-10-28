@@ -160,6 +160,30 @@ The sweep never re-queues anything.  A task that may have run must not run
 twice: the same rule that re-queues on a *restart* (where the beacon is
 known to be gone) does not apply to a timeout (where it is not).
 
+### The queue layer
+
+The delivery of the work is a layer of its own (`internal/hub/queue.go`),
+between the store (what exists) and the link (what goes out).  It holds
+four decisions:
+
+* **the order** — the tasks of a host are handed out by priority first and
+  by age second, so the urgent work goes first and nothing starves;
+* **the limits** — the work in flight on one host, the rate one host
+  receives work at, and the throughput of the whole server;
+* **the breaker** — a host that fails in a row is taken out of the
+  rotation until the cooldown is over and one probe succeeds;
+* **the window** — the maintenance window stops the traffic without
+  stopping the server.
+
+The layer has its own lock (`hub.qmu`) and never calls into the store
+while it holds it: the store has its own lock, and the two are never
+nested in the other direction.
+
+The metrics are a snapshot of the same state (`internal/hub/metrics.go`):
+one pass over the store, one pass over the counters, and a histogram of
+the latency of the finished tasks.  The dashboard serves them in the
+Prometheus text format.
+
 ### Concurrency and safety
 
 * one goroutine per connection, no shared mutable message state;

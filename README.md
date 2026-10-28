@@ -65,6 +65,12 @@ Added on top of that core:
 | Host triage | Hashes, entropy and file type of a file on the target, a search by name or content, and the network configuration | [docs/OPERATIONS.md](docs/OPERATIONS.md#3b-interactive-sessions-chains-and-alerts) |
 | Staying alive | The implant installs itself so it survives a reboot, takes the start-up entries away again, replaces itself with a verified new build, and dials a list of servers through a proxy | [docs/OPERATIONS.md](docs/OPERATIONS.md#keeping-the-implant-alive) |
 | Reliability | A task that is never answered fails instead of hanging forever, and the server sweeps the queue every 30 s | [docs/OPERATIONS.md](docs/OPERATIONS.md#5-state-and-recovery) |
+| The predictable queue | The urgent task goes first, a host that is already busy is not given more work, the server hands out a bounded number of tasks per second, and a task that failed too often is parked in the dead letter queue | [docs/PROTOCOL.md](docs/PROTOCOL.md#72o-the-queue-the-breakers-and-the-traces) |
+| Surviving a bad operator | The server counts the failures of a host and opens its circuit breaker, and a maintenance window stops the traffic without stopping the server | [docs/OPERATIONS.md](docs/OPERATIONS.md#5h-the-queue-the-breakers-and-the-metrics) |
+| The metrics | The counters of the server in the Prometheus text format: the depth of the queue, the latency histogram, the rate of the check-ins, the rate of the failures, the mix of the transports and the bytes that moved | [docs/OPERATIONS.md](docs/OPERATIONS.md#5h-the-queue-the-breakers-and-the-metrics) |
+| The trace | Every task carries a trace id from the operator to the implant and back: the record, the events and the audit trail all carry it | [docs/PROTOCOL.md](docs/PROTOCOL.md#72o-the-queue-the-breakers-and-the-traces) |
+| The state that survives | The snapshot is written at least once a minute, the write is atomic, the last three generations are kept, and the recovery procedure is written down | [docs/RUNBOOK.md](docs/RUNBOOK.md#the-recovery-procedure) |
+| The deployment | A systemd unit, a container image, a compose file, a reverse-proxy sample and a hardened configuration with every key documented | [deploy/](deploy/), [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 | The way a team works | A command namespace of saved commands, a failed task that can be run again, and a report of an agent for the handover | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The journal | Every event is numbered and kept, so a console that was not watching can still ask what it missed | [docs/OPERATIONS.md](docs/OPERATIONS.md#3-operator-workflow) |
 | The dashboard | A web view of the inventory, the tasks and the event stream, on the same tokens as the console | [docs/OPERATIONS.md](docs/OPERATIONS.md#3c-the-dashboard) |
@@ -187,6 +193,7 @@ UmbraC2/
 | [docs/PIVOTING.md](docs/PIVOTING.md) | SOCKS5, port forwards, peer-to-peer links, the layer-3 tunnel |
 | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) | the extension store, the command namespace, stagers, in-memory modules, reconnaissance |
 | [docs/SECURITY.md](docs/SECURITY.md) | threat model, cryptographic choices, attack surface, limitations |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | the certificate rotation, the recovery procedure, the maintenance window, the stuck queue |
 
 ## Tests
 

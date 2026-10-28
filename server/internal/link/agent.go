@@ -405,6 +405,7 @@ func (s *Server) runAgent(stream FrameStream, conn net.Conn, sess *session.Sessi
 			return
 		}
 		budget -= int64(len(raw))
+		s.Hub.NoteBytes(int64(len(raw)), 0)
 		if budget < 0 {
 			log.Warn("agent exceeded frame budget", "agent", rec.ID)
 			return
@@ -419,6 +420,7 @@ func (s *Server) runAgent(stream FrameStream, conn net.Conn, sess *session.Sessi
 				log.Debug("agent write failed", "err", err)
 				return
 			}
+			s.Hub.NoteBytes(0, int64(len(f)))
 		}
 		if link.Closed() {
 			log.Info("agent closed session", "agent", rec.ID)

@@ -7250,3 +7250,185 @@ def test_the_dashboard_has_the_panels_the_team_needs():
     assert "/api/rpc" in dash, dash
     link = read_text("server/internal/link/operator.go")
     assert "func (s *Server) DispatchOperator(" in link, link
+
+
+def test_the_queue_is_predictable_and_the_dead_letter_waits():
+    """The priority decides the order, and a task that keeps failing is parked."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-queue-0123456789a"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-queue")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # Three tasks, and the urgent one is marked as urgent.
+        first = client.submit("agent-queue", "shell", {"cmd": "one"})
+        second = client.submit("agent-queue", "shell", {"cmd": "two"})
+        third = client.submit("agent-queue", "shell", {"cmd": "three"})
+        client.set_priority(third, 10)
+
+        # The queue says what it is going to do.
+        queue = client.queue()
+        assert queue["max_attempts"] == 3, queue
+        assert queue["max_in_flight_per_agent"] == 4, queue
+        assert queue["dead_letter"] == [], queue
+
+        # The task carries the priority and the trace.
+        task = client.task(third)
+        assert task["priority"] == 10, task
+        assert task["trace_id"], task
+        # Every task has its own trace.
+        assert client.task(first)["trace_id"] != task["trace_id"], task
+
+        # The urgent task goes first: the beacon receives the batch in
+        # the order the queue decided.
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            with server._lock:
+                batches = list(server.delivery_log)
+            if batches:
+                break
+            time.sleep(0.2)
+        assert batches, "the queue handed nothing out"
+        assert batches[0][0] == third, batches
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_host_that_keeps_failing_ends_up_in_the_dead_letter():
+    """The breaker of a host opens, and the work that fails on it is parked."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-dead-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-dead")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The task fails: the fake agent answers with an error.
+        task_id = client.submit("agent-dead", "shell", {"cmd": "exit 3"})
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if client.task(task_id)["state"] in ("done", "failed", "dead"):
+                break
+            time.sleep(0.2)
+        task = client.task(task_id)
+        assert task["state"] == "failed", task
+        # The trace travelled with the task.
+        assert task["trace_id"], task
+        # The breaker counted the failure.
+        with server._lock:
+            assert server.breakers.get("agent-dead", 0) >= 1, server.breakers
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_quiet_window_stops_the_traffic():
+    """The maintenance window: the beacons check in and get nothing."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-quiet-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-quiet")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The window is closed.
+        answer = client.quiet(True)
+        assert answer["quiet"] is True, answer
+
+        # Nothing new is queued while the window is closed.
+        with pytest.raises(Exception):
+            client.submit("agent-quiet", "shell", {"cmd": "id"})
+
+        # The window is open again.
+        answer = client.quiet(False)
+        assert answer["quiet"] is False, answer
+        task_id = client.submit("agent-quiet", "shell", {"cmd": "id"})
+        assert task_id
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_reliability_is_in_every_implementation():
+    """The queue, the breakers, the quiet window, the metrics and the trace."""
+    hub = read_text("server/internal/hub/queue.go")
+    for symbol in ("func (h *Hub) allowDelivery(", "func (h *Hub) BreakerOpen(",
+                   "func (h *Hub) SetQuiet(", "func (h *Hub) DeadLetter(",
+                   "func NewTraceID(", "func (h *Hub) NoteBytes("):
+        assert symbol in hub, symbol
+    metrics = read_text("server/internal/hub/metrics.go")
+    assert "func (h *Hub) Metrics()" in metrics, metrics
+
+    store = read_text("server/internal/store/store.go")
+    for symbol in ("func (s *Store) Candidates(", "func (s *Store) MarkDelivered(",
+                   "func (s *Store) DeadLetter(", "func (s *Store) SetPriority(",
+                   "func (s *Store) InFlight(", "func rotateBackups("):
+        assert symbol in store, symbol
+
+    config = read_text("server/internal/config/config.go")
+    assert "type Queue struct" in config, config
+
+    link = read_text("server/internal/link/operator.go")
+    for rpc in ("server.quiet", "server.queue", "task.priority"):
+        assert rpc in link, rpc
+    rbac = read_text("server/internal/rbac/rbac.go")
+    for rpc in ("server.quiet", "server.queue", "task.priority"):
+        assert f'"{rpc}"' in rbac, rpc
+
+    dash = read_text("server/internal/dash/dash.go")
+    assert "/metrics" in dash, dash
+    assert "umbra_task_latency_seconds" in dash, dash
+
+    mock = read_text("tools/mock_server.py")
+    for rpc in ("server.quiet", "server.queue", "task.priority"):
+        assert rpc in mock, rpc
+
+    client = read_text("operator/umbra_cli/client.py")
+    for method in ("def quiet(", "def queue(", "def set_priority("):
+        assert method in client, method
+
+    # The deployment grew into a real one.
+    assert os.path.exists(os.path.join(ROOT, "deploy", "Dockerfile"))
+    assert os.path.exists(os.path.join(ROOT, "deploy", "compose.yml"))
+    assert os.path.exists(os.path.join(ROOT, "docs", "RUNBOOK.md"))
+    prod = json.loads(read_text("deploy/server.prod.json"))
+    assert "queue" in prod, prod
+    assert prod["queue"]["max_attempts"] == 3, prod

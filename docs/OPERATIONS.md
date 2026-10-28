@@ -1098,6 +1098,32 @@ Three more things keep a team from fighting itself.
 The chat never reaches the implants: the stream the agents read carries
 tasks and results, never a word of the team.
 
+## 5f. File transfer
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice download web-01 /etc/passwd ./passwd
+umbra --server 127.0.0.1:4002 --operator alice upload   web-01 ./collector /tmp/collector
+```
+
+Inside the console the same commands are `get <remote> <local>` and
+`put <local> <remote>` for the selected agent. Both are chunked at 900 KiB, the
+largest payload that still fits in one frame, so arbitrary file sizes work
+without a new message type or a second connection:
+
+* every chunk is checked against the SHA-256 the beacon reports;
+* downloads are written to `<local>.part` and renamed only after the last chunk
+  and the size check pass, so a failed transfer never leaves a truncated file
+  that looks complete;
+* uploads truncate at offset 0 and report the whole-file hash on the final
+  chunk, which the CLI compares with the local file;
+* `--chunk` lowers the step size (useful on lossy links); `--timeout` applies
+  per chunk, not to the whole transfer.
+
+A transfer is a sequence of ordinary tasks, so it appears in `tasks`, in the
+audit trail and in the cancel path like anything else. The beacon reports
+`total`, `offset`, `eof` and `sha256` in each RESULT, and the server stores them
+as task metadata that `result <task-id>` prints.
+
 ## 5g. The operator's experience
 
 The console is the product; the server is its engine. This is what the
@@ -1185,31 +1211,98 @@ holds the value of the material that was collected. Treat it like the
 notebook it is: do not leave it in a shared directory, and do not put it in
 a ticket.
 
-## 5f. File transfer
+## 5h. The queue, the breakers and the metrics
+
+### The queue is predictable
+
+The queue of the server is the part an operator trusts last and needs
+first. Four things decide what happens when there is more work than the
+hosts can take:
+
+| rule | what it does | the key |
+|---|---|---|
+| **the priority** | the urgent task goes first; the rest keeps its order, so nothing starves | `umbra priority <task-id> 10` |
+| **the work in flight** | a host that is already busy is not given more work | `queue.max_in_flight_per_agent` |
+| **the rate of the host** | one host receives work at a bounded rate | `queue.max_deliver_per_minute_per_agent` |
+| **the throughput of the server** | the whole server hands out a bounded number of tasks per second | `queue.max_deliver_per_second` |
 
 ```bash
-umbra --server 127.0.0.1:4002 --operator alice download web-01 /etc/passwd ./passwd
-umbra --server 127.0.0.1:4002 --operator alice upload   web-01 ./collector /tmp/collector
+umbra --server 127.0.0.1:4002 --operator alice priority t-9f3a 10
+umbra --server 127.0.0.1:4002 --operator alice queue
 ```
 
-Inside the console the same commands are `get <remote> <local>` and
-`put <local> <remote>` for the selected agent. Both are chunked at 900 KiB, the
-largest payload that still fits in one frame, so arbitrary file sizes work
-without a new message type or a second connection:
+### The dead letter queue
 
-* every chunk is checked against the SHA-256 the beacon reports;
-* downloads are written to `<local>.part` and renamed only after the last chunk
-  and the size check pass, so a failed transfer never leaves a truncated file
-  that looks complete;
-* uploads truncate at offset 0 and report the whole-file hash on the final
-  chunk, which the CLI compares with the local file;
-* `--chunk` lowers the step size (useful on lossy links); `--timeout` applies
-  per chunk, not to the whole transfer.
+A task that fails too many times (`queue.max_attempts`, three by default)
+is **not** run again: a task that may have run must not run a second time
+without a decision. It goes to the dead letter queue, where it stays
+visible with the reason and the trace.
 
-A transfer is a sequence of ordinary tasks, so it appears in `tasks`, in the
-audit trail and in the cancel path like anything else. The beacon reports
-`total`, `offset`, `eof` and `sha256` in each RESULT, and the server stores them
-as task metadata that `result <task-id>` prints.
+```bash
+umbra --server 127.0.0.1:4002 --operator alice queue
+```
+
+### The circuit breaker
+
+A host that fails too many times in a row (`queue.breaker_threshold`,
+five by default) has its breaker opened: the server stops handing work to
+it. After the cooldown (`queue.breaker_cooldown_s`, sixty seconds) one
+probe goes through, and the answer of the probe decides whether the
+breaker stays open. A host that is really gone is a host that should not
+be given work.
+
+### The maintenance window
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice quiet on --until 1780000000
+```
+
+The beacons keep checking in and get nothing; nothing new is queued. The
+window ends by itself, or with `quiet off`. The change is an event and an
+audit line.
+
+### The trace
+
+Every task carries a trace id from the RPC that queued it to the result
+that came back:
+
+```bash
+umbra --server 127.0.0.1:4002 --operator alice tasks --trace 4f2a9c11
+```
+
+The trace is in the task record, in the events and in the audit trail, so
+one identifier follows the work from the operator to the implant and back.
+
+### The metrics
+
+The dashboard serves the counters of the server in the Prometheus text
+format.  The dashboard is off in the deployed configuration — it is a
+wide surface ✗ — so a deployment that wants the metrics turns it on, on
+the loopback, with a token of its own:
+
+```json
+{"dashboard_listen": "127.0.0.1:4004", "dashboard_token": "<32 bytes of hex>"}
+```
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4004/metrics
+```
+
+| metric | what it is |
+|---|---|
+| `umbra_agents`, `umbra_agents_online` | the inventory and how much of it answers |
+| `umbra_tasks_pending`, `umbra_tasks_done`, `umbra_tasks_failed`, `umbra_tasks_dead_letter` | the queue and its outcome |
+| `umbra_task_latency_seconds` | the histogram: how long a task took between the delivery and the result |
+| `umbra_checkins_total` | how often the beacons check in |
+| `umbra_agents_by_transport` | the transport mix |
+| `umbra_bytes_in_total`, `umbra_bytes_out_total` | the bytes that moved |
+| `umbra_operators` | the consoles that are connected |
+| `umbra_events_dropped_total` | the events a console missed |
+| `umbra_breakers_open` | the hosts whose breaker is open |
+| `umbra_quiet` | one when the server is in its maintenance window |
+
+The health check needs no token, and says nothing but that the process is
+alive: `GET /healthz`.
 
 ## 6. Monitoring
 

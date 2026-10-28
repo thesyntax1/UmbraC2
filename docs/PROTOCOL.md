@@ -549,6 +549,9 @@ Operator RPC commands, with the minimum role each requires:
 | `creds.list` | viewer | the credential vault: the shape of the material, without the value |
 | `creds.search` | viewer | the records of the vault that match a `query` |
 | `creds.export` | operator | the material with its value; the server needs a vault key |
+| `server.quiet` | admin | the maintenance window: `on` (true or false), `until` (a unix time); the beacons keep checking in and get nothing |
+| `server.queue` | viewer | the state of the queue: the policy, the depth and the dead letter queue |
+| `task.priority` | operator | say how urgent a task is: `task_id`, `priority`; the queue delivers the urgent one first |
 | `workflow.list` | viewer | the catalogue of the named sequences of steps, and the last runs |
 | `workflow.add` | operator | write a workflow: `name`, `steps`, `description`, `params`; a workflow with the same name replaces the old one |
 | `workflow.remove` | operator | take a workflow out of the catalogue |
@@ -1167,6 +1170,9 @@ against, so the shapes are written down here.
 | `workflow run` | `{"run_id": "...", "run": {...}}` |
 | `workflow status` | `{"run": {...}}` — the steps, their answers and the report |
 | `rpc` | `{"ok": true, "data": {...}}` — the raw answer of the command |
+| `queue` | `{"policy": {...}, "dead_letter": [...], "dead_letter_count": n, ...}` |
+| `quiet` | `{"quiet": true}` — and `until` when the window has an end |
+| `priority` | `{"task_id": "...", "priority": n}` |
 | `db export` | the whole notebook (§5a of the operations manual) |
 
 The rules that hold for all of them:
@@ -1185,6 +1191,58 @@ The rules that hold for all of them:
 `umbra rpc` is the raw form of all of it: it sends one command and prints
 the answer of the server, so a pipeline that needs a command the console
 does not have a button for is still one line away.
+
+### 7.2o The queue, the breakers and the traces
+
+The queue of the server is the part an operator trusts last and needs
+first, so its rules are written down here.
+
+**The order of the work.** A task has a `priority` (an integer, higher goes
+first, the default is `0`). The queue hands out the tasks of a host by
+priority first and by age second, so the urgent work goes first and nothing
+starves behind a flood of low priority work. `task.priority {task_id,
+priority}` changes the priority of a task that has not run yet; the value is
+clamped to the range -100..100.
+
+**The limits.** Four numbers decide how much work a host and the server
+may carry at a time:
+
+| the key | what it limits | the default |
+|---|---|---|
+| `queue.max_in_flight_per_agent` | the tasks that may run on one host at a time | 4 |
+| `queue.max_deliver_per_minute_per_agent` | the tasks one host receives per minute | 60 |
+| `queue.max_deliver_per_second` | the tasks the whole server hands out per second | 200 |
+| `queue.max_attempts` | the deliveries of one task before it is parked | 3 |
+
+**The dead letter queue.** A task that failed and cannot be run again
+without a decision is *parked*: its state becomes `dead`, the reason is in
+the record and in the `task.dead` event, and the task is not delivered
+again. The dead letter queue is what `server.queue` returns and what
+`umbra queue --dead` prints.
+
+**The circuit breaker.** A host that fails too many times in a row
+(`queue.breaker_threshold`, five by default) has its breaker opened: the
+server stops handing work to it. After the cooldown
+(`queue.breaker_cooldown_s`, sixty seconds) exactly one probe goes through,
+and the answer of the probe decides whether the host is given work again.
+The breaker of a host is open while `server.queue` says so.
+
+**The maintenance window.** `server.quiet {on, until}` stops the traffic:
+the beacons keep checking in and get nothing, and nothing new is queued.
+The window may end by itself at `until` (a unix time in seconds). The
+change is an event and an audit line.
+
+**The trace.** Every task carries a `trace_id`: sixteen hexadecimal
+characters that the server gives it when the task is queued. The trace is
+in the task record, in the `task.result` and `task.timeout` events (`trace`)
+and in the audit trail, so one identifier follows the work from the
+operator to the implant and back. `umbra tasks --trace <id>` filters the
+history by it.
+
+The counters of all of this are served in the Prometheus text format at
+`/metrics` of the dashboard listener: the depth of the queue, the latency
+histogram, the rate of the check-ins, the rate of the failures, the mix of
+the transports and the bytes that moved.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 
@@ -1456,6 +1514,7 @@ virtual machine or a lab machine sleeps longer than a production server.
 The obfuscation can be switched off with `UMBRA_SLEEP_OBFUSCATE=0` when a
 fixed interval matters more than the traffic pattern (a lab test that needs
 a predictable check-in, for instance).
+
 
 ## 8. Transports
 

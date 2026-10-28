@@ -408,6 +408,78 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	case "server.stats":
 		return reply(toUpkMap(s.Hub.Stats()))
 
+	case "server.quiet":
+		// The maintenance window: the beacons keep checking in and get
+		// nothing, and nothing new is queued.
+		on := true
+		if raw, ok := args["on"].(bool); ok {
+			on = raw
+		}
+		var until time.Time
+		if ts, ok := asInt64(args["until"]); ok && ts > 0 {
+			until = time.Unix(ts, 0).UTC()
+		}
+		s.Hub.SetQuiet(on, until)
+		quiet, deadline := s.Hub.Quiet()
+		out := upk.Map{"quiet": quiet}
+		if !deadline.IsZero() {
+			out["until"] = deadline.Unix()
+		}
+		return reply(out)
+
+	case "server.queue":
+		// The state of the queue: the policy, the depth, the dead letter
+		// queue and the breakers.
+		policy := s.Hub.QueuePolicy()
+		dead := s.Hub.Store().DeadTasks(50)
+		deadRows := make([]any, 0, len(dead))
+		for _, t := range dead {
+			deadRows = append(deadRows, upk.Map{
+				"task_id":  t.ID,
+				"agent_id": t.AgentID,
+				"kind":     t.Kind,
+				"attempts": int64(t.Attempts),
+				"err":      t.Err,
+				"trace_id": t.TraceID,
+			})
+		}
+		metrics := s.Hub.Metrics()
+		return reply(upk.Map{
+			"pending":      int64(metrics.TasksPending),
+			"done":         int64(metrics.TasksDone),
+			"failed":       int64(metrics.TasksFailed),
+			"dead":         int64(metrics.TasksDead),
+			"quiet":        bool(metrics.Quiet),
+			"breakers_open": int64(metrics.BreakersOpen),
+
+			"max_in_flight_per_agent":        int64(policy.MaxInFlightPerAgent),
+			"max_deliver_per_minute_per_agent": int64(policy.MaxDeliverPerMinutePerAgent),
+			"max_deliver_per_second":          int64(policy.MaxDeliverPerSecond),
+			"max_attempts":                    int64(policy.MaxAttempts),
+			"breaker_threshold":               int64(policy.BreakerThreshold),
+			"breaker_cooldown_s":              int64(policy.BreakerCooldown / time.Second),
+
+			"dead_letter":       deadRows,
+			"dead_letter_count": int64(len(deadRows)),
+		})
+
+	case "task.priority":
+		// The operator decides what is urgent; the queue only reads it.
+		taskID, _ := args["task_id"].(string)
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" {
+			return fail("task.priority needs task_id")
+		}
+		priority, ok := asInt64(args["priority"])
+		if !ok {
+			return fail("task.priority needs a numeric priority")
+		}
+		if !s.Hub.Store().SetPriority(taskID, int(priority)) {
+			return fail("task.priority: there is no task called %q", taskID)
+		}
+		s.Hub.Store().SaveAsync()
+		return reply(upk.Map{"task_id": taskID, "priority": priority})
+
 	case "chat.send":
 		text, _ := args["text"].(string)
 		text = strings.TrimSpace(text)
@@ -2490,6 +2562,15 @@ func (s *Server) taskMap(t *store.Task) upk.Map {
 	if t.AssignedTo != "" {
 		m["assigned_to"] = t.AssignedTo
 		m["assigned_at"] = t.AssignedAt.Unix()
+	}
+	if t.TraceID != "" {
+		m["trace_id"] = t.TraceID
+	}
+	if t.Priority != 0 {
+		m["priority"] = int64(t.Priority)
+	}
+	if t.Attempts > 0 {
+		m["attempts"] = int64(t.Attempts)
 	}
 	if t.ChainID != "" {
 		m["chain_id"] = t.ChainID

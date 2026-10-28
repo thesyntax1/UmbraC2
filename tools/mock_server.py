@@ -20,6 +20,7 @@ import ipaddress
 import json
 import os
 import queue
+import secrets
 import socket
 import ssl
 import struct
@@ -880,6 +881,12 @@ class MockServer:
         self.workflows: Dict[str, Dict[str, Any]] = {}
         self.workflow_runs: Dict[str, Dict[str, Any]] = {}
         self._workflow_seq = 0
+        # The queue: the quiet window, the breakers of the hosts and the
+        # tasks that keep failing.
+        self.quiet = False
+        self.delivery_log: List[List[str]] = []
+        self.quiet_until = 0
+        self.breakers: Dict[str, int] = {}
         # The journal of the recent events: a console that was not
         # watching asks for the ones it missed.
         self.events: List[Dict[str, Any]] = []
@@ -2315,13 +2322,35 @@ class MockServer:
             self.emit("killswitch.armed", agent_id, task_id=task_id, data={"armed": True})
 
     def _take_tasks(self, agent_id: str) -> List[Dict[str, Any]]:
+        """The tasks of one agent, in the order they should be delivered.
+
+        The queue is ordered by priority first and by age second: the work
+        the operator marked as important goes first, and the rest keeps its
+        order, so nothing starves behind a flood of low priority work.
+        """
         out: List[Dict[str, Any]] = []
         with self._lock:
-            for task in self.tasks.values():
-                if task["agent_id"] == agent_id and task["state"] == "queued" and len(out) < 32:
-                    task["state"] = "delivered"
-                    task["delivered"] = _now()
-                    out.append({"id": task["id"], "kind": task["kind"], "args": task["args"]})
+            if self.quiet:
+                # The maintenance window: the beacon checks in and gets
+                # nothing.
+                return out
+            if self.breakers.get(agent_id, 0) >= BREAKER_THRESHOLD:
+                return out
+            candidates = [t for t in self.tasks.values()
+                          if t["agent_id"] == agent_id and t["state"] == "queued"]
+            candidates.sort(key=lambda t: (-int(t.get("priority", 0) or 0),
+                                            t.get("created", 0)))
+            for task in candidates:
+                if len(out) >= 32:
+                    break
+                task["state"] = "delivered"
+                task["delivered"] = _now()
+                task["attempts"] = int(task.get("attempts", 0) or 0) + 1
+                out.append({"id": task["id"], "kind": task["kind"], "args": task["args"]})
+        if out:
+            # What was handed out, in which order: the operator can see
+            # that the urgent task really went first.
+            self.delivery_log.append([t["id"] for t in out])
         for t in out:
             self.emit("task.delivered", agent_id, task_id=t["id"])
         return out
@@ -2347,6 +2376,12 @@ class MockServer:
                 task["state"] = "failed"
                 task["err"] = "the agent never answered"
                 task["completed"] = _now()
+                # A task that keeps failing ends up in the dead letter
+                # queue: it is not run again without a decision.
+                if int(task.get("attempts", 0) or 0) >= MAX_ATTEMPTS:
+                    task["state"] = "dead"
+                    self.breakers[task["agent_id"]] = self.breakers.get(
+                        task["agent_id"], 0) + 1
                 failed.append(task["id"])
         for task_id in failed:
             self.emit("task.timeout", task_id=task_id, data={})
@@ -2374,7 +2409,11 @@ class MockServer:
 
     def _queue_task(self, agent_id: str, kind: str,
                     task_args: Dict[str, Any]) -> Dict[str, Any]:
-        """Queue a task and announce it."""
+        """Queue a task and announce it.
+
+        The trace id follows the task from this call to the result, so the
+        operator can grep for it.
+        """
         task = {
             "id": new_id("t"),
             "agent_id": agent_id,
@@ -2385,6 +2424,9 @@ class MockServer:
             "out": b"",
             "err": "",
             "created": _now(),
+            "trace_id": secrets.token_hex(8),
+            "attempts": 0,
+            "priority": 0,
         }
         with self._lock:
             self.tasks[task["id"]] = task
@@ -2595,6 +2637,17 @@ class MockServer:
                 if session_id:
                     self.open_sessions.pop(session_id, None)
             task["err"] = str(msg.get("err", ""))
+            # The breaker of the host: a host that answers clears its
+            # failures, a host that fails counts them, and a host that
+            # fails too often in a row has its work parked.
+            agent_id = str(task.get("agent_id", "") or "")
+            if task["state"] == "failed":
+                self.breakers[agent_id] = self.breakers.get(agent_id, 0) + 1
+                if self.breakers[agent_id] >= BREAKER_THRESHOLD:
+                    task["state"] = "dead"
+                    task["err"] = task["err"] or "the host was not answering"
+            elif agent_id:
+                self.breakers[agent_id] = 0
             meta = {
                 k: v
                 for k, v in msg.items()
@@ -2757,6 +2810,11 @@ class MockServer:
         "workflow.add": "operator",
         "workflow.remove": "operator",
         "workflow.run": "operator",
+        # The quiet window is an admin decision; reading the queue is
+        # harmless; the priority of a task is the operator's call.
+        "server.quiet": "admin",
+        "server.queue": "viewer",
+        "task.priority": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
         # The server-side file store: reading it is harmless, filling it
@@ -3179,6 +3237,8 @@ class MockServer:
         if cmd == "task.submit":
             agent_id = str(args.get("id", ""))
             kind = str(args.get("kind", ""))
+            if self.quiet:
+                return fail("the server is in its quiet window")
             problem = self._refusal(agent_id, kind)
             if problem:
                 return fail(problem)
@@ -3263,6 +3323,65 @@ class MockServer:
                 rows.append({"agent_id": agent_id, "task_id": task["id"],
                              "state": "queued"})
             return ok({"tasks": rows, "count": len(rows), "skipped": skipped})
+
+        if cmd == "server.quiet":
+            # The maintenance window: the beacons keep checking in and get
+            # nothing, and nothing new is queued.
+            on = args.get("on")
+            if on is None:
+                on = True
+            self.quiet = bool(on)
+            until = int(args.get("until", 0) or 0)
+            self.quiet_until = until if self.quiet else 0
+            answer: Dict[str, Any] = {"quiet": self.quiet}
+            if self.quiet_until:
+                answer["until"] = self.quiet_until
+            return ok(answer)
+
+        if cmd == "server.queue":
+            with self._lock:
+                dead = [{"task_id": t["id"], "agent_id": t["agent_id"],
+                         "kind": t["kind"], "attempts": int(t.get("attempts", 0) or 0),
+                         "err": t.get("err", ""), "trace_id": t.get("trace_id", "")}
+                        for t in self.tasks.values() if t.get("state") == "dead"]
+            with self._lock:
+                counts = {"queued": 0, "delivered": 0, "done": 0, "failed": 0,
+                          "dead": 0}
+                for task in self.tasks.values():
+                    state = str(task.get("state", ""))
+                    if state in counts:
+                        counts[state] += 1
+                breakers = sum(1 for value in self.breakers.values()
+                               if value >= BREAKER_THRESHOLD)
+            return ok({
+                "pending": counts["queued"] + counts["delivered"],
+                "done": counts["done"],
+                "failed": counts["failed"],
+                "dead": counts["dead"],
+                "quiet": bool(self.quiet),
+                "breakers_open": breakers,
+                "max_in_flight_per_agent": 4,
+                "max_deliver_per_minute_per_agent": 60,
+                "max_deliver_per_second": 200,
+                "max_attempts": MAX_ATTEMPTS,
+                "breaker_threshold": BREAKER_THRESHOLD,
+                "breaker_cooldown_s": 60,
+                "dead_letter": dead,
+                "dead_letter_count": len(dead),
+            })
+
+        if cmd == "task.priority":
+            task_id = str(args.get("task_id", "") or "")
+            try:
+                priority = int(args.get("priority", 0) or 0)
+            except (TypeError, ValueError):
+                return fail("task.priority needs a numeric priority")
+            with self._lock:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    return fail(f"there is no task called {task_id!r}")
+                task["priority"] = priority
+            return ok({"task_id": task_id, "priority": priority})
 
         if cmd == "workflow.list":
             with self._lock:
@@ -4540,6 +4659,10 @@ def _task_out(task: Dict[str, Any]) -> Dict[str, Any]:
 # a console that crashed must not keep a task to itself.
 PRESENCE_TTL = 90
 CLAIM_LEASE = 120
+
+# The queue of the mock server: the same limits as the Go hub.
+BREAKER_THRESHOLD = 5
+MAX_ATTEMPTS = 3
 
 
 def _expand_workflow_steps(steps: List[Any], params: Dict[str, str]) -> List[Dict[str, Any]]:

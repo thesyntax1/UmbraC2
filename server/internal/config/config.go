@@ -166,6 +166,39 @@ type Server struct {
 	// that queued a thousand commands, would otherwise pile up work that
 	// is stale by the time it is delivered.
 	MaxQueuedTasks int `json:"max_queued_tasks"`
+
+	// Queue is the policy of the queue: the priorities, the limits and the
+	// circuit breaker.
+	Queue Queue `json:"queue"`
+}
+
+// Queue is how the server hands work out.
+//
+// The queue is the part of a C2 that decides what happens when there is
+// more work than the hosts can take.  A predictable queue is worth more
+// than a fast one: an operator who knows that the urgent task goes first,
+// that a slow host does not hold the queue, and that a task which keeps
+// failing ends up in the dead letter queue instead of being retried
+// forever, can trust the server.
+type Queue struct {
+	// MaxInFlightPerAgent is how many tasks may be running on one agent
+	// at the same time.  Zero means the default.
+	MaxInFlightPerAgent int `json:"max_in_flight_per_agent"`
+	// MaxDeliverPerMinutePerAgent is how many tasks one agent may
+	// receive in a minute.
+	MaxDeliverPerMinutePerAgent int `json:"max_deliver_per_minute_per_agent"`
+	// MaxDeliverPerSecond is the throughput cap of the whole server: how
+	// many tasks may be delivered in one second, to every agent together.
+	MaxDeliverPerSecond int `json:"max_deliver_per_second"`
+	// MaxAttempts is how many times a task may be delivered before it
+	// goes to the dead letter queue.
+	MaxAttempts int `json:"max_attempts"`
+	// BreakerThreshold is how many failures in a row open the circuit
+	// breaker of a host.
+	BreakerThreshold int `json:"breaker_threshold"`
+	// BreakerCooldownSec is how long the breaker stays open before one
+	// probe is let through.
+	BreakerCooldownSec int `json:"breaker_cooldown_s"`
 }
 
 // Defaults for the queue limits.
@@ -174,6 +207,19 @@ const (
 	DefaultMaxTaskBatch = 64
 	// DefaultMaxQueuedTasks is the backlog an agent may carry.
 	DefaultMaxQueuedTasks = 256
+	// DefaultMaxInFlightPerAgent is how many tasks may run on one host.
+	DefaultMaxInFlightPerAgent = 4
+	// DefaultMaxDeliverPerMinutePerAgent is the rate one host receives
+	// work at.
+	DefaultMaxDeliverPerMinutePerAgent = 60
+	// DefaultMaxDeliverPerSecond is the throughput of the whole server.
+	DefaultMaxDeliverPerSecond = 200
+	// DefaultMaxAttempts is how many times a task may be delivered.
+	DefaultMaxAttempts = 3
+	// DefaultBreakerThreshold is how many failures open the breaker.
+	DefaultBreakerThreshold = 5
+	// DefaultBreakerCooldownSec is how long the breaker stays open.
+	DefaultBreakerCooldownSec = 60
 )
 
 // Keyring is the set of pre-shared keys the server accepts.
@@ -231,6 +277,14 @@ func Default() *Config {
 		TaskTimeoutSec:  300,
 		MaxTaskBatch:    DefaultMaxTaskBatch,
 		MaxQueuedTasks:  DefaultMaxQueuedTasks,
+		Queue: Queue{
+			MaxInFlightPerAgent:         DefaultMaxInFlightPerAgent,
+			MaxDeliverPerMinutePerAgent: DefaultMaxDeliverPerMinutePerAgent,
+			MaxDeliverPerSecond:         DefaultMaxDeliverPerSecond,
+			MaxAttempts:                 DefaultMaxAttempts,
+			BreakerThreshold:            DefaultBreakerThreshold,
+			BreakerCooldownSec:          DefaultBreakerCooldownSec,
+		},
 		MaxClockSkewS:   300,
 		SessionTimeout:  300,
 	}}
@@ -340,6 +394,11 @@ func (c *Config) Validate() error {
 	}
 	if s.AgentListen == "" && s.OperatorListen == "" && s.HTTPListen == "" {
 		return errors.New("config: no listener configured")
+	}
+	if q := s.Queue; q.MaxInFlightPerAgent < 0 || q.MaxDeliverPerMinutePerAgent < 0 ||
+		q.MaxDeliverPerSecond < 0 || q.MaxAttempts < 0 || q.BreakerThreshold < 0 ||
+		q.BreakerCooldownSec < 0 {
+		return errors.New("config: the queue limits may not be negative")
 	}
 	if s.Beacon.Sleep < 1 || s.Beacon.Sleep > 86400 {
 		return errors.New("config: beacon.sleep must be between 1 and 86400")

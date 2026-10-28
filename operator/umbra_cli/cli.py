@@ -305,11 +305,15 @@ def print_tasks(tasks: List[Dict[str, Any]]) -> None:
                 t.get("state", "?"),
                 t.get("claimed_by") or "-",
                 t.get("code", "?"),
+                # The trace is the identifier that follows the work from
+                # the operator to the implant and back.
+                short(str(t.get("trace_id", "") or "-"), 12),
                 short(decode_out(t.get("out", "")), 60) or "-",
                 fmt_ts(t.get("created")),
             ]
         )
-    print(table(["TASK", "KIND", "STATE", "CLAIMED BY", "CODE", "OUTPUT", "CREATED"], rows))
+    print(table(["TASK", "KIND", "STATE", "CLAIMED BY", "CODE", "TRACE",
+                 "OUTPUT", "CREATED"], rows))
 
 
 def print_alerts(rules: List[Dict[str, Any]]) -> None:
@@ -1308,8 +1312,18 @@ class Console:
                     self._resolve(None), rest[0], rest[1], progress=_progress_printer())
                 print(f"uploaded {info['bytes']} bytes -> {info['path']} ({info['chunks']} chunk(s))")
             elif cmd == "tasks":
-                limit = int(rest[0]) if rest else 20
-                print_tasks(self.client.tasks(self._resolve(None), limit))
+                # tasks [limit] [trace]
+                limit = 20
+                trace = ""
+                for word in rest:
+                    if word.startswith("--trace="):
+                        trace = word.split("=", 1)[1]
+                    elif word.isdigit() and limit == 20:
+                        limit = int(word)
+                    elif not trace and not word.isdigit():
+                        trace = word
+                print_tasks(self.client.tasks(self._resolve(None), limit,
+                                             trace=trace))
             elif cmd == "result":
                 if not rest:
                     print("usage: result <task-id>")
@@ -1662,6 +1676,20 @@ class Console:
                 print(script)
             elif cmd == "stats":
                 print(json.dumps(self.client.stats(), indent=2, default=str, sort_keys=True))
+            elif cmd == "quiet":
+                state = rest[0].lower() if rest else "on"
+                answer = self.client.quiet(state != "off")
+                print("the server is quiet" if answer.get("quiet")
+                      else "the server is loud again")
+                return True
+            elif cmd == "queue":
+                print_queue(self.client.queue())
+                return True
+            elif cmd == "priority" and len(rest) >= 2:
+                answer = self.client.set_priority(rest[0], int(rest[1]))
+                print(f"task {answer.get('task_id', '')} has priority "
+                      f"{answer.get('priority', 0)}")
+                return True
             elif cmd in ("test-event", "testevent"):
                 # One event of our own, to check that the stream of the
                 # server reaches this console.
@@ -2045,6 +2073,27 @@ def print_db_search(rows: List[Dict[str, Any]]) -> None:
                   f"(code {row.get('code', 0)}): {row.get('excerpt', '')}")
 
 
+def print_queue(payload: Dict[str, Any]) -> None:
+    """Render the state of the queue."""
+    print("the policy")
+    print(f"  in flight per agent : {payload.get('max_in_flight_per_agent', '?')}")
+    print(f"  per minute per agent: {payload.get('max_deliver_per_minute_per_agent', '?')}")
+    print(f"  per second          : {payload.get('max_deliver_per_second', '?')}")
+    print(f"  attempts before dead: {payload.get('max_attempts', '?')}")
+    print(f"  breaker after       : {payload.get('breaker_threshold', '?')} failures")
+    print("")
+    dead = payload.get("dead_letter") or []
+    if not dead:
+        print("the dead letter queue is empty")
+        return
+    print("the dead letter queue")
+    print(table(["TASK", "AGENT", "KIND", "ATTEMPTS", "TRACE", "REASON"],
+                [[str(row.get("task_id", "")), str(row.get("agent_id", "")),
+                  str(row.get("kind", "")), str(row.get("attempts", "")),
+                  str(row.get("trace_id", "")), str(row.get("err", ""))[:40]]
+                 for row in dead]))
+
+
 def print_db_findings(rows: List[Dict[str, Any]]) -> None:
     """Render the findings of the notebook."""
     if not rows:
@@ -2294,6 +2343,19 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="put one event of your own into the journal")
     test_event.add_argument("--kind", default="test.ping", help="the kind of the event")
 
+    quiet = sub.add_parser("quiet", help="stop the traffic of the server (a window)")
+    quiet.add_argument("state", choices=["on", "off"], help="on or off")
+    quiet.add_argument("--until", type=int, default=0,
+                       help="the unix time the window ends by itself")
+
+    queue = sub.add_parser("queue", help="the state of the queue")
+    queue.add_argument("--dead", action="store_true",
+                       help="show only the dead letter queue")
+
+    priority = sub.add_parser("priority", help="say how urgent a task is")
+    priority.add_argument("task_id")
+    priority.add_argument("priority", type=int, help="the priority: higher goes first")
+
     audit_cmd = sub.add_parser("audit", help="recent operator actions (audit trail)")
     audit_cmd.add_argument("--limit", type=int, default=50)
 
@@ -2378,6 +2440,7 @@ def build_parser() -> argparse.ArgumentParser:
     tasks.add_argument("--limit", type=int, default=20)
     tasks.add_argument("--kind", default="", help="filter: the task kind")
     tasks.add_argument("--state", default="", help="filter: queued, delivered, done, failed")
+    tasks.add_argument("--trace", default="", help="filter: the trace id of the task")
 
     result = sub.add_parser("result", help="print a task result")
     result.add_argument("task_id")
@@ -3105,6 +3168,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "operators":
             rows = client.operators()
             emit(rows) if args.json else print_operators(rows)
+        elif args.cmd == "quiet":
+            answer = client.quiet(args.state == "on", args.until)
+            if args.json:
+                emit(answer)
+            else:
+                if answer.get("quiet"):
+                    until = answer.get("until")
+                    when = time.strftime("%H:%M:%S", time.localtime(int(until))) if until else "manually"
+                    print(f"the server is quiet until {when}")
+                else:
+                    print("the server is loud again")
+        elif args.cmd == "queue":
+            answer = client.queue()
+            if args.json:
+                emit(answer)
+            else:
+                print_queue(answer)
+        elif args.cmd == "priority":
+            answer = client.set_priority(args.task_id, args.priority)
+            if args.json:
+                emit(answer)
+            else:
+                print(f"task {answer.get('task_id', '')} has priority "
+                      f"{answer.get('priority', 0)}")
         elif args.cmd == "test-event":
             answer = client.test_event(args.kind)
             if args.json:
@@ -3242,7 +3329,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f" sha256={info['sha256'][:16]}…"
             )
         elif args.cmd == "tasks":
-            rows = client.tasks(args.agent, args.limit, kind=args.kind, state=args.state)
+            rows = client.tasks(args.agent, args.limit, kind=args.kind,
+                                state=args.state, trace=args.trace)
             emit(rows) if args.json else print_tasks(rows)
         elif args.cmd == "result":
             task = client.task(args.task_id)

@@ -436,8 +436,9 @@ class OperatorClient:
         return res.data
 
     def tasks(self, agent_id: str = "", limit: int = 25,
-              kind: str = "", state: str = "") -> List[Dict[str, Any]]:
-        """The task history, narrowed by agent, kind and state."""
+              kind: str = "", state: str = "",
+              trace: str = "") -> List[Dict[str, Any]]:
+        """The task history, narrowed by agent, kind, state and trace."""
         args: Dict[str, Any] = {"limit": limit}
         if agent_id:
             args["id"] = agent_id
@@ -445,10 +446,21 @@ class OperatorClient:
             args["kind"] = kind
         if state:
             args["state"] = state
+        if trace:
+            # The server does not know the trace yet: the filter is done
+            # here, and the window is opened wide enough to find the
+            # task in it.
+            args["limit"] = max(int(limit), 500)
         res = self.rpc("task.list", args)
         if not res.ok:
             raise OperatorError(res.error)
-        return list(res.data.get("tasks", []))
+        rows = list(res.data.get("tasks", []))
+        if trace:
+            needle = trace.strip().lower()
+            rows = [t for t in rows
+                    if needle in str(t.get("trace_id", "") or "").lower()]
+            rows = rows[:limit]
+        return rows
 
     def stats(self) -> Dict[str, Any]:
         res = self.rpc("server.stats")
@@ -1011,6 +1023,40 @@ class OperatorClient:
         if not res.ok:
             raise OperatorError(res.error)
         return dict(res.data)
+
+    # -- the queue and the maintenance window ----------------------------
+    def quiet(self, on: bool = True, until: int = 0) -> Dict[str, Any]:
+        """Stop (or resume) the traffic of the server.
+
+        The maintenance window: the beacons keep checking in and get
+        nothing, and nothing new is queued.
+        """
+        payload: Dict[str, Any] = {"on": bool(on)}
+        if until:
+            payload["until"] = int(until)
+        res = self.rpc("server.quiet", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def queue(self) -> Dict[str, Any]:
+        """The state of the queue: the policy, the depth and the dead letters."""
+        res = self.rpc("server.queue")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def set_priority(self, task_id: str, priority: int) -> Dict[str, Any]:
+        """Say how urgent a task is; the queue delivers the urgent one first."""
+        res = self.rpc("task.priority", {"task_id": task_id, "priority": int(priority)})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def dead_tasks(self) -> List[Dict[str, Any]]:
+        """The tasks in the dead letter queue."""
+        payload = self.queue()
+        return list(payload.get("dead_letter") or [])
 
     # -- the workflow layer ----------------------------------------------
     def workflow_list(self) -> Dict[str, Any]:

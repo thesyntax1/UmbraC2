@@ -170,6 +170,12 @@ type Hub struct {
 	nextSub int64
 	started time.Time
 
+	// qmu guards the counters of the queue: the limits, the breakers and
+	// the quiet window.  It is its own lock, because the queue is read on
+	// the path of a check-in and must not wait for the hub's lock.
+	qmu      sync.Mutex
+	counters *queueCounters
+
 	// dropped counts events discarded because a console's queue was full. It is
 	// a health signal, not noise: if it grows, an operator is missing events.
 	dropped uint64
@@ -524,6 +530,12 @@ func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task
 	if agent.Panicked {
 		return nil, fmt.Errorf("agent %s was panicked and accepts no further work", agentID)
 	}
+	if quiet, until := h.Quiet(); quiet {
+		if until.IsZero() {
+			return nil, ErrQuiet
+		}
+		return nil, fmt.Errorf("%w (until %s)", ErrQuiet, until.Format(time.RFC3339))
+	}
 	if !agentSupports(agent.Caps, kind) {
 		return nil, fmt.Errorf("agent %s does not support the task kind %q", agentID, kind)
 	}
@@ -532,11 +544,16 @@ func (h *Hub) SubmitTask(agentID, kind string, args map[string]any) (*store.Task
 			return nil, fmt.Errorf("agent %s already has %d queued tasks (limit %d)", agentID, queued, limit)
 		}
 	}
-	t := h.store.AddTask(&store.Task{AgentID: agentID, Kind: kind, Args: args})
+	// The trace id follows the task from this RPC to the result that
+	// comes back, so the operator can grep for it.
+	t := h.store.AddTask(&store.Task{
+		AgentID: agentID, Kind: kind, Args: args, TraceID: NewTraceID(),
+	})
 	h.store.SaveAsync()
 	h.Emit(Event{Kind: "task.queued", AgentID: agentID, TaskID: t.ID,
-		Data: map[string]any{"kind": t.Kind, "args": t.Args}})
-	h.log.Info("task queued", "agent", agentID, "task", t.ID, "kind", t.Kind)
+		Data: map[string]any{"kind": t.Kind, "args": t.Args, "trace": t.TraceID}})
+	h.log.Info("task queued", "agent", agentID, "task", t.ID, "kind", t.Kind,
+		"trace", t.TraceID)
 	return t, nil
 }
 
@@ -722,8 +739,41 @@ func substituteValue(value any, text string) any {
 }
 
 // NextTasks marks and returns the tasks to ship in the current beacon cycle.
+//
+// The queue is predictable: the quiet window stops everything, an open
+// circuit breaker stops one host, the work in flight and the rate of the
+// host and the throughput of the server cap what goes out, and the tasks
+// themselves are ordered by priority.
 func (h *Hub) NextTasks(agentID string, max int) []*store.Task {
-	tasks := h.store.Pending(agentID, max)
+	if quiet, _ := h.Quiet(); quiet {
+		// The maintenance window: the beacon checks in and gets nothing.
+		return nil
+	}
+	if h.BreakerOpen(agentID) {
+		return nil
+	}
+	if max <= 0 {
+		max = 1
+	}
+	// The candidates are the queued tasks in the order they should go; the
+	// limits are checked before anything is marked as delivered, because a
+	// task that was marked is work the beacon is going to do.
+	candidates := h.store.Candidates(agentID, max)
+	if len(candidates) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(candidates))
+	for _, t := range candidates {
+		if !h.allowDelivery(agentID) {
+			break
+		}
+		ids = append(ids, t.ID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	tasks := h.store.MarkDelivered(ids)
+	h.noteDelivery(agentID, len(tasks))
 	for _, t := range tasks {
 		h.Emit(Event{Kind: "task.delivered", AgentID: agentID, TaskID: t.ID})
 	}
@@ -781,9 +831,28 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	if hasCreds {
 		h.storeCredentials(agentID, entries)
 	}
+	// A host that answers is a host that works: the failures of its
+	// breaker are cleared.  A host that fails is counted, and a task that
+	// keeps failing ends up in the dead letter queue.
+	if t.Err != "" || t.State == store.TaskFailed {
+		h.NoteFailure(agentID)
+		// A host whose breaker is open is not answering any more: the
+		// work that fails on it is parked in the dead letter queue
+		// instead of being run again on a host that may be gone.
+		if open, _ := h.BreakerState(agentID); open {
+			h.ParkTask(t, "the host was not answering")
+		} else {
+			h.DeadLetter(t, t.Err)
+		}
+	} else {
+		h.NoteSuccess(agentID)
+	}
 	data := map[string]any{
 		"code": t.Code, "state": t.State, "err": t.Err,
 		"size": len(t.Output), "kind": t.Kind,
+	}
+	if t.TraceID != "" {
+		data["trace"] = t.TraceID
 	}
 	// A finished "session.close" means the session is gone.
 	if t.Kind == "session.close" {
@@ -1626,6 +1695,10 @@ func (h *Hub) StartScheduler(ctx context.Context) {
 		// does not become interesting again in the next second.
 		sweep := time.NewTicker(30 * time.Second)
 		defer sweep.Stop()
+		// The snapshot of the state is written at least once a minute, so
+		// a machine that dies loses at most a minute of the engagement.
+		snapshot := time.NewTicker(time.Minute)
+		defer snapshot.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -1637,6 +1710,10 @@ func (h *Hub) StartScheduler(ctx context.Context) {
 				// The claims of the consoles that are gone are released, so
 				// the tasks they were working on become available again.
 				h.ExpireClaims()
+			case <-snapshot.C:
+				if err := h.store.Save(); err != nil {
+					h.log.Error("the snapshot of the state failed", "err", err)
+				}
 			}
 		}
 	}()
@@ -1657,10 +1734,15 @@ func (h *Hub) SweepTasks(timeout time.Duration) int {
 		if !h.store.FailTask(t.ID, "the agent never answered") {
 			continue
 		}
+		// The host did not answer: it counts as a failure, and a task
+		// that keeps not being answered goes to the dead letter queue.
+		h.NoteFailure(t.AgentID)
+		h.DeadLetter(t, "the agent never answered")
 		h.Emit(Event{Kind: "task.timeout", AgentID: t.AgentID, TaskID: t.ID,
 			Data: map[string]any{
 				"kind":   t.Kind,
 				"waited": int64(timeout.Seconds()),
+				"trace":  t.TraceID,
 			}})
 	}
 	if len(stale) > 0 {
