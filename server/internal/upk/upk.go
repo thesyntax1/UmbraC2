@@ -51,10 +51,10 @@ const (
 type Map = map[string]any
 
 var (
-	ErrTruncated   = errors.New("upk: truncated input")
+	ErrTruncated    = errors.New("upk: truncated input")
 	ErrNonCanonical = errors.New("upk: non-canonical encoding")
-	ErrLimit       = errors.New("upk: value exceeds limit")
-	ErrType        = errors.New("upk: unsupported type")
+	ErrLimit        = errors.New("upk: value exceeds limit")
+	ErrType         = errors.New("upk: unsupported type")
 )
 
 // ---------------------------------------------------------------------------

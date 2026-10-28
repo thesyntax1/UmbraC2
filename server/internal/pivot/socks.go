@@ -37,15 +37,15 @@ const (
 
 // SOCKS5 reply codes.
 const (
-	socks5Succeeded        = 0x00
-	socks5GeneralFailure   = 0x01
-	socks5NotAllowed       = 0x02
-	socks5NetworkUnreach   = 0x03
-	socks5HostUnreach      = 0x04
-	socks5ConnRefused      = 0x05
-	socks5TTLExpired       = 0x06
-	socks5CommandNotSupp   = 0x07
-	socks5AddrTypeNotSupp  = 0x08
+	socks5Succeeded       = 0x00
+	socks5GeneralFailure  = 0x01
+	socks5NotAllowed      = 0x02
+	socks5NetworkUnreach  = 0x03
+	socks5HostUnreach     = 0x04
+	socks5ConnRefused     = 0x05
+	socks5TTLExpired      = 0x06
+	socks5CommandNotSupp  = 0x07
+	socks5AddrTypeNotSupp = 0x08
 )
 
 // socks5Handshake performs the greeting and reads the CONNECT request.

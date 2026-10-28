@@ -167,11 +167,11 @@ type Server struct {
 	reserved map[string]uint32
 	// routes are the networks that lie behind a peer.
 	routes []*Route
-	base     uint32
-	mask     uint32
-	next     uint32
-	conn     *net.UDPConn
-	closed   bool
+	base   uint32
+	mask   uint32
+	next   uint32
+	conn   *net.UDPConn
+	closed bool
 }
 
 // config is the resolved configuration.

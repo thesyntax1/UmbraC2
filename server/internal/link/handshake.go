@@ -29,10 +29,10 @@ func handshakeErr(format string, args ...any) *HandshakeError {
 
 // HelloInfo is the authenticated result of a handshake.
 type HelloInfo struct {
-	Role     byte
-	ID       string
-	Meta     map[string]any
-	Suite    byte
+	Role      byte
+	ID        string
+	Meta      map[string]any
+	Suite     byte
 	KeyName   string // which keyring entry authenticated the peer
 	ClientIP  string
 	SessionID []byte // 128-bit session id handed to the peer in HELLO_ACK
@@ -55,8 +55,6 @@ type HelloInfo struct {
 // The server accepts every version in this list and answers in the
 // version the peer asked for.  The matrix is in docs/PROTOCOL.md.
 var helloVersions = []int{int(wire.HelloVersion), 1}
-
-
 
 // candidate is one (suite, key) pair the server is willing to try.
 type candidate struct {

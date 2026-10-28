@@ -138,13 +138,13 @@ func Parse(data []byte) (*Object, error) {
 		return nil, fmt.Errorf("%w: unknown machine 0x%04x", ErrNotCOFF, magic)
 	}
 	obj := &Object{
-		Machine:             magic,
-		NumberOfSections:    binary.LittleEndian.Uint16(data[2:4]),
-		TimeDateStamp:       binary.LittleEndian.Uint32(data[4:8]),
+		Machine:              magic,
+		NumberOfSections:     binary.LittleEndian.Uint16(data[2:4]),
+		TimeDateStamp:        binary.LittleEndian.Uint32(data[4:8]),
 		PointerToSymbolTable: binary.LittleEndian.Uint32(data[8:12]),
-		NumberOfSymbols:     binary.LittleEndian.Uint32(data[12:16]),
+		NumberOfSymbols:      binary.LittleEndian.Uint32(data[12:16]),
 		SizeOfOptionalHeader: binary.LittleEndian.Uint16(data[16:18]),
-		Characteristics:    binary.LittleEndian.Uint16(data[18:20]),
+		Characteristics:      binary.LittleEndian.Uint16(data[18:20]),
 	}
 	if obj.NumberOfSections == 0 || obj.NumberOfSections > 96 {
 		return nil, fmt.Errorf("coff: implausible section count %d", obj.NumberOfSections)
@@ -159,11 +159,11 @@ func Parse(data []byte) (*Object, error) {
 	for i := 0; i < int(obj.NumberOfSections); i++ {
 		raw := data[sectionTable+i*40 : sectionTable+i*40+40]
 		section := Section{
-			VirtualSize:    binary.LittleEndian.Uint32(raw[8:12]),
-			VirtualAddress: binary.LittleEndian.Uint32(raw[12:16]),
-			SizeOfRawData:  binary.LittleEndian.Uint32(raw[16:20]),
+			VirtualSize:      binary.LittleEndian.Uint32(raw[8:12]),
+			VirtualAddress:   binary.LittleEndian.Uint32(raw[12:16]),
+			SizeOfRawData:    binary.LittleEndian.Uint32(raw[16:20]),
 			PointerToRawData: binary.LittleEndian.Uint32(raw[20:24]),
-			Characteristics: binary.LittleEndian.Uint32(raw[36:40]),
+			Characteristics:  binary.LittleEndian.Uint32(raw[36:40]),
 		}
 		if raw[0] != 0 {
 			// Long section names live in the string table.

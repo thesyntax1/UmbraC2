@@ -673,7 +673,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"task_id": task.ID,
+		"task_id":  task.ID,
 		"agent_id": task.AgentID,
 		"kind":     task.Kind,
 	})

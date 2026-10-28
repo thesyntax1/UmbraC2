@@ -67,8 +67,8 @@ type Metrics struct {
 func (h *Hub) Metrics() Metrics {
 	agents := h.store.Agents()
 	out := Metrics{
-		AgentsTotal:   len(agents),
-		Transports:   map[string]int{},
+		AgentsTotal:    len(agents),
+		Transports:     map[string]int{},
 		LatencyBuckets: make([]int, len(LatencyBuckets)),
 	}
 	for _, agent := range agents {

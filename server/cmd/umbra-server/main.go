@@ -54,16 +54,16 @@ func main() {
 
 func run() error {
 	var (
-		cfgPath    = flag.String("config", "", "path to the JSON configuration file")
-		agentAddr  = flag.String("listen-agent", "", "override server.agent_listen")
-		opAddr     = flag.String("listen-operator", "", "override server.operator_listen")
-		httpAddr   = flag.String("listen-http", "", "override server.http_listen (\"\" disables HTTP)")
-		dataPath   = flag.String("data", "", "override server.data_file")
-		logLevel   = flag.String("log-level", "", "debug|info|warn|error")
-		genPSK     = flag.Bool("gen-psk", false, "print a fresh 32-byte agent PSK and exit")
-		genToken   = flag.Bool("gen-token", false, "print a fresh 32-byte operator token and exit")
-		genConfig  = flag.Bool("gen-config", false, "print the default configuration as JSON and exit")
-		printVer   = flag.Bool("version", false, "print the version and exit")
+		cfgPath   = flag.String("config", "", "path to the JSON configuration file")
+		agentAddr = flag.String("listen-agent", "", "override server.agent_listen")
+		opAddr    = flag.String("listen-operator", "", "override server.operator_listen")
+		httpAddr  = flag.String("listen-http", "", "override server.http_listen (\"\" disables HTTP)")
+		dataPath  = flag.String("data", "", "override server.data_file")
+		logLevel  = flag.String("log-level", "", "debug|info|warn|error")
+		genPSK    = flag.Bool("gen-psk", false, "print a fresh 32-byte agent PSK and exit")
+		genToken  = flag.Bool("gen-token", false, "print a fresh 32-byte operator token and exit")
+		genConfig = flag.Bool("gen-config", false, "print the default configuration as JSON and exit")
+		printVer  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
 

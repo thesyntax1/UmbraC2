@@ -150,9 +150,9 @@ func (l *AgentLink) onCheckin(msg map[string]any) ([][]byte, error) {
 		encoded = append(encoded, upk.Map{"id": t.ID, "kind": t.Kind, "args": args})
 	}
 	body := upk.Map{
-		"tasks":       encoded,
-		"sleep":       sleep,
-		"jitter":      jitter,
+		"tasks":  encoded,
+		"sleep":  sleep,
+		"jitter": jitter,
 		// The obfuscation flag travels with the cadence: the server decides
 		// whether the beacon hides its check-in pattern.
 		"obf":         obfuscate,
@@ -314,10 +314,10 @@ func AgentMeta(info *HelloInfo, transport, addr string, sleep, jitter int) *stor
 		Addr:      addr,
 		// The peer listener of the beacon: the server chains a pivot
 		// through it when the operator names a far end.
-		P2P:       str("p2p"),
-		Sleep:     sleep,
-		Jitter:    jitter,
-		Caps:      metaCaps(meta["caps"]),
+		P2P:    str("p2p"),
+		Sleep:  sleep,
+		Jitter: jitter,
+		Caps:   metaCaps(meta["caps"]),
 		// The fields of the second version of the handshake.
 		HelloVersion:   info.Version,
 		ImplantVersion: info.ImplantVersion,

@@ -347,4 +347,3 @@ func stringArg(args map[string]any, name string) string {
 	value, _ := args[name].(string)
 	return value
 }
-

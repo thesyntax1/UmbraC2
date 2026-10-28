@@ -751,8 +751,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		out := make([]any, 0, len(rules))
 		for _, rule := range rules {
 			out = append(out, upk.Map{
-				"name":       rule.Name, "event": rule.Event, "tag": rule.Tag,
-				"agent":      rule.Agent, "task_kind": rule.TaskKind,
+				"name": rule.Name, "event": rule.Event, "tag": rule.Tag,
+				"agent": rule.Agent, "task_kind": rule.TaskKind,
 				"cooldown_s": int64(rule.CooldownSec),
 			})
 		}
@@ -804,7 +804,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{
 			"chain_id": chain.ID, "task_id": task.ID, "agent_id": chain.AgentID,
-			"stages":   len(chain.Stages), "state": task.State,
+			"stages": len(chain.Stages), "state": task.State,
 		})
 
 	case "task.claim":
@@ -815,7 +815,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{
 			"task_id": t.ID, "agent_id": t.AgentID, "claimed_by": t.ClaimedBy,
-			"state":   t.State,
+			"state": t.State,
 		})
 
 	case "task.release":
@@ -1865,7 +1865,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		})
 
 	// ---- the journal and the open sessions ----------------------------
-	case "sessions.list":		// The interactive sessions that are open, per agent.
+	case "sessions.list": // The interactive sessions that are open, per agent.
 		sessions := s.Hub.Sessions()
 		rows := make([]any, 0, len(sessions))
 		for _, sess := range sessions {

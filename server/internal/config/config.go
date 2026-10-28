@@ -156,7 +156,7 @@ type Server struct {
 	Alerts []AlertRule `json:"alerts,omitempty"`
 	// TaskTimeoutSec is how long a delivered task may stay unanswered
 	// before the server gives up on it (0 = never).
-	TaskTimeoutSec int `json:"task_timeout_s"`
+	TaskTimeoutSec int    `json:"task_timeout_s"`
 	Beacon         Beacon `json:"beacon"`
 	Limits         Limits `json:"limits"`
 	MaxClockSkewS  int    `json:"max_clock_skew_s"`
@@ -294,7 +294,7 @@ func Default() *Config {
 		TaskTimeoutSec:  300,
 		MaxTaskBatch:    DefaultMaxTaskBatch,
 		MaxQueuedTasks:  DefaultMaxQueuedTasks,
-		Queue:           Queue{
+		Queue: Queue{
 			MaxInFlightPerAgent:         DefaultMaxInFlightPerAgent,
 			MaxDeliverPerMinutePerAgent: DefaultMaxDeliverPerMinutePerAgent,
 			MaxDeliverPerSecond:         DefaultMaxDeliverPerSecond,

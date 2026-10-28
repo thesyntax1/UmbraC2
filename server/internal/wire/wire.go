@@ -35,7 +35,7 @@ var Magic = [2]byte{0x55, 0x43}
 // AEAD suites. The server always supports suite 1; suite 2 is negotiated when
 // every participant supports it (see crypt.SuiteSupported).
 const (
-	SuiteAES256GCM       byte = 1
+	SuiteAES256GCM        byte = 1
 	SuiteChaCha20Poly1305 byte = 2
 )
 
@@ -56,7 +56,7 @@ const (
 	MsgPing       byte = 0x14
 	MsgPong       byte = 0x15
 	MsgRekey      byte = 0x16
-	MsgKill      byte = 0x17
+	MsgKill       byte = 0x17
 	MsgTaskCancel byte = 0x18
 	MsgBye        byte = 0x19
 

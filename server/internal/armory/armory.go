@@ -148,10 +148,10 @@ type Catalog struct {
 
 // Extension is an installed extension: its manifest and where the blob is.
 type Extension struct {
-	Manifest  Manifest   `json:"manifest"`
-	Path      string     `json:"path"`
-	Installed time.Time  `json:"installed"`
-	Bytes     int64      `json:"bytes"`
+	Manifest  Manifest  `json:"manifest"`
+	Path      string    `json:"path"`
+	Installed time.Time `json:"installed"`
+	Bytes     int64     `json:"bytes"`
 	// Details describes the blob when the server could read it: a COFF
 	// module is summarised here, so the operator sees what it exports
 	// before it runs on a target.

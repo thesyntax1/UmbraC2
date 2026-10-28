@@ -121,18 +121,18 @@ func (w *Workflow) Clone() *Workflow {
 
 // WorkflowRun is one execution of a workflow.
 type WorkflowRun struct {
-	ID         string            `json:"id"`
-	Workflow   string            `json:"workflow"`
-	State      string            `json:"state"`
-	Params     map[string]string `json:"params,omitempty"`
-	Started    time.Time         `json:"started"`
-	Finished   time.Time         `json:"finished,omitempty"`
-	By         string            `json:"by,omitempty"`
-	Steps      []WorkflowRunStep `json:"steps,omitempty"`
-	Report     string            `json:"report,omitempty"`
-	Current    int               `json:"current"`
-	Error      string            `json:"err,omitempty"`
-	TaskIDs    []string          `json:"task_ids,omitempty"`
+	ID       string            `json:"id"`
+	Workflow string            `json:"workflow"`
+	State    string            `json:"state"`
+	Params   map[string]string `json:"params,omitempty"`
+	Started  time.Time         `json:"started"`
+	Finished time.Time         `json:"finished,omitempty"`
+	By       string            `json:"by,omitempty"`
+	Steps    []WorkflowRunStep `json:"steps,omitempty"`
+	Report   string            `json:"report,omitempty"`
+	Current  int               `json:"current"`
+	Error    string            `json:"err,omitempty"`
+	TaskIDs  []string          `json:"task_ids,omitempty"`
 }
 
 // The states of a run.

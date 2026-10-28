@@ -10,10 +10,10 @@
 //	query    <seq>.<chunk>.<agent>.<domain>
 //	answer   TXT records, each one base32 of a slice of the next frame
 //
-// * `seq`    is the sequence number of the query, eight hex characters.
-// * `chunk`  is the base32 of the payload the agent sends in this query.  It
-//            is empty when the agent only polls.
-// * `agent`  is the base32 of the agent id.
+//   - `seq`    is the sequence number of the query, eight hex characters.
+//   - `chunk`  is the base32 of the payload the agent sends in this query.  It
+//     is empty when the agent only polls.
+//   - `agent`  is the base32 of the agent id.
 //
 // The frames that travel through the tunnel are ordinary umbra/v1 frames, so
 // the session state machine above the transport does not change at all: the

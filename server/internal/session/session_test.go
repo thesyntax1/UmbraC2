@@ -26,7 +26,7 @@ type frameVector struct {
 }
 
 type vectorFile struct {
-	Frames []frameVector `json:"frames"`
+	Frames  []frameVector     `json:"frames"`
 	Rejects map[string]string `json:"rejects"`
 	Session struct {
 		C2SKey    string `json:"c2s_key"`

@@ -188,8 +188,8 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*tunnelSession // agent id -> callback session
-	tunnels  map[string]*tunnel         // tunnel id -> tunnel
-	pending  map[string]*pendingOpen    // agent id -> unanswered request
+	tunnels  map[string]*tunnel        // tunnel id -> tunnel
+	pending  map[string]*pendingOpen   // agent id -> unanswered request
 	closed   bool
 
 	// claims maps the name of a claim to the tunnels it holds.  The
@@ -336,21 +336,21 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 	}
 	now := time.Now().UTC()
 	tun := &tunnel{
-		id:          tunnelID,
-		agentID:     agentID,
-		mode:        mode,
-		host:        opt.Host,
-		port:        opt.Port,
-		opened:      now,
-		lastActive:  now,
-		state:       "open",
-		dns:         dns,
-		claim:       opt.Claim,
-		through:     opt.Through,
-		path:        path,
-		user:        opt.User,
-		password:    opt.Password,
-		pipe:        opt.Pipe,
+		id:         tunnelID,
+		agentID:    agentID,
+		mode:       mode,
+		host:       opt.Host,
+		port:       opt.Port,
+		opened:     now,
+		lastActive: now,
+		state:      "open",
+		dns:        dns,
+		claim:      opt.Claim,
+		through:    opt.Through,
+		path:       path,
+		user:       opt.User,
+		password:   opt.Password,
+		pipe:       opt.Pipe,
 	}
 	tun.listener = ln
 	tun.listen = ln.Addr().String()
@@ -802,22 +802,22 @@ func (m *Manager) info(tun *tunnel) TunnelInfo {
 	tun.mu.Lock()
 	defer tun.mu.Unlock()
 	return TunnelInfo{
-		Stream:      tun.id,
-		AgentID:     tun.agentID,
-		Mode:        tun.mode,
-		Listen:      tun.listen,
-		Host:        tun.host,
-		Port:        tun.port,
-		Opened:      tun.opened,
-		Streams:     tun.streams,
-		BytesUp:     tun.bytesUp,
-		BytesDown:   tun.bytesDown,
-		State:       tun.state,
-		Claim:       tun.claim,
-		Through:     tun.through,
-		Path:        append([]string(nil), tun.path...),
-		DNS:         tun.dns,
-		Pipe:        tun.pipe,
+		Stream:       tun.id,
+		AgentID:      tun.agentID,
+		Mode:         tun.mode,
+		Listen:       tun.listen,
+		Host:         tun.host,
+		Port:         tun.port,
+		Opened:       tun.opened,
+		Streams:      tun.streams,
+		BytesUp:      tun.bytesUp,
+		BytesDown:    tun.bytesDown,
+		State:        tun.state,
+		Claim:        tun.claim,
+		Through:      tun.through,
+		Path:         append([]string(nil), tun.path...),
+		DNS:          tun.dns,
+		Pipe:         tun.pipe,
 		LastActivity: tun.lastActivity,
 	}
 }

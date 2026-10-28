@@ -74,17 +74,17 @@ const (
 // It lives in the store rather than in a scheduler's memory so a restart does
 // not silently stop an operator's collection run.
 type Schedule struct {
-	ID       string         `json:"id"`
-	AgentID  string         `json:"agent_id"`
-	Kind     string         `json:"kind"`
-	Args     map[string]any `json:"args"`
-	EverySec int            `json:"every_s"`
-	Enabled  bool           `json:"enabled"`
-	Created  time.Time      `json:"created"`
-	NextRun  time.Time      `json:"next_run"`
-	Runs     uint64         `json:"runs"`
-	LastTask string         `json:"last_task,omitempty"`
-	CreatedBy string        `json:"created_by,omitempty"`
+	ID        string         `json:"id"`
+	AgentID   string         `json:"agent_id"`
+	Kind      string         `json:"kind"`
+	Args      map[string]any `json:"args"`
+	EverySec  int            `json:"every_s"`
+	Enabled   bool           `json:"enabled"`
+	Created   time.Time      `json:"created"`
+	NextRun   time.Time      `json:"next_run"`
+	Runs      uint64         `json:"runs"`
+	LastTask  string         `json:"last_task,omitempty"`
+	CreatedBy string         `json:"created_by,omitempty"`
 }
 
 // Clone returns a copy with its own Args map.
@@ -155,25 +155,25 @@ func (p TransportPolicy) Valid() bool {
 
 // Agent is the persisted view of a beacon.
 type Agent struct {
-	ID        string    `json:"id"`
-	Host      string    `json:"host"`
-	OS        string    `json:"os"`
-	Arch      string    `json:"arch"`
-	User      string    `json:"user"`
-	PID       int64     `json:"pid"`
-	Version   string    `json:"version"`
-	Integrity string    `json:"integrity,omitempty"`
-	Transport string    `json:"transport"`
-	Addr      string    `json:"addr"`
+	ID        string `json:"id"`
+	Host      string `json:"host"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	User      string `json:"user"`
+	PID       int64  `json:"pid"`
+	Version   string `json:"version"`
+	Integrity string `json:"integrity,omitempty"`
+	Transport string `json:"transport"`
+	Addr      string `json:"addr"`
 	// P2P is the address of the peer listener of the beacon: where
 	// another beacon (or the server) can dial in to carry a pivot
 	// through this host.
 	P2P string `json:"p2p,omitempty"`
 	// Route is how this agent has to reach the team server: the operator
 	// says which transport it speaks and in which order it may fall back.
-	Route *TransportPolicy `json:"route,omitempty"`
-	Sleep     int       `json:"sleep"`
-	Jitter    int       `json:"jitter"`
+	Route  *TransportPolicy `json:"route,omitempty"`
+	Sleep  int              `json:"sleep"`
+	Jitter int              `json:"jitter"`
 	// What the beacon last reported, kept apart from the cadence the
 	// operator controls.  A beacon that has not applied a pushed policy yet
 	// still reports its old interval; the report must not undo the policy.
@@ -358,19 +358,19 @@ func (c *Credential) Redacted() *Credential {
 
 // Task is one queued or completed command.
 type Task struct {
-	ID        string         `json:"id"`
-	AgentID   string         `json:"agent_id"`
-	Kind      string         `json:"kind"`
-	Args      map[string]any `json:"args"`
-	State     string         `json:"state"`
-	Output    []byte         `json:"output,omitempty"`
-	Code      int64          `json:"code"`
-	Err       string         `json:"err,omitempty"`
+	ID      string         `json:"id"`
+	AgentID string         `json:"agent_id"`
+	Kind    string         `json:"kind"`
+	Args    map[string]any `json:"args"`
+	State   string         `json:"state"`
+	Output  []byte         `json:"output,omitempty"`
+	Code    int64          `json:"code"`
+	Err     string         `json:"err,omitempty"`
 	// Meta carries extra result fields the beacon attached to the RESULT body
 	// (`total`, `offset`, `eof`, `sha256`, ...). They are opaque to the server,
 	// which only stores and forwards them, so new beacon-side metadata never
 	// needs a server change.
-	Meta      map[string]any `json:"meta,omitempty"`
+	Meta map[string]any `json:"meta,omitempty"`
 	// ClaimedBy is the operator who took this task, so two consoles do not
 	// duplicate work on the same target.
 	ClaimedBy string    `json:"claimed_by,omitempty"`
@@ -391,10 +391,10 @@ type Task struct {
 	Attempts int `json:"attempts,omitempty"`
 	// TraceID follows the task from the RPC that queued it to the result
 	// that came back, so an operator can grep for it.
-	TraceID string `json:"trace_id,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
 	Created   time.Time `json:"created"`
-	Delivered time.Time      `json:"delivered,omitempty"`
-	Completed time.Time      `json:"completed,omitempty"`
+	Delivered time.Time `json:"delivered,omitempty"`
+	Completed time.Time `json:"completed,omitempty"`
 }
 
 // Clone returns a copy with its own Args map.
@@ -577,10 +577,10 @@ type Store struct {
 
 	// workflows is the catalogue of the named sequences of steps, and
 	// runs keeps what the last executions of them did.
-	workflows   map[string]*Workflow
+	workflows     map[string]*Workflow
 	workflowOrder []string
-	runs        map[string]*WorkflowRun
-	runOrder    []string
+	runs          map[string]*WorkflowRun
+	runOrder      []string
 
 	// alertRules are the rules the team wrote at runtime.
 	alertRules []config.AlertRule
@@ -1739,23 +1739,23 @@ func (s *Store) Save() error {
 	// Keep the generation we are about to replace. If the machine dies between
 	// this rename and the next one, Open falls back to the backup instead of
 	// starting empty.
-		if _, statErr := os.Stat(s.path); statErr == nil {
-			// The generations are rotated first, so the file that is
-			// about to be replaced is still there when the rename of
-			// the new snapshot fails.
-			if err := rotateBackups(s.path); err != nil {
-				s.asyncMu.Lock()
-				handler := s.onError
-				s.asyncMu.Unlock()
-				if handler != nil {
-					handler(fmt.Errorf("store: the backup generations could not be rotated: %w", err))
-				}
-			}
-			if err := os.Rename(s.path, backupPath(s.path)); err != nil {
-				_ = os.Remove(tmp)
-				return err
+	if _, statErr := os.Stat(s.path); statErr == nil {
+		// The generations are rotated first, so the file that is
+		// about to be replaced is still there when the rename of
+		// the new snapshot fails.
+		if err := rotateBackups(s.path); err != nil {
+			s.asyncMu.Lock()
+			handler := s.onError
+			s.asyncMu.Unlock()
+			if handler != nil {
+				handler(fmt.Errorf("store: the backup generations could not be rotated: %w", err))
 			}
 		}
+		if err := os.Rename(s.path, backupPath(s.path)); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)
 		return err

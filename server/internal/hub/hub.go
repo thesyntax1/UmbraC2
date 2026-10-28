@@ -248,7 +248,7 @@ const MaxChatHistory = 200
 
 // ChatMessage is one operator chat line.
 type ChatMessage struct {
-	From string    `json:"from"`
+	From string `json:"from"`
 	// To is the operator a message was addressed to; empty means the whole
 	// team. It addresses a message, it does not hide it: the history stays
 	// complete, because a shared operation needs a shared record.

@@ -73,7 +73,7 @@ var requirements = map[string]string{
 	"chat.operators": Viewer,
 	"schedule.list":  Viewer,
 	// The alert rules are configuration: reading them is harmless.
-	"alerts.list":    Viewer,
+	"alerts.list": Viewer,
 
 	// ---- state-changing on a host -------------------------------------
 	"task.submit":     Operator,
@@ -85,7 +85,7 @@ var requirements = map[string]string{
 	// A bulk task reaches every agent the filter selects, so it is an
 	// operator action like a single task: the difference is the reach, not
 	// the privilege.
-	"task.bulk":     Operator,
+	"task.bulk": Operator,
 	// A chain runs several tasks one after the other on the same host, so it
 	// is an operator action like a single task.
 	"task.chain":    Operator,
@@ -126,7 +126,7 @@ var requirements = map[string]string{
 	"task.claim":   Operator,
 	"task.release": Operator,
 	// Handing a task to a colleague orders human work as well.
-	"task.assign":     Operator,
+	"task.assign": Operator,
 	// Focus is presence: which agent this console is looking at.
 	"operators.focus": Operator,
 

@@ -217,20 +217,20 @@ type TopologyNode struct {
 
 // TopologyEdge is one pivot in the graph.
 type TopologyEdge struct {
-	Tunnel      string `json:"tunnel"`
-	AgentID     string `json:"agent_id"`
-	Through     string `json:"through,omitempty"`
-	Mode        string `json:"mode"`
-	Listen      string `json:"listen"`
-	Host        string `json:"host,omitempty"`
-	Port        int    `json:"port,omitempty"`
-	Streams     int    `json:"streams"`
-	BytesUp     int64  `json:"bytes_up"`
-	BytesDown   int64  `json:"bytes_down"`
-	LastActive  int64  `json:"last_active"`
-	State       string `json:"state"`
-	Claim       string `json:"claim,omitempty"`
-	DNS         string `json:"dns,omitempty"`
+	Tunnel     string `json:"tunnel"`
+	AgentID    string `json:"agent_id"`
+	Through    string `json:"through,omitempty"`
+	Mode       string `json:"mode"`
+	Listen     string `json:"listen"`
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Streams    int    `json:"streams"`
+	BytesUp    int64  `json:"bytes_up"`
+	BytesDown  int64  `json:"bytes_down"`
+	LastActive int64  `json:"last_active"`
+	State      string `json:"state"`
+	Claim      string `json:"claim,omitempty"`
+	DNS        string `json:"dns,omitempty"`
 	// Path is the chain of hops after the first agent.
 	Path []string `json:"path,omitempty"`
 }
@@ -238,13 +238,13 @@ type TopologyEdge struct {
 // Topology is the whole picture: the agents, the pivots between them, the
 // clients of the proxy and the log of the connections.
 type Topology struct {
-	Nodes       []TopologyNode     `json:"nodes"`
-	Edges       []TopologyEdge     `json:"edges"`
-	Clients     []clientAccount    `json:"clients"`
-	Connections []connectionRecord `json:"connections"`
+	Nodes       []TopologyNode      `json:"nodes"`
+	Edges       []TopologyEdge      `json:"edges"`
+	Clients     []clientAccount     `json:"clients"`
+	Connections []connectionRecord  `json:"connections"`
 	Claims      map[string][]string `json:"claims"`
-	Sessions    int                `json:"sessions"`
-	Tunnels     int                `json:"tunnels"`
+	Sessions    int                 `json:"sessions"`
+	Tunnels     int                 `json:"tunnels"`
 }
 
 // Topology returns the graph of the pivots.
