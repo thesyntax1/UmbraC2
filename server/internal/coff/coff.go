@@ -97,6 +97,11 @@ type Object struct {
 	NumberOfSections uint16
 	// The timestamp of the object.
 	TimeDateStamp uint32
+	// The offset of the symbol table in the file.  Zero when the object
+	// carries no symbols.
+	PointerToSymbolTable uint32
+	// The number of symbols in the table.
+	NumberOfSymbols uint32
 	// The size of the optional header (always zero for a COFF object).
 	SizeOfOptionalHeader uint16
 	// The characteristics of the object.
@@ -201,14 +206,21 @@ func (o *Object) parseSymbols(data []byte) error {
 	if strTable+4 <= len(data) {
 		strLen = int(binary.LittleEndian.Uint32(data[strTable : strTable+4]))
 	}
+	// The table is only as long as it says it is: a name that points
+	// past its end is a name that does not exist, not a name that runs
+	// into the rest of the file.
+	strEnd := len(data)
+	if strLen > 0 && strTable+strLen <= len(data) {
+		strEnd = strTable + strLen
+	}
 	readName := func(off int32) string {
 		if off > 0 {
 			start := strTable + int(off)
-			if start < 0 || start >= len(data) {
+			if start < 0 || start >= strEnd {
 				return ""
 			}
 			end := start
-			for end < len(data) && data[end] != 0 {
+			for end < strEnd && data[end] != 0 {
 				end++
 			}
 			return string(data[start:end])

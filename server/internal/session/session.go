@@ -119,7 +119,7 @@ func (s *Session) Encrypt(msgType byte, body any) ([]byte, error) {
 }
 
 // SealFrame seals an already encoded body.
-func (s *Session) SealFrame(msgType, plaintext []byte) ([]byte, error) {
+func (s *Session) SealFrame(msgType byte, plaintext []byte) ([]byte, error) {
 	if len(plaintext) > wire.MaxBody {
 		return nil, wire.ErrTooLarge
 	}
