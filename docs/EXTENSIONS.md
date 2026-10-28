@@ -229,6 +229,12 @@ umbra task laptop-1 privesc --args '{"mode":"token"}'
 umbra task laptop-1 inject --args '{"pid":1234,"mode":"reflect","data":"<base64>"}'
 ```
 
+The desktop is not a Windows story either.  The screen, the clipboard and
+the keys work on a mac as well -- `screencapture`, `pbpaste` and an event
+tap that listens and never takes the keyboard away -- and the registry of a
+mac is a property list, a domain of the defaults or a job of launchd.  The
+task kinds are the same on both; the work is the work of the platform.
+
 The reflective loader resolves the imports against the libraries that are
 already loaded in the process.  A module that imports from a library that is
 not loaded yet fails to link, and the loader says so instead of running a

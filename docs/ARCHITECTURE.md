@@ -280,6 +280,25 @@ Choices worth knowing:
   never staged on disk (no temp scripts, no dropped helper binaries). The
   implant itself never writes to disk except for explicit `upload` tasks.
 
+### The mac as a target
+
+The Rust implant is not a Windows program that runs elsewhere: the code
+of macOS is behind its own cfg, and the three places where Windows has a
+name have a mac name.
+
+| The Windows way | The mac way |
+|---|---|
+| the persistence catalogue | `launchd.agent`, `launchd.daemon`, `loginitem`, `shell_rc`, `cron.user` |
+| the registry | a property list (`plutil`), a domain of the defaults (`defaults read`), a job of launchd (`launchctl print`) |
+| the desktop | `screencapture`, `pbpaste`, an event tap (`CGEventTapCreate`, listen-only) |
+
+The same task kinds answer on both: `registry`, `screenshot`, `clipboard`
+and `keylog` do the work of the platform they are on, and the operator
+does not have to know which one it is.  The code is checked for both macs
+in CI (`cargo check --target x86_64-apple-darwin` and
+`aarch64-apple-darwin`), because a mac that does not compile is a mac
+that does not work.
+
 ### The identity and the vault
 
 An identity is a record, not a wall of text.  The implant collects material
@@ -322,6 +341,17 @@ platform differences:
   type, real pid/uid);
 * the UI is an explicit consent screen: nothing runs unless the device owner
   starts the service.
+
+The phone is a peer of the team, not a toy:
+
+* the persistence of the phone is a catalogue of its own — `boot_receiver`,
+  `foreground_service` and `alarm` — and every entry is read back before the
+  manager says that it is installed;
+* the capability list of the phone says what it can run, and the kinds it
+  cannot run are answered with an error and a reason, not with a silence;
+* the foreground service carries a notification and a wake lock, so the
+  beacon survives the doze of the phone;
+* the tunnel works: the phone may open a pivot callback to the team server.
 
 ## 5. The Go implant
 
@@ -524,13 +554,18 @@ restart of the team server instead of turning into a base64 string.
 Medium term: S3 and SMTP transports, named-pipe pivots, per-operator ACLs on
 the chat, and a sandbox for task modules that are not plain memory.
 
-Done (the Go implant): the fourth implementation of the protocol, in the
-standard library of Go and with nothing else (`implant/go`, no `go.sum`): it
-checks in, takes the batch, runs the sixteen task kinds it advertises and
-answers the ones it does not know with an error instead of a silence; it
-carries its own copy of the protocol core and is proved against the same
-conformance vectors as the other three; and its self test runs a whole cycle
-against a server that lives in the process.
+Done (the other implants): the phone reaches parity where it makes sense
+(the foreground service, the persistence of the phone with a verification
+of every entry, the tunnel, the capability list and an honest answer for
+the kinds it cannot run); the mac is a first-class target of the Rust
+implant (the persistence, the registry equivalents and the desktop); and
+the Go implant is the fourth implementation of the protocol, in the
+standard library of Go and with nothing else (`implant/go`, no `go.sum`):
+it checks in, takes the batch, runs the sixteen task kinds it advertises
+and answers the ones it does not know with an error instead of a silence;
+it carries its own copy of the protocol core and is proved against the
+same conformance vectors as the other three; and its self test runs a
+whole cycle against a server that lives in the process.
 
 Done: a versioned module ABI (the manifest of a module, its argument
 schema, its output schema and the capabilities it needs), the sandboxed

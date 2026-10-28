@@ -12,7 +12,6 @@ uses 0x1A" class of bug before it reaches a build.
 from __future__ import annotations
 
 import os
-import pathlib
 import re
 import sys
 
@@ -222,6 +221,58 @@ def doc_task_kinds() -> set[str]:
     return set(re.findall(r"^\| `([a-z][a-z0-9.]*)` \|", section, re.M))
 
 
+def doc_event_kinds() -> set[str]:
+    """The event kinds the protocol document lists."""
+    text = read("docs/PROTOCOL.md")
+    section = text.split("The kinds the server emits:", 1)[-1]
+    # Stop at the next subsection: the tables after it have their own
+    # first column.
+    section = section.split("\n### ", 1)[0]
+    return set(re.findall(r"^\| `([a-z][a-z0-9._]*)` \|", section, re.M))
+
+
+def go_source_files() -> list[str]:
+    """Every Go file of the server, as the paths the reader understands."""
+    out = []
+    root = os.path.join(ROOT, "server")
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            if not name.endswith(".go") or name.endswith("_test.go"):
+                continue
+            out.append(os.path.relpath(os.path.join(base, name), ROOT))
+    return sorted(out)
+
+
+def code_event_kinds() -> set[str]:
+    """Every event kind the server emits."""
+    kinds: set[str] = set()
+    for rel in go_source_files():
+        text = read(rel)
+        # Only the event literals: a task kind is stored in a field of
+        # its own, and it is not an event.
+        kinds |= set(re.findall(
+            r'(?:hub\.)?Event\{Kind:\s*"([a-z][a-z0-9._]*)"', text))
+    return kinds
+
+
+def check_events() -> int:
+    """The events the server emits are the events the document lists."""
+    documented = doc_event_kinds()
+    emitted = code_event_kinds()
+    problems = 0
+    missing = emitted - documented
+    if missing:
+        print(f"  !! EVENTS: the server emits {sorted(missing)} and the document does not say so")
+        problems += 1
+    extra = documented - emitted
+    if extra:
+        print(f"  !! EVENTS: the document lists {sorted(extra)} and the server never emits them")
+        problems += 1
+    if problems == 0:
+        print(f"  EVENTS          {len(emitted)} kinds, emitted and documented")
+    return problems
+
+
 def doc_rpc_commands() -> set[str]:
     """Every RPC named in the protocol document, from the table or the prose."""
     text = read("docs/PROTOCOL.md")
@@ -256,16 +307,10 @@ def rust_persist_techniques() -> set[str]:
 def go_event_kinds() -> set[str]:
     """The event kinds the Go server emits.
 
-    The whole hub package is read, not only the broker file: the vault and
-    the other helpers emit their own events.
+    Every package is read, not only the hub: the pivot manager emits its
+    own events, and the vault and the other helpers emit theirs.
     """
-    kinds: set[str] = set()
-    for base in ("server/internal/hub", "server/internal/link"):
-        for path in sorted(pathlib.Path(base).glob("*.go")):
-            if path.name.endswith("_test.go"):
-                continue
-            kinds |= set(re.findall(r'Kind:\s*"([a-z]+\.[a-z]+)"', path.read_text()))
-    return kinds
+    return code_event_kinds()
 
 
 def doc_rpc_roles() -> dict[str, str]:
@@ -590,6 +635,9 @@ def main() -> int:
     # The Go implant is deliberately small, so it is not asked to cover
     # every documented kind; it is asked to be honest about its own.
     failures += check_go_implant(documented, documented | rust_kinds | kotlin_kinds)
+
+    print("\n== the events the server pushes ==")
+    failures += check_events()
 
     print("\n== deploy config vs config.Server ==")
     failures += check_deploy_configs()

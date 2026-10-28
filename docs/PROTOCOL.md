@@ -1379,6 +1379,87 @@ from the files at every handshake, so a renewed certificate is in use
 after the next connection.  A file that is half written is refused and
 the certificate that is already in use stays.
 
+### 7.2r The events the server pushes
+
+The server pushes an event to the operators when something happens.  An
+event is a frame of its own (`OP_EVENT`, 0x0E) with this shape:
+
+| field | type | what it is |
+|---|---|---|
+| `kind` | str | the kind of the event (the table below) |
+| `at` | uint | when it happened, in seconds since the epoch |
+| `seq` | uint | the number of the event in the journal: a console that reconnects asks for the events after the last one it saw |
+| `agent_id` | str | the host it is about, when it is about one |
+| `task_id` | str | the task it is about, when it is about one |
+| `from` | str | the console it comes from |
+| `to` | str | the console it is directed to; empty means everybody |
+| `data` | map | what the event carries, per kind |
+
+The kinds the server emits:
+
+| kind | what it says | data |
+|---|---|---|
+| `agent.new` | a host checked in for the first time | the inventory of the host |
+| `agent.online` | a host is back | the inventory of the host |
+| `agent.offline` | a host has been quiet for longer than its grace window | — |
+| `agent.heartbeat` | the host is alive between two check-ins | `version`, `busy`, `abi` |
+| `agent.policy` | the cadence of the host was changed | `sleep`, `jitter` |
+| `agent.route` | the route of the host was changed | `primary`, `fallback`, `front`, `inspect` |
+| `agent.tags` | the labels of the host were changed | `tags`, `mode` |
+| `agent.panic` | the host was told to stop existing | `agent` |
+| `agent.unpanic` | the host was told to carry on | `agent` |
+| `alert` | a rule of the server matched | `rule`, `event`, `detail` |
+| `alerts.changed` | the rules of the server were changed | `count` |
+| `alias.created` | a command of the namespace was saved | `name`, `kind`, `by`, `created` |
+| `alias.removed` | a command of the namespace was taken away | `name`, `removed` |
+| `beacon.error` | the host reported a frame level failure | `code`, `msg` |
+| `chain.started` | a chain of tasks began | `chain`, `kind`, `stages` |
+| `chain.stage` | a stage of the chain finished | `chain`, `stage`, `kind` |
+| `chain.done` | the chain finished | `chain`, `stages` |
+| `chain.failed` | the chain failed | `chain`, `err` |
+| `chat` | a line of the team chat | the message |
+| `claim.expired` | the claim of a task expired: the console that held it stopped talking | — |
+| `creds.collected` | a credential task came back | `collected`, `dropped` |
+| `engagement.wiped` | the record of the engagement was cleared | `agents`, `tasks`, `schedules` |
+| `keys.rotated` | a key was rotated | `target`, `overlap` |
+| `killswitch.armed` | the kill switch was armed | `armed` |
+| `operator.focus` | a console took the focus on a host | `operator`, `agent_id` |
+| `operator.test` | a console asked the team whether it is there | `from`, `emitted` |
+| `pivot.opened` | a tunnel was opened | `tunnel`, `mode`, `listen`, `host`, `port`, `claim`, `through`, `dns`, `path`, `pipe` |
+| `pivot.closed` | a tunnel was closed | `tunnel` |
+| `pivot.denied` | the proxy refused a target | `tunnel`, `host`, `port` |
+| `pivot.error` | a target of the tunnel could not be reached | `tunnel`, `host`, `port`, `err` |
+| `pivot.session_closed` | a session of a tunnel ended | `session` |
+| `persist.updated` | the persistence of a host was changed | `entries`, `broken`, `methods` |
+| `persist.broken` | an entry of a host is broken | `broken`, `total` |
+| `posture.updated` | the implant changed its mind about the host | `label`, `confidence`, `sandbox`, `lab`, `silent`, `virtual` |
+| `schedule.created` | a recurring task was created | `schedule_id`, `kind`, `every` |
+| `schedule.fired` | a recurring task ran | `schedule_id`, `kind` |
+| `schedule.skipped` | a recurring task did not run | `schedule_id`, `reason` |
+| `schedule.removed` | a recurring task was taken away | `schedule_id`, `removed` |
+| `task.queued` | a task is in the queue | `kind`, `args`, `trace` |
+| `task.delivered` | a task was handed to the host | — |
+| `task.result` | the answer of a task came back | the fields of the result |
+| `task.output` | a part of the output of a task came back | the chunk |
+| `task.assigned` | a task was given to somebody | — |
+| `task.claimed` | an operator took a task | `by` |
+| `task.released` | an operator let a task go | `by` |
+| `task.cancelled` | a task was cancelled | `was` |
+| `task.timeout` | a task was not answered in time | `kind`, `trace`, `waited` |
+| `task.dead` | a task failed too often and was parked in the dead letter queue | `kind`, `trace`, `attempts`, `reason` |
+| `token.rotated` | an operator token was rotated | `target`, `role` |
+| `workflow.created` | a workflow was saved | `workflow`, `steps` |
+| `workflow.started` | a workflow began | `workflow`, `run` |
+| `workflow.step` | a step of a workflow finished | `workflow`, `run`, `step`, `kind`, `state`, `ok` |
+| `workflow.finished` | a workflow ended | `workflow`, `run`, `state` |
+| `workflow.removed` | a workflow was taken away | `workflow`, `removed` |
+
+The kinds are a promise in both directions: the console may rely on the
+name of an event, and the server may not invent one without saying so in
+this document.  The consistency checker of the repository compares the
+table with the kinds the server emits (`tools/check_consistency.py`, the
+`EVENTS` check), so an event that is not written down is a build failure.
+
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 
 Pivoting is built on one rule: **the agent always dials out**. A beacon that

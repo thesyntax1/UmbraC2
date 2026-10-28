@@ -8171,3 +8171,29 @@ def test_the_suite_waits_for_what_it_wants():
             continue
         strays.append(node.lineno)
     assert not strays, f"sleeps that wait for nothing: {strays}"
+
+
+def test_the_consistency_check_detects_an_undocumented_event():
+    """An event the server emits and the document does not list is a bug.
+
+    The operator console reacts to the name of an event, so a name that
+    only exists in the code is a promise the console cannot keep.
+    """
+    def add_event(rel, text):
+        if rel.endswith("server/internal/hub/hub.go"):
+            return text.replace('Kind: "agent.new"', 'Kind: "agent.newcomer"', 1)
+        return text
+
+    code, out = _run_checker("check_consistency.py", add_event)
+    assert code == 1, out
+    assert "EVENTS" in out
+    assert "agent.newcomer" in out
+
+
+def test_the_protocol_document_lists_every_event():
+    """The table of the events is the contract with the consoles."""
+    kinds = _checker_module("check_consistency.py")
+    documented = kinds.doc_event_kinds()
+    emitted = kinds.code_event_kinds()
+    assert len(documented) >= 50
+    assert emitted == documented

@@ -502,6 +502,10 @@ exactly the kind of thing the log exists to show.
 9. **The console trusts the server certificate it is given.** `--tls-ca` pins
    the authority; the operator has to check that the name matches. There is no
    certificate transparency and no pinning of a leaf certificate.
+10. **The keylogger of a mac asks for a permission.** The event tap of macOS
+    needs the accessibility permission of the user.  The implant says so
+    instead of pretending to listen, and the tap is created listen-only, so
+    the keyboard of the user is never taken away from them.
 
 ## 6. Hardening advice
 
