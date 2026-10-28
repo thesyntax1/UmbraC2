@@ -437,6 +437,7 @@ Task kinds understood by the reference implants:
 | `scan` | `host` (an address or a CIDR block), `ports`, optional `timeout_ms` | the hosts that answered: one line per open port, plus the number of probes |
 | `resolve` | `host`, optional `port` | the addresses a name points at |
 | `env` | optional `filter` | the environment of the implant, one `KEY=VALUE` per line |
+| `pwd` | — | the working directory of the implant |
 | `touch` | `path` | creates the file if it is missing and stamps it with the current time |
 | `proc.kill` | `pid` or `name` | terminates a process of the host |
 | `keylog.file` | `path`, optional `seconds` | the key logger writes into a file, to be fetched later |

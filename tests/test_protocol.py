@@ -7884,3 +7884,97 @@ def test_the_artifact_store_refuses_the_wrong_key():
     mtls = read_text("server/internal/mtls/mtls.go")
     assert "GetCertificate" in mtls
     assert "rotatingCertificate" in mtls
+
+
+# ---------------------------------------------------------------------------
+# 12. The other implants
+# ---------------------------------------------------------------------------
+def documented_task_kinds() -> set:
+    """The task kinds the protocol document lists."""
+    text = read_text("docs/PROTOCOL.md")
+    section = text.split("Task kinds understood by the reference implants:", 1)[-1]
+    for marker in ("Operator RPC commands", "\n### "):
+        section = section.split(marker, 1)[0]
+    return set(re.findall(r"^\| `([a-z][a-z0-9.]*)` \|", section, re.M))
+
+
+def test_the_go_implant_advertises_exactly_what_it_runs():
+    """The small beacon says what it can do, and does what it says.
+
+    The server refuses to queue a task the host did not say it can run,
+    so the list of the Go implant and the table it runs have to be the
+    same list.  A kind that is run but not advertised would be a task
+    nobody may queue; a kind that is advertised but not run would be a
+    task that fails.
+    """
+    tasks = read_text("implant/go/internal/beacon/tasks.go")
+    block = re.search(r"kinds := \[\]string\{(.*?)\n\t\}", tasks, re.S)
+    assert block, "the Go implant has no task table"
+    advertised = set(re.findall(r'"([a-z][a-z0-9.]*)"', block.group(1)))
+    arms = set(re.findall(r'case "([a-z][a-z0-9.]*)":', tasks))
+    assert advertised == arms
+    assert len(advertised) >= 16
+    # Every kind is one the framework knows: the Go implant speaks the
+    # vocabulary of the team server, not a dialect of its own.
+    assert advertised <= documented_task_kinds()
+    # A kind it does not know is answered with an error and not with a
+    # silence: the operator has to see that the task did not run.
+    assert "errUnknownKind" in tasks
+    assert "default:" in tasks
+
+
+def test_the_go_implant_is_a_module_of_its_own():
+    """The Go implant is the standard library and nothing else."""
+    mod = read_text("implant/go/go.mod")
+    assert "require" not in mod, "the Go implant must not need a crate"
+    assert not os.path.exists(os.path.join(ROOT, "implant", "go", "go.sum"))
+    # It carries its own copy of the protocol primitives, because a
+    # module outside the server tree cannot import its internal packages.
+    for part in ("wire", "upk", "crypt", "session"):
+        assert os.path.isdir(os.path.join(ROOT, "implant", "go", "internal", part))
+
+
+def test_the_android_implant_advertises_only_what_it_runs():
+    """The phone says what it can do, and refuses the rest out loud."""
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    block = re.search(r"val CAPABILITIES: List<String> = listOf\((.*?)\n    \)", runner, re.S)
+    assert block, "the Android implant has no capability list"
+    caps = set(re.findall(r'"([a-z][a-z0-9.]*)"', block.group(1)))
+    assert len(caps) >= 30
+    # The arms of the runner: every kind it answers, with its aliases.
+    arms = set()
+    for line in runner.splitlines():
+        if "->" in line:
+            arms.update(re.findall(r'"([a-z][a-z0-9.]*)"', line.split("->")[0]))
+    # A kind the phone cannot run is not advertised: the server would
+    # refuse to queue it, and the operator would never know why.
+    refused = set(re.findall(r'"([a-z][a-z0-9.]*)" -> unsupported\(', runner))
+    assert not (caps & refused)
+    # Every advertised kind is one the runner answers.
+    assert caps <= arms
+    assert "else -> Outcome(2, ByteArray(0), \"unknown task kind" in runner
+    # The phone runs a real foreground service with a notification.
+    service = read_text("implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt")
+    assert "startForeground" in service
+    assert "Notification" in service
+    # And it can tunnel.
+    assert "tunnel" in caps
+
+
+def test_the_macos_path_is_not_a_windows_story():
+    """The persistence, the registry and the desktop work on a mac as well."""
+    persist = read_text("implant/rust/src/persist.rs")
+    for technique in ("launchd.agent", "launchd.daemon", "loginitem", "shell_rc", "cron.user"):
+        assert f'"{technique}"' in persist
+    assert 'platform: "macos"' in persist
+    # The registry of a mac is a property list: the hive is a domain, the
+    # key is a key of the domain and the service is a launchd job.
+    registry = read_text("implant/rust/src/registry.rs")
+    assert "/usr/bin/plutil" in registry
+    assert "/usr/bin/defaults" in registry
+    assert "launchctl" in registry
+    # The desktop of a mac: the screen, the clipboard and the keys.
+    desktop = read_text("implant/rust/src/desktop.rs")
+    assert "screencapture" in desktop
+    assert "pbpaste" in desktop
+    assert "CGEventTapCreate" in desktop

