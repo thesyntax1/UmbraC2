@@ -197,11 +197,14 @@ listed here with the guard that keeps them from becoming the weakest link.
 
 * The console writes the tasks it submitted, their results and its own notes
   into a local SQLite file (`~/.umbra/state.db` by default).
-* The notebook holds **task output**. It never holds a credential: the
-  operator token, the agent PSK and the session keys stay in memory. The
-  material in it is the same material the server already keeps in its state
-  file -- the difference is that the notebook is on the operator's own disk
-  and nobody else knows it exists.
+* The notebook holds **task output** and, since the workflow pass, the
+  material the operator collected: the findings of the reconnaissance, the
+  artefacts that were pulled off a host, the screenshots and the value of
+  the credentials that were collected. The operator token, the agent PSK
+  and the session keys stay in memory: those are never written anywhere.
+  The material in the notebook is the same material the server keeps in
+  its vault -- the difference is that the notebook is on the operator's own
+  disk, it is not encrypted, and nobody else knows it exists.
 * The file is created with the permissions of the process that creates it
   (0600 under a normal umask). It is not encrypted: treat it like the
   server's state file and delete it when the engagement ends.
@@ -230,6 +233,39 @@ listed here with the guard that keeps them from becoming the weakest link.
   written by one operator and used by all of them. The write is an event
   and the audit trail keeps it, so a template that does something nobody
   expected has an author.
+
+## 3.11 The workflow layer, the plan and the notebook
+
+**A workflow runs on the server.** The steps are data the team writes, and
+the server walks them: a task, a chain, a wait, a condition, a report. A
+workflow may not carry a parameter nobody gave, because a workflow that
+runs the wrong thing is worse than no workflow at all. The catalogue lives
+in the state file of the server, so it is as sensitive as the state file:
+who may write a workflow is a role decision (`workflow.add` is an operator
+action, `workflow.run` queues tasks, so it is one too).
+
+**The plan file is read by the console, not by the server.** The reader is
+a small YAML subset inside the console: no library, no dependency, and no
+network. A plan is a local file; the operator decides what is in it.
+
+**The notebook is a secret.** The operator's SQLite file holds the value of
+the material that was collected — the passwords, the hashes, the tickets.
+It is the operator's own file on the operator's own disk, but it is not
+encrypted, and it is not in the vault of the server. Treat it like the
+notebook it is: keep it out of shared directories, out of tickets and out
+of backups that travel. The server's vault stays the authoritative copy,
+and the value leaves it only with a role that may see it.
+
+**The dashboard can change things.** The panels of the dashboard are
+read-only by default, but the workflow runner and the alert rules editor
+change the state of the engagement, so they are refused when the dashboard
+runs read-only. The dashboard is behind the operator token, and the token
+is compared in constant time on every request.
+
+**The raw command line is the raw command line.** `umbra rpc` sends any
+command the server knows, with the role of the operator attached. It is not
+a way around the role table: the server checks the role of the command,
+not the shape of the request.
 
 ## 4. Secret handling
 

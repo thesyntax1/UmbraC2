@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional
 
 # The schema version is stored in the `meta` table.  Bump it when the schema
 # changes; `open()` refuses to work with a newer file than it understands.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -79,9 +79,55 @@ CREATE TABLE IF NOT EXISTS notes (
     created    INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS findings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent      TEXT    NOT NULL DEFAULT '',
+    kind       TEXT    NOT NULL DEFAULT '',
+    name       TEXT    NOT NULL DEFAULT '',
+    detail     TEXT    NOT NULL DEFAULT '',
+    severity   TEXT    NOT NULL DEFAULT 'info',
+    source     TEXT    NOT NULL DEFAULT '',
+    created    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL DEFAULT '',
+    agent      TEXT    NOT NULL DEFAULT '',
+    digest     TEXT    NOT NULL DEFAULT '',
+    path       TEXT    NOT NULL DEFAULT '',
+    size       INTEGER NOT NULL DEFAULT 0,
+    created    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS screenshots (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent      TEXT    NOT NULL DEFAULT '',
+    path       TEXT    NOT NULL DEFAULT '',
+    digest     TEXT    NOT NULL DEFAULT '',
+    size       INTEGER NOT NULL DEFAULT 0,
+    created    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS credentials (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent      TEXT    NOT NULL DEFAULT '',
+    kind       TEXT    NOT NULL DEFAULT '',
+    account    TEXT    NOT NULL DEFAULT '',
+    target     TEXT    NOT NULL DEFAULT '',
+    secret     TEXT    NOT NULL DEFAULT '',
+    source     TEXT    NOT NULL DEFAULT '',
+    confidence INTEGER NOT NULL DEFAULT 0,
+    created    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS tasks_agent_idx ON tasks(agent);
 CREATE INDEX IF NOT EXISTS results_task_idx ON results(task_id);
 CREATE INDEX IF NOT EXISTS notes_agent_idx ON notes(agent);
+CREATE INDEX IF NOT EXISTS findings_agent_idx ON findings(agent);
+CREATE INDEX IF NOT EXISTS artifacts_agent_idx ON artifacts(agent);
+CREATE INDEX IF NOT EXISTS screenshots_agent_idx ON screenshots(agent);
+CREATE INDEX IF NOT EXISTS credentials_agent_idx ON credentials(agent);
 """
 
 
@@ -130,6 +176,13 @@ class StateStore:
                     raise StateError(
                         f"the database was written by a newer umbra "
                         f"(schema {found} > {SCHEMA_VERSION})")
+                if found < SCHEMA_VERSION:
+                    # An older notebook grows the tables it lacks; the
+                    # records it has are kept.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+                        (str(SCHEMA_VERSION),),
+                    )
             conn.commit()
         except sqlite3.Error as exc:
             raise StateError(f"cannot open {self.path}: {exc}") from exc
@@ -323,8 +376,171 @@ class StateStore:
                 "at": row["finished"],
                 "excerpt": self._excerpt(bytes(row["output"] or b""), needle),
             })
+        cur = self.conn.execute(
+            "SELECT id, agent, kind, name, detail, severity, source, created "
+            "FROM findings WHERE name LIKE ? OR detail LIKE ? OR kind LIKE ? "
+            "OR agent LIKE ? ORDER BY created DESC LIMIT ?",
+            (pattern, pattern, pattern, pattern, limit))
+        for row in cur.fetchall():
+            out.append({
+                "where": "finding",
+                "finding_id": row["id"],
+                "agent": row["agent"],
+                "kind": row["kind"],
+                "name": row["name"],
+                "detail": row["detail"],
+                "severity": row["severity"],
+                "at": row["created"],
+            })
+        cur = self.conn.execute(
+            "SELECT id, name, agent, digest, path, size, created FROM artifacts "
+            "WHERE name LIKE ? OR path LIKE ? OR digest LIKE ? OR agent LIKE ? "
+            "ORDER BY created DESC LIMIT ?",
+            (pattern, pattern, pattern, pattern, limit))
+        for row in cur.fetchall():
+            out.append({
+                "where": "artifact",
+                "artifact_id": row["id"],
+                "name": row["name"],
+                "agent": row["agent"],
+                "path": row["path"],
+                "digest": row["digest"],
+                "at": row["created"],
+            })
+        cur = self.conn.execute(
+            "SELECT id, agent, kind, account, target, secret, source, created "
+            "FROM credentials WHERE account LIKE ? OR target LIKE ? OR kind LIKE ? "
+            "OR agent LIKE ? OR secret LIKE ? ORDER BY created DESC LIMIT ?",
+            (pattern, pattern, pattern, pattern, pattern, limit))
+        for row in cur.fetchall():
+            out.append({
+                "where": "credential",
+                "credential_id": row["id"],
+                "agent": row["agent"],
+                "kind": row["kind"],
+                "account": row["account"],
+                "target": row["target"],
+                "secret": row["secret"],
+                "at": row["created"],
+            })
+        cur = self.conn.execute(
+            "SELECT id, agent, path, digest, created FROM screenshots "
+            "WHERE path LIKE ? OR agent LIKE ? ORDER BY created DESC LIMIT ?",
+            (pattern, pattern, limit))
+        for row in cur.fetchall():
+            out.append({
+                "where": "screenshot",
+                "screenshot_id": row["id"],
+                "agent": row["agent"],
+                "path": row["path"],
+                "digest": row["digest"],
+                "at": row["created"],
+            })
         out.sort(key=lambda item: item.get("at") or 0, reverse=True)
         return out[:limit]
+
+    # -- the collected material -------------------------------------------
+    def add_finding(self, agent: str, kind: str, name: str, detail: str = "",
+                    severity: str = "info", source: str = "") -> int:
+        """Record a finding the reconnaissance produced."""
+        cur = self.conn.execute(
+            "INSERT INTO findings(agent, kind, name, detail, severity, source, created) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (agent or "", kind or "", name or "", detail or "",
+             severity or "info", source or "", int(time.time())),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def findings(self, agent: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """The findings the notebook holds."""
+        limit = max(1, min(int(limit or 50), 1000))
+        if agent:
+            cur = self.conn.execute(
+                "SELECT * FROM findings WHERE agent = ? ORDER BY created DESC LIMIT ?",
+                (agent, limit))
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM findings ORDER BY created DESC LIMIT ?", (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+    def add_artifact(self, name: str, agent: str = "", digest: str = "",
+                     path: str = "", size: int = 0) -> int:
+        """Record an artefact the operator pulled off a host."""
+        cur = self.conn.execute(
+            "INSERT INTO artifacts(name, agent, digest, path, size, created) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (name or "", agent or "", digest or "", path or "",
+             int(size or 0), int(time.time())),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def artifacts(self, agent: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """The artefacts the notebook holds."""
+        limit = max(1, min(int(limit or 50), 1000))
+        if agent:
+            cur = self.conn.execute(
+                "SELECT * FROM artifacts WHERE agent = ? ORDER BY created DESC LIMIT ?",
+                (agent, limit))
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM artifacts ORDER BY created DESC LIMIT ?", (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+    def add_screenshot(self, agent: str, path: str, digest: str = "",
+                       size: int = 0) -> int:
+        """Record a screenshot the operator took of a host."""
+        cur = self.conn.execute(
+            "INSERT INTO screenshots(agent, path, digest, size, created) "
+            "VALUES(?, ?, ?, ?, ?)",
+            (agent or "", path or "", digest or "", int(size or 0), int(time.time())),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def screenshots(self, agent: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """The screenshots the notebook holds."""
+        limit = max(1, min(int(limit or 50), 1000))
+        if agent:
+            cur = self.conn.execute(
+                "SELECT * FROM screenshots WHERE agent = ? ORDER BY created DESC LIMIT ?",
+                (agent, limit))
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM screenshots ORDER BY created DESC LIMIT ?", (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+    def add_credential(self, agent: str, kind: str, account: str = "",
+                       target: str = "", secret: str = "", source: str = "",
+                       confidence: int = 0) -> int:
+        """Record a credential the operator pulled off a host.
+
+        The notebook is the operator's own file on the operator's own disk:
+        it holds the material the operator asked for, and nothing else.  The
+        server keeps the authoritative copy; this is the one that survives a
+        server that is gone.
+        """
+        cur = self.conn.execute(
+            "INSERT INTO credentials(agent, kind, account, target, secret, "
+            "source, confidence, created) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent or "", kind or "", account or "", target or "", secret or "",
+             source or "", int(confidence or 0), int(time.time())),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def credentials(self, agent: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """The credentials the notebook holds."""
+        limit = max(1, min(int(limit or 50), 1000))
+        if agent:
+            cur = self.conn.execute(
+                "SELECT * FROM credentials WHERE agent = ? ORDER BY created DESC LIMIT ?",
+                (agent, limit))
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM credentials ORDER BY created DESC LIMIT ?", (limit,))
+        return [dict(row) for row in cur.fetchall()]
 
     def stats(self) -> Dict[str, Any]:
         """A small summary of the local notebook."""
@@ -347,6 +563,10 @@ class StateStore:
             "tasks": count("SELECT COUNT(*) FROM tasks"),
             "results": count("SELECT COUNT(*) FROM results"),
             "notes": count("SELECT COUNT(*) FROM notes"),
+            "findings": count("SELECT COUNT(*) FROM findings"),
+            "artifacts": count("SELECT COUNT(*) FROM artifacts"),
+            "screenshots": count("SELECT COUNT(*) FROM screenshots"),
+            "credentials": count("SELECT COUNT(*) FROM credentials"),
             "agents": agents,
             "kinds": kinds,
             "first_session": int(first["a"]) if first and first["a"] else 0,
@@ -354,7 +574,14 @@ class StateStore:
         }
 
     def export(self, path: str) -> str:
-        """Write the whole notebook to a JSON file and return its path."""
+        """Write the whole notebook to a file and return its path.
+
+        The format follows the extension: a .md file is written as the
+        Markdown document an operator reads, anything else as JSON.
+        """
+        target = os.path.abspath(os.path.expanduser(path))
+        if target.lower().endswith((".md", ".markdown")):
+            return self.export_markdown(target)
         payload = {
             "sessions": [dict(row) for row in self.conn.execute(
                 "SELECT * FROM sessions ORDER BY id").fetchall()],
@@ -365,10 +592,118 @@ class StateStore:
                 "ORDER BY finished").fetchall()],
             "notes": [dict(row) for row in self.conn.execute(
                 "SELECT * FROM notes ORDER BY created").fetchall()],
+            "findings": [dict(row) for row in self.conn.execute(
+                "SELECT * FROM findings ORDER BY created").fetchall()],
+            "artifacts": [dict(row) for row in self.conn.execute(
+                "SELECT * FROM artifacts ORDER BY created").fetchall()],
+            "screenshots": [dict(row) for row in self.conn.execute(
+                "SELECT * FROM screenshots ORDER BY created").fetchall()],
+            "credentials": [dict(row) for row in self.conn.execute(
+                "SELECT * FROM credentials ORDER BY created").fetchall()],
         }
-        target = os.path.abspath(os.path.expanduser(path))
         with open(target, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, sort_keys=True, default=str)
+        return target
+
+    def export_markdown(self, path: str) -> str:
+        """Write the notebook as a Markdown document.
+
+        It is the document an operator hands over: the sessions, the tasks,
+        the findings, the artefacts, the material and the notes, in the
+        order they happened.
+        """
+        target = os.path.abspath(os.path.expanduser(path))
+        lines: List[str] = []
+        lines.append("# The notebook")
+        lines.append("")
+        lines.append(f"_{self.path}_")
+        lines.append("")
+
+        lines.append("## The sessions")
+        lines.append("")
+        for row in self.conn.execute(
+                "SELECT * FROM sessions ORDER BY id").fetchall():
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["started"]))
+            lines.append("- **{}** {} on {} ({})".format(
+                when, row["operator"] or "?", row["server"] or "?",
+                row["session_id"][:12] or "no id"))
+        lines.append("")
+
+        lines.append("## The findings")
+        lines.append("")
+        findings = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM findings ORDER BY created").fetchall()]
+        if not findings:
+            lines.append("_no finding was recorded_")
+        else:
+            lines.append("| when | agent | severity | finding | detail |")
+            lines.append("| --- | --- | --- | --- | --- |")
+            for row in findings:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created"]))
+                lines.append("| {} | {} | {} | {} | {} |".format(
+                    when, row["agent"], row["severity"], row["name"],
+                    (row["detail"] or "")[:80]))
+        lines.append("")
+
+        lines.append("## The artefacts")
+        lines.append("")
+        artifacts = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM artifacts ORDER BY created").fetchall()]
+        if not artifacts:
+            lines.append("_no artefact was kept_")
+        else:
+            lines.append("| when | agent | name | size | digest |")
+            lines.append("| --- | --- | --- | --- | --- |")
+            for row in artifacts:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created"]))
+                lines.append("| {} | {} | {} | {} | {} |".format(
+                    when, row["agent"], row["name"], row["size"],
+                    (row["digest"] or "")[:16]))
+        lines.append("")
+
+        lines.append("## The screenshots")
+        lines.append("")
+        shots = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM screenshots ORDER BY created").fetchall()]
+        if not shots:
+            lines.append("_no screenshot was taken_")
+        else:
+            for row in shots:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created"]))
+                lines.append("- **{}** {} `{}`".format(when, row["agent"], row["path"]))
+        lines.append("")
+
+        lines.append("## The material")
+        lines.append("")
+        creds = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM credentials ORDER BY created").fetchall()]
+        if not creds:
+            lines.append("_no material was collected_")
+        else:
+            lines.append("| when | agent | kind | account | target | value |")
+            lines.append("| --- | --- | --- | --- | --- | --- |")
+            for row in creds:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created"]))
+                lines.append("| {} | {} | {} | {} | {} | {} |".format(
+                    when, row["agent"], row["kind"], row["account"],
+                    row["target"], row["secret"]))
+        lines.append("")
+
+        lines.append("## The notes")
+        lines.append("")
+        notes = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM notes ORDER BY created").fetchall()]
+        if not notes:
+            lines.append("_no note was left_")
+        else:
+            for row in notes:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created"]))
+                lines.append("- **{}** {} ({})".format(
+                    when, row["body"], row["agent"] or "-"))
+        lines.append("")
+
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
         return target
 
     # -- helpers --------------------------------------------------------

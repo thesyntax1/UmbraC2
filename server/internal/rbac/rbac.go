@@ -178,6 +178,16 @@ var requirements = map[string]string{
 	"alias.add":    Operator,
 	"alias.remove": Operator,
 
+	// ---- the workflow layer --------------------------------------------
+	// A workflow is a named sequence of steps: writing one is operator
+	// work, running one is operator work too (it queues tasks), and
+	// watching one is harmless.
+	"workflow.list":   Viewer,
+	"workflow.status": Viewer,
+	"workflow.add":    Operator,
+	"workflow.remove": Operator,
+	"workflow.run":    Operator,
+
 	// ---- team synchronisation ------------------------------------------
 	"team.sync": Viewer,
 	// The handover document only reads the engagement.

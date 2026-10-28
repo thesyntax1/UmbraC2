@@ -1400,7 +1400,13 @@ func (h *Hub) checkAlerts(ev Event) {
 		// An alert never triggers another alert.
 		return
 	}
-	rules := h.cfg.Server.Alerts
+	// The rules the team wrote at runtime win over the ones in the
+	// configuration file: the dashboard edits the rules of the running
+	// server, and the file is only what the server starts with.
+	rules := h.store.AlertRules()
+	if len(rules) == 0 {
+		rules = h.cfg.Server.Alerts
+	}
 	if len(rules) == 0 {
 		return
 	}

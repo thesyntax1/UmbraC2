@@ -226,6 +226,42 @@ func (s *Server) dispatch(log *slog.Logger, op *hub.Operator, req map[string]any
 	return out
 }
 
+// DispatchOperator runs one operator command on behalf of a caller that is
+// not a console -- the dashboard, for now.
+//
+// The role is checked by the same table the console obeys, so the dashboard
+// is not a way around it: a viewer token on the dashboard is a viewer
+// everywhere.  The call is audited like any other.
+func (s *Server) DispatchOperator(role, cmd string, args map[string]any) (any, error) {
+	if role == "" {
+		role = "viewer"
+	}
+	if !rbac.Valid(role) {
+		role = "viewer"
+	}
+	op := &hub.Operator{
+		Name:      "dashboard",
+		Role:      role,
+		Peer:      "dashboard",
+		Transport: "http",
+		Since:     time.Now().UTC(),
+	}
+	out := s.handleRPC(s.Log, op, map[string]any{
+		"cmd":  cmd,
+		"args": args,
+		"rid":  0,
+	})
+	ok, _ := out["ok"].(bool)
+	if !ok {
+		errText, _ := out["err"].(string)
+		if errText == "" {
+			errText = "the command was refused"
+		}
+		return nil, errors.New(errText)
+	}
+	return out["data"], nil
+}
+
 // record writes one audit line. Auditing never fails an RPC: a disk problem is
 // logged, because refusing to work is worse than a gap in the trail.
 func (s *Server) record(op *hub.Operator, cmd string, args map[string]any, ok bool, errText, agentID, taskID string, ms int64) {
@@ -1976,9 +2012,256 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"stager":    script,
 		})
 
+	case "workflow.list":
+		// The catalogue of the named sequences of steps, and the runs
+		// that came out of them.
+		workflows := s.Hub.Store().Workflows()
+		rows := make([]any, 0, len(workflows))
+		for _, w := range workflows {
+			rows = append(rows, workflowMap(w))
+		}
+		runs := s.Hub.Store().WorkflowRuns(20)
+		runRows := make([]any, 0, len(runs))
+		for _, r := range runs {
+			runRows = append(runRows, workflowRunMap(r))
+		}
+		return reply(upk.Map{"workflows": rows, "count": len(rows), "runs": runRows})
+
+	case "workflow.add":
+		// A workflow is written once and used by everybody: the steps are
+		// data, so the team can change them without touching the server.
+		name, _ := args["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fail("workflow.add needs a name")
+		}
+		steps, err := workflowSteps(args["steps"])
+		if err != nil {
+			return fail("workflow.add: %v", err)
+		}
+		if len(steps) == 0 {
+			return fail("workflow.add needs at least one step")
+		}
+		description, _ := args["description"].(string)
+		params := stringList(args["params"])
+		w := &store.Workflow{
+			Name:        name,
+			Description: description,
+			Params:      params,
+			Steps:       steps,
+			CreatedBy:   op.Name,
+		}
+		saved, err := s.Hub.Store().AddWorkflow(w)
+		if err != nil {
+			return fail("workflow.add: %v", err)
+		}
+		s.Hub.Store().SaveAsync()
+		s.Hub.Emit(hub.Event{Kind: "workflow.created", From: op.Name,
+			Data: map[string]any{"workflow": saved.Name, "steps": len(saved.Steps)}})
+		return reply(upk.Map{"workflow": workflowMap(saved)})
+
+	case "workflow.remove":
+		name, _ := args["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fail("workflow.remove needs a name")
+		}
+		if !s.Hub.Store().RemoveWorkflow(name) {
+			return fail("workflow.remove: there is no workflow called %q", name)
+		}
+		s.Hub.Store().SaveAsync()
+		s.Hub.Emit(hub.Event{Kind: "workflow.removed", From: op.Name,
+			Data: map[string]any{"workflow": name}})
+		return reply(upk.Map{"removed": name})
+
+	case "workflow.run":
+		// The run happens in the background: the implant answers when it
+		// checks in again, and the console does not wait for it.
+		name, _ := args["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return fail("workflow.run needs a name")
+		}
+		params := map[string]string{}
+		if raw, ok := args["params"].(map[string]any); ok {
+			for k, v := range raw {
+				params[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		run, err := s.Hub.RunWorkflow(name, params, op.Name)
+		if err != nil {
+			return fail("workflow.run: %v", err)
+		}
+		return reply(upk.Map{"run_id": run.ID, "run": workflowRunMap(run)})
+
+	case "workflow.status":
+		// The state of one run: the steps, what they answered and the
+		// report they wrote.
+		id, _ := args["run_id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return fail("workflow.status needs run_id")
+		}
+		run, ok := s.Hub.Store().WorkflowRun(id)
+		if !ok {
+			return fail("workflow.status: there is no run called %q", id)
+		}
+		return reply(upk.Map{"run": workflowRunMap(run)})
+
 	default:
 		return fail("unknown command %q", cmd)
 	}
+}
+
+// workflowSteps reads the steps of a workflow from the wire.
+//
+// The steps arrive as a list of maps; a chain carries its stages inside
+// itself, so the reading is recursive.
+func workflowSteps(raw any) ([]store.WorkflowStep, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("the steps must be a list")
+	}
+	out := make([]store.WorkflowStep, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("a step must be a map")
+		}
+		step := store.WorkflowStep{}
+		step.Kind, _ = m["kind"].(string)
+		step.Agent, _ = m["agent"].(string)
+		step.TaskKind, _ = m["task_kind"].(string)
+		step.Condition, _ = m["condition"].(string)
+		step.Title, _ = m["title"].(string)
+		if secs, ok := m["seconds"].(int64); ok {
+			step.Seconds = int(secs)
+		}
+		if secs, ok := m["seconds"].(int); ok {
+			step.Seconds = secs
+		}
+		if raw, ok := m["args"].(map[string]any); ok {
+			step.Args = raw
+		}
+		if stages, ok := m["stages"].([]any); ok {
+			nested, err := workflowSteps(stages)
+			if err != nil {
+				return nil, err
+			}
+			step.Stages = nested
+		}
+		out = append(out, step)
+	}
+	return out, nil
+}
+
+// workflowMap is the wire shape of one workflow.
+func workflowMap(w *store.Workflow) upk.Map {
+	if w == nil {
+		return upk.Map{}
+	}
+	steps := make([]any, 0, len(w.Steps))
+	for _, step := range w.Steps {
+		steps = append(steps, workflowStepMap(step))
+	}
+	params := make([]any, 0, len(w.Params))
+	for _, p := range w.Params {
+		params = append(params, p)
+	}
+	row := upk.Map{
+		"name":        w.Name,
+		"description": w.Description,
+		"params":      params,
+		"steps":       steps,
+		"runs":        int64(w.Runs),
+		"created_by":  w.CreatedBy,
+	}
+	if !w.Created.IsZero() {
+		row["created"] = w.Created.Unix()
+	}
+	if !w.LastRun.IsZero() {
+		row["last_run"] = w.LastRun.Unix()
+	}
+	return row
+}
+
+// workflowStepMap is the wire shape of one step.
+func workflowStepMap(step store.WorkflowStep) upk.Map {
+	row := upk.Map{"kind": step.Kind}
+	if step.Agent != "" {
+		row["agent"] = step.Agent
+	}
+	if step.TaskKind != "" {
+		row["task_kind"] = step.TaskKind
+	}
+	if step.Condition != "" {
+		row["condition"] = step.Condition
+	}
+	if step.Title != "" {
+		row["title"] = step.Title
+	}
+	if step.Seconds > 0 {
+		row["seconds"] = int64(step.Seconds)
+	}
+	if len(step.Args) > 0 {
+		row["args"] = toUpkMap(step.Args)
+	}
+	if len(step.Stages) > 0 {
+		stages := make([]any, 0, len(step.Stages))
+		for _, stage := range step.Stages {
+			stages = append(stages, workflowStepMap(stage))
+		}
+		row["stages"] = stages
+	}
+	return row
+}
+
+// workflowRunMap is the wire shape of one run.
+func workflowRunMap(r *store.WorkflowRun) upk.Map {
+	if r == nil {
+		return upk.Map{}
+	}
+	steps := make([]any, 0, len(r.Steps))
+	for _, step := range r.Steps {
+		row := upk.Map{
+			"index":   int64(step.Index),
+			"kind":    step.Kind,
+			"ok":      step.OK,
+			"code":    step.Code,
+			"skipped": step.Skipped,
+		}
+		if step.Detail != "" {
+			row["detail"] = step.Detail
+		}
+		if step.TaskID != "" {
+			row["task_id"] = step.TaskID
+		}
+		if step.Output != "" {
+			row["output"] = truncate([]byte(step.Output), 2000)
+		}
+		steps = append(steps, row)
+	}
+	row := upk.Map{
+		"id":       r.ID,
+		"workflow": r.Workflow,
+		"state":    r.State,
+		"steps":    steps,
+		"current":  int64(r.Current),
+		"by":       r.By,
+	}
+	if !r.Started.IsZero() {
+		row["started"] = r.Started.Unix()
+	}
+	if !r.Finished.IsZero() {
+		row["finished"] = r.Finished.Unix()
+	}
+	if r.Err != "" {
+		row["err"] = r.Err
+	}
+	if r.Report != "" {
+		row["report"] = r.Report
+	}
+	return row
 }
 
 // submitExtension ships an installed extension to an agent.

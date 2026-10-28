@@ -985,6 +985,80 @@ class OperatorClient:
             raise OperatorError(res.error)
         return list(res.data.get("tasks", []))
 
+    # -- the team and the events -----------------------------------------
+    def kill_agent(self, agent_id: str, exit_after: bool = False) -> Dict[str, Any]:
+        """Tell an agent to exit, or to exit after the task it is running.
+
+        `agents.kill` is the abrupt one and `agents.exit` is the polite one:
+        the agent is told to go away after the work it has in hand.
+        """
+        if exit_after:
+            res = self.rpc("agents.exit", {"id": agent_id})
+        else:
+            res = self.rpc("agents.kill", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def test_event(self, kind: str = "test.ping") -> Dict[str, Any]:
+        """Put one event of our own into the journal.
+
+        It is how an operator checks that the event stream of the server
+        reaches this console at all, without waiting for an agent to do
+        something.
+        """
+        res = self.rpc("events.test", {"kind": kind})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    # -- the workflow layer ----------------------------------------------
+    def workflow_list(self) -> Dict[str, Any]:
+        """The catalogue of the named sequences of steps, and the last runs."""
+        res = self.rpc("workflow.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def workflow_add(self, name: str, steps: List[Dict[str, Any]],
+                     description: str = "",
+                     params: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Write a workflow: a named, parameterised sequence of steps."""
+        payload: Dict[str, Any] = {"name": name, "steps": list(steps)}
+        if description:
+            payload["description"] = description
+        if params:
+            payload["params"] = list(params)
+        res = self.rpc("workflow.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def workflow_remove(self, name: str) -> Dict[str, Any]:
+        """Take a workflow out of the catalogue."""
+        res = self.rpc("workflow.remove", {"name": name})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def workflow_run(self, name: str,
+                     params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Start a workflow; the run happens on the server."""
+        payload: Dict[str, Any] = {"name": name}
+        if params:
+            payload["params"] = dict(params)
+        res = self.rpc("workflow.run", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def workflow_status(self, run_id: str) -> Dict[str, Any]:
+        """The state of one run: the steps, their answers and the report."""
+        res = self.rpc("workflow.status", {"run_id": run_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
     # -- stagers ---------------------------------------------------------
     def stager_generate(
         self,

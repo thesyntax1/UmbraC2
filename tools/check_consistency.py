@@ -184,8 +184,10 @@ RPC_SPECS = {
     # A Go case may list aliases on one line (`case "agents.kill", "agents.exit":`),
     # so collect every quoted command in the case label, not just the first.
     "go": r'(?:case|,) "([a-z]+\.[a-z]+)"',
-    "python": r'self\.rpc\("([a-z]+\.[a-z]+)"',
-    "cli": r'rpc\("([a-z]+\.[a-z]+)"',
+    # The call may be written on one line or split over several, so the
+    # pattern tolerates the line break between the parenthesis and the name.
+    "python": r'self\.rpc\(\s*"([a-z]+\.[a-z]+)"',
+    "cli": r'rpc\(\s*"([a-z]+\.[a-z]+)"',
 }
 
 
@@ -555,6 +557,15 @@ def main() -> int:
         failures += 1
     else:
         print(f"  RPC             python: {len(py_rpc)} commands all handled by the server")
+    # Every documented command must be reachable from the console: the
+    # console is the product, and a command nobody can type is a command
+    # that does not exist.
+    unreachable = rpc_doc - py_rpc
+    if unreachable:
+        print(f"  !! RPC: the console does not reach {sorted(unreachable)}")
+        failures += 1
+    else:
+        print(f"  RPC             console: all {len(rpc_doc)} documented commands reachable")
 
     print()
     if failures:

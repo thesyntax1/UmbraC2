@@ -57,7 +57,8 @@ main: load config → build keyring → open store → start listeners
 | `vpn` | layer-3 tunnel | X25519 + HKDF + AES-256-GCM datagrams, 64 packet replay window |
 | `dnstun` | DNS transport | TXT records carry the frames; the session above the transport does not change |
 | `armory` | extension store | Ed25519 signed catalogue; an unsigned catalogue installs nothing |
-| `alias` | command namespace | named task templates, call-time arguments win |
+| `alias` | command namespace | named task templates, call-time arguments win; the namespace of the team is kept next to the state file |
+| `store` (workflows) | the workflow catalogue | named, parameterised sequences of steps; the runner walks them in the background and writes what every step did into the run |
 | `stager` | stager generation | PowerShell and Bash, one per transport; the download stager, the store stager, the offline stager and the digest shim; the agent key never reaches the audit log |
 | `coff` | object inspection | the server parses a module before it is pushed to an agent |
 | `mtls` | TLS configuration | mutual TLS for the operator listener, plain TLS for the agent listener |
@@ -289,12 +290,21 @@ protocol:
   session to one thread at a time, and the wait for the socket happens outside
   of that lock, so a reader never freezes the writer;
 * `cli.py` — sub-commands for scripting and an interactive shell for live work;
+* `shell.py` — the shell around the commands: the history, the completion, the
+  continuation of a command over several lines and the status line of the prompt;
+* `flows.py` — the two things a single command cannot do: one task on many
+  agents with a cap on the answers waited for, and a sequence of steps run from
+  one line;
+* `plan.py` — the plan file: a small YAML subset (JSON is a plan too) read by
+  the console itself, so a workflow can be written without a dependency;
 * `dns.py`, `ws.py` — reference implementations of the DNS tunnel and of the
   WebSocket transport, so both can be exercised without a Go build;
 * `db.py` — the console's local notebook: a SQLite database with the tasks
-  this operator ran, their results and the notes they left. It is local on
-  purpose: the server stays dependency-free, and the engagement history
-  belongs to the operator who collected it.
+  this operator ran, their results, the notes they left, the findings of the
+  reconnaissance, the artefacts, the screenshots and the material they
+  collected. It is local on purpose: the server stays dependency-free, and
+  the engagement history belongs to the operator who collected it. It is
+  written as JSON or as the Markdown document an operator hands over.
 
 `tools/mock_server.py` implements the server side in Python (plus a reference
 agent) so the console and the protocol can be exercised without a Go build. It is

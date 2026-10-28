@@ -875,6 +875,11 @@ class MockServer:
         # the server watches the event stream with.
         self.chains: Dict[str, Dict[str, Any]] = {}
         self.alerts: List[Dict[str, Any]] = list(alerts or [])
+        # The workflow layer: named sequences of steps and the runs that
+        # came out of them.
+        self.workflows: Dict[str, Dict[str, Any]] = {}
+        self.workflow_runs: Dict[str, Dict[str, Any]] = {}
+        self._workflow_seq = 0
         # The journal of the recent events: a console that was not
         # watching asks for the ones it missed.
         self.events: List[Dict[str, Any]] = []
@@ -2386,6 +2391,106 @@ class MockServer:
         self.emit("task.queued", agent_id, task_id=task["id"], data={"kind": kind})
         return task
 
+    def _wait_task(self, task_id: str, timeout: float = 30.0) -> Dict[str, Any]:
+        """Wait for a task to finish, the way the console does."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._lock:
+                task = self.tasks.get(task_id)
+                if task is None:
+                    return {"state": "failed", "code": 0, "out": b"", "err": "gone"}
+                if task.get("state") in ("done", "failed", "cancelled"):
+                    return dict(task)
+            time.sleep(0.05)
+        with self._lock:
+            task = self.tasks.get(task_id) or {}
+        return dict(task)
+
+    def _run_workflow(self, run_id: str, workflow: Dict[str, Any],
+                      params: Dict[str, str]) -> None:
+        """Walk the steps of a workflow, the way the Go hub does.
+
+        The run happens in the background: the implant answers when it
+        checks in again, and the console does not wait for it.
+        """
+        steps = _expand_workflow_steps(workflow.get("steps") or [], params)
+        report: List[str] = []
+        collected: List[str] = []
+        last_ok = True
+        last_code = 0
+        with self._lock:
+            run = self.workflow_runs.get(run_id)
+            if run is None:
+                return
+            run["state"] = "running"
+        for index, step in enumerate(steps):
+            entry: Dict[str, Any] = {"index": index, "kind": str(step.get("kind", "")),
+                                     "ok": True, "code": 0}
+            kind = step.get("kind")
+            if kind == "wait":
+                seconds = int(step.get("seconds", 0) or 0)
+                entry["detail"] = f"{seconds} seconds"
+                if seconds > 0:
+                    time.sleep(min(seconds, 5))
+            elif kind == "condition":
+                condition = str(step.get("condition", ""))
+                entry["detail"] = condition
+                if condition == "failed":
+                    last_ok = not last_ok
+                elif condition.startswith("code=="):
+                    last_ok = condition[len("code=="):].strip() == str(last_code)
+                entry["ok"] = last_ok
+                if not last_ok:
+                    entry["skipped"] = True
+                    entry["detail"] = condition + " was not met"
+            elif kind == "report":
+                entry["detail"] = str(step.get("title", "report"))
+                report.append("## " + entry["detail"] + "\n")
+                report.append("\n".join(collected) or "_nothing yet_")
+                report.append("")
+            else:
+                agent = str(step.get("agent", ""))
+                task_kind = str(step.get("task_kind", ""))
+                problem = self._refusal(agent, task_kind) if task_kind else "no task kind"
+                if problem:
+                    entry["ok"] = False
+                    entry["detail"] = problem
+                else:
+                    task = self._queue_task(agent, task_kind, step.get("args") or {})
+                    entry["task_id"] = task["id"]
+                    result = self._wait_task(task["id"])
+                    entry["state"] = result.get("state", "done")
+                    entry["code"] = int(result.get("code", 0) or 0)
+                    out = result.get("out", b"")
+                    text = out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out)
+                    entry["output"] = text
+                    entry["ok"] = entry["state"] == "done" and entry["code"] == 0
+                    collected.append(text)
+                last_ok = bool(entry["ok"])
+                last_code = int(entry["code"])
+            with self._lock:
+                run = self.workflow_runs.get(run_id)
+                if run is not None:
+                    run["steps"].append(entry)
+                    run["current"] = index + 1
+                    if entry.get("skipped"):
+                        run["state"] = "stopped"
+                        run["finished"] = _now()
+            self.emit("workflow.step", data={"workflow": workflow.get("name", ""),
+                                             "run": run_id, "step": index,
+                                             "kind": kind, "ok": entry.get("ok")})
+            if entry.get("skipped"):
+                break
+        with self._lock:
+            run = self.workflow_runs.get(run_id)
+            if run is not None:
+                if run.get("state") != "stopped":
+                    run["state"] = "done"
+                run["finished"] = _now()
+                run["report"] = "\n".join(report)
+        self.emit("workflow.finished", data={"workflow": workflow.get("name", ""),
+                                             "run": run_id, "state": "done"})
+
     def _advance_chain(self, task_id: str, output: bytes) -> None:
         """Hand the output of a finished stage to the next one."""
         with self._lock:
@@ -2645,6 +2750,13 @@ class MockServer:
         # Handing a task to a colleague orders human work as well.
         "task.assign": "operator",
         "operators.focus": "operator",
+        # The workflow layer: writing and running a workflow is operator
+        # work, watching one is harmless.
+        "workflow.list": "viewer",
+        "workflow.status": "viewer",
+        "workflow.add": "operator",
+        "workflow.remove": "operator",
+        "workflow.run": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
         # The server-side file store: reading it is harmless, filling it
@@ -3151,6 +3263,98 @@ class MockServer:
                 rows.append({"agent_id": agent_id, "task_id": task["id"],
                              "state": "queued"})
             return ok({"tasks": rows, "count": len(rows), "skipped": skipped})
+
+        if cmd == "workflow.list":
+            with self._lock:
+                workflows = [dict(w) for w in self.workflows.values()]
+                runs = [dict(r) for r in
+                        sorted(self.workflow_runs.values(),
+                               key=lambda r: r.get("started", ""), reverse=True)][:20]
+            return ok({"workflows": workflows, "count": len(workflows), "runs": runs})
+
+        if cmd == "workflow.add":
+            name = str(args.get("name", "") or "").strip()
+            if not name:
+                return fail("workflow.add needs a name")
+            steps = args.get("steps") or []
+            if not isinstance(steps, list) or not steps:
+                return fail("workflow.add needs at least one step")
+            for step in steps:
+                if not isinstance(step, dict) or not step.get("kind"):
+                    return fail("workflow.add: a step needs a kind")
+            params = args.get("params") or []
+            if isinstance(params, str):
+                params = [p.strip() for p in params.split(",") if p.strip()]
+            workflow = {
+                "name": name,
+                "description": str(args.get("description", "") or ""),
+                "params": list(params),
+                "steps": steps,
+                "created_by": operator,
+                "created": _now(),
+                "runs": 0,
+            }
+            with self._lock:
+                self.workflows[name] = workflow
+            self.emit("workflow.created", data={"workflow": name,
+                                                "steps": len(steps)},
+                      sender=operator)
+            return ok({"workflow": workflow})
+
+        if cmd == "workflow.remove":
+            name = str(args.get("name", "") or "").strip()
+            with self._lock:
+                if name not in self.workflows:
+                    return fail(f"workflow.remove: there is no workflow called {name!r}")
+                self.workflows.pop(name, None)
+            self.emit("workflow.removed", data={"workflow": name}, sender=operator)
+            return ok({"removed": name})
+
+        if cmd == "workflow.run":
+            name = str(args.get("name", "") or "").strip()
+            with self._lock:
+                workflow = self.workflows.get(name)
+            if workflow is None:
+                return fail(f"workflow.run: there is no workflow called {name!r}")
+            params = args.get("params") or {}
+            if not isinstance(params, dict):
+                params = {}
+            params = {str(k): str(v) for k, v in params.items()}
+            missing = [p for p in workflow.get("params", [])
+                       if not str(params.get(p, "")).strip()]
+            if missing:
+                return fail("workflow.run: the workflow needs parameters: "
+                            + ", ".join(missing))
+            with self._lock:
+                self._workflow_seq += 1
+                run_id = f"wfrun{self._workflow_seq:04d}"
+            run = {
+                "id": run_id,
+                "workflow": name,
+                "state": "queued",
+                "params": params,
+                "started": _now(),
+                "by": operator,
+                "steps": [],
+                "current": 0,
+            }
+            with self._lock:
+                self.workflow_runs[run_id] = run
+            self.emit("workflow.started", data={"workflow": name, "run": run_id},
+                      sender=operator)
+            thread = threading.Thread(target=self._run_workflow,
+                                      args=(run_id, workflow, params), daemon=True)
+            thread.start()
+            self._threads.append(thread)
+            return ok({"run_id": run_id, "run": dict(run)})
+
+        if cmd == "workflow.status":
+            run_id = str(args.get("run_id", "") or "").strip()
+            with self._lock:
+                run = self.workflow_runs.get(run_id)
+            if run is None:
+                return fail(f"workflow.status: there is no run called {run_id!r}")
+            return ok({"run": dict(run)})
 
         if cmd == "task.chain":
             agent_id = str(args.get("id", "") or "")
@@ -4336,6 +4540,49 @@ def _task_out(task: Dict[str, Any]) -> Dict[str, Any]:
 # a console that crashed must not keep a task to itself.
 PRESENCE_TTL = 90
 CLAIM_LEASE = 120
+
+
+def _expand_workflow_steps(steps: List[Any], params: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Fill the parameters of the steps of a workflow.
+
+    The placeholders are {{name}}: the workflow says {{target}} and the
+    operator gives the target when the workflow runs.
+    """
+    out: List[Dict[str, Any]] = []
+    for raw in steps:
+        if not isinstance(raw, dict):
+            continue
+        step: Dict[str, Any] = {}
+        for key, value in raw.items():
+            if isinstance(value, str):
+                step[key] = _expand_params(value, params)
+            elif isinstance(value, dict):
+                step[key] = _expand_params_map(value, params)
+            elif isinstance(value, list):
+                step[key] = [_expand_params_map(item, params) if isinstance(item, dict)
+                             else _expand_params(item, params) if isinstance(item, str)
+                             else item for item in value]
+            else:
+                step[key] = value
+        out.append(step)
+    return out
+
+
+def _expand_params_map(value: Dict[str, Any], params: Dict[str, str]) -> Dict[str, Any]:
+    """Fill the parameters of a nested map."""
+    out: Dict[str, Any] = {}
+    for key, item in value.items():
+        out[key] = _expand_params(item, params) if isinstance(item, str) else item
+    return out
+
+
+def _expand_params(text: str, params: Dict[str, str]) -> str:
+    """Replace the {{name}} placeholders of a text."""
+    if not text or not params:
+        return text
+    for name, value in params.items():
+        text = text.replace("{{" + str(name) + "}}", str(value))
+    return text
 
 
 def _parse_mentions(text: str) -> List[str]:

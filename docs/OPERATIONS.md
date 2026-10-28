@@ -1098,6 +1098,93 @@ Three more things keep a team from fighting itself.
 The chat never reaches the implants: the stream the agents read carries
 tasks and results, never a word of the team.
 
+## 5g. The operator's experience
+
+The console is the product; the server is its engine. This is what the
+console does for the operator who lives in it.
+
+### The shell
+
+The prompt says what the console is looking at right now:
+
+```
+umbra[web-01 · 2/3 online · queue 4 · sleep 30s]>
+```
+
+The history is kept in `~/.umbra/history`, so the last session is where the
+next one starts. The completion knows the commands and the agents by name:
+`work` becomes `workflow`, and `use web-` becomes `use web-01`. A command
+may be written over several lines: a line with an open quote or bracket is
+continued with `... `, so a long JSON argument is written the way it is
+read.
+
+### One task, many agents
+
+```bash
+umbra run --group dc --group web --kind sysinfo --cap 8 --wait
+```
+
+The filter language is the one the server speaks, so the selection is
+written once and used for finding agents and for acting on them. The cap
+is how many answers are waited for at the same time; the progress line
+shows what is coming back, and the table at the end says what every host
+answered.
+
+### The plan
+
+A plan file is a workflow written in a small YAML subset (JSON is a plan
+too):
+
+```yaml
+name: sweep
+params: [target]
+steps:
+  - kind: task
+    agent: "{{target}}"
+    task_kind: shell
+    args:
+      cmd: "systeminfo"
+  - kind: wait
+    seconds: 5
+  - kind: report
+    title: The sweep
+```
+
+```bash
+umbra batch --file sweep.yaml --param target=web-01     # run it here, now
+umbra workflow add sweep --file sweep.yaml              # save it for the team
+umbra workflow run sweep --param target=web-01 --wait   # run it on the server
+```
+
+The plan reader lives in the console and reads the subset itself: no YAML
+library, no dependency, no surprise. A plan that is not a plan is refused
+with the line that is wrong.
+
+### The raw command line
+
+```bash
+umbra rpc task.list '{"agent": "web-01"}'
+umbra rpc task.submit --arg id=web-01 --arg kind=shell --arg args='{"cmd":"id"}'
+```
+
+`umbra rpc` is the escape hatch: every command the server understands is
+reachable from the shell, and `--json` makes the answer machine-readable.
+The shapes of the answers are documented in `docs/PROTOCOL.md`.
+
+### The notebook
+
+The notebook (`~/.umbra/state.db`) holds what the operator collected: the
+sessions, the tasks, the answers, the notes, the findings of the
+reconnaissance, the artefacts that were pulled off a host, the screenshots
+and the material. Everything in it is searchable (`umbra db search admin`),
+and it is written either as JSON or as the Markdown document an operator
+hands over (`umbra db export --out notebook.md`).
+
+The notebook is the operator's own file on the operator's own disk, and it
+holds the value of the material that was collected. Treat it like the
+notebook it is: do not leave it in a shared directory, and do not put it in
+a ticket.
+
 ## 5f. File transfer
 
 ```bash

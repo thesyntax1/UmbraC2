@@ -40,6 +40,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
 	"github.com/thesyntax1/UmbraC2/server/internal/mtls"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
+	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 )
@@ -276,6 +277,10 @@ func run() error {
 				// The dashboard draws the pivots, so it needs the
 				// picture of the reach.
 				Topology: func() any { return pivotMgr.Topology() },
+				// The dashboard runs the operator commands with the
+				// role of the operator it belongs to.
+				Role:    dashboardRole(cfg),
+				Dispatch: srv.DispatchOperator,
 			}, h, logger)
 			go func() {
 				if err := dashSrv.Serve(ctx); err != nil {
@@ -363,6 +368,20 @@ func operatorKeys(cfg *config.Config) [][]byte {
 		}
 	}
 	return out
+}
+
+// dashboardRole is the role the dashboard runs the operator commands with.
+//
+// The dashboard uses the token of the first operator, so it runs with the
+// role of that operator: a viewer token on the dashboard is a viewer
+// everywhere, and the role table is checked by the server.
+func dashboardRole(cfg *config.Config) string {
+	for name := range cfg.Keyring.Operators {
+		if len(cfg.Keyring.Operators[name]) > 0 {
+			return cfg.Keyring.Role(name)
+		}
+	}
+	return rbac.Viewer
 }
 
 // artifactDir is where the server-side file store lives.

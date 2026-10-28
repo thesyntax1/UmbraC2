@@ -6838,3 +6838,415 @@ def test_the_collaboration_is_in_every_implementation():
     assert "| `task.assign` |" in protocol, protocol
     assert "| `chat.operators` |" in protocol, protocol
     assert "| `team.handover` |" in protocol, protocol
+
+
+def test_a_workflow_runs_the_steps_of_a_phase():
+    """A workflow is a named sequence of steps, and it runs on the server."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-workflow-0123456789a"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-workflow")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The workflow is written once and everybody can run it.
+        steps = [
+            {"kind": "task", "agent": "{{target}}", "task_kind": "shell",
+             "args": {"cmd": "id"}},
+            {"kind": "wait", "seconds": 1},
+            {"kind": "report", "title": "The phase"},
+        ]
+        data = client.workflow_add("sweep", steps, description="the first phase",
+                                   params=["target"])
+        assert data["workflow"]["name"] == "sweep", data
+        assert len(data["workflow"]["steps"]) == 3, data
+
+        listing = client.workflow_list()
+        names = [w["name"] for w in listing["workflows"]]
+        assert "sweep" in names, listing
+
+        # A run without its parameters is refused: a workflow that runs the
+        # wrong thing is worse than no workflow at all.
+        with pytest.raises(Exception):
+            client.workflow_run("sweep")
+
+        run = client.workflow_run("sweep", {"target": "agent-workflow"})
+        run_id = run["run_id"]
+        assert run_id, run
+
+        # The run happens on the server; the console watches it.
+        state = ""
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            payload = client.workflow_status(run_id)
+            state = payload["run"]["state"]
+            if state in ("done", "failed", "stopped"):
+                break
+            time.sleep(0.2)
+        assert state == "done", payload
+
+        steps_done = payload["run"]["steps"]
+        assert len(steps_done) == 3, steps_done
+        assert steps_done[0]["kind"] == "task", steps_done
+        assert steps_done[0]["task_id"], steps_done
+        assert steps_done[0]["ok"] is True, steps_done
+        # The report step collects what the task answered.
+        assert "The phase" in payload["run"]["report"], payload["run"]
+
+        # The run is remembered in the catalogue of the runs.
+        listing = client.workflow_list()
+        assert any(r["id"] == run_id for r in listing["runs"]), listing
+
+        # A workflow can be taken out of the catalogue.
+        client.workflow_remove("sweep")
+        listing = client.workflow_list()
+        assert "sweep" not in [w["name"] for w in listing["workflows"]], listing
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_plan_file_is_read_without_a_dependency():
+    """The plan is a small YAML subset, read by the console itself."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli.plan import PlanError, load_plan, parse_plan, plan_steps
+
+    text = """
+name: sweep
+description: sweep the web tier   # the comment
+params: [target, kind]
+steps:
+  - kind: task
+    agent: "{{target}}"
+    task_kind: "{{kind}}"
+    args:
+      cmd: "systeminfo"
+      deep: true
+  - kind: wait
+    seconds: 5
+  - kind: condition
+    condition: ok
+  - kind: report
+    title: The sweep
+"""
+    plan = parse_plan(text)
+    assert plan["name"] == "sweep", plan
+    assert plan["description"] == "sweep the web tier", plan
+    assert plan["params"] == ["target", "kind"], plan
+    steps = plan_steps(plan)
+    assert len(steps) == 4, steps
+    assert steps[0]["agent"] == "{{target}}", steps
+    assert steps[0]["args"]["cmd"] == "systeminfo", steps
+    assert steps[0]["args"]["deep"] is True, steps
+    assert steps[1]["seconds"] == 5, steps
+    assert steps[3]["title"] == "The sweep", steps
+
+    # JSON is a plan too: a pipeline writes what it already has.
+    plan = parse_plan('{"name": "quick", "steps": [{"kind": "task"}]}')
+    assert plan["name"] == "quick", plan
+
+    # A plan that is not a plan is refused, with a reason.
+    with pytest.raises(PlanError):
+        parse_plan("steps: [")
+    with pytest.raises(PlanError):
+        parse_plan("")
+    with pytest.raises(PlanError):
+        plan_steps({"name": "x"})
+
+
+def test_the_operator_experience_is_in_every_implementation():
+    """The workflow layer, the plan and the bulk run are everywhere."""
+    go_link = read_text("server/internal/link/operator.go")
+    for rpc in ("workflow.list", "workflow.add", "workflow.remove",
+                "workflow.run", "workflow.status"):
+        assert rpc in go_link, rpc
+    rbac = read_text("server/internal/rbac/rbac.go")
+    for rpc in ("workflow.list", "workflow.add", "workflow.remove",
+                "workflow.run", "workflow.status"):
+        assert f'"{rpc}"' in rbac, rpc
+
+    store = read_text("server/internal/store/workflow.go")
+    assert "func (s *Store) AddWorkflow(" in store, store
+    assert "func ExpandWorkflow(" in store, store
+    hub = read_text("server/internal/hub/workflow.go")
+    assert "func (h *Hub) RunWorkflow(" in hub, hub
+
+    mock = read_text("tools/mock_server.py")
+    for rpc in ("workflow.list", "workflow.add", "workflow.remove",
+                "workflow.run", "workflow.status"):
+        assert rpc in mock, rpc
+
+    client = read_text("operator/umbra_cli/client.py")
+    for method in ("workflow_list", "workflow_add", "workflow_remove",
+                   "workflow_run", "workflow_status"):
+        assert f"def {method}(" in client, method
+
+    console = read_text("operator/umbra_cli/cli.py")
+    assert '"workflow"' in console, console
+    assert '"batch"' in console, console
+    assert '"rpc"' in console, console
+    flows = read_text("operator/umbra_cli/flows.py")
+    assert "def run_bulk(" in flows, flows
+    assert "def run_plan(" in flows, flows
+    plan = read_text("operator/umbra_cli/plan.py")
+    assert "def parse_plan(" in plan, plan
+
+
+def test_the_notebook_holds_the_material_of_the_engagement():
+    """The notebook keeps the findings, the artefacts and the material."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import db
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "notebook.db")
+        store = db.StateStore(path).open()
+        try:
+            store.start_session("alice", "127.0.0.1:9000", "abc123")
+            store.record_task("t1", "agent-1", "recon", {"profile": "windows"})
+            store.record_result("t1", 0, b"the answer", "")
+
+            store.add_finding("agent-1", "user", "the admin account",
+                              "the account is an administrator", "high", "windows")
+            store.add_artifact("notes.txt", "agent-1", "abc123", "C:/notes.txt", 42)
+            store.add_screenshot("agent-1", "C:/shot.png", "def456", 1024)
+            store.add_credential("agent-1", "password", "admin", "10.0.0.5",
+                                 "Pa55w0rd", "lsass", 90)
+
+            # The search reaches everything the notebook holds.
+            hits = store.search("admin")
+            where = {hit["where"] for hit in hits}
+            assert "finding" in where, hits
+            assert "credential" in where, hits
+            hits = store.search("notes.txt")
+            assert any(hit["where"] == "artifact" for hit in hits), hits
+            hits = store.search("shot.png")
+            assert any(hit["where"] == "screenshot" for hit in hits), hits
+
+            # The counters know the material.
+            stats = store.stats()
+            assert stats["findings"] == 1, stats
+            assert stats["artifacts"] == 1, stats
+            assert stats["screenshots"] == 1, stats
+            assert stats["credentials"] == 1, stats
+
+            # The export is JSON, and the Markdown document is the one an
+            # operator hands over.
+            import json as _json
+
+            target = store.export(os.path.join(tmp, "notebook.json"))
+            with open(target, encoding="utf-8") as handle:
+                payload = _json.load(handle)
+            assert len(payload["findings"]) == 1, payload
+            assert len(payload["credentials"]) == 1, payload
+
+            target = store.export(os.path.join(tmp, "notebook.md"))
+            with open(target, encoding="utf-8") as handle:
+                text = handle.read()
+            assert "The notebook" in text, text[:200]
+            assert "The findings" in text, text[:200]
+            assert "the admin account" in text, text[:400]
+            assert "Pa55w0rd" in text, text[:400]
+        finally:
+            store.close()
+
+        # The notebook of a console that never ran is still a notebook.
+        with db.StateStore(os.path.join(tmp, "fresh.db")).open() as fresh:
+            assert fresh.stats()["tasks"] == 0
+
+
+def test_the_shell_of_the_console_remembers_and_completes():
+    """The prompt completes, the history is kept and a command may span lines."""
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli import shell
+
+    class FakeConsole:
+        class client:  # noqa: N801 - the console only needs the client
+            @staticmethod
+            def agents():
+                return [{"id": "agent-one"}, {"id": "agent-two"}]
+
+        current_agent = "agent-one"
+
+    console = FakeConsole()
+
+    # The commands are completed by their name.
+    assert "workflow" in shell.complete(console, "work"), shell.complete(console, "work")
+    assert shell.complete(console, "zzzz") == []
+
+    # The agents are completed by their id.
+    assert shell.complete(console, "use agent-") == ["agent-one", "agent-two"]
+
+    # A line that is still open is continued.
+    assert shell._unbalanced('{"cmd": "whoami"') is True
+    assert shell._unbalanced('{"cmd": "whoami"}') is False
+    assert shell._unbalanced("run agent-one 'ls -l") is True
+
+    # The status line says what the console is looking at.
+    console._status = {"agents_online": 2, "agents_total": 3,
+                       "tasks_pending": 4, "sleep": 30}
+    line = shell.status_line(console)
+    assert "agent-one" in line, line
+    assert "2/3 online" in line, line
+    assert "queue 4" in line, line
+
+
+def test_the_bulk_run_answers_for_every_agent():
+    """One task, many agents, one cap on the answers waited for."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-bulk-0123456789a"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agents = [FakeAgent(server.address, AGENT_PSK, f"agent-bulk-{i}") for i in range(3)]
+    for agent in agents:
+        agent.start()
+
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli.client import OperatorClient
+    from umbra_cli.flows import render_bulk_table, run_bulk
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and len(client.agents()) < 3:
+            time.sleep(0.05)
+
+        rows = client.submit_bulk("shell", {"cmd": "id"},
+                                  agents=[f"agent-bulk-{i}" for i in range(3)])
+        assert len(rows) == 3, rows
+
+        results = run_bulk(client, None, "shell", {"cmd": "id"}, rows, cap=2, timeout=20)
+        assert len(results) == 3, results
+        for row in results:
+            assert row.get("state") == "done", row
+            assert row.get("code") == 0, row
+
+        table = render_bulk_table(results)
+        assert "agent-bulk-0" in table, table
+        assert "done" in table, table
+    finally:
+        client.close()
+        for agent in agents:
+            agent.stop()
+        server.stop()
+
+
+def test_the_raw_command_line_reaches_the_server():
+    """`umbra rpc` is the escape hatch: every command, from the shell."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-rpc-0123456789abcd"
+    op_token = b"operator-token-rpc-operator-0123"
+    # A viewer may look, but not burn the engagement.
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": op_token},
+                        roles={"alice": "viewer", "bob": "operator"})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-rpc")
+    agent.start()
+
+    from umbra_cli.client import OperatorClient
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    other = OperatorClient(server.address, op_token.decode(), "bob")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        # The raw form of a command.
+        answer = client.rpc("agents.list")
+        assert answer.ok, answer
+        assert answer.data["agents"], answer.data
+
+        # The raw form of a command that is not allowed for this role.
+        answer = client.rpc("agents.panic", {"id": "agent-rpc"})
+        assert not answer.ok, answer
+        assert "permission denied" in answer.error, answer
+
+        # The raw form of a command that queues work, from a console whose
+        # role may do it.
+        other.connect()
+        answer = other.rpc("task.submit", {"id": "agent-rpc", "kind": "shell",
+                                           "args": {"cmd": "id"}})
+        assert answer.ok, answer
+        assert answer.data["task_id"], answer.data
+    finally:
+        client.close()
+        other.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_engagement_report_tells_the_whole_story():
+    """The report carries the inventory, the findings and the timeline."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"operator-token-report-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-report")
+    agent.start()
+
+    sys.path.insert(0, os.path.join(ROOT, "operator"))
+    from umbra_cli.client import OperatorClient
+    from umbra_cli.cli import build_engagement_report
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        deadline = time.time() + 5
+        while time.time() < deadline and not client.agents():
+            time.sleep(0.05)
+
+        task_id = client.submit("agent-report", "recon", {"profile": "windows"})
+        client.wait_for_result(task_id, timeout=15, poll=0.05)
+
+        text = build_engagement_report(client, 50, None)
+        for section in ("# The engagement", "## The hosts", "## The persistence",
+                        "## The tasks", "## The findings", "## The material",
+                        "## The artefacts", "## The timeline", "## The team"):
+            assert section in text, (section, text[:400])
+        assert "agent-report" in text, text[:600]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_dashboard_has_the_panels_the_team_needs():
+    """The dashboard shows the persistence, the vault, the team and the output."""
+    dash = read_text("server/internal/dash/dash.go")
+    for route in ("/api/persistence", "/api/credentials", "/api/workflows",
+                  "/api/workflow", "/api/alerts", "/api/operators", "/api/output"):
+        assert route in dash, route
+
+    page = read_text("server/internal/dash/index.html")
+    for panel in ("persistence", "credentials", "operators", "workflows",
+                  "alerts", "output"):
+        assert f'id="{panel}"' in page, panel
+    assert 'id="rpcForm"' in page, page
+
+    # Every operator command is reachable from the dashboard as well, with
+    # the role of the dashboard attached.
+    assert "/api/rpc" in dash, dash
+    link = read_text("server/internal/link/operator.go")
+    assert "func (s *Server) DispatchOperator(" in link, link

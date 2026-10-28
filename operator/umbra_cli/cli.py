@@ -24,6 +24,9 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__, crypto, db, image, netio, wire
 from .client import CHUNK_MAX, OperatorClient, OperatorError
+from .flows import render_bulk_table, render_workflows, run_bulk, run_plan, split_params
+from .plan import PlanError, load_plan, plan_params, plan_steps
+from .shell import install_readline, read_command, save_history, status_line
 from .vpn import (
     _table,
     print_pivots,
@@ -393,7 +396,9 @@ def build_engagement_report(client: OperatorClient, limit: int,
     """Write the report of the whole engagement as a Markdown document.
 
     It is the document that goes with the handover: every host that was
-    touched, and every task that was run.
+    touched, the timeline of what was done to it, what survives a reboot,
+    what was taken off it, the material that was found and the notes the
+    operator left.
     """
     agents = client.agents()
     lines: List[str] = []
@@ -414,6 +419,27 @@ def build_engagement_report(client: OperatorClient, limit: int,
             agent.get("state", ""), tags))
     lines.append("")
 
+    lines.append("## The persistence")
+    lines.append("")
+    persistence: List[Dict[str, Any]] = []
+    try:
+        persistence = client.persistence_report()
+    except Exception:  # noqa: BLE001 - the report is a convenience
+        persistence = []
+    if not persistence:
+        lines.append("_no host reported a persistence entry_")
+    else:
+        lines.append("| agent | host | persisted | techniques |")
+        lines.append("| --- | --- | --- | --- |")
+        for row in persistence:
+            entries = row.get("entries") or []
+            techniques = ", ".join(
+                str(entry.get("technique", "")) for entry in entries)
+            lines.append("| {} | {} | {} | {} |".format(
+                row.get("agent_id", ""), row.get("host", ""),
+                "yes" if row.get("persisted") else "no", techniques))
+    lines.append("")
+
     lines.append("## The tasks")
     lines.append("")
     tasks = client.tasks("", limit)
@@ -431,6 +457,94 @@ def build_engagement_report(client: OperatorClient, limit: int,
                 task.get("state", ""), err[:80]))
     lines.append("")
 
+    lines.append("## The findings")
+    lines.append("")
+    findings = _report_findings(tasks)
+    if not findings:
+        lines.append("_the reconnaissance found nothing_")
+    else:
+        lines.append("| when | agent | severity | finding | detail |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for finding in findings:
+            lines.append("| {} | {} | {} | {} | {} |".format(
+                finding.get("when", ""), finding.get("agent", ""),
+                finding.get("severity", ""), finding.get("name", ""),
+                finding.get("detail", "")))
+    lines.append("")
+
+    lines.append("## The material")
+    lines.append("")
+    credentials: List[Dict[str, Any]] = []
+    try:
+        credentials = client.creds_list(limit=limit)
+    except Exception:  # noqa: BLE001 - the report is a convenience
+        credentials = []
+    if not credentials:
+        lines.append("_no material was collected_")
+    else:
+        lines.append("| agent | kind | account | target | source | confidence |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for record in credentials:
+            lines.append("| {} | {} | {} | {} | {} | {} |".format(
+                record.get("agent_id", ""), record.get("kind", ""),
+                record.get("account", ""), record.get("target", ""),
+                record.get("source", ""), record.get("confidence", "")))
+    lines.append("")
+
+    lines.append("## The artefacts")
+    lines.append("")
+    artefacts: List[Dict[str, Any]] = []
+    try:
+        artefacts = client.artifact_list()
+    except Exception:  # noqa: BLE001 - the report is a convenience
+        artefacts = []
+    if not artefacts:
+        lines.append("_no artefact was kept_")
+    else:
+        lines.append("| name | size | digest |")
+        lines.append("| --- | --- | --- |")
+        for entry in artefacts:
+            lines.append("| {} | {} | {} |".format(
+                entry.get("name", ""), entry.get("size", ""),
+                str(entry.get("sha256", ""))[:16]))
+    lines.append("")
+
+    lines.append("## The timeline")
+    lines.append("")
+    events = []
+    try:
+        events = (client.events(0, limit) or {}).get("events") or []
+    except Exception:  # noqa: BLE001 - the report is a convenience
+        events = []
+    if not events:
+        lines.append("_the journal is empty_")
+    else:
+        lines.append("| when | event | agent | task |")
+        lines.append("| --- | --- | --- | --- |")
+        for event in events[:limit]:
+            when = str(event.get("at", "") or "")[:19].replace("T", " ")
+            lines.append("| {} | {} | {} | {} |".format(
+                when, event.get("kind", ""), event.get("agent_id", ""),
+                event.get("task_id", "")))
+    lines.append("")
+
+    lines.append("## The team")
+    lines.append("")
+    try:
+        operators = client.operators()
+    except Exception:  # noqa: BLE001 - the report is a convenience
+        operators = []
+    if not operators:
+        lines.append("_the team was alone_")
+    else:
+        lines.append("| operator | role | focus | idle |")
+        lines.append("| --- | --- | --- | --- |")
+        for operator in operators:
+            lines.append("| {} | {} | {} | {}s |".format(
+                operator.get("name", ""), operator.get("role", ""),
+                operator.get("focus") or "-", operator.get("idle_sec", 0)))
+    lines.append("")
+
     if state is not None:
         try:
             notes = state.notes("", limit)
@@ -442,10 +556,33 @@ def build_engagement_report(client: OperatorClient, limit: int,
             for note in notes:
                 when = str(note.get("at", ""))[:19].replace("T", " ")
                 lines.append("- **{}** {} ({})".format(
-                    when, note.get("text", ""), note.get("agent", "")))
+                    when, note.get("body", note.get("text", "")),
+                    note.get("agent", "")))
             lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+def _report_findings(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The findings the reconnaissance left in the task answers."""
+    out: List[Dict[str, Any]] = []
+    for task in tasks:
+        meta = task.get("meta") or {}
+        report = meta.get("recon")
+        if not isinstance(report, dict):
+            continue
+        when = str(task.get("completed") or task.get("created") or "")[:19]
+        for finding in report.get("findings") or []:
+            if not isinstance(finding, dict):
+                continue
+            out.append({
+                "when": when.replace("T", " "),
+                "agent": task.get("agent_id", ""),
+                "severity": finding.get("severity", ""),
+                "name": finding.get("name", ""),
+                "detail": finding.get("detail", ""),
+            })
+    return out
 
 
 def run_task_and_wait(client: OperatorClient, console: Console, agent_id: str,
@@ -854,6 +991,9 @@ class Console:
         # The local notebook is optional: the console works without it.
         self.store = store
         self.session = 0
+        # The numbers of the status line: refreshed after every command, so
+        # the prompt never waits for the server.
+        self._status: Dict[str, Any] = {}
 
     # -- notebook --------------------------------------------------------
     def note_task(self, task_id: str, agent: str, kind: str,
@@ -867,7 +1007,13 @@ class Console:
             pass
 
     def note_result(self, task_id: str, task: Dict[str, Any]) -> None:
-        """Record a task result in the local state database."""
+        """Record a task result in the local state database.
+
+        The material a task produced is kept in the notebook as well: the
+        findings of a reconnaissance, the screenshot of a host, the
+        credentials that were collected.  The notebook is what the operator
+        searches three hours later.
+        """
         if self.store is None or not task_id:
             return
         try:
@@ -879,6 +1025,85 @@ class Console:
             )
         except Exception:  # noqa: BLE001 - never break the console
             pass
+        self.note_material(task)
+
+    def note_material(self, task: Dict[str, Any]) -> None:
+        """Keep the findings, the screenshots and the material of a result."""
+        if self.store is None:
+            return
+        meta = task.get("meta") or {}
+        agent = str(task.get("agent_id", "") or "")
+        try:
+            report = meta.get("recon")
+            if isinstance(report, dict):
+                for finding in report.get("findings") or []:
+                    if not isinstance(finding, dict):
+                        continue
+                    self.store.add_finding(
+                        agent,
+                        str(finding.get("kind", "")),
+                        str(finding.get("name", "")),
+                        str(finding.get("detail", "")),
+                        str(finding.get("severity", "info")),
+                        str(finding.get("source", "")),
+                    )
+            credentials = meta.get("credentials")
+            if isinstance(credentials, list):
+                for record in credentials:
+                    if not isinstance(record, dict):
+                        continue
+                    self.store.add_credential(
+                        str(record.get("agent_id", "") or agent),
+                        str(record.get("kind", "")),
+                        str(record.get("account", "")),
+                        str(record.get("target", "")),
+                        str(record.get("secret", "")),
+                        str(record.get("source", "")),
+                        int(record.get("confidence", 0) or 0),
+                    )
+            screenshot = meta.get("screenshot")
+            if isinstance(screenshot, dict):
+                self.store.add_screenshot(
+                    agent,
+                    str(screenshot.get("path", "")),
+                    str(screenshot.get("sha256", "")),
+                    int(screenshot.get("size", 0) or 0),
+                )
+        except Exception:  # noqa: BLE001 - never break the console
+            pass
+
+    def note_artifact(self, name: str, agent: str = "", digest: str = "",
+                      path: str = "", size: int = 0) -> None:
+        """Keep an artefact the operator pulled off a host."""
+        if self.store is None:
+            return
+        try:
+            self.store.add_artifact(name, agent, digest, path, size)
+        except Exception:  # noqa: BLE001 - never break the console
+            pass
+
+    def refresh_status(self) -> None:
+        """Refresh the numbers of the status line.
+
+        A status line that blocks on a round trip is worse than no status
+        line, so a failure leaves the last numbers in place.
+        """
+        try:
+            stats = self.client.stats()
+        except Exception:  # noqa: BLE001 - the status is a convenience
+            return
+        if not isinstance(stats, dict):
+            return
+        self._status.update(stats)
+        agent = self.current_agent
+        if agent:
+            try:
+                for row in self.client.agents():
+                    if row.get("id") == agent:
+                        self._status["sleep"] = row.get("sleep")
+                        break
+            except Exception:  # noqa: BLE001 - the status is a convenience
+                return
 
     def _resolve(self, agent: Optional[str]) -> str:
         target = agent or self.current_agent
@@ -1112,8 +1337,15 @@ class Console:
                 self.client.set_sleep(self._resolve(None), int(rest[0]), jitter)
                 print("beacon policy updated")
             elif cmd == "kill":
-                res = self.client.rpc("agents.kill", {"id": self._resolve(rest[0] if rest else None)})
-                print("kill task queued" if res.ok else f"error: {res.error}")
+                # `kill` is the abrupt one, `kill-soft` lets the agent
+                # finish the work it has in hand first.
+                agent = self._resolve(rest[0] if rest else None)
+                if len(rest) > 1 and rest[1] == "soft":
+                    self.client.kill_agent(agent, exit_after=True)
+                    print("exit task queued")
+                else:
+                    self.client.kill_agent(agent)
+                    print("kill task queued")
             elif cmd in ("cancel", "kill-task"):
                 if not rest:
                     print("usage: cancel <task-id>")
@@ -1148,9 +1380,22 @@ class Console:
                             return True
                         note_id = self.store.add_note(value, "")
                         print(f"note {note_id} recorded")
+                    elif action == "findings":
+                        print_db_findings(self.store.findings(value, 20))
+                    elif action == "artifacts":
+                        print_db_artifacts(self.store.artifacts(value, 20))
+                    elif action == "screenshots":
+                        print_db_screenshots(self.store.screenshots(value, 20))
+                    elif action == "creds":
+                        print_db_credentials(self.store.credentials(value, 20))
+                    elif action == "export":
+                        target = value or "umbra-state.md"
+                        path = self.store.export(target)
+                        print(f"notebook written to {path}")
                     else:
                         print(f"unknown db action {action!r} "
-                              "(stats|tasks|results|notes|search|note)")
+                              "(stats|tasks|results|notes|search|note|findings|"
+                              "artifacts|screenshots|creds|export)")
                 except db.StateError as exc:
                     print(f"local state error: {exc}")
             elif cmd in ("audit", "log"):
@@ -1417,13 +1662,93 @@ class Console:
                 print(script)
             elif cmd == "stats":
                 print(json.dumps(self.client.stats(), indent=2, default=str, sort_keys=True))
-            elif cmd == "raw":
+            elif cmd in ("test-event", "testevent"):
+                # One event of our own, to check that the stream of the
+                # server reaches this console.
+                answer = self.client.test_event(rest[0] if rest else "test.ping")
+                print(f"event {answer.get('seq', '?')} queued")
+            elif cmd in ("raw", "rpc"):
                 if len(rest) < 1:
                     print("usage: raw <command> [json-args]")
                     return True
                 args = json.loads(" ".join(rest[1:])) if len(rest) > 1 else {}
                 res = self.client.rpc(rest[0], args)
                 print(json.dumps({"ok": res.ok, "data": res.data, "error": res.error}, indent=2, default=str))
+            elif cmd in ("batch", "plan"):
+                # The plan, from the prompt of the console.
+                if len(rest) < 1:
+                    print("usage: batch <plan-file> [key=value ...]")
+                    return True
+                try:
+                    plan = load_plan(rest[0])
+                    steps = plan_steps(plan)
+                except PlanError as exc:
+                    print(f"the plan is not usable: {exc}")
+                    return True
+                params, broken = split_params(rest[1:])
+                if broken:
+                    print("the parameters must be key=value: " + ", ".join(broken))
+                    return True
+                outcome = run_plan(self.client, self, steps, params)
+                for entry in outcome["steps"]:
+                    mark = "ok " if entry.get("ok") else "!! "
+                    detail = entry.get("detail") or entry.get("err") or ""
+                    print(f"{mark}{entry.get('index')} {entry.get('kind')} {detail}")
+                if outcome.get("report"):
+                    print()
+                    print(outcome["report"])
+            elif cmd == "workflow":
+                if len(rest) < 1 or rest[0] == "list":
+                    payload = self.client.workflow_list()
+                    print(render_workflows(payload))
+                    return True
+                action = rest[0]
+                if action == "add" and len(rest) > 2:
+                    plan = load_plan(rest[2])
+                    self.client.workflow_add(rest[1], plan_steps(plan),
+                                             description=str(plan.get("description", "")),
+                                             params=plan_params(plan))
+                    print(f"workflow {rest[1]} written")
+                    return True
+                if action == "rm" and len(rest) > 1:
+                    self.client.workflow_remove(rest[1])
+                    print(f"workflow {rest[1]} removed")
+                    return True
+                if action == "run" and len(rest) > 1:
+                    params, broken = split_params(rest[2:])
+                    if broken:
+                        print("the parameters must be key=value: " + ", ".join(broken))
+                        return True
+                    data = self.client.workflow_run(rest[1], params)
+                    print(f"workflow {rest[1]} started as {data.get('run_id', '')}")
+                    return True
+                if action == "status" and len(rest) > 1:
+                    payload = self.client.workflow_status(rest[1])
+                    run = payload.get("run") or {}
+                    print(f"run {run.get('id', '')}: {run.get('state', '')}")
+                    for step in run.get("steps") or []:
+                        mark = "ok " if step.get("ok") else "!! "
+                        print(f"  {mark}{step.get('index')} {step.get('kind')} "
+                              f"{step.get('detail', '')}")
+                    return True
+                print("usage: workflow list | add <name> <file> | rm <name> | "
+                      "run <name> [k=v ...] | status <run-id>")
+                return True
+            elif cmd == "bulk":
+                # One task, many agents, from the prompt of the console.
+                if len(rest) < 2:
+                    print("usage: bulk <kind> <filter> [k=v ...]")
+                    return True
+                kind = rest[0]
+                filters = parse_filter(rest[1])
+                args, broken = split_params(rest[2:])
+                if broken:
+                    print("the arguments must be key=value: " + ", ".join(broken))
+                    return True
+                rows = self.client.submit_bulk(kind, args, **filters)
+                results = run_bulk(self.client, self, kind, args, rows)
+                print(render_bulk_table(results))
+                return True
             else:
                 print(f"unknown command {cmd!r} (try `help`)")
         except OperatorError as exc:
@@ -1528,6 +1853,13 @@ def print_help() -> None:
   kill [agent-id]           tell an agent to exit
   audit [limit]             recent operator actions (audit trail)
   stats                     server statistics
+  rpc <cmd> [json]          send one raw command to the server
+  batch <plan-file> [k=v]   run a plan file, step by step
+  workflow list|add|rm|run|status   the named sequences of steps
+  bulk <kind> <filter>      one task on many agents, with a cap
+  inbox                     the tasks that were handed to you
+  assign <task-id> <op>     hand a task to a colleague
+  handover                  the handover document of the engagement
   pivot [list|open|close|claims|release]
                           pivot through an agent (socks5 / port forward)
   vpn [status|peers|alloc|routes|route|ping]  the layer-3 tunnel
@@ -1713,6 +2045,51 @@ def print_db_search(rows: List[Dict[str, Any]]) -> None:
                   f"(code {row.get('code', 0)}): {row.get('excerpt', '')}")
 
 
+def print_db_findings(rows: List[Dict[str, Any]]) -> None:
+    """Render the findings of the notebook."""
+    if not rows:
+        print("_no finding was recorded_")
+        return
+    print(table(["WHEN", "AGENT", "SEVERITY", "KIND", "FINDING", "DETAIL"],
+                [[str(r.get("created", "")), str(r.get("agent", "")),
+                  str(r.get("severity", "")), str(r.get("kind", "")),
+                  str(r.get("name", "")), str(r.get("detail", ""))[:60]]
+                 for r in rows]))
+
+
+def print_db_artifacts(rows: List[Dict[str, Any]]) -> None:
+    """Render the artefacts of the notebook."""
+    if not rows:
+        print("_no artefact was kept_")
+        return
+    print(table(["WHEN", "AGENT", "NAME", "SIZE", "DIGEST"],
+                [[str(r.get("created", "")), str(r.get("agent", "")),
+                  str(r.get("name", "")), str(r.get("size", "")),
+                  str(r.get("digest", ""))[:16]] for r in rows]))
+
+
+def print_db_screenshots(rows: List[Dict[str, Any]]) -> None:
+    """Render the screenshots of the notebook."""
+    if not rows:
+        print("_no screenshot was taken_")
+        return
+    print(table(["WHEN", "AGENT", "PATH", "SIZE"],
+                [[str(r.get("created", "")), str(r.get("agent", "")),
+                  str(r.get("path", "")), str(r.get("size", ""))] for r in rows]))
+
+
+def print_db_credentials(rows: List[Dict[str, Any]]) -> None:
+    """Render the material of the notebook."""
+    if not rows:
+        print("_no material was collected_")
+        return
+    print(table(["WHEN", "AGENT", "KIND", "ACCOUNT", "TARGET", "VALUE"],
+                [[str(r.get("created", "")), str(r.get("agent", "")),
+                  str(r.get("kind", "")), str(r.get("account", "")),
+                  str(r.get("target", "")), str(r.get("secret", ""))]
+                 for r in rows]))
+
+
 def run_db_command(args: argparse.Namespace) -> int:
     """`umbra db ...` -- the local notebook; it needs no server connection."""
     store = open_state(args.db)
@@ -1769,6 +2146,30 @@ def run_db_command(args: argparse.Namespace) -> int:
                                  indent=2, sort_keys=True))
             else:
                 print(f"note {note_id} recorded")
+        elif args.action == "findings":
+            rows = store.findings(args.agent or args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_findings(rows)
+        elif args.action == "artifacts":
+            rows = store.artifacts(args.agent or args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_artifacts(rows)
+        elif args.action == "screenshots":
+            rows = store.screenshots(args.agent or args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_screenshots(rows)
+        elif args.action == "creds":
+            rows = store.credentials(args.agent or args.value, args.limit)
+            if args.json:
+                print(json.dumps(rows, indent=2, sort_keys=True, default=json_default))
+            else:
+                print_db_credentials(rows)
         else:  # export
             target = args.out or "umbra-state.json"
             path = store.export(target)
@@ -1889,17 +2290,61 @@ def build_parser() -> argparse.ArgumentParser:
     sched.add_argument("--args", default="{}", help="task arguments as JSON (add)")
     sub.add_parser("stats", help="server statistics")
 
+    test_event = sub.add_parser("test-event",
+                                 help="put one event of your own into the journal")
+    test_event.add_argument("--kind", default="test.ping", help="the kind of the event")
+
     audit_cmd = sub.add_parser("audit", help="recent operator actions (audit trail)")
     audit_cmd.add_argument("--limit", type=int, default=50)
 
     info = sub.add_parser("info", help="show one agent")
     info.add_argument("agent")
 
-    run = sub.add_parser("run", help="queue a shell command")
-    run.add_argument("agent")
+    run = sub.add_parser("run", help="queue a shell command, or one task on many agents")
+    run.add_argument("agent", nargs="?", default="")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.add_argument("--wait", action="store_true", help="wait for and print the result")
     run.add_argument("--timeout", type=float, default=120.0)
+    run.add_argument("--kind", dest="kind_flag", default="",
+                     help="the task kind of a bulk run")
+    run.add_argument("--args", default="{}", help="the task arguments as JSON (bulk run)")
+    run.add_argument("--group", default="",
+                     help="the tag of the agents of a bulk run")
+    run.add_argument("--agents", default="",
+                     help="comma separated agent ids of a bulk run")
+    run.add_argument("--filter", default="",
+                     help="the filter of a bulk run: state=online,os=windows")
+    run.add_argument("--cap", type=int, default=4,
+                     help="how many answers are waited for at the same time (bulk run)")
+
+    # -- the raw command line ---------------------------------------------
+    rpc = sub.add_parser("rpc", help="send one raw command to the server")
+    rpc.add_argument("command")
+    rpc.add_argument("args", nargs="?", default="",
+                     help="the arguments of the command as JSON")
+    rpc.add_argument("--arg", action="append", default=[],
+                     help="one argument as key=value, repeatable")
+
+    # -- the plan ----------------------------------------------------------
+    batch = sub.add_parser("batch", help="run a plan file, step by step")
+    batch.add_argument("--file", required=True, help="the plan file")
+    batch.add_argument("--param", action="append", default=[],
+                       help="one parameter of the plan as key=value, repeatable")
+    batch.add_argument("--no-wait", action="store_true",
+                       help="queue the steps without waiting for the answers")
+    batch.add_argument("--timeout", type=float, default=120.0)
+
+    # -- the workflow layer ------------------------------------------------
+    workflow = sub.add_parser("workflow", help="the named sequences of steps")
+    workflow.add_argument("action", choices=["list", "add", "rm", "run", "status"])
+    workflow.add_argument("name", nargs="?", default="")
+    workflow.add_argument("--file", default="", help="the plan file (add)")
+    workflow.add_argument("--description", default="", help="one line about it (add)")
+    workflow.add_argument("--param", action="append", default=[],
+                          help="one parameter as key=value (run), repeatable")
+    workflow.add_argument("--wait", action="store_true",
+                          help="wait for the run to finish (run)")
+    workflow.add_argument("--timeout", type=float, default=300.0)
 
     task = sub.add_parser("task", help="queue an arbitrary task")
     task.add_argument("agent", nargs="?", default="", help="agent id")
@@ -2448,7 +2893,8 @@ def build_parser() -> argparse.ArgumentParser:
     # -- local state ------------------------------------------------------
     dbcmd = sub.add_parser("db", help="the console's local state database (SQLite)")
     dbcmd.add_argument("action", choices=[
-        "stats", "tasks", "results", "notes", "search", "note", "export"])
+        "stats", "tasks", "results", "notes", "search", "note", "export",
+        "findings", "artifacts", "screenshots", "creds"])
     dbcmd.add_argument("value", nargs="?", default="",
                        help="agent id, task id or search term (depends on the action)")
     dbcmd.add_argument("--limit", type=int, default=50)
@@ -2508,17 +2954,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                   file=sys.stderr)
 
         if args.cmd is None:
-            # interactive shell
+            # The interactive shell: the history, the completion and a
+            # prompt that says what the console is looking at.
             print(BANNER)
+            install_readline(console)
+            console.refresh_status()
             while True:
                 try:
-                    prompt = f"umbra[{console.current_agent or '-'}]> "
-                    line = input(prompt)
+                    prompt = f"umbra[{status_line(console)}]> "
+                    line = read_command(prompt, console)
                 except (EOFError, KeyboardInterrupt):
                     print()
                     break
                 if not console.run_command(line):
                     break
+                console.refresh_status()
+            save_history(console)
             return 0
 
         if args.cmd == "agents":
@@ -2654,6 +3105,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "operators":
             rows = client.operators()
             emit(rows) if args.json else print_operators(rows)
+        elif args.cmd == "test-event":
+            answer = client.test_event(args.kind)
+            if args.json:
+                emit(answer)
+            else:
+                print(f"event {answer.get('seq', '?')} queued")
         elif args.cmd == "stats":
             emit(client.stats())
         elif args.cmd == "audit":
@@ -2666,6 +3123,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             emit(client.agent_info(args.agent))
         elif args.cmd == "run":
             command = " ".join(args.command).strip()
+            filters = parse_filter(args.filter)
+            if args.group:
+                filters["tag"] = args.group
+            bulk_agents = [a.strip() for a in args.agents.split(",") if a.strip()]
+            if filters or bulk_agents:
+                # The bulk path: one kind of task, many agents, one cap on
+                # how many answers are waited for at the same time.
+                if not args.kind_flag:
+                    print("a bulk run needs --kind", file=sys.stderr)
+                    return 2
+                try:
+                    task_args = json.loads(args.args)
+                except json.JSONDecodeError as exc:
+                    print(f"invalid --args json: {exc}", file=sys.stderr)
+                    return 2
+                rows = client.submit_bulk(args.kind_flag, task_args,
+                                          agents=bulk_agents or None, **filters)
+                for row in rows:
+                    console.note_task(str(row.get("task_id", "")),
+                                      str(row.get("agent_id", "")),
+                                      args.kind_flag, task_args)
+                results = run_bulk(client, console, args.kind_flag, task_args, rows,
+                                   cap=args.cap, timeout=args.timeout, wait=args.wait)
+                if args.json:
+                    emit({"tasks": results, "count": len(results)})
+                else:
+                    print(f"queued {len(results)} task(s) of kind {args.kind_flag}")
+                    print(render_bulk_table(results))
+                return 0
+            if not args.agent:
+                print("no agent given", file=sys.stderr)
+                return 2
             if not command:
                 print("no command given", file=sys.stderr)
                 return 2
@@ -2741,6 +3230,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
             if bar is not None:
                 bar(info["bytes"], info["bytes"], final=True)
+            if args.cmd == "download":
+                # The artefact is kept in the notebook: the file on the disk
+                # of the operator and the record of what it was.
+                console.note_artifact(
+                    os.path.basename(info.get("path", "") or args.local),
+                    args.agent, str(info.get("sha256", "")),
+                    args.remote, int(info.get("bytes", 0) or 0))
             emit(info) if args.json else print(
                 f"{args.cmd} {info['path']} {info['bytes']} bytes in {info['chunks']} chunk(s)"
                 f" sha256={info['sha256'][:16]}…"
@@ -3433,6 +3929,159 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"wrote {args.out} ({len(text)} bytes)")
             else:
                 print(text, end="")
+        elif args.cmd == "rpc":
+            # The raw command line: the escape hatch for everything the
+            # console does not have a button for.
+            payload: Dict[str, Any] = {}
+            if args.args:
+                try:
+                    loaded = json.loads(args.args)
+                except json.JSONDecodeError as exc:
+                    print(f"invalid json: {exc}", file=sys.stderr)
+                    return 2
+                if not isinstance(loaded, dict):
+                    print("the arguments must be a json object", file=sys.stderr)
+                    return 2
+                payload.update(loaded)
+            pairs, broken = split_params(args.arg)
+            for key, value in pairs.items():
+                payload[key] = value
+            if broken:
+                print("the arguments must be key=value: " + ", ".join(broken),
+                      file=sys.stderr)
+                return 2
+            res = client.rpc(args.command, payload)
+            if args.json:
+                emit({"ok": res.ok, "data": res.data, "error": res.error})
+            elif res.ok:
+                print(json.dumps(res.data, indent=2, default=str, sort_keys=True))
+            else:
+                print(f"error: {res.error}", file=sys.stderr)
+                return 1
+        elif args.cmd == "batch":
+            # The plan: one file, one line, a whole phase of the engagement.
+            try:
+                plan = load_plan(args.file)
+                steps = plan_steps(plan)
+            except PlanError as exc:
+                print(f"the plan is not usable: {exc}", file=sys.stderr)
+                return 2
+            params, broken = split_params(args.param)
+            if broken:
+                print("the parameters must be key=value: " + ", ".join(broken),
+                      file=sys.stderr)
+                return 2
+            missing = [name for name in plan_params(plan)
+                       if not str(params.get(name, "")).strip()]
+            if missing:
+                print("the plan needs: " + ", ".join(missing), file=sys.stderr)
+                return 2
+            outcome = run_plan(client, console, steps, params,
+                               wait=not args.no_wait, timeout=args.timeout)
+            if args.json:
+                emit(outcome)
+            else:
+                for entry in outcome["steps"]:
+                    mark = "ok " if entry.get("ok") else "!! "
+                    detail = entry.get("detail") or entry.get("err") or ""
+                    print(f"{mark}{entry.get('index')} {entry.get('kind')} {detail}")
+                if outcome.get("report"):
+                    print()
+                    print(outcome["report"])
+        elif args.cmd == "workflow":
+            if args.action == "list":
+                payload = client.workflow_list()
+                if args.json:
+                    emit(payload)
+                else:
+                    print(render_workflows(payload))
+            elif args.action == "add":
+                if not args.name:
+                    print("usage: umbra workflow add <name> --file plan.yaml",
+                          file=sys.stderr)
+                    return 2
+                if not args.file:
+                    print("a workflow is written from a plan file", file=sys.stderr)
+                    return 2
+                try:
+                    plan = load_plan(args.file)
+                    steps = plan_steps(plan)
+                except PlanError as exc:
+                    print(f"the plan is not usable: {exc}", file=sys.stderr)
+                    return 2
+                description = args.description or str(plan.get("description", ""))
+                data = client.workflow_add(args.name, steps,
+                                           description=description,
+                                           params=plan_params(plan))
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"workflow {args.name} written")
+            elif args.action == "rm":
+                if not args.name:
+                    print("usage: umbra workflow rm <name>", file=sys.stderr)
+                    return 2
+                client.workflow_remove(args.name)
+                if args.json:
+                    emit({"removed": args.name})
+                else:
+                    print(f"workflow {args.name} removed")
+            elif args.action == "status":
+                if not args.name:
+                    print("usage: umbra workflow status <run-id>", file=sys.stderr)
+                    return 2
+                payload = client.workflow_status(args.name)
+                run = payload.get("run") or {}
+                if args.json:
+                    emit(payload)
+                else:
+                    print(f"run {run.get('id', '')} of {run.get('workflow', '')}: "
+                          f"{run.get('state', '')}")
+                    for step in run.get("steps") or []:
+                        mark = "ok " if step.get("ok") else "!! "
+                        print(f"  {mark}{step.get('index')} {step.get('kind')} "
+                              f"{step.get('detail', '')}")
+                    if run.get("report"):
+                        print()
+                        print(run["report"])
+            else:
+                if not args.name:
+                    print("usage: umbra workflow run <name> [--param key=value]",
+                          file=sys.stderr)
+                    return 2
+                params, broken = split_params(args.param)
+                if broken:
+                    print("the parameters must be key=value: " + ", ".join(broken),
+                          file=sys.stderr)
+                    return 2
+                data = client.workflow_run(args.name, params)
+                run_id = str(data.get("run_id", ""))
+                if args.json and not args.wait:
+                    emit(data)
+                else:
+                    print(f"workflow {args.name} started as {run_id}")
+                if args.wait and run_id:
+                    # The run happens on the server; the console watches it.
+                    deadline = time.time() + args.timeout
+                    state = ""
+                    while time.time() < deadline:
+                        payload = client.workflow_status(run_id)
+                        run = payload.get("run") or {}
+                        state = str(run.get("state", ""))
+                        if state in ("done", "failed", "stopped"):
+                            break
+                        time.sleep(1.0)
+                    if args.json:
+                        emit(payload)
+                    else:
+                        print(f"run {run_id}: {state}")
+                        for step in (payload.get("run") or {}).get("steps") or []:
+                            mark = "ok " if step.get("ok") else "!! "
+                            print(f"  {mark}{step.get('index')} {step.get('kind')} "
+                                  f"{step.get('detail', '')}")
+                        if (payload.get("run") or {}).get("report"):
+                            print()
+                            print((payload.get("run") or {})["report"])
         elif args.cmd == "browse":
             run_task_and_wait(client, console, args.agent, "find",
                               {"path": args.path, "name": "", "content": "", "max": args.max},

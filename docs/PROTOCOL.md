@@ -549,6 +549,11 @@ Operator RPC commands, with the minimum role each requires:
 | `creds.list` | viewer | the credential vault: the shape of the material, without the value |
 | `creds.search` | viewer | the records of the vault that match a `query` |
 | `creds.export` | operator | the material with its value; the server needs a vault key |
+| `workflow.list` | viewer | the catalogue of the named sequences of steps, and the last runs |
+| `workflow.add` | operator | write a workflow: `name`, `steps`, `description`, `params`; a workflow with the same name replaces the old one |
+| `workflow.remove` | operator | take a workflow out of the catalogue |
+| `workflow.run` | operator | start a workflow: `name`, `params`; the run happens on the server and the answer is a run id |
+| `workflow.status` | viewer | the state of one run: the steps, their answers and the report they wrote |
 
 ### 7.2a Selecting agents
 
@@ -1090,6 +1095,96 @@ when the operator who ran the engagement goes home: the inventory, the open
 work, the findings of the reconnaissance, the persistence, the open
 sessions, the artefacts, the team and the last moves of the journal. The
 console renders it as Markdown and adds the notes of its own notebook.
+
+### 7.2m The workflow layer
+
+A workflow is a **named, parameterised sequence of steps**. It is the text
+form of an engagement phase: "sweep every web server, collect the
+reconnaissance of the ones that answer, write the report". The steps are
+data, so the team writes them without touching the server, and everybody
+runs the same one.
+
+The steps the server knows:
+
+| step | what it does |
+|---|---|
+| `task` | runs one task on one agent and waits for the answer |
+| `chain` | runs a multi-stage task on one agent |
+| `wait` | waits for a number of seconds |
+| `condition` | looks at the answer of the step before it; the rest of the workflow stops when it is not met |
+| `report` | collects what the workflow found so far |
+
+A parameter is written `{{name}}` in the text of a step:
+
+```json
+{
+  "name": "sweep",
+  "description": "sweep the web tier",
+  "params": ["target", "kind"],
+  "steps": [
+    {"kind": "task", "agent": "{{target}}", "task_kind": "{{kind}}",
+     "args": {"cmd": "systeminfo"}},
+    {"kind": "wait", "seconds": 5},
+    {"kind": "condition", "condition": "ok"},
+    {"kind": "report", "title": "The sweep"}
+  ]
+}
+```
+
+**The run happens on the server.** `workflow.run` starts it and answers with
+a run id; the run walks the steps in the background, writes what each step
+did into the run, and ends in `done`, `failed` or `stopped`. The console
+watches it with `workflow.status`, and the dashboard runs it from the
+panel. A run that is interrupted still says what it did: every step is
+written to the run before the next one starts.
+
+A workflow whose parameters nobody gave is **refused**, not run with the
+placeholder still in it: a workflow that runs the wrong thing is worse than
+no workflow at all.
+
+The catalogue lives in the state file of the server, so a workflow written
+by one operator is there for the next one and for the next run of the
+server.
+
+### 7.2n The shapes of the console's JSON
+
+Every command of the console answers either a table for a human or a JSON
+document for a program. The JSON is the contract a pipeline writes
+against, so the shapes are written down here.
+
+`--json` answers one of these:
+
+| command | the JSON is |
+|---|---|
+| `agents` | a list of the agent records (§7.2) |
+| `tasks` | a list of the task records (§7.2) |
+| `result` | the task record, with `out` as the text of the answer |
+| `events` | `{"events": [...], "count": n}` — the journal, oldest first |
+| `operators` | a list of the presence records (§7.2l) |
+| `creds-list` | a list of the vault records, without the value |
+| `creds-export` | a list of the vault records, with the value |
+| `workflow list` | `{"workflows": [...], "count": n, "runs": [...]}` |
+| `workflow run` | `{"run_id": "...", "run": {...}}` |
+| `workflow status` | `{"run": {...}}` — the steps, their answers and the report |
+| `rpc` | `{"ok": true, "data": {...}}` — the raw answer of the command |
+| `db export` | the whole notebook (§5a of the operations manual) |
+
+The rules that hold for all of them:
+
+* the **keys are sorted**, so a diff of two answers is a diff of the
+  engagement and not of the hash order;
+* the **bytes are text**: `out` is the answer as a string, so a pipeline
+  does not have to guess whether it is base64;
+* the **numbers are numbers**, and a missing field is missing rather than
+  zero;
+* **nothing is a secret** unless the command is one that hands out
+  secrets (`creds-export`): the value of a credential is only in the
+  answer of that command, and the server checks the role before it
+  answers it.
+
+`umbra rpc` is the raw form of all of it: it sends one command and prints
+the answer of the server, so a pipeline that needs a command the console
+does not have a button for is still one line away.
 
 ### 7.3 Pivoting, tunnels and the layer-3 VPN
 

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thesyntax1/UmbraC2/server/internal/config"
 )
 
 // Agent lifecycle states.
@@ -390,6 +392,14 @@ type snapshot struct {
 	// Credentials is the vault.  The secrets in it are already encrypted
 	// when the operator configured a key.
 	Credentials []*Credential `json:"credentials,omitempty"`
+	// Workflows is the catalogue of the named sequences of steps, and Runs
+	// keeps what the last executions of them did.
+	Workflows []*Workflow    `json:"workflows,omitempty"`
+	Runs      []*WorkflowRun `json:"workflow_runs,omitempty"`
+	// AlertRules are the rules the team wrote at runtime.  The ones in
+	// the configuration file are the ones the server starts with; these
+	// are the ones it runs with.
+	AlertRules []config.AlertRule `json:"alert_rules,omitempty"`
 }
 
 // binMarker is the key a binary argument is wrapped in on its way to disk.
@@ -473,7 +483,7 @@ func decodeValue(v any) any {
 }
 
 // snapshotVersion is the layout this build writes and understands.
-const snapshotVersion = 2
+const snapshotVersion = 3
 
 // backupPath is the previous generation: the snapshot that was current before
 // the last successful save.
@@ -493,6 +503,16 @@ type Store struct {
 	// credentials is the vault of the engagement: the material the
 	// implants collected, with the source and the confidence.
 	credentials map[string]*Credential
+
+	// workflows is the catalogue of the named sequences of steps, and
+	// runs keeps what the last executions of them did.
+	workflows   map[string]*Workflow
+	workflowOrder []string
+	runs        map[string]*WorkflowRun
+	runOrder    []string
+
+	// alertRules are the rules the team wrote at runtime.
+	alertRules []config.AlertRule
 
 	// writeMu serialises file writes. Without it two goroutines shared one
 	// "<path>.tmp" file and could rename a half-rewritten document into place.
@@ -581,6 +601,8 @@ func Open(path string) (*Store, error) {
 		tasks:       make(map[string]*Task),
 		schedules:   make(map[string]*Schedule),
 		credentials: make(map[string]*Credential),
+		workflows:   make(map[string]*Workflow),
+		runs:        make(map[string]*WorkflowRun),
 	}
 	if path == "" {
 		return s, nil
@@ -618,6 +640,21 @@ func Open(path string) (*Store, error) {
 			continue
 		}
 		s.credentials[c.ID] = c
+	}
+	s.alertRules = append(s.alertRules, snap.AlertRules...)
+	for _, w := range snap.Workflows {
+		if w == nil || w.Name == "" {
+			continue
+		}
+		s.workflows[w.Name] = w
+		s.workflowOrder = append(s.workflowOrder, w.Name)
+	}
+	for _, r := range snap.Runs {
+		if r == nil || r.ID == "" {
+			continue
+		}
+		s.runs[r.ID] = r
+		s.runOrder = append(s.runOrder, r.ID)
 	}
 	for _, sc := range snap.Schedules {
 		if sc.ID == "" {
@@ -1432,6 +1469,17 @@ func (s *Store) Save() error {
 	}
 	for _, c := range s.credentials {
 		snap.Credentials = append(snap.Credentials, c.Clone())
+	}
+	for _, name := range s.workflowOrder {
+		if w := s.workflows[name]; w != nil {
+			snap.Workflows = append(snap.Workflows, w.Clone())
+		}
+	}
+	snap.AlertRules = append(snap.AlertRules, s.alertRules...)
+	for _, id := range s.runOrder {
+		if r := s.runs[id]; r != nil {
+			snap.Runs = append(snap.Runs, r.Clone())
+		}
 	}
 	s.mu.RUnlock()
 
