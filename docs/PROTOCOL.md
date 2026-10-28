@@ -778,12 +778,13 @@ beacon knows seventeen Windows techniques (the `Run` keys, `Winlogon`,
 `AppInit_DLLs`, the Image File Execution Options, a COM hijack, a print
 monitor, a shell extension, a scheduled task, a task from an XML definition,
 a service, a service DLL shim, the startup folder, a boot execute entry, a
-permanent WMI event subscription and a DLL search-order hijack), fourteen on
+permanent WMI event subscription and a DLL search-order hijack), fifteen on
 Linux (a systemd system unit, a systemd user unit, a systemd timer, a
 drop-in that hooks into a unit that already exists, a user crontab, an
 `/etc/cron.d` entry, `rc.local`, an init script, a shell profile hook, a
-shell alias wrapper, the `ld_preload` technique, an XDG autostart entry, an
-`at` job and a kernel module) and six on macOS (a launch agent, a launch
+shell alias wrapper, an environment source in `/etc/profile`, the
+`ld_preload` technique, an XDG autostart entry, an `at` job and a kernel
+module) and six on macOS (a launch agent, a launch
 daemon, a login item, a shell rc hook, a crontab and an XDG autostart
 entry). The phone has seven: the boot receiver, the sticky foreground
 service, the alarm, a job scheduler entry, the re-launch after an update of

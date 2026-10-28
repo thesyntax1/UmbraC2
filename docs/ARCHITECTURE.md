@@ -503,8 +503,8 @@ back to.
 
 Done (the persistence engine): the start-up entries are a manager around a
 catalogue of techniques instead of one scheduled task
-(`implant/rust/src/persist.rs`): fourteen Windows techniques, thirteen on
-Linux, five on macOS and three on the phone, each of which knows how to
+(`implant/rust/src/persist.rs`): seventeen Windows techniques, fifteen on
+Linux, six on macOS and seven on the phone, each of which knows how to
 install itself, how to read itself back and how to take itself away.  The
 manager picks the quietest technique the host can carry, installs it
 idempotently, verifies it, and keeps its own record in the canonical `upk`
@@ -514,6 +514,25 @@ lifecycle travels over the wire (`persist`, `unpersist`, `persist.list`,
 entries with the agent (`store.Agent.Persist`), the inventory filters on
 them (`persisted=yes`), a broken entry raises `persist.broken` on the event
 stream, and the console has the fleet report (`umbra persist-report`).
+
+The catalogue is not a list of names: the quiet ones are the start-up
+folder, the service, the cron, the systemd unit, the launch agent, the
+registry run key, and they are the ones the manager picks on its own.
+The loud ones exist because an operator sometimes needs them, and they
+are honest about their cost: the permanent WMI subscription (nothing of
+the implant touches the disk, but the subscription is there for anyone
+who looks), the DLL search-order hijack (a file sits next to a
+legitimate program), the service that loads a DLL instead of a program,
+the systemd drop-in that hooks the implant into a unit that already
+runs, and the kernel module (the loudest technique in the catalogue).
+On the phone the same rule holds: the boot receiver, the foreground
+service, the alarm and the job scheduler are the quiet ones; the
+accessibility service and the device-owner enrolment are visible to the
+user of the phone, and the report says so instead of pretending
+otherwise.  A technique that needs something from the operator (the
+module to plant, the directory of the program, the unit to hook, the
+accessibility toggle in the settings of the phone) says what it needs
+and refuses to lie about the result.
 
 Done (the posture engine): the implant knows what the host looks like
 (`implant/rust/src/evade.rs`) and says so, instead of only answering "is

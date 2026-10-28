@@ -14,10 +14,14 @@ import java.io.File
 /**
  * The persistence of the implant on a phone.
  *
- * A phone is not a server, so the catalogue is small: the three techniques
- * that actually make the implant come back are the boot receiver, the
- * sticky foreground service and the alarm that wakes the service when the
- * system kills it.  The shape of the manager is the same as on the desktop
+ * A phone is not a server, so the catalogue is small: the techniques that
+ * actually make the implant come back are the boot receiver, the sticky
+ * foreground service, the alarm that wakes the service when the system
+ * kills it, the job scheduler of the system and the re-launch after an
+ * update of the application.  Two more are loud: the accessibility
+ * service and the enrolment as the device owner are visible to the user of
+ * the phone, and the report says so.  The shape of the manager is the same
+ * as on the desktop
  * (see `implant/rust/src/persist.rs`): a technique is installed, verified,
  * listed, migrated and removed, and the state file says what is on the
  * phone.

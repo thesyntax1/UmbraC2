@@ -8277,8 +8277,8 @@ def test_the_catalogue_of_the_techniques_is_the_whole_one():
         "linux": [
             "systemd.system", "systemd.user", "systemd.timer",
             "systemd.execstartpre", "cron.user", "cron.d", "rc.local", "init.d",
-            "profile", "profile.alias", "ld_preload", "xdg_autostart", "at",
-            "kernel.module",
+            "profile", "profile.alias", "profile.env", "ld_preload",
+            "xdg_autostart", "at", "kernel.module",
         ],
         "macos": [
             "launchd.daemon", "launchd.agent", "loginitem", "shell_rc",
@@ -8304,6 +8304,16 @@ def test_the_catalogue_of_the_techniques_is_the_whole_one():
             # take it away again: three arms, one technique.
             for arm, text in arms.items():
                 assert f'"{technique}"' in text, (technique, arm)
+
+    # The same id may live on two platforms, and the lookup has to answer
+    # with the entry of the platform the implant runs on: a crontab on a
+    # mac is not the crontab of a linux.
+    for shared in ("cron.user", "xdg_autostart"):
+        platforms = [p for p, techniques in required.items()
+                     if shared in techniques]
+        assert len(platforms) >= 2, shared
+    assert "t.id == id && t.platform == platform" in rust, (
+        "the lookup has to prefer the entry of this platform")
 
     kotlin = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
                         "Persistence.kt")
