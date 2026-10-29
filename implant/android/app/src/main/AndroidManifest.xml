@@ -13,6 +13,9 @@
     <!-- The alarm that wakes the service when the system killed it needs the
          permission to schedule an exact alarm. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- The guide of the phone asks the user to let the implant run without
+         the battery optimisation; the screen that asks for it needs this. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- usesCleartextTraffic: the HTTP transport is plain HTTP by design (the
          implant has no TLS stack); see docs/SECURITY.md limitation 1 and run it

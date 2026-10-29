@@ -955,6 +955,41 @@ is answered with an error and not with a silence, and its self test runs a
 whole cycle against a server that lives in the process, so the binary can
 be proved to work before it goes near a target.
 
+### The phone and the rules of its manufacturer
+
+A phone is not a server, and the system of a phone is much stricter about
+the applications it does not know.  The implant survives on a Redmi only
+when the user of the phone has allowed it to start on its own: the boot
+receiver runs once after the boot, and without the autostart permission
+the system stops the application a few minutes later.
+
+The implant cannot take that permission itself, so it says what has to be
+done and where:
+
+```bash
+umbra task phone-01 --kind host.guide                 # what does the system say
+umbra task phone-01 --kind host.guide --args '{"action":"show","step":"autostart"}'
+```
+
+The report has four steps, and every one of them carries the screen that
+shows it:
+
+| step | what it asks | how the phone answers |
+|---|---|---|
+| `battery` | the exemption from the battery optimisation | `isIgnoringBatteryOptimizations`: yes, no or unknown |
+| `autostart` | the autostart list of Xiaomi | not readable by an application: the state is *unknown* and the operator looks at the screen |
+| `notifications` | the permission of the notification | `areNotificationsEnabled`: yes or no |
+| `standby` | the standby bucket | `getStandbyBucket`: active, working set, frequent or rare |
+
+With `action: "show"` the phone opens the screen of a step.  A phone
+blocks an application that opens a screen from the background, so the step
+also travels as a notification the user can tap, and the report says
+which of the two happened.
+
+The state of the phone changes the traffic as well: a phone whose screen
+is off stretches its check-in, because the screen of a phone is the
+closest thing it has to the presence of a person in front of it.
+
 ### The mac is a first-class target
 
 The Rust implant carries the whole catalogue on a mac, and the things that

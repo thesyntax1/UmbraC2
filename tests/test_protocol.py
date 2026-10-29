@@ -8329,3 +8329,84 @@ def test_the_catalogue_of_the_techniques_is_the_whole_one():
     for component in (".UmbraJobService", ".UmbraAccessibilityService",
                       ".UpdateReceiver", ".UmbraAdminReceiver"):
         assert component in manifest, component
+
+
+def test_the_guide_of_the_host_says_what_the_manufacturer_does():
+    """The guide: what keeps the implant alive on a host, and what stops it.
+
+    A phone is the strictest host there is: the manufacturer decides which
+    applications may start on their own, and on a Redmi a boot receiver
+    alone is not enough.  The guide answers that question, and it has to
+    name the screen that shows the permission -- the implant cannot take
+    it by itself, the user of the phone has to press the button.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    kotlin = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "Vendor.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    beacon = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "Beacon.kt")
+    manifest = read_text("implant/android/app/src/main/AndroidManifest.xml")
+    rust = read_text("implant/rust/src/task.rs")
+    evade = read_text("implant/rust/src/evade.rs")
+
+    # The desktop answers the same question with what the operating
+    # system can tell: the idle time, the power and the persistence.
+    assert '"host.guide" =>' in rust
+    assert "pub fn guide()" in evade
+    assert "pub fn presence()" in evade
+    assert "GetLastInputInfo" in evade
+    assert "GetSystemPowerStatus" in evade
+
+    # The phone answers it with the rules of the manufacturer.
+    assert '"host.guide" ->' in runner
+    assert "host.guide" in runner
+    for step in ("battery", "autostart", "notifications", "standby"):
+        assert f'id = "{step}"' in kotlin, step
+    # The autostart list of Xiaomi is the reason a boot receiver alone is
+    # not enough, and the implant opens that screen.
+    assert "miui.intent.action.OP_AUTO_START" in kotlin
+    assert "com.miui.permcenter.autostart" in kotlin
+    # The permission the screen of the battery optimisation asks for.
+    assert "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" in manifest
+    # The state of the phone is read from the system, not guessed.
+    assert "isIgnoringBatteryOptimizations" in kotlin
+    assert "standbyBucket" in kotlin
+    assert "areNotificationsEnabled" in kotlin
+    # A phone whose screen is off is quieter.
+    assert "screenFactor" in beacon
+    assert "isInteractive" in beacon
+
+    # The mock answers the task, so the console and the tests see one
+    # shape everywhere.
+    token = b"guide-token-0123456789abc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-guide", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        task_id = client.submit("agent-guide", "host.guide", {})
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the guide never came back"
+        record = client.task(task_id)
+        assert record.get("state") == "done", record
+        output = record.get("output") or record.get("out") or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        assert "guide:" in output, record
+        assert "persistence entries" in output, record
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+

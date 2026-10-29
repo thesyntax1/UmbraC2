@@ -71,7 +71,7 @@ AGENT_CAPS = [
     "session.open", "session.input", "session.close", "vpn", "scan",
     "resolve", "env", "touch", "evade.report", "evade.posture",
     "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
-    "hygiene.process", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
+    "hygiene.process", "host.guide", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
     "ldap.query", "ssh.exec",
     # The reconnaissance of the profiles, the map of the domain and the
     # suggestions that follow from the findings.
@@ -2457,6 +2457,7 @@ class MockServer:
     EVADE_KINDS = (
         "evade.report", "evade.posture", "evade.profile", "evade.shape",
         "evade.killswitch", "hygiene.memory", "hygiene.process",
+        "host.guide",
     )
 
     def _posture_result(self, task: Dict[str, Any], task_id: str) -> None:
@@ -5883,6 +5884,25 @@ class FakeAgent(threading.Thread):
 
     def _evasion(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """The posture engine of the fake host."""
+        if kind == "host.guide":
+            # The guide of the host: what keeps the implant alive here.
+            #
+            # The mock is not a real host, so it answers with the shape of
+            # the answer: the same keys the desktop beacon sends, so the
+            # console and the tests see one shape everywhere.
+            idle = int(self.evade.get("idle_seconds", 0) or 0)
+            power = str(self.evade.get("power", "mains"))
+            entries = self.persist
+            lines = [
+                "guide: the machine has been idle for {} seconds".format(idle),
+                "guide: the machine runs on the {}".format(power),
+                "guide: {} persistence entries are installed".format(len(entries)),
+                "guide: a desktop has no vendor rules; what stops the implant here "
+                "is the deletion of its file and the replacement of its binary",
+            ]
+            meta = {"guide": {"idle_seconds": idle, "power": power,
+                              "persistence": len(entries)}}
+            return 0, ("\n".join(lines) + "\n").encode(), "", meta
         if kind == "evade.report":
             posture = self._posture(args)
             text = self._posture_report(posture)
@@ -6241,7 +6261,8 @@ class FakeAgent(threading.Thread):
             return 0, report.encode(), "", {"open": len(open_ports),
                                             "probes": probes}
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
-                    "evade.killswitch", "hygiene.memory", "hygiene.process"):
+                    "evade.killswitch", "hygiene.memory", "hygiene.process",
+                    "host.guide"):
             return self._evasion(kind, args)
         if kind == "vpn":
             return self._vpn(args)

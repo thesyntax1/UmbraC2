@@ -457,6 +457,7 @@ Task kinds understood by the reference implants:
 | `evade.killswitch` | one of `file`, `registry`, `at`, `uptime`, `marker`; `clear` disarms it | the moment the implant stops existing |
 | `hygiene.memory` | — | the memory hygiene: what holds a secret and what was wiped |
 | `hygiene.process` | optional `copy`, `name`, `cwd`, `clean_env`, `ppid` | the process hygiene: the name, the directory, the environment and the parent |
+| `host.guide` | optional `action` (`report`, `show`), `step` | what keeps the implant alive on this host, and what stops it |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -1757,6 +1758,49 @@ virtual machine or a lab machine sleeps longer than a production server.
 The obfuscation can be switched off with `UMBRA_SLEEP_OBFUSCATE=0` when a
 fixed interval matters more than the traffic pattern (a lab test that needs
 a predictable check-in, for instance).
+
+
+### 7.2s The guide of the host
+
+The `host.guide` task answers a question an operator asks before a
+weekend: what will the operating system do to the implant while nobody
+is looking?
+
+On a **desktop** the answer is what the operating system can tell: how
+long the machine has been idle (Windows answers with the time of the
+last input), where the power comes from (the mains or the battery), and
+how many persistence entries are installed.  A platform that cannot tell
+says so -- "this platform cannot tell how long the machine has been
+idle" -- and nothing changes.  A desktop has no vendor rules: what stops
+the implant there is the deletion of its file and the replacement of its
+binary.
+
+On a **phone** the answer is the rules of the manufacturer.  A phone that
+runs an ordinary application is killed by the system when the system
+feels like it, and on the skins of Xiaomi a boot receiver alone is not
+enough: the application has to be on the autostart list, it has to be
+exempt from the battery optimisation, it has to be allowed to show its
+notification, and it has to stay out of the rare standby bucket.  The
+task answers with the state of each of those and with the steps that are
+still open:
+
+| step | what it asks | how it is checked |
+|---|---|---|
+| `battery` | the exemption from the battery optimisation | `PowerManager.isIgnoringBatteryOptimizations` |
+| `autostart` | the autostart list of Xiaomi | not readable by an application: the state is "unknown" and the operator looks at the screen |
+| `notifications` | the permission of the notification | `NotificationManager.areNotificationsEnabled` |
+| `standby` | the standby bucket | `PowerManager.getStandbyBucket` |
+
+The implant cannot take these permissions by itself: on those phones the
+user of the phone has to press the button.  `host.guide` with
+`action: "show"` and a `step` opens the screen that shows it -- and
+because the phone blocks an application that opens a screen from the
+background, the step also travels as a notification the user can tap.
+The report says which of the two happened.
+
+The state of the phone changes the traffic as well: a phone whose screen
+is off stretches its check-in, because the screen of a phone is the
+closest thing it has to the presence of a person in front of it.
 
 
 ## 8. Transports

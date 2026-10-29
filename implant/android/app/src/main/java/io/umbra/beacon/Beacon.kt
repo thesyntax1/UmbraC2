@@ -168,7 +168,7 @@ class Beacon(
     private fun nextIntervalSeconds(): Long {
         // The schedule of the day stretches the interval: the phone is busy
         // while the office is open and quiet at night.
-        val factor = Evasion.factor(evasion).coerceAtLeast(0.1)
+        val factor = (Evasion.factor(evasion) * screenFactor()).coerceAtLeast(0.1)
         val base = sleep.toDouble() * factor
         val j = jitter.coerceIn(0, 90) / 100.0
         val lo = (base * (1.0 - j)).coerceAtLeast(1.0)
@@ -180,6 +180,25 @@ class Beacon(
             interval = (interval * (1.5 + 2.0 * Random.nextDouble())).toLong()
         }
         return interval.coerceAtLeast(1)
+    }
+
+    /**
+     * The factor the interval gets when nobody is looking at the phone.
+     *
+     * A phone whose screen is off is a phone that is lying on a table:
+     * the check-in stretches, so the traffic of the night is sparse and
+     * the battery lasts longer.  The screen of a phone is the closest
+     * thing it has to the presence of a person in front of it.
+     */
+    private fun screenFactor(): Double {
+        val ctx = config.androidContext ?: return 1.0
+        return try {
+            val power = ctx.getSystemService(android.content.Context.POWER_SERVICE)
+                as? android.os.PowerManager
+            if (power != null && !power.isInteractive) 2.5 else 1.0
+        } catch (t: Throwable) {
+            1.0
+        }
     }
 
     /** One full beacon cycle. Returns false when the server told us to exit. */
