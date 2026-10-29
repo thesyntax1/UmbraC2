@@ -34,6 +34,9 @@
   "armory_key": "/var/lib/umbra/armory/pubkey.pem",
   "psk_file": "/etc/umbra/agent.psk",
   "agent_psk_env": "UMBRA_AGENT_PSK",
+  "agent_key_env": [
+    "UMBRA_AGENT_KEYS"
+  ],
   "operator_token_env": [
     "UMBRA_OPERATOR_TOKENS"
   ],

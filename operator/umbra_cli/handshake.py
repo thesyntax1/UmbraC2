@@ -72,11 +72,18 @@ class HandshakeError(Exception):
 
 @dataclass(frozen=True)
 class KeyringEntry:
-    """One accepted pre-shared key and the role it is allowed to claim."""
+    """One accepted pre-shared key and the role it is allowed to claim.
+
+    ``bound_id`` is the agent id the key may claim.  It is empty for a
+    fleet key, which may claim any name, and it names one host for a key
+    that belongs to that host: the identity of the beacon is then proved
+    by the key and not only by the name it says.
+    """
 
     name: str
     psk: bytes
     role: int
+    bound_id: str = ""
 
 
 @dataclass
@@ -326,6 +333,10 @@ def server_handshake(
         raise HandshakeError(f"role {role} not allowed for key {entry.name!r}")
     if entry.role == crypto.ROLE_OPERATOR and ident != entry.name:
         raise HandshakeError("operator token used by a different identity")
+    if entry.role == crypto.ROLE_AGENT and entry.bound_id and ident != entry.bound_id:
+        raise HandshakeError(
+            f"the key is bound to agent {entry.bound_id!r}, not {ident!r}"
+        )
     if hello.get("suite") != suite:
         raise HandshakeError("suite mismatch in HELLO")
 

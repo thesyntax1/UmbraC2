@@ -199,6 +199,16 @@ client                                                    server
 Both handshake frames carry a one-byte payload marker (`0x01` for HELLO,
 `0x02` for HELLO_ACK) followed by a upk map.
 
+**The key of an agent may be bound to one host.**  The server holds a fleet
+key (every beacon that was built before the per-agent keys existed uses it)
+and, next to it, keys that belong to one agent id.  A key that is bound to
+an id may only claim that id: the server refuses a HELLO whose identity is
+not the one the key belongs to, so a key that is stolen impersonates one
+machine and not the whole fleet.  The binding does not change the wire
+format -- the identity of the HELLO is inside the transcript MAC either
+way -- and it is the server that enforces it, right where it verifies the
+MAC.
+
 Bootstrap keys (per direction, per suite):
 
 ```

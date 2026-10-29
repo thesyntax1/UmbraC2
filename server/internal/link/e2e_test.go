@@ -28,6 +28,13 @@ var (
 
 func newTestServer(t *testing.T) (*link.Server, *hub.Hub, string, string) {
 	t.Helper()
+	return newTestServerWithKeys(t, nil)
+}
+
+// newTestServerWithKeys starts a server whose keyring also holds the keys
+// that are bound to one agent id.
+func newTestServerWithKeys(t *testing.T, agentKeys map[string][]byte) (*link.Server, *hub.Hub, string, string) {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Server.AgentListen = "127.0.0.1:0"
 	cfg.Server.OperatorListen = "127.0.0.1:0"
@@ -37,6 +44,7 @@ func newTestServer(t *testing.T) (*link.Server, *hub.Hub, string, string) {
 	cfg.Server.Limits.IdleTimeoutSec = 10
 	cfg.Keyring = config.Keyring{
 		AgentPSK:  agentPSK,
+		AgentKeys: agentKeys,
 		Operators: map[string][]byte{"op1": opToken, "op2": op2Token, "viewer1": viewerToken},
 		Roles:     map[string]string{"op1": rbac.Admin, "op2": rbac.Operator, "viewer1": rbac.Viewer},
 	}

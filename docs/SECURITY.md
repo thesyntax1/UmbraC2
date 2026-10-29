@@ -388,6 +388,13 @@ connected loses it the moment it is taken away.
 can type it, copy it into the configuration of a beacon and paste it into
 a ticket.  What the operator sees is exactly the bytes the server
 checks; there is no "decode it first" step to get wrong.
+**A key may belong to one host.**  The fleet key is a key of everybody:
+whoever holds it may claim any name.  A key that is bound to one agent id
+may not claim another one -- the server refuses the handshake -- so a key
+that is stolen impersonates one machine and not the whole fleet.  The
+binding changes nothing on the wire: the identity of the HELLO is inside
+the transcript MAC either way, and the server enforces the binding where
+it verifies the MAC.
 
 **The comparison is constant time.**  A token is a secret, and the time
 the server takes to refuse it says something about it.

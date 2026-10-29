@@ -62,6 +62,11 @@ type candidate struct {
 	psi     []byte
 	keyName string
 	role    byte // role this key is allowed to claim
+	// boundID is the agent id this key may claim.  An empty boundID is a
+	// fleet key: it may claim any name.  A key that is bound to one id
+	// proves the identity of the host, so a stolen key impersonates one
+	// machine and not the whole fleet.
+	boundID string
 }
 
 // PreAck runs once the peer is authenticated and before the HELLO_ACK is
@@ -96,6 +101,19 @@ func Handshake(stream FrameStream, cfg *config.Config, ring *keyring.Keyring, lo
 	operatorKeys := ring.OperatorCandidates()
 	cands := make([]candidate, 0, 4*(1+len(operatorKeys)))
 	for _, suite := range crypt.ServerSuites() {
+		// The keys that are bound to an agent id come first: a beacon
+		// that has its own key is served by it, and the fleet key is
+		// only the fallback for the beacons that were built before the
+		// per-agent keys existed.
+		for _, agent := range ring.AgentKeyCandidates() {
+			cands = append(cands, candidate{
+				suite:   suite,
+				psi:     agent.PSK,
+				keyName: "agent:" + agent.ID,
+				role:    crypt.RoleAgent,
+				boundID: agent.ID,
+			})
+		}
 		for _, psi := range agentKeys {
 			cands = append(cands, candidate{suite: suite, psi: psi, keyName: "agent", role: crypt.RoleAgent})
 		}
@@ -289,6 +307,10 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 	}
 	if cand.role == crypt.RoleAgent && id == "" {
 		return nil, handshakeErr("agent identity required")
+	}
+	// A key that is bound to one agent id may not claim another one.
+	if cand.role == crypt.RoleAgent && cand.boundID != "" && id != cand.boundID {
+		return nil, handshakeErr("the key is bound to agent %q, not %q", cand.boundID, id)
 	}
 
 	want, err := crypt.HelloAuth(cand.psi, byte(role), []byte(id), pub, cn, ts, byte(suiteID))

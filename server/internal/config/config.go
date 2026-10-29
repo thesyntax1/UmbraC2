@@ -126,6 +126,15 @@ type Server struct {
 	AgentPSK      string   `json:"agent_psk_env"`      // env var that holds the agent PSK
 	OperatorToken []string `json:"operator_token_env"` // env vars holding "name:token" pairs
 
+	// AgentKeyEnv names the environment variables that hold the per-agent
+	// keys.  Each one carries "agent-id:key" pairs separated by commas.
+	//
+	// A key that is bound to an agent id may not claim another one, so a
+	// key that is stolen impersonates one host and not the whole fleet.
+	// The fleet key stays the fallback for the beacons that were built
+	// before this option existed.
+	AgentKeyEnv []string `json:"agent_key_env"`
+
 	// VaultKey encrypts the credential vault at rest.  It is the key of
 	// the vault, nothing else: without it the server keeps the digest of
 	// the material and drops the value, and with it the value comes back
@@ -232,6 +241,8 @@ const (
 // Keyring is the set of pre-shared keys the server accepts.
 type Keyring struct {
 	AgentPSK []byte
+	// AgentKeys maps an agent id to the key that is bound to it.
+	AgentKeys map[string][]byte
 	// Operators maps operator identity -> raw token bytes.
 	Operators map[string][]byte
 	// Roles maps operator identity -> role (admin/operator/viewer). An identity
@@ -339,6 +350,29 @@ func (c *Config) loadKeys() error {
 	}
 	if agentPSK != "" {
 		c.Keyring.AgentPSK = []byte(agentPSK)
+	}
+
+	// The per-agent keys: "agent-id:key" pairs, separated by commas.  A
+	// key that is bound to an agent id may not claim another one.
+	c.Keyring.AgentKeys = map[string][]byte{}
+	for _, envName := range c.Server.AgentKeyEnv {
+		raw := os.Getenv(envName)
+		for _, pair := range strings.Split(raw, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			parts := strings.SplitN(pair, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			id := strings.TrimSpace(parts[0])
+			key := strings.TrimSpace(parts[1])
+			if id == "" || key == "" {
+				continue
+			}
+			c.Keyring.AgentKeys[id] = []byte(key)
+		}
 	}
 
 	// The vault key: from the file, from the environment or from the

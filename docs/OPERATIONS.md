@@ -1025,6 +1025,37 @@ The persistence of a mac is `launchd.agent`, `launchd.daemon`, `loginitem`,
 `shell_rc` and `cron.user`, and the manager reads every one of them back
 before it says that it is installed.
 
+### A key for every host
+
+The fleet key is a key of everybody: whoever holds it may claim any name.
+The server also takes keys that belong to one agent, and a beacon that
+proves such a key may not claim another name -- the server refuses the
+handshake, so a key that is stolen impersonates one machine and not the
+whole fleet.
+
+The keys come from the environment, one pair per host, separated by
+commas:
+
+```bash
+export UMBRA_AGENT_KEYS="web-01:8f3c...d21a,db-01:41b7...90ce"
+```
+
+The server reads the variable named in `agent_key_env` (the default is
+`UMBRA_AGENT_KEYS`), and the beacon is built with the same key and the
+same identity.  The Rust beacon takes the key and the identity from the
+environment, so the same pair is written in one place:
+
+```bash
+UMBRA_AGENT_ID=web-01 UMBRA_PSK=8f3c...d21a cargo build --release
+```
+
+The phone takes them from the build (`UMBRA_AGENT_ID` and `UMBRA_PSK_HEX`
+in `app/build.gradle`), because an application on a phone cannot be given
+an environment at runtime.
+
+The fleet key keeps working for the beacons that were built before this
+option existed, so the fleet can be moved one host at a time.
+
 ## 4. Beacon tuning
 
 The server dictates cadence at handshake time (`beacon.sleep` / `beacon.jitter`)

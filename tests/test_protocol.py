@@ -8410,3 +8410,58 @@ def test_the_guide_of_the_host_says_what_the_manufacturer_does():
         server.stop()
 
 
+def test_a_key_that_is_bound_to_one_agent_may_not_claim_another():
+    """The identity of a host is proved by its key, not by the name it says.
+
+    A fleet key belongs to everybody: whoever holds it may claim any
+    name.  A key that is bound to one agent id may not claim another
+    one, so a key that is stolen impersonates one machine and not the
+    whole fleet.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    bound = b"bound-agent-key-0123456789"
+    token = b"identity-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token},
+                        agent_keys={"host-bound": bound})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    agents = []
+    try:
+        client.connect()
+
+        # The beacon that proves the bound key and claims its own name is
+        # served.
+        honest = FakeAgent(server.address, bound, "host-bound", interval=0.2)
+        honest.start()
+        agents.append(honest)
+        assert wait_until(
+            lambda: any(a.get("id") == "host-bound" for a in client.agents()),
+            timeout=10), "the beacon with its own key never showed up"
+
+        # The beacon that proves the same key and claims another name is
+        # refused: the key is bound to one host.
+        impostor = FakeAgent(server.address, bound, "host-other", interval=0.2)
+        impostor.start()
+        agents.append(impostor)
+        assert not wait_until(
+            lambda: any(a.get("id") == "host-other" for a in client.agents()),
+            timeout=3), "a bound key may not claim another name"
+
+        # The fleet key still works for the beacons that were built before
+        # the per-agent keys existed.
+        fleet = FakeAgent(server.address, AGENT_PSK, "host-fleet", interval=0.2)
+        fleet.start()
+        agents.append(fleet)
+        assert wait_until(
+            lambda: any(a.get("id") == "host-fleet" for a in client.agents()),
+            timeout=10), "the fleet key has to keep working"
+    finally:
+        client.close()
+        for agent in agents:
+            agent.stop()
+        server.stop()
+
+

@@ -890,8 +890,12 @@ class MockServer:
         websocket: bool = False,
         alerts: Optional[List[Dict[str, Any]]] = None,
         pivot_deny: Optional[List[str]] = None,
+        agent_keys: Optional[Dict[str, bytes]] = None,
     ) -> None:
         self.agent_psk = agent_psk
+        # The keys that are bound to one agent id: a beacon that proves
+        # such a key may not claim another name.
+        self.agent_keys = dict(agent_keys or {})
         self.operators = dict(operators)
         # Roles mirror server/internal/rbac: everything defaults to admin so
         # existing tests keep working, and `roles=` narrows a specific console.
@@ -1668,6 +1672,16 @@ class MockServer:
 
     def _keyring(self) -> List[handshake.KeyringEntry]:
         ring = [handshake.KeyringEntry("agent", self.agent_psk, crypto.ROLE_AGENT)]
+        # The keys that are bound to one agent id come first: a beacon
+        # with its own key is served by it, and the fleet key is the
+        # fallback for the beacons that were built before them.
+        for agent_id in sorted(self.agent_keys):
+            ring.append(
+                handshake.KeyringEntry(
+                    f"agent:{agent_id}", self.agent_keys[agent_id],
+                    crypto.ROLE_AGENT, bound_id=agent_id,
+                )
+            )
         # The previous agent key still works while the fleet catches up.
         if self.previous_agent_psk and self.previous_agent_until > time.time():
             ring.append(

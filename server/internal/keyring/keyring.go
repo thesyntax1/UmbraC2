@@ -26,6 +26,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,9 @@ type Keyring struct {
 	mu sync.RWMutex
 
 	agentPSK []byte
+	// agentKeys holds the keys that are bound to one agent id.  A beacon
+	// that proves such a key may only claim that id.
+	agentKeys map[string][]byte
 	// previousAgentPSK is the PSK from before the last rotation.
 	previousAgentPSK []byte
 	// previousAgentUntil is when the previous PSK stops working.
@@ -99,11 +103,18 @@ type Keyring struct {
 // FromConfig builds the runtime keyring out of the configured one.
 func FromConfig(k config.Keyring) *Keyring {
 	ring := &Keyring{
+		agentKeys: map[string][]byte{},
 		operators: map[string]*Operator{},
 		overlap:   DefaultOverlap,
 	}
 	if len(k.AgentPSK) > 0 {
 		ring.agentPSK = append([]byte(nil), k.AgentPSK...)
+	}
+	if len(k.AgentKeys) > 0 {
+		ring.agentKeys = make(map[string][]byte, len(k.AgentKeys))
+		for id, psk := range k.AgentKeys {
+			ring.agentKeys[id] = append([]byte(nil), psk...)
+		}
 	}
 	for name, token := range k.Operators {
 		op := &Operator{
@@ -126,6 +137,7 @@ func FromConfig(k config.Keyring) *Keyring {
 func New(agentPSK []byte, operator string, token []byte, role string) *Keyring {
 	ring := &Keyring{
 		agentPSK:  append([]byte(nil), agentPSK...),
+		agentKeys: map[string][]byte{},
 		operators: map[string]*Operator{},
 		overlap:   DefaultOverlap,
 	}
@@ -168,6 +180,70 @@ func (k *Keyring) AgentCandidates() [][]byte {
 		out = append(out, append([]byte(nil), k.previousAgentPSK...))
 	}
 	return out
+}
+
+// AgentKey is a key that is bound to one agent id.
+//
+// A beacon that proves such a key may only claim that id: the identity of
+// the host is proved by the key and not only by the name it says.  A
+// fleet key has an empty id and may claim any name, which is what the
+// beacons that were built before this option existed need.
+type AgentKey struct {
+	ID  string
+	PSK []byte
+}
+
+// AgentKeyCandidates returns the keys that are bound to an agent id.
+//
+// The order is stable (the ids are sorted), so the handshake is
+// reproducible and the audit trail reads the same way twice.
+func (k *Keyring) AgentKeyCandidates() []AgentKey {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	ids := make([]string, 0, len(k.agentKeys))
+	for id := range k.agentKeys {
+		ids = append(ids, id)
+	}
+	sortStrings(ids)
+	out := make([]AgentKey, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, AgentKey{ID: id, PSK: append([]byte(nil), k.agentKeys[id]...)})
+	}
+	return out
+}
+
+// SetAgentKey binds a key to an agent id.
+//
+// The key replaces the one that was bound to the id before, so the
+// operator can change the key of one host without touching the others.
+func (k *Keyring) SetAgentKey(id string, psk []byte) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("keyring: the agent id is empty")
+	}
+	if len(psk) < 16 {
+		return errors.New("keyring: the agent key is shorter than 16 bytes")
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.agentKeys == nil {
+		k.agentKeys = map[string][]byte{}
+	}
+	k.agentKeys[id] = append([]byte(nil), psk...)
+	return nil
+}
+
+// RemoveAgentKey takes the key of an agent away.
+//
+// The host that used it cannot connect any more, which is what the
+// operator wants when a machine is lost.
+func (k *Keyring) RemoveAgentKey(id string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.agentKeys[id]; !ok {
+		return false
+	}
+	delete(k.agentKeys, id)
+	return true
 }
 
 // OperatorCandidates returns every operator token the server accepts, with
