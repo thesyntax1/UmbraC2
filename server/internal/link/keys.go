@@ -100,7 +100,10 @@ func (s *Server) handleKeysRotate(op *hub.Operator, args map[string]any,
 		// that hands it out) or let the server generate one.
 		var fresh []byte
 		if brought := strings.TrimSpace(stringArg(args, "psk")); brought != "" {
-			if err := s.Keys.SetAgentPSK([]byte(brought)); err != nil {
+			// The operator brings the key as hex, because that is what
+			// the server prints and what the beacons read.
+			key := config.DecodePSK(brought)
+			if err := s.Keys.SetAgentPSK(key); err != nil {
 				return fail("keys.rotate: %v", err)
 			}
 			fresh = []byte(brought)

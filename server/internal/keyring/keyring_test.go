@@ -1,6 +1,7 @@
 package keyring
 
 import (
+	"encoding/hex"
 	"testing"
 	"time"
 )
@@ -33,7 +34,9 @@ func TestTheAgentKeyIsRotatedAndTheOldOneKeepsWorking(t *testing.T) {
 	if len(cands) != 2 {
 		t.Fatalf("expected the old key to keep working, got %d candidates", len(cands))
 	}
-	if string(cands[0]) != string(fresh) {
+	// The candidate is the bytes behind the hex the operator saw: the
+	// protocol uses the bytes, the operator copies the hex.
+	if hex.EncodeToString(cands[0]) != string(fresh) {
 		t.Fatal("the new key is not the first candidate")
 	}
 	// After the overlap the old key is gone.

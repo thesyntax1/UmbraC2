@@ -368,15 +368,17 @@ func (k *Keyring) RotateAgentPSK() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	psk := []byte(hex.EncodeToString(fresh))
+	// The key is kept as the bytes the protocol uses; the operator sees it
+	// as hex, because that is what the beacons read.
+	text := []byte(hex.EncodeToString(fresh))
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if len(k.agentPSK) > 0 {
 		k.previousAgentPSK = k.agentPSK
 		k.previousAgentUntil = time.Now().Add(k.overlap)
 	}
-	k.agentPSK = psk
-	return append([]byte(nil), psk...), nil
+	k.agentPSK = fresh
+	return text, nil
 }
 
 // SetAgentPSK replaces the agent PSK with one the operator brought.

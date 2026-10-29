@@ -336,6 +336,25 @@ func Load(path string) (*Config, error) {
 	return cfg, cfg.Validate()
 }
 
+// DecodePSK turns the agent key the operator wrote into the bytes the
+// protocol uses.
+//
+// The operator writes the key as hex -- the server prints it that way, and
+// the beacons read it that way -- so the hex is decoded here.  A value that
+// is not hex is taken as it is, which is what a lab that puts raw bytes in
+// the environment needs.  The two sides must agree on this, or the server
+// and the beacons do not share a key at all.
+func DecodePSK(raw string) []byte {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if decoded, err := hex.DecodeString(trimmed); err == nil && len(decoded) >= 16 {
+		return decoded
+	}
+	return []byte(trimmed)
+}
+
 func (c *Config) loadKeys() error {
 	c.Keyring.Operators = map[string][]byte{}
 	c.Keyring.Roles = map[string]string{}
@@ -349,7 +368,7 @@ func (c *Config) loadKeys() error {
 		}
 	}
 	if agentPSK != "" {
-		c.Keyring.AgentPSK = []byte(agentPSK)
+		c.Keyring.AgentPSK = DecodePSK(agentPSK)
 	}
 
 	// The per-agent keys: "agent-id:key" pairs, separated by commas.  A

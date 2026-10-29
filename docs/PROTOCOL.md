@@ -199,6 +199,12 @@ client                                                    server
 Both handshake frames carry a one-byte payload marker (`0x01` for HELLO,
 `0x02` for HELLO_ACK) followed by a upk map.
 
+**The key of an agent is hex on the wire of the operator.**  The server
+prints the agent key as hex and the beacons read it as hex, and both sides
+decode it before the key is used: the bytes behind the hex are the key.
+A configuration that holds something that is not hex is taken as it is,
+which is what a lab with raw bytes in the environment needs.
+
 **The key of an agent may be bound to one host.**  The server holds a fleet
 key (every beacon that was built before the per-agent keys existed uses it)
 and, next to it, keys that belong to one agent id.  A key that is bound to

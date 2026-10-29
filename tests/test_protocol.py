@@ -7654,8 +7654,9 @@ def test_the_key_of_the_beacons_can_be_rotated_while_the_server_runs():
         assert fresh.encode() != AGENT_PSK, "the key did not change"
         assert answer["overlap"] > 0, answer
 
-        # The new key is the one the server accepts from now on.
-        assert server.agent_psk == fresh.encode(), server.agent_psk
+        # The new key is the one the server accepts from now on: the
+        # operator sees the hex, the protocol uses the bytes behind it.
+        assert server.agent_psk == bytes.fromhex(fresh), server.agent_psk
 
         # A beacon that still has the old key is still served: the
         # overlap is what keeps the fleet from falling apart.
@@ -7878,7 +7879,9 @@ def test_the_operator_can_bring_its_own_key():
         brought = "0123456789abcdef0123456789abcdef"
         answer = client.rotate_keys("agent", brought)
         assert answer["psk"] == brought, answer
-        assert server.agent_psk == brought.encode(), server.agent_psk
+        # The key the operator brought is hex, and the protocol uses the
+        # bytes behind it: the same bytes the beacons read.
+        assert server.agent_psk == bytes.fromhex(brought), server.agent_psk
     finally:
         client.close()
         server.stop()
@@ -8465,3 +8468,39 @@ def test_a_key_that_is_bound_to_one_agent_may_not_claim_another():
         server.stop()
 
 
+def test_the_key_of_the_beacons_is_the_same_on_both_sides():
+    """The operator writes the key as hex, and both sides decode it.
+
+    The server prints the key as hex and the beacons read it as hex.  If
+    one side took the text and the other took the bytes behind it, the
+    server and the implants would not share a key at all -- and nothing
+    would say so until a beacon failed to check in.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import decode_psk, decode_psk_bytes  # noqa: WPS433
+
+    hexed = "00112233445566778899aabbccddeeff"
+    assert decode_psk(hexed) == bytes.fromhex(hexed)
+    assert decode_psk_bytes(hexed.encode()) == bytes.fromhex(hexed)
+    # A value that is not hex is taken as it is.
+    raw = "agent-psk-0123456789abcdef0123"
+    assert decode_psk(raw) == raw.encode()
+    assert decode_psk_bytes(raw.encode()) == raw.encode()
+    # The binary of the tests stays binary.
+    binary = bytes(range(32))
+    assert decode_psk_bytes(binary) == binary
+
+    # The Go server decodes the hex the same way.
+    go = read_text("server/internal/config/config.go")
+    assert "func DecodePSK(" in go, "the server does not decode the key"
+    assert "c.Keyring.AgentPSK = DecodePSK(agentPSK)" in go, (
+        "the server keeps the text of the key instead of its bytes")
+    # The rotation keeps the bytes and shows the hex.
+    ring = read_text("server/internal/keyring/keyring.go")
+    assert "k.agentPSK = fresh" in ring, "the rotation does not keep the bytes"
+    # The implants read hex.
+    rust = read_text("implant/rust/src/config.rs")
+    assert "hex_decode(&psk_raw)" in rust, "the beacon does not read hex"
+    kotlin = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "RemoteConfig.kt")
+    assert "Crypto.unhex(pskHex)" in kotlin, "the phone does not read hex"

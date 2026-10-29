@@ -224,6 +224,36 @@ def _parse_scan_ports(spec: str) -> List[int]:
     return out[:256]
 
 
+def decode_psk(raw: str) -> bytes:
+    """The agent key the operator wrote, as the bytes the protocol uses.
+
+    The operator writes the key as hex -- the server prints it that way and
+    the beacons read it that way -- so the hex is decoded here.  A value
+    that is not hex is taken as it is, which is what a lab that puts raw
+    bytes in the environment needs.  The two sides have to agree on this,
+    or the server and the beacons do not share a key at all.
+    """
+    text = raw.strip()
+    if not text:
+        return b""
+    if len(text) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in text):
+        decoded = bytes.fromhex(text)
+        if len(decoded) >= 16:
+            return decoded
+    return text.encode()
+
+
+def decode_psk_bytes(raw: bytes) -> bytes:
+    """The same rule, for a key that is already bytes."""
+    try:
+        text = raw.decode("ascii")
+    except (UnicodeDecodeError, AttributeError):
+        return raw
+    if not text or not text.isprintable():
+        return raw
+    return decode_psk(text)
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}-{crypto.random_bytes(4).hex()}"
 
@@ -892,7 +922,7 @@ class MockServer:
         pivot_deny: Optional[List[str]] = None,
         agent_keys: Optional[Dict[str, bytes]] = None,
     ) -> None:
-        self.agent_psk = agent_psk
+        self.agent_psk = decode_psk_bytes(agent_psk)
         # The keys that are bound to one agent id: a beacon that proves
         # such a key may not claim another name.
         self.agent_keys = dict(agent_keys or {})
@@ -1707,7 +1737,9 @@ class MockServer:
             raise ValueError("the agent PSK must be at least 16 characters")
         self.previous_agent_psk = self.agent_psk
         self.previous_agent_until = time.time() + self.key_overlap
-        self.agent_psk = fresh.encode()
+        # The key is kept as the bytes the protocol uses; the operator sees
+        # it as hex, because that is what the beacons read.
+        self.agent_psk = decode_psk(fresh)
         return fresh
 
     def rotate_token(self, name: str, role: Optional[str] = None,
@@ -5084,7 +5116,10 @@ class FakeAgent(threading.Thread):
     ) -> None:
         super().__init__(daemon=True, name="mock-agent")
         self.server = server
-        self.psk = psk
+        # The key the operator wrote: hex is decoded, exactly like the
+        # implants do, so a beacon built with the text the server printed
+        # talks to it.
+        self.psk = decode_psk_bytes(psk)
         self.agent_id = agent_id or new_id("agent")
         # The address of the peer listener: where another beacon (or the
         # server) can dial in to carry a pivot through this host.

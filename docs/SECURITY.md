@@ -386,8 +386,13 @@ connected loses it the moment it is taken away.
 
 **The keys are texts.**  A generated key is hex encoded, so the operator
 can type it, copy it into the configuration of a beacon and paste it into
-a ticket.  What the operator sees is exactly the bytes the server
-checks; there is no "decode it first" step to get wrong.
+a ticket.  The hex is what the operator sees; the bytes behind it are what
+the server checks and what the beacons read, and both sides decode the
+hex the same way.  There is no "decode it first" step to get wrong, and
+there is no step where one side takes the text and the other takes the
+bytes -- that would leave the server and the implants without a shared
+key, and the only symptom would be a beacon that never checks in.
+
 **A key may belong to one host.**  The fleet key is a key of everybody:
 whoever holds it may claim any name.  A key that is bound to one agent id
 may not claim another one -- the server refuses the handshake -- so a key

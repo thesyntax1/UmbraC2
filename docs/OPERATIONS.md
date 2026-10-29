@@ -13,6 +13,7 @@ install -d -m 700 /etc/umbra /var/lib/umbra
 install -m 600 deploy/server.prod.json   /etc/umbra/server.json
 install -m 600 /dev/stdin /etc/umbra/agent.psk <<< "$UMBRA_AGENT_PSK"
 printf 'UMBRA_OPERATOR_TOKENS=%s\n' "$UMBRA_OPERATOR_TOKENS" > /etc/umbra/server.env
+
 chmod 600 /etc/umbra/server.env
 
 # 3. service
@@ -20,6 +21,11 @@ install -m 644 deploy/umbra-server.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now umbra-server
 journalctl -u umbra-server -f
 ```
+
+The key is hex: the server decodes it and the beacons read it as hex, so
+the bytes behind the text are the key on both sides.  A value that is not
+hex is taken as it is by the server, which is what a lab with raw bytes in
+the environment needs.
 
 The server prints a fingerprint (first 16 hex chars of SHA-256) for every
 operator token it loads — never the token itself. If a fingerprint is missing,
