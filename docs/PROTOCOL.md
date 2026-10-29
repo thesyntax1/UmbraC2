@@ -1931,6 +1931,41 @@ to a common name); the umbra handshake still decides *what* the peer may do.
 The role in the HELLO picks the session: an agent gets a beacon session, an
 operator gets a control channel.  TLS 1.3 is the minimum.
 
+**Certificate pinning** — on top of the chain, either side may pin the public
+key of the peer.  A pin is the hex SHA-256 of the `SubjectPublicKeyInfo` of
+the certificate: the fingerprint of the *key*, not of the certificate around
+it, so a certificate that is renewed with the same key keeps its pin and a
+certificate that only claims the same name does not have it.
+
+| Where | What is pinned | How it is written |
+|---|---|---|
+| the server | the key of the console | `tls_client_spki` in the configuration of the server |
+| the console | the key of the server | `--tls-pin` or `UMBRA_TLS_PIN` |
+
+Both sides compare the fingerprint in constant time.  The pin replaces the
+trust in the authority and never widens it: when a certificate authority is
+configured as well, the chain is verified too, so a pin narrows the set of
+peers that are welcome.  The name of the peer is checked by hand when a pin
+is used, because a console that pins a key does not need a chain of
+certificates to trust.
+
+The console checks the pin **before** the umbra handshake, so a console that
+refuses a server never sends its token to it.  The server pins the console in
+the same way and refuses a client certificate that does not hold the pinned
+key, even when the certificate is signed by the configured authority and
+carries the expected name.
+
+The pin of a certificate is printed by
+
+```
+umbra pin <certificate.pem>          # the console
+umbra-server -gen-spki <certificate.pem>   # the server
+```
+
+and the value is pinned in `contracts/vectors.json` (`pin.spki_sha256`), so
+every implementation agrees on it: the Go server, the console and the
+reference tools compute the same fingerprint for the same certificate.
+
 ### 8.1 IPv6
 
 An address family is never guessed: the family of a peer, of a listener and

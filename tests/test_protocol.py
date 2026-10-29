@@ -2648,6 +2648,9 @@ def _write_certificates(tmp_path):
         ]),
     )
     client_cert, client_key = leaf("console", x509.SubjectAlternativeName([]))
+    # A second console certificate: the same name, another key.  A pin
+    # has to tell them apart, a name cannot.
+    other_cert, other_key = leaf("console", x509.SubjectAlternativeName([]))
 
     def write(name_, cert, key):
         path = os.path.join(tmp_path, name_)
@@ -2669,6 +2672,7 @@ def _write_certificates(tmp_path):
         "ca": ca_path,
         "server": write("server.pem", server_cert, server_key),
         "client": write("client.pem", client_cert, client_key),
+        "other": write("other.pem", other_cert, other_key),
     }
 
 
@@ -2705,6 +2709,258 @@ def test_operator_console_connects_over_mutual_tls(tmp_path):
             assert who["role"] == "admin"
         finally:
             client.close()
+    finally:
+        server.stop()
+
+
+def test_the_pin_of_a_certificate_is_the_same_on_every_implementation():
+    """The pin is a vector, like the frames are.
+
+    The Go server, the console and the reference tools have to come to
+    the same pin for the same certificate, so the value is pinned in
+    contracts/vectors.json and every implementation checks itself
+    against it.
+    """
+    from umbra_cli.tls import spki_pin_of_pem
+
+    vector = VECTORS["pin"]
+    certificate = os.path.join(ROOT, "contracts", vector["certificate"])
+    assert spki_pin_of_pem(certificate) == vector["spki_sha256"]
+    # The pin is the fingerprint of the public key and not of the
+    # certificate: it is 32 bytes written as hex.
+    assert len(vector["spki_sha256"]) == 64
+
+
+def test_a_console_that_pins_the_key_of_the_server_talks_to_it(tmp_path):
+    """A pinned console trusts the key and not the authority."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    from umbra_cli.tls import spki_pin_of_pem
+
+    certs = _write_certificates(str(tmp_path))
+    pin = spki_pin_of_pem(certs["server"])
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+    )
+    server.start()
+    try:
+        from umbra_cli.client import OperatorClient
+
+        client = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_cert=certs["client"],
+            tls_key=certs["client"],
+            tls_pin=pin,
+        )
+        try:
+            client.connect()
+            who = client.whoami()
+            assert who["name"] == "alice"
+        finally:
+            client.close()
+    finally:
+        server.stop()
+
+
+def test_a_console_with_the_wrong_pin_never_sends_its_token(tmp_path):
+    """The pin is checked before the token leaves the console.
+
+    A server that holds another key gets the TLS handshake and nothing
+    else: the token is never written to it.
+    """
+    import ssl
+
+    from umbra_cli.client import OperatorError, OperatorClient
+    from umbra_cli.tls import spki_pin_of_pem
+
+    certs = _write_certificates(str(tmp_path))
+    good = spki_pin_of_pem(certs["server"])
+    wrong = spki_pin_of_pem(certs["other"])
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certs["server"], certs["server"])
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    received = []
+
+    def serve():
+        conn, _ = listener.accept()
+        try:
+            sock = context.wrap_socket(conn, server_side=True)
+        except (ssl.SSLError, OSError):
+            received.append(b"")
+            return
+        try:
+            sock.settimeout(5)
+            received.append(sock.recv(65536))
+        except (ssl.SSLError, OSError):
+            received.append(b"")
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=serve, name="umbra-pin-server")
+    thread.start()
+    try:
+        client = OperatorClient(
+            f"127.0.0.1:{port}",
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_pin=wrong,
+        )
+        with pytest.raises(OperatorError):
+            client.connect()
+        client.close()
+        thread.join(timeout=10)
+        # The server saw the handshake and nothing else: the first byte
+        # of the umbra frame never arrived.
+        assert received == [b""]
+        # The pin of the server is the one that would have worked.
+        assert good != wrong
+    finally:
+        listener.close()
+
+
+def test_a_console_may_hold_the_old_key_and_the_new_one(tmp_path):
+    """The handover of a renewed key: the list of pins holds both."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    from umbra_cli.client import OperatorClient
+    from umbra_cli.tls import spki_pin_of_pem
+
+    certs = _write_certificates(str(tmp_path))
+    pin = spki_pin_of_pem(certs["server"])
+    other = spki_pin_of_pem(certs["other"])
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+    )
+    server.start()
+    try:
+        # The console holds both keys: the one of the server and another
+        # one that will be the key of the next certificate.
+        client = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_cert=certs["client"],
+            tls_key=certs["client"],
+            tls_pin=f"{pin},{other}",
+        )
+        try:
+            client.connect()
+            assert client.whoami()["name"] == "alice"
+        finally:
+            client.close()
+    finally:
+        server.stop()
+
+
+def test_the_console_prints_the_pin_of_a_certificate(tmp_path):
+    """`umbra pin` is a local command: it needs no server and no token."""
+    import subprocess
+
+    from umbra_cli.tls import spki_pin_of_pem
+
+    certs = _write_certificates(str(tmp_path))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "operator")
+    proc = subprocess.run(
+        [sys.executable, "-m", "umbra_cli", "pin", certs["server"]],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip() == spki_pin_of_pem(certs["server"])
+    # The same command on the certificate of the vectors prints the
+    # value the vectors hold.
+    vector = os.path.join(ROOT, "contracts", VECTORS["pin"]["certificate"])
+    proc = subprocess.run(
+        [sys.executable, "-m", "umbra_cli", "pin", vector],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip() == VECTORS["pin"]["spki_sha256"]
+
+
+def test_the_server_refuses_a_console_that_does_not_hold_the_pinned_key(tmp_path):
+    """The server pins the console the same way the console pins it."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+
+    from umbra_cli.client import OperatorClient, OperatorError
+    from umbra_cli.netio import StreamError
+    from umbra_cli.tls import spki_pin_of_pem
+
+    certs = _write_certificates(str(tmp_path))
+    pin = spki_pin_of_pem(certs["client"])
+    server = MockServer(
+        AGENT_PSK,
+        {"alice": OP_TOKEN},
+        tls_cert=certs["server"],
+        tls_key=certs["server"],
+        tls_client_ca=certs["ca"],
+        tls_client_spki=pin,
+    )
+    server.start()
+    try:
+        # The console that holds the pinned key is served.
+        good = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_cert=certs["client"],
+            tls_key=certs["client"],
+        )
+        try:
+            good.connect()
+            assert good.whoami()["name"] == "alice"
+        finally:
+            good.close()
+
+        # The console that holds another key is refused, even though the
+        # certificate carries the same name and the same authority.
+        bad = OperatorClient(
+            server.address,
+            OP_TOKEN.decode(),
+            "alice",
+            tls=True,
+            tls_ca=certs["ca"],
+            tls_server_name="localhost",
+            tls_cert=certs["other"],
+            tls_key=certs["other"],
+        )
+        try:
+            with pytest.raises((OperatorError, StreamError, OSError)):
+                bad.connect()
+        finally:
+            bad.close()
     finally:
         server.stop()
 

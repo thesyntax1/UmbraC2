@@ -11,6 +11,8 @@
   "tls_cert": "",
   "tls_key": "",
   "tls_client_ca": "",
+  "tls_client_cn": "",
+  "tls_client_spki": "",
   "dns_listen": "",
   "dns_domain": "tunnel.example.com",
   "smtp_listen": "",

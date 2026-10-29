@@ -917,6 +917,8 @@ class MockServer:
         tls_cert: str = "",
         tls_key: str = "",
         tls_client_ca: str = "",
+        tls_client_cn: str = "",
+        tls_client_spki: str = "",
         websocket: bool = False,
         alerts: Optional[List[Dict[str, Any]]] = None,
         pivot_deny: Optional[List[str]] = None,
@@ -951,6 +953,16 @@ class MockServer:
         self.tls_cert = tls_cert
         self.tls_key = tls_key
         self.tls_client_ca = tls_client_ca
+        # The pins on the client certificate, mirrored from
+        # server/internal/mtls: the name it has to carry and the public key
+        # it has to hold.  A certificate that is signed by the client CA
+        # but carries another key is refused.
+        self.tls_client_cn = tls_client_cn
+        self.tls_client_spki = [
+            part.strip().lower()
+            for part in tls_client_spki.split(",")
+            if part.strip()
+        ]
         self._tls_ctx: Optional[ssl.SSLContext] = None
         # The WebSocket transport: the same protocol, but every frame travels
         # in a binary WebSocket frame.
@@ -1289,6 +1301,49 @@ class MockServer:
             ctx.verify_mode = ssl.CERT_REQUIRED
         return ctx
 
+    def _client_certificate_is_welcome(self, conn: ssl.SSLSocket) -> bool:
+        """Whether the client certificate is the one the operator pinned.
+
+        The chain is proved by the TLS stack; this says which certificate
+        of that chain is welcome.  The comparison of the pin is constant
+        time, because the moment a peer is refused says something about
+        the pin.
+        """
+        if not self.tls_client_cn and not self.tls_client_spki:
+            return True
+        try:
+            der = conn.getpeercert(binary_form=True)
+        except (OSError, ValueError):
+            return False
+        if not der:
+            return False
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import serialization
+        except ImportError:  # pragma: no cover - the package is required
+            return True
+        try:
+            cert = x509.load_der_x509_certificate(der)
+        except ValueError:
+            return False
+        if self.tls_client_cn:
+            names = [attr.value for attr in cert.subject]
+            if self.tls_client_cn not in names:
+                return False
+        if self.tls_client_spki:
+            key = cert.public_key().public_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            digest = hashlib.sha256(key).hexdigest()
+            matched = False
+            for pin in self.tls_client_spki:
+                if hmac.compare_digest(digest, pin):
+                    matched = True
+            if not matched:
+                return False
+        return True
+
     def _accept_loop(self) -> None:
         assert self._sock is not None
         while not self._stop.is_set():
@@ -1306,6 +1361,14 @@ class MockServer:
                     conn = self._tls_ctx.wrap_socket(conn, server_side=True)
                 except (ssl.SSLError, OSError):
                     # A peer that fails the TLS handshake is not a session.
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    continue
+                if not self._client_certificate_is_welcome(conn):
+                    # The certificate is signed by the client CA but it
+                    # is not the certificate the operator pinned.
                     try:
                         conn.close()
                     except OSError:
@@ -6563,6 +6626,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="PEM bundle of the client CA (the listener then requires a client certificate)",
     )
     parser.add_argument(
+        "--tls-client-spki",
+        default="",
+        help="pinned public key of the clients (hex SHA-256 of the "
+        "SubjectPublicKeyInfo; several pins may be separated by commas)",
+    )
+    parser.add_argument(
         "--agent-interval",
         type=float,
         default=2.0,
@@ -6590,6 +6659,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
         tls_client_ca=args.tls_ca,
+        tls_client_spki=args.tls_client_spki,
     )
     host, port = server.start()
     print(f"[mock] agent PSK   : {psk.hex()}")

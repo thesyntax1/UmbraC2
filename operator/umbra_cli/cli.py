@@ -2335,6 +2335,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="client certificate for a server that asks for one (mTLS)")
     p.add_argument("--tls-key", default=os.environ.get("UMBRA_TLS_KEY", ""),
                    help="private key of the client certificate")
+    p.add_argument("--tls-pin", default=os.environ.get("UMBRA_TLS_PIN", ""),
+                   help="pinned public key of the server (hex SHA-256 of its "
+                        "SubjectPublicKeyInfo); the server is trusted only "
+                        "when it holds that key")
     p.add_argument("--watch", action="store_true", help="print events as they arrive")
     p.add_argument("--quiet", action="store_true", help="do not print the event banner")
     p.add_argument("--db", default=os.environ.get(
@@ -3053,6 +3057,11 @@ def build_parser() -> argparse.ArgumentParser:
     dbcmd.add_argument("--out", default="", help="output file for `db export`")
     dbcmd.add_argument("--agent", default="", help="agent id for `db note`")
 
+    pincmd = sub.add_parser(
+        "pin",
+        help="print the pinned public key of a certificate (local, no server)")
+    pincmd.add_argument("certificate", help="PEM file with the certificate")
+
     return p
 
 
@@ -3061,6 +3070,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "db":
         # The notebook is local: it works without a server or a token.
         return run_db_command(args)
+    if args.cmd == "pin":
+        # The pin of a certificate is a local fact: it works without a
+        # server and without a token.
+        from . import tls as pinning
+        try:
+            print(pinning.spki_pin_of_pem(args.certificate))
+        except (OSError, ValueError) as exc:
+            print(f"cannot read the certificate: {exc}", file=sys.stderr)
+            return 2
+        return 0
     token = read_token(args)
 
     def on_event(ev: Dict[str, Any]) -> None:
@@ -3080,6 +3099,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         tls_server_name=args.tls_server_name,
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
+        tls_pin=args.tls_pin,
     )
     try:
         client.connect()

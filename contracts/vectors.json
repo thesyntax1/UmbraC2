@@ -147,6 +147,12 @@
       "chacha20-poly1305": 2
     }
   },
+  "pin": {
+    "algorithm": "sha256",
+    "certificate": "pin-vector.pem",
+    "encoding": "hex",
+    "spki_sha256": "36a3e56f74fac2fdefc67e8eab8225eb6f1966e10d977b617331231a859ba50a"
+  },
   "psk": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "rejects": {
     "bad_magic": "004301001001000000000011a49d33fb00000000000000008a6ae19c465d59172d2f0653e112e0c47b37c6af5f90dedc2a9aa778fc0177066d",

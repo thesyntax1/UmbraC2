@@ -63,6 +63,7 @@ func run() error {
 		genPSK    = flag.Bool("gen-psk", false, "print a fresh 32-byte agent PSK and exit")
 		genToken  = flag.Bool("gen-token", false, "print a fresh 32-byte operator token and exit")
 		genConfig = flag.Bool("gen-config", false, "print the default configuration as JSON and exit")
+	genSPKI  = flag.String("gen-spki", "", "print the pinned public key of a certificate and exit")
 		printVer  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
@@ -82,6 +83,16 @@ func run() error {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(config.Default().Server)
+	case *genSPKI != "":
+		// The pinned public key of a certificate: what the operator
+		// writes into the configuration of the server and into the
+		// command line of the console.
+		fingerprint, err := mtls.SPKIOfFile(*genSPKI)
+		if err != nil {
+			return err
+		}
+		fmt.Println(fingerprint)
+		return nil
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -203,6 +214,8 @@ func run() error {
 			CertFile:          cfg.Server.TLSCert,
 			KeyFile:           cfg.Server.TLSKey,
 			ClientCAFile:      cfg.Server.TLSClientCA,
+			ClientCN:          cfg.Server.TLSClientCN,
+			ClientSPKI:        cfg.Server.TLSClientSPKI,
 			RequireClientCert: true,
 			MinVersion:        "1.3",
 		})

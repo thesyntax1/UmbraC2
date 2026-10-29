@@ -144,6 +144,34 @@ listed here with the guard that keeps them from becoming the weakest link.
 * The certificates never replace the umbra handshake: the TLS layer proves
   *who*, the handshake decides *what*.
 
+**The pin is stronger than the name.**  A certificate that carries the
+expected common name proves nothing on its own: anybody who can ask the
+authority for a certificate can ask for one with that name.  A pin is the
+fingerprint of the public key itself — the hex SHA-256 of the
+`SubjectPublicKeyInfo` — so a peer has to hold the key, not merely the name.
+The server pins the console with `tls_client_spki`, the console pins the
+server with `--tls-pin` (or `UMBRA_TLS_PIN`), and both compare the
+fingerprint in constant time: the moment a peer is refused says something
+about the pin, and a comparison that leaks the first differing byte leaks
+it.
+
+**A pin narrows the trust, it never widens it.**  When an authority is
+configured as well, the chain is verified on top of the pin.  A console
+that pins a key does not need a chain of certificates to trust, so the name
+is checked by hand instead; the two checks are two checks — the pin says
+which key, the name says which host.
+
+**The console checks the pin before it speaks.**  The pin is verified right
+after the TLS handshake and before the umbra handshake, so a console that
+refuses a server never sends its token to it.  The token is the credential
+that matters; the certificate only proves who is talking.
+
+**The pin survives a renewal.**  Because the pin is the fingerprint of the
+key and not of the certificate, a certificate that is renewed with the same
+key keeps its pin.  The operator reads the new pin with `umbra pin
+<certificate.pem>` (or `umbra-server -gen-spki`) and writes it into the
+configuration of the other side.
+
 ### 3.6 The WebSocket transport (`internal/link/ws.go`)
 
 * The upgrade is the standard RFC 6455 handshake, and the client verifies the
@@ -407,6 +435,20 @@ the server takes to refuse it says something about it.
 **The TLS certificate is read at every handshake.**  A renewed certificate
 is in use after the next connection, with no restart.  A file that is
 half written is refused and the certificate that is already in use stays.
+
+**The pinned key is read at every handshake too.**  A pin that is written
+into the configuration of the server (`tls_client_spki`) or of the console
+(`--tls-pin`, `UMBRA_TLS_PIN`) is checked on every connection, so taking a
+pin away takes effect at once.  A pin that is not the hex of a SHA-256
+fingerprint is refused when the configuration is read: a typo must not
+leave the listener with a rule that never matches and a console that is
+refused without a reason.
+
+**A pin is rotated like a certificate.**  The operator prints the new
+fingerprint of the new certificate, writes it into the configuration of the
+other side and restarts the process that holds it.  Both sides may hold
+the old pin and the new one during the handover: the server takes a list of
+pins, the console takes one at a time.
 
 ## 4.2 The secrets that never reach the disk in the clear
 

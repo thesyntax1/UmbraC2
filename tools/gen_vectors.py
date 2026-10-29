@@ -10,6 +10,8 @@ changes; the file is committed so every implementation can test itself offline:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import sys
@@ -34,6 +36,66 @@ TS = 1735689600  # 2025-01-01T00:00:00Z
 
 def b(hexstr: str) -> bytes:
     return bytes.fromhex(hexstr)
+
+
+def _der_elements(der: bytes, start: int, end: int):
+    """The elements of a constructed DER value.
+
+    Each element is returned as ``(tag, start, content, stop)``: the tag
+    byte, where the element begins, where its content begins and where it
+    ends.  The parser is deliberately small: it reads the length of an
+    element and moves on, and it is only used to find the public key of a
+    certificate that sits in the repository.
+    """
+    items = []
+    pos = start
+    while pos < end:
+        tag = der[pos]
+        length = der[pos + 1]
+        cursor = pos + 2
+        if length & 0x80:
+            count = length & 0x7F
+            length = int.from_bytes(der[cursor:cursor + count], "big")
+            cursor += count
+        stop = cursor + length
+        items.append((tag, pos, cursor, stop))
+        pos = stop
+    return items
+
+
+def _spki_of_certificate(der: bytes) -> bytes:
+    """The SubjectPublicKeyInfo of a certificate, in DER.
+
+    The certificate is a sequence of three elements; the first one holds
+    the body, and the body holds the public key as the seventh element
+    (or the sixth, when the version is not written).
+    """
+    certificate = _der_elements(der, 0, len(der))
+    if not certificate or certificate[0][0] != 0x30:
+        raise ValueError("the certificate is not a DER sequence")
+    # The certificate holds the body, the signature algorithm and the
+    # signature; the body is the first of the three.
+    parts = _der_elements(der, certificate[0][2], certificate[0][3])
+    if not parts:
+        raise ValueError("the certificate holds no body")
+    body = _der_elements(der, parts[0][2], parts[0][3])
+    index = 6 if body and body[0][0] == 0xA0 else 5
+    element = body[index]
+    return der[element[1]:element[3]]
+
+
+def _pin_of_certificate(path: str) -> str:
+    """The pin of a certificate: the hex SHA-256 of its public key.
+
+    The public key is taken in the DER form it has inside the
+    certificate, so every implementation that reads the same certificate
+    comes to the same pin.
+    """
+    with open(path, "r", encoding="ascii") as handle:
+        text = handle.read()
+    body = "".join(line for line in text.splitlines() if "-----" not in line)
+    der = base64.b64decode(body)
+    return hashlib.sha256(_spki_of_certificate(der)).hexdigest()
 
 
 def main() -> None:
@@ -297,6 +359,19 @@ def main() -> None:
         # (0x08 0x01) around one uvarint (0x03 0x01). The encoder refuses to
         # produce this at all, which is why it is spelled out byte by byte.
         "upk_depth_exceeded": ("0801" * (upk.MAX_DEPTH + 1)) + "0301",
+    }
+
+    # ---- certificate pinning -------------------------------------------
+    # The pin of a certificate is the fingerprint of its public key: the
+    # Go server, the console and every other implementation have to
+    # agree on it, so it is a vector like the frames are.
+    out["pin"] = {
+        "algorithm": "sha256",
+        "certificate": "pin-vector.pem",
+        "encoding": "hex",
+        "spki_sha256": _pin_of_certificate(
+            os.path.join(ROOT, "contracts", "pin-vector.pem")
+        ),
     }
 
     path = os.path.join(ROOT, "contracts", "vectors.json")

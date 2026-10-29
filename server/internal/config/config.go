@@ -72,6 +72,14 @@ type Server struct {
 	TLSCert     string `json:"tls_cert"`
 	TLSKey      string `json:"tls_key"`
 	TLSClientCA string `json:"tls_client_ca"`
+	// TLSClientSPKI is the pinned public key of the clients: the hex
+	// SHA-256 of the SubjectPublicKeyInfo of the certificate.  A peer
+	// whose certificate is signed by the client CA but carries another
+	// key is refused, so the chain proves the authority and the pin
+	// proves the peer.
+	TLSClientSPKI string `json:"tls_client_spki"`
+	// TLSClientCN is the name the client certificate has to carry.
+	TLSClientCN string `json:"tls_client_cn"`
 
 	// DNSListen is the UDP/TCP listener of the DNS transport, and DNSDomain
 	// is the zone it answers for.
@@ -549,6 +557,28 @@ func (c *Config) Validate() error {
 		if s.TLSClientCA == "" {
 			return errors.New("config: tls_client_ca is required when tls_listen is used (the listener is mutual TLS)")
 		}
+	}
+	if s.TLSClientSPKI != "" {
+		if s.TLSListen == "" {
+			return errors.New("config: tls_client_spki needs a tls_listen to pin the clients on")
+		}
+		// The pin may be a list: the old key and the new one are both
+		// welcome while the handover lasts.
+		for _, part := range strings.Split(s.TLSClientSPKI, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, err := hex.DecodeString(part); err != nil {
+				return errors.New("config: tls_client_spki must be the hex of a SHA-256 fingerprint")
+			}
+			if len(part) != 64 {
+				return errors.New("config: tls_client_spki must be 64 hex characters (a SHA-256 fingerprint)")
+			}
+		}
+	}
+	if s.TLSClientCN != "" && s.TLSListen == "" {
+		return errors.New("config: tls_client_cn needs a tls_listen to pin the clients on")
 	}
 	if s.DNSListen != "" && s.DNSDomain == "" {
 		return errors.New("config: dns_domain must be set when dns_listen is used")

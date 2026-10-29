@@ -69,6 +69,58 @@ umbra --server c2.example.com:4002 --operator alice --tls \
 `tls_client_ca`: the listener is mutual TLS, so a client certificate is
 mandatory and a stolen token alone is not enough to take over an operation.
 
+### Pinning the console
+
+A certificate authority proves that the certificate was written by somebody
+the operator trusts; a pin proves that it is *this* key.  Both sides may
+pin, and the pin is the fingerprint of the public key: the hex SHA-256 of
+the `SubjectPublicKeyInfo`.
+
+```bash
+# 1. the pin of the certificate of the console
+umbra pin /etc/umbra/console.pem
+# -> 36a3e56f74fac2fdefc67e8eab8225eb6f1966e10d977b617331231a859ba50a
+
+# 2. the server pins that key (in /etc/umbra/server.json)
+#    "tls_client_spki": "36a3e56f74fac2fdefc67e8eab8225eb6f1966e10d977b617331231a859ba50a"
+
+# 3. the console pins the server
+umbra --server c2.example.com:4002 --operator alice --tls \
+      --tls-ca /etc/umbra/ca.pem --tls-server-name c2.example.com \
+      --tls-cert /etc/umbra/console.pem --tls-key /etc/umbra/console.key \
+      --tls-pin 9f2c...  --watch
+```
+
+`--tls-pin` may also come from the environment (`UMBRA_TLS_PIN`), so the pin
+of the console does not have to sit in the history of a shell.
+
+**The pin of the server is printed the same way**, with the server binary
+when the certificate of the server is at hand:
+
+```bash
+umbra-server -gen-spki /etc/umbra/server.pem
+```
+
+**A handover of a renewed key.**  Both sides take a list of pins, separated
+by commas, so the old key and the new one are both welcome while the
+handover lasts:
+
+```json
+"tls_client_spki": "36a3e5...ba50a,91bc7...4d2f"
+```
+
+Taking the old pin away is a matter of writing the list again and
+restarting the process that holds it.  The server refuses a configuration
+whose pin is not the hex of a SHA-256 fingerprint, so a typo is reported
+at the start and not at the first connection.
+
+**What a pin does not do.**  It does not replace the umbra handshake: the
+TLS layer still proves *who* the peer is, and the handshake still decides
+*what* the peer may do.  It also does not widen the trust: when a
+certificate authority is configured as well, the chain is verified on top
+of the pin.  And the console checks the pin *before* the umbra handshake,
+so a console that refuses a server never sends its token to it.
+
 ## 3. Operator workflow
 
 ```bash

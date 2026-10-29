@@ -63,6 +63,7 @@ class OperatorClient:
         tls_server_name: str = "",
         tls_cert: str = "",
         tls_key: str = "",
+        tls_pin: str = "",
     ) -> None:
         self.server = server
         self.operator = operator
@@ -75,6 +76,10 @@ class OperatorClient:
         self.tls_server_name = tls_server_name
         self.tls_cert = tls_cert
         self.tls_key = tls_key
+        # The pinned public key of the server: the hex SHA-256 of its
+        # SubjectPublicKeyInfo.  A console that pins a key trusts that
+        # key and not the authority that wrote the certificate.
+        self.tls_pin = tls_pin
 
         self._stream: Optional[netio.Stream] = None
         self._session: Optional[session.Session] = None
@@ -149,6 +154,8 @@ class OperatorClient:
         """
         import ssl
 
+        from . import tls as pin
+
         ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.tls_ca or None)
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
@@ -163,12 +170,37 @@ class OperatorClient:
             except (OSError, ssl.SSLError) as exc:
                 raise OperatorError(f"client certificate {self.tls_cert} rejected: {exc}") from exc
         name = self.tls_server_name or host
+        want = (self.tls_pin or "").strip().lower()
+        if want:
+            # A pinned console does not need a chain of certificates: the
+            # key is the trust.  The name is still checked by hand, and
+            # the pin is checked before the umbra handshake sends the
+            # token, so a wrong server never sees it.
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
         try:
-            return ctx.wrap_socket(sock, server_hostname=name)
+            wrapped = ctx.wrap_socket(sock, server_hostname=name)
         except ssl.SSLError as exc:
             raise OperatorError(f"TLS handshake with {name} failed: {exc}") from exc
         except OSError as exc:
             raise OperatorError(f"TLS setup failed: {exc}") from exc
+        if want:
+            cert = pin.peer_certificate(wrapped)
+            if not pin.pin_matches(cert, want):
+                try:
+                    wrapped.close()
+                except OSError:
+                    pass
+                raise OperatorError(
+                    "the server certificate does not hold the pinned key "
+                    f"(UMBRA_TLS_PIN / --tls-pin)")
+            if not pin.hostname_matches(cert, name):
+                try:
+                    wrapped.close()
+                except OSError:
+                    pass
+                raise OperatorError(f"the server certificate is not for {name}")
+        return wrapped
 
     # -- rpc -------------------------------------------------------------
     def rpc(self, cmd: str, args: Optional[Dict[str, Any]] = None) -> RpcResult:
