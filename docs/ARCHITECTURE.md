@@ -389,7 +389,9 @@ The phone is a peer of the team, not a toy:
   with the key of the agent under the label `umbra/w1/attest`, and the
   server checks the signature in constant time and records the answer in
   the metadata of the task.  The label keeps a signature over a report
-  from being a signature over a frame.
+  from being a signature over a frame, and the label and one report of
+  the contract live in `contracts/vectors.json`, so the four
+  implementations prove they produce the same bytes.
 
 ## 5. The Go implant
 

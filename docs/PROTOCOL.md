@@ -2098,7 +2098,9 @@ and the label `umbra/w1/attest`.  The server checks the signature and
 records `attested: true` in the metadata of the task, so the operator
 keeps a proof of what the implant removed even when the host is gone.  The
 comparison is constant time and the label keeps a signature over a report
-from being a signature over a frame.
+from being a signature over a frame.  The label and one report of the
+contract live in `contracts/vectors.json`, and the four implementations
+prove against it that they produce the same bytes.
 
 **The dead man's switch.**  An implant that outlives its engagement is an
 implant nobody is watching.  `wipe.deadman` arms a window: every check-in
