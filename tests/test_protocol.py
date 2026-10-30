@@ -9112,3 +9112,165 @@ def test_the_end_of_the_engagement_on_a_phone():
     for kind in ("app.dump", "anti.forensic", "evade.suicide"):
         assert f'"{kind}"' in runner, kind
         assert f"| `{kind}` |" in protocol, kind
+
+
+def test_the_senses_of_the_desktop_answer_what_the_machine_allows():
+    """The eight families that only a workstation can answer.
+
+    Every family has to be implemented on the desktop, advertised by the
+    reference server and documented -- and every one of them has to say
+    what it could not read, because a report that pretends the machine
+    has nothing to give is a lie.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    senses = read_text("implant/rust/src/senses.rs")
+    task = read_text("implant/rust/src/task.rs")
+    go_senses = read_text("implant/go/internal/beacon/senses.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                      "Desktop.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    kinds = ("window.list", "clipboard.watch", "screen.stream",
+             "wifi.profiles", "browser.creds", "av.survey", "usb.history",
+             "proc.memory")
+
+    # The desktop implant runs them.
+    for kind in kinds:
+        assert f'"{kind}"' in task, kind
+        assert f"| `{kind}` |" in protocol, kind
+
+    # The tools of the platform are used, and the API of Windows is used
+    # directly where the platform says more than its tools do.
+    for tool in ("netsh wlan show profiles", "networksetup",
+                 "nmcli --show-secrets", "wmctrl", "xdotool", "import",
+                 "scrot", "maim", "xclip", "ioreg", "lsusb", "aa-status",
+                 "MiniDumpWriteDump", "EnumWindows", "/proc/"):
+        assert tool in senses or tool in go_senses, tool
+
+    # The Go implant runs them too: the fourth implementation is not a
+    # toy either.
+    for kind in kinds:
+        assert f'"{kind}"' in go_senses or f'"{kind}"' in read_text(
+            "implant/go/internal/beacon/tasks.go"), kind
+
+    # The phone answers the same names with the truth of the phone.
+    for marker in ("fun windows(", "fun avSurvey(", "fun usb(",
+                   "fun memory(", "fun wifiProfiles(", "fun browserCreds("):
+        assert marker in phone, marker
+
+    # And the reference server answers them all.
+    token = b"desktop-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-desktop", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        for kind, args in (
+            ("window.list", {}),
+            ("clipboard.watch", {"action": "status"}),
+            ("screen.stream", {"frames": 2}),
+            ("wifi.profiles", {}),
+            ("browser.creds", {}),
+            ("av.survey", {}),
+            ("usb.history", {}),
+            ("proc.memory", {"pid": "4242"}),
+        ):
+            task_id = client.submit("agent-desktop", kind, args)
+            assert wait_until(
+                lambda: client.task(task_id).get("state") in ("done", "failed"),
+                timeout=15), f"{kind} never came back"
+            record = client.task(task_id)
+            assert record.get("state") == "done", record
+            output = record.get("output") or record.get("out") or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", "replace")
+            assert output, f"{kind} answered nothing"
+            assert kind.split(".")[0] in output, (kind, output)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_desktop_senses_say_what_they_could_not_read():
+    """A family that cannot read everything has to say so.
+
+    The wireless key of another user, a locked browser and the memory of
+    a process of another user are not readable; the report says that
+    instead of pretending that the machine has nothing to give, and the
+    secrets of the browsers stay off the wire unless the operator asks
+    for them.
+    """
+    senses = read_text("implant/rust/src/senses.rs")
+    go_senses = read_text("implant/go/internal/beacon/senses.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                      "Desktop.kt")
+    task = read_text("implant/rust/src/task.rs")
+
+    # The refusals of the desktop.
+    assert "is not readable" in senses, "the desktop pretends to see everything"
+    assert "not readable without the entitlement" in senses, (
+        "the memory of a mac would pretend that it is readable")
+    assert "could not be read" in senses, (
+        "the database of a browser would pretend that it is readable")
+    assert "is not readable" in go_senses, "the go implant pretends too"
+
+    # The secrets of the browsers are only on the wire when the operator
+    # asks for them.
+    assert "to_value(raw)" in task, "the secret of a browser is always sent"
+    assert "redacted" in read_text("implant/rust/src/creds.rs"), (
+        "the record does not say that it was redacted")
+
+    # The phone refuses the two families the platform keeps to itself,
+    # and it names the reason.
+    assert "since the tenth version" in phone, (
+        "the phone would pretend that it reads the saved networks")
+    assert "storage of another application is not readable" in phone, (
+        "the phone would pretend that it reads the databases of the browsers")
+
+    # The desktop refuses the families of the phone.
+    assert "the senses of the phone need the phone implant" in task, (
+        "the desktop answers the families of the phone")
+    assert "the window of the phone needs the phone implant" in task, (
+        "the desktop answers the window of the phone")
+
+
+def test_the_stream_of_the_screen_travels_in_pieces():
+    """A picture is bigger than a frame, so the stream is cut into pieces.
+
+    Every implementation sends the chunks of a streamed answer as partial
+    results: the task stays open while the pieces travel, and the final
+    result closes it.
+    """
+    rust_outcome = read_text("implant/rust/src/task.rs")
+    rust_beacon = read_text("implant/rust/src/beacon.rs")
+    go_outcome = read_text("implant/go/internal/beacon/tasks.go")
+    go_beacon = read_text("implant/go/internal/beacon/beacon.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                      "Beacon.kt")
+
+    # The outcome of a task carries the chunks.
+    assert "pub chunks: Vec<Vec<u8>>" in rust_outcome, (
+        "the rust implant has no place for the chunks of a stream")
+    assert "Chunks [][]byte" in go_outcome, (
+        "the go implant has no place for the chunks of a stream")
+
+    # The beacon sends them as partial results.
+    assert '"partial"' in rust_beacon, "the rust beacon sends no partial result"
+    assert "std::mem::take(&mut outcome.chunks)" in rust_beacon, (
+        "the rust beacon does not empty the chunks of the outcome")
+    assert '"partial"' in go_beacon, "the go beacon sends no partial result"
+    assert '"partial": true' in go_beacon, (
+        "the go beacon does not mark the partial results")
+    assert "partialValue" in phone, "the phone sends no partial result"
+
+    # The screen of the desktop is the family that uses them.
+    assert "outcome.chunks = frames" in rust_outcome, (
+        "the stream of the screen is not cut into pieces")
