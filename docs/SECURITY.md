@@ -630,6 +630,52 @@ exactly the kind of thing the log exists to show.
     NSS on Firefox) and the implant opens only what the user of the
     machine may open; what it cannot open is reported as such and never
     guessed.
+16. **The wipe cannot promise a clean host.**  The artefacts of the
+    implant go away -- the state, the journal, the caches, the binary --
+    and the history of the user is scrubbed of the lines that mention the
+    implant rather than deleted.  But the MFT and the USN journal of
+    Windows, `utmp`, `wtmp` and `btmp` on a POSIX host, the free blocks
+    of the disk, the swap of the machine, the buffer of the system log,
+    the statistics of the use and the backups of the cloud are not
+    reachable from a process of a user: the report names them and says
+    why.  A host that carried a file still carries its name in the blocks
+    the file system has not reused yet, and no claim of a "clean" host is
+    made anywhere in the framework.
+17. **The end of an engagement is the work of an admin, on every path.**
+    `wipe.self` and `decommission` end the implant on a host, so the
+    server refuses them to every role but the admin whichever way they
+    are queued -- the dedicated command, `task.submit`, `task.bulk`,
+    `task.chain`, `schedule.add` and `alias.run` are one door.  The
+    console asks twice before it destroys anything, and the answer of the
+    wipe travels before the implant leaves, so the operator keeps the
+    record of what was removed and what was not.
+18. **The journal of the engagement is off by default.**  The implant
+    writes what it did on a host only while the operator asks for it
+    (`forensics.timeline` with `journal: "on"`), because a record of its
+    own actions is evidence it does not need to carry.  While it is on it
+    is an ordinary artefact in the state directory, and the wipe of the
+    state removes it like any other.
+19. **The attestation proves the report, not the host.**  The signature
+    over a report shows that the report came from the key of that agent
+    and that nobody edited it on the way.  It does not show that the
+    report is true: an implant that lies signs a lie perfectly well, and
+    the signature cannot reach the parts of the disk that no process of a
+    user may open.  The limits of the report are part of the report.
+20. **The dead man's switch keeps the clock of the host.**  The window is
+    counted with the clock of the host, so a machine whose clock is moved
+    forward ends its implant early and a machine whose clock is moved
+    back keeps it longer than the operator intended.  The switch is a
+    safety belt against a forgotten implant, not a guarantee: an implant
+    that cannot reach the server at all never renews the window, and the
+    state directory of the implant is removed by the wipe, so a host that
+    is wiped before the window ends carries no switch.
+21. **A wipe of a group is a wipe of every host that matched.**  The
+    filter of the group is written in the console and evaluated by the
+    server, and the operator sees the list of the hosts before the wipe
+    begins.  A host that is added to the group between the list and the
+    wipe is not in the list, and a host that answers late is not in the
+    report: the console names the hosts that did not answer instead of
+    hiding them.
 
 ## 6. Hardening advice
 

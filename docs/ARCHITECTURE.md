@@ -260,6 +260,8 @@ main → Config (compile-time defaults + env/flags) → Beacon::run
 | `evade` | the posture engine: the environment, the schedule and the kill switch |
 | `hygiene` | the memory and the process hygiene |
 | `persist` | the persistence manager and its technique catalogue |
+| `forensics` | the zero-footprint wipe: the catalogue of the artefacts of the platform, the survey, the wipe, the verification, the surface, the journal, the dead man's switch and the end |
+| `senses` | the senses of the desktop: the window table, the clipboard, the screen, the networks, the browsers, the security software, the USB keys and the memory of a process |
 
 Choices worth knowing:
 
@@ -369,7 +371,25 @@ The phone is a peer of the team, not a toy:
   security software, the USB keys and the memory of a process.  The
   Android implant answers the same eight names (`Desktop.kt`) with the
   truth of the phone: what the platform allows is answered, and what it
-  hides is refused with the reason.
+  hides is refused with the reason;
+* the zero-footprint wipe has its own layer on the three platforms
+  (`forensics.rs` in Rust, `forensics.go` in Go, `Wipe.kt` on the
+  phone): the catalogue of the artefacts of the platform, the survey, the
+  wipe, the verification, the surface, the journal and the end.  The
+  history of the user is scrubbed and never deleted, the limits of the
+  platform are named instead of being pretended away, and the two kinds
+  that end an engagement are refused by the server to everybody but an
+  admin, whichever path they travel;
+* the dead man's switch belongs to that layer: the window is armed by the
+  operator, every check-in renews it, and the silence of the team ends
+  the implant by itself.  The state of the switch is an ordinary file of
+  the state directory, so a reboot does not disarm it and the wipe takes
+  it with the rest;
+* the attestation belongs to the wire: every report of the wipe is signed
+  with the key of the agent under the label `umbra/w1/attest`, and the
+  server checks the signature in constant time and records the answer in
+  the metadata of the task.  The label keeps a signature over a report
+  from being a signature over a frame.
 
 ## 5. The Go implant
 
@@ -388,6 +408,8 @@ main → Config → Beacon.Run
 | `internal/crypt` | the key schedule |
 | `internal/session` | the link state machine |
 | `internal/beacon` | the cycle, the client half of the handshake, the task table, the inventory and the self test |
+| `internal/beacon/senses.go` | the senses of the desktop, in the standard library alone |
+| `internal/beacon/forensics.go` | the zero-footprint wipe of a POSIX host: the catalogue of the artefacts, the survey, the wipe, the verification, the surface, the journal, the dead man's switch and the end |
 
 The implant carries its own copy of the protocol core, the way the Rust and
 the Kotlin implants carry theirs, and the conformance vectors in
@@ -398,7 +420,7 @@ Go and nothing else.
 It is deliberately small, and the capability list it advertises in the
 handshake is the list of what it can really do:
 
-* twenty-four task kinds, and no module loader and no persistence: those
+* thirty-two task kinds, and no module loader and no persistence: those
   are the Rust beacon;
 * the link is TCP only: the other transports are the Rust beacon as well;
 * the shell task needs a POSIX shell and the process table is read from

@@ -1252,6 +1252,96 @@ The persistence of a mac is `launchd.agent`, `launchd.daemon`, `loginitem`,
 `shell_rc` and `cron.user`, and the manager reads every one of them back
 before it says that it is installed.
 
+### Leaving nothing behind
+
+Every engagement leaves something on the host: a file in the state
+directory of the implant, a line in the history of the shell, a prefetch
+entry, the name of the binary in the table of the processes.  The
+framework knows how to survey a host, how to scrub the traces it made
+and how to take the implant off the machine.  The operator asks for it
+with seven commands:
+
+```bash
+umbra survey ws-01                 # what is here: every artefact and its size
+umbra forensics ws-01              # the surface an analyst would find
+umbra scrub ws-01 --dry-run       # what a wipe would remove, touching nothing
+umbra scrub ws-01 --what state,history   # remove the state and scrub the history
+umbra verify ws-01                # what is left, and what cannot be reached
+umbra journal ws-01 --on          # the timeline of the engagement on the host
+umbra vanish ws-01                # the implant leaves the host
+umbra decommission ws-01          # the end of the engagement on the host
+```
+
+**The order matters.**  `decommission` is not a list of deletions but a
+sequence, and the sequence is the one that leaves nothing behind:
+
+1. the watchers stop first -- they would write into the state that is
+   about to go;
+2. the persistence entries are taken away -- a start-up entry that points
+   at a missing binary is a trace worse than the entry itself;
+3. the traces are wiped: the state, the journal, the caches, the history
+   of the shell, the list of the recent files;
+4. the binary goes: a child waits for the process and removes it, and on
+   Windows the deletion is handed to the session manager;
+5. the verification closes the report.
+
+The answer travels **before** the implant leaves, so the operator reads
+what was removed and what was not.
+
+**The history of the user is scrubbed, never deleted.**  The lines of
+`.bash_history` that mention the implant are taken out; the rest of the
+file stays.  The same holds for the recent files and for the trash: the
+implant is removed from them, not the user.
+
+**A limit is a limit.**  The report names the things no process of a user
+can reach -- the MFT and the USN journal of Windows, `utmp`, `wtmp` and
+`btmp` on a POSIX host, the free blocks of the disk, the swap, the buffer
+of the system log, the statistics of the use, the backups of the cloud --
+and says why they are out of reach.  A host that carries a deleted file in
+its free space is not a clean host, and the report does not pretend that
+it is.
+
+**The journal is off until the operator asks for it.**  An implant that
+writes a record of its own actions carries evidence that it does not
+need to carry.  `umbra journal ws-01 --on` turns it on, the timeline
+answers what the implant did on that host, and the wipe removes the
+journal like any other artefact.
+
+**The end of an engagement is the work of an admin.**  `vanish` and
+`decommission` are refused to everybody but an admin, and they are
+refused whichever path they travel: the dedicated command, `task.submit`,
+`task.bulk`, `task.chain`, `schedule.add` and `alias.run` are one door.
+The console asks twice before it destroys anything.
+
+**The dead man's switch.**  An implant that outlives its engagement is an
+implant nobody is watching.  The operator arms a window and every
+check-in renews it; when the team goes quiet for longer than the window
+the implant wipes its traces, takes its persistence with it and leaves:
+
+```bash
+umbra deadman ws-01 --minutes 720      # twelve hours of silence, then the end
+umbra deadman ws-01 --minutes 0        # the switch is disarmed
+```
+
+The window lives in the state directory of the implant, so a reboot does
+not disarm it, and arming it is an admin command: it is the end of an
+engagement waiting to happen.
+
+**The proof outlives the host.**  Every report of the wipe carries the
+signature of the implant: the HMAC of the report under the key of the
+agent and the label `umbra/w1/attest`.  The server checks the signature
+and writes `attested: true` in the metadata of the task, so the record of
+what was removed stays readable after the host is gone.
+
+**A fleet is wiped host by host.**  The seven commands take one host or a
+group of them, and the console walks the group: the survey, the wipe and
+the verification of every host, one after the other, so the operator sees
+the host that did not answer instead of a promise.
+
+```bash
+umbra cleanup --filter state=online --what state,history,cache
+```
+
 ### A key for every host
 
 The fleet key is a key of everybody: whoever holds it may claim any name.
@@ -1824,6 +1914,9 @@ NTP, or raise the limit if you accept the risk.
 - [ ] `socks_user` and `socks_password` set on every proxy that is not bound to loopback
 - [ ] `pivot_deny` holds the ranges the operation must not touch (link-local, the metadata address)
 - [ ] rendered stagers deleted after the engagement (they carry the agent key)
+- [ ] the journal of the engagement left off on the implants (`umbra journal <agent> --on` only when the engagement needs it)
+- [ ] the traces of the engagement wiped before the host is handed back (`umbra survey`, `umbra scrub`, `umbra verify`)
+- [ ] the dead man's switch disarmed on the hosts that stay (`umbra deadman <agent> --minutes 0`)
 
 ## 8. Upgrades
 

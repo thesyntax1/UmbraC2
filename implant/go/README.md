@@ -72,6 +72,14 @@ server refuses to queue work that is not on it.
 | `av.survey` | The security software of the machine: the products and the services that watch it. |
 | `usb.history` | The USB keys of the machine: the history of the bus and the devices that are attached. |
 | `proc.memory` | The memory of a process: the readable regions and the strings that look like a credential. |
+| `wipe.survey` | What the engagement left on the host: every artefact, its size and the reason it is a trace. It changes nothing. |
+| `wipe.run` | Removes the artefacts of the families the operator names (`state`, `history`, `recent`, `cache`, `log`, `system` or `all`) and reports what was removed, what was scrubbed and what could not be touched. |
+| `wipe.verify` | What is left on the host after the wipe, and what no process of a user can reach. |
+| `wipe.self` | The self-destruction of the implant: its state, its journal and its binary. |
+| `forensics.report` | The surface of the host as an analyst sees it: the artefacts, the journal and the process. |
+| `forensics.timeline` | The timeline of the engagement on the host; the journal is written only while it is on. |
+| `decommission` | The end of the engagement on the host: the watchers stop, the traces are wiped, the binary goes and the verification follows. |
+| `wipe.deadman` | The dead man's switch: the implant ends itself when the operator has not checked in for the number of minutes the operator named. Zero disarms the switch. |
 
 ## Building and running
 
@@ -138,6 +146,10 @@ implant/go/
 │   ├── senses.go                the senses of the desktop: the windows, the
 │   │                             clipboard, screen, networks, browsers, the
 │   │                             security software, the USB keys, the memory
+│   ├── forensics.go             the zero-footprint wipe: the survey of the
+│   │                             artefacts, the wipe of the traces, the
+│   │                             verification, the journal, the dead man's
+│   │                             switch and the end
 │   ├── sysinfo.go                the inventory, the network and the processes
 │   ├── selftest.go               the offline tests and the built-in server
 │   └── values.go                 the readers of the values that come off the wire

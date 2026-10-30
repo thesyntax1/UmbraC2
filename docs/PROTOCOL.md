@@ -505,6 +505,14 @@ Task kinds understood by the reference implants:
 | `av.survey` | — | the security software of the desktop: the products of the security centre and the services that watch the machine |
 | `usb.history` | — | the USB keys of the desktop: the history of the machine and the devices that are attached now |
 | `proc.memory` | `pid` | the memory of a process: the dump of the process, and the strings that look like a credential |
+| `wipe.survey` | — | what the engagement left on the host: every artefact, its size and the reason it is a trace (it changes nothing) |
+| `wipe.run` | optional `what` (list of `state`, `history`, `recent`, `cache`, `log`, `system` or `all`), optional `dry_run` | removes the artefacts of the named families and reports what was removed, what was scrubbed and what could not be touched |
+| `wipe.verify` | — | what is left on the host after the wipe, and what no process of a user can reach |
+| `wipe.self` | optional `keep_state` | the self-destruction of the implant: its state, its journal and its binary |
+| `forensics.report` | — | the surface of the host as an analyst sees it: the artefacts, the persistence entries, the process and the journal |
+| `forensics.timeline` | optional `journal` (`on`/`off`) | the timeline of the engagement on the host; the journal is written only while it is on |
+| `decommission` | optional `keep_state` | the end of the engagement on the host: the watchers stop, the persistence goes, the traces are wiped, the binary goes and the verification follows |
+| `wipe.deadman` | optional `minutes` (zero disarms the switch) | arms the dead man's switch: the implant ends itself when the operator has not checked in for that many minutes |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -583,6 +591,14 @@ Operator RPC commands, with the minimum role each requires:
 | `events.list` | viewer | the recent events of the journal (`after`, `limit`) |
 | `sessions.list` | viewer | the interactive sessions that are open, per agent |
 | `engagement.wipe` | admin | clears the agents, the tasks and the schedules of the server |
+| `forensics.survey` | viewer | queue the survey of the traces of a host: `id` |
+| `forensics.report` | viewer | queue the surface of a host, as an analyst sees it: `id` |
+| `forensics.verify` | viewer | queue the verification of a host after a wipe: `id` |
+| `forensics.timeline` | viewer | queue the timeline of the engagement on a host: `id`, optional `journal` (`on`/`off`) |
+| `forensics.wipe` | operator | queue the removal of the traces of a host: `id`, optional `what` (list of families), optional `dry_run` |
+| `forensics.self` | admin | queue the self-destruction of the implant on a host: `id` |
+| `forensics.decommission` | admin | queue the end of the engagement on a host: `id` |
+| `forensics.deadman` | admin | arm the dead man's switch of a host: `id`, `minutes` (zero disarms it) |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -1999,6 +2015,111 @@ the security software that is installed (`av.survey`), the USB devices
 (`proc.memory`).  The two families the platform keeps to itself are refused
 with the reason: the saved networks of the phone (`wifi.profiles`) and the
 databases of its browsers (`browser.creds`).
+
+### 7.2w The zero-footprint wipe
+
+Every implant leaves something behind: a file in the state directory, a line
+in the history of the shell, a prefetch entry, the name of the binary in
+the table of the processes.  Some of it belongs to the implant and some of
+it belongs to the platform, and the difference matters: the artefacts of
+the implant go away with the implant, and the artefacts of the platform
+need the tools of the platform.
+
+The eight tasks of this section answer seven questions and refuse to answer
+the eighth one:
+
+| question | task | what the operator gets |
+|---|---|---|
+| what is here? | `wipe.survey` | every artefact, its size and the reason it is a trace; it changes nothing |
+| take it away | `wipe.run` | what was removed, what was scrubbed, what could not be touched, and what is still there |
+| is it gone? | `wipe.verify` | what is left, and what no process of a user can reach |
+| what would an analyst find? | `forensics.report` | the artefacts, the persistence entries, the process and the journal |
+| what did the implant do here? | `forensics.timeline` | the timeline of the engagement, and the switch of the journal |
+| let the implant go | `wipe.self` | the state, the journal and the binary of the implant |
+| end the engagement | `decommission` | all of it, in the order that leaves nothing behind |
+| what if nobody comes back? | `wipe.deadman` | the window of the silence after which the implant ends itself |
+
+**Three rules hold everywhere.**
+
+1. *A wipe never destroys the material of the user that the implant did not
+   create.*  The history of the shell is **scrubbed** of the lines that
+   mention the implant; the rest of the file stays.  The trash of the user
+   and the list of the recent files are cleaned the same way.
+2. *The operator chooses the family, and the report says which family was
+   touched.*  The families are `state`, `history`, `recent`, `cache`, `log`
+   and `system`, or `all`.  A wipe that removes everything and a wipe that
+   removes the history are not the same thing.
+3. *A limit is reported as a limit.*  The MFT and the USN journal of
+   Windows, the `utmp`/`wtmp`/`btmp` of a POSIX host, the free blocks of
+   the disk, the swap of the machine, the buffer of the system log, the
+   statistics of the use and the backups of the cloud are not reachable
+   from a process of a user.  The report names them and says why, instead
+   of pretending that the disk is clean.
+
+**The families, per platform.**
+
+| family | Windows | macOS | Linux | Android |
+|---|---|---|---|---|
+| `state` | the state of the implant, the journal | the same | the same | the state of the application, the journal |
+| `history` | the lines of the consoles that name the implant | the shells of the user | the shells of the user | the clipboard of the system |
+| `recent` | the shortcuts of the recent files | the recent documents | the recent files and the trash | the entry of the application in the recents |
+| `cache` | the temporary directory | the caches of the user | the cache of the implant | the cache of the application |
+| `log` | the prefetch, the event log, the unified log | the unified log | the journal of the system | the buffer of the system log (a limit) |
+| `system` | the MFT, the USN journal, the amcache (limits) | the log of the system (a limit) | `utmp`, `wtmp`, `btmp`, the swap, the free blocks (limits) | the statistics of the use, the record of the installer, the backups (limits) |
+
+**The order of the end.**  `decommission` is not a list of deletions but a
+sequence: the watchers stop first (they would write into the state that is
+about to go), then the persistence entries are taken away (a start-up entry
+that points at a missing binary is a trace worse than the entry itself),
+then the traces are wiped, then the binary goes, and the verification
+closes the report.  The Rust and the Go implants delete their own binary
+with a child that waits for the process to end; the Windows implant hands
+the deletion to the session manager, because the file of a running process
+cannot be removed while it runs.
+
+**The journal.**  The implant can keep a journal of what it did on the host
+(the tasks it ran, the handshakes it made).  It is **off until the
+operator turns it on** (`forensics.timeline` with `journal: "on"`), because
+an implant that writes a record of its own actions carries evidence that
+it does not need to carry.  While it is on it lives in the state directory
+(`~/.umbra/journal.state` on the desktop, the private directory of the
+application on the phone), and the wipe removes it like any other artefact.
+
+**The server guards the end.**  `forensics.self` and `forensics.decommission`
+are admin commands, and the server refuses those two task kinds to every
+role but the admin **whichever path they travel**: the dedicated command,
+`task.submit`, `task.bulk`, `task.chain`, `schedule.add` and `alias.run`
+are one door.  A task that burns a host does not become less destructive
+because it was queued in another way.
+
+**The attestation of a report.**  Every report of the wipe carries an
+`attest` field: the HMAC-SHA256 of the report, under the key of the agent
+and the label `umbra/w1/attest`.  The server checks the signature and
+records `attested: true` in the metadata of the task, so the operator
+keeps a proof of what the implant removed even when the host is gone.  The
+comparison is constant time and the label keeps a signature over a report
+from being a signature over a frame.
+
+**The dead man's switch.**  An implant that outlives its engagement is an
+implant nobody is watching.  `wipe.deadman` arms a window: every check-in
+of the operator renews it, and when the team goes quiet for longer than
+the window the implant wipes its traces, takes its persistence with it
+and leaves.  The state of the switch lives in the state directory of the
+implant (`~/.umbra/deadman.state`), so a reboot does not disarm it, and
+arming it is an admin action: it is the end of an engagement waiting to
+happen.
+
+**A group of hosts.**  The eight commands name one host with `id`, or a
+group with `agents` (a list) or with a filter (`state`, `os`, `tag`,
+...).  A command with neither is refused: the end of an engagement must
+never be a guess.
+
+**The console.**  The operator talks to the eight commands with
+`umbra survey`, `umbra forensics`, `umbra scrub`, `umbra verify`,
+`umbra journal`, `umbra vanish`, `umbra decommission` and `umbra deadman`,
+and with `umbra cleanup` for a group of hosts: the console walks the
+group host by host -- the survey, the wipe and the verification -- and
+prints the host that did not answer instead of hiding it.
 
 ## 8. Transports
 
