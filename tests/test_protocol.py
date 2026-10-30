@@ -9538,10 +9538,24 @@ def test_the_report_of_the_wipe_is_signed():
                            "TaskRunner.kt")
     agent = read_text("server/internal/link/agent.go")
     mock = read_text("tools/mock_server.py")
+    # The label is a constant of every implementation, not a literal that
+    # is written again in every file.
+    rust_crypto = read_text("implant/rust/src/crypto.rs")
+    go_crypto = read_text("implant/go/internal/crypt/crypt.go")
+    phone_crypto = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                             "Crypto.kt")
+    server_crypto = read_text("server/internal/crypt/crypt.go")
+    python_crypto = read_text("operator/umbra_cli/crypto.py")
 
     # The label is the same everywhere.
-    for module in (rust_task, go, phone_task, agent, mock):
+    for module in (rust_crypto, go_crypto, phone_crypto, server_crypto,
+                   python_crypto):
         assert "umbra/w1/attest" in module, module[:40]
+
+    # And the code that signs uses the constant.
+    for module in (rust_task, go, phone_task, agent):
+        assert "LABEL_ATTEST" in module or "LabelAttest" in module, module[:40]
+    assert "crypto.attest" in mock, "the mock does not sign with the helper"
 
     # The signature is an HMAC-SHA256 and the comparison is constant
     # time: the signature is public, but the habit is worth keeping.
@@ -9677,3 +9691,25 @@ def test_the_group_wipe_and_the_dead_man_switch_work_end_to_end():
         one.stop()
         two.stop()
         server.stop()
+
+
+def test_the_attestation_of_a_report_is_the_same_everywhere():
+    """The label and the bytes of the report are the contract.
+
+    The conformance vectors carry one report, the key that signs it and
+    the signature that must come out of it, so every implementation can
+    prove it produces the same bytes.
+    """
+    from umbra_cli import crypto  # noqa: WPS433
+
+    with open(os.path.join(ROOT, "contracts", "vectors.json"), "r",
+              encoding="utf-8") as handle:
+        vectors = json.load(handle)
+    attest = vectors["attest"]
+    assert attest["algorithm"] == "hmac-sha256", attest
+    assert attest["label"] == crypto.LABEL_ATTEST.decode(), attest
+    report = bytes.fromhex(attest["report_hex"])
+    assert report.decode() == attest["report_text"], attest
+    key = bytes.fromhex(attest["key"])
+    assert crypto.attest(key, report).hex() == attest["mac"], (
+        "the signature of the report is not the one of the contract")
