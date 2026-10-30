@@ -9274,3 +9274,406 @@ def test_the_stream_of_the_screen_travels_in_pieces():
     # The screen of the desktop is the family that uses them.
     assert "outcome.chunks = frames" in rust_outcome, (
         "the stream of the screen is not cut into pieces")
+
+
+def test_the_wipe_of_the_host_is_implemented_everywhere():
+    """The seven tasks of the zero-footprint wipe.
+
+    Every kind has to be implemented on the desktop, on the phone and on
+    the Go implant, advertised by the reference server and documented --
+    and every one of them has to answer, because a task nobody answers
+    is a task the operator waits for forever.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    rust = read_text("implant/rust/src/forensics.rs")
+    rust_task = read_text("implant/rust/src/task.rs")
+    go = read_text("implant/go/internal/beacon/forensics.go")
+    go_task = read_text("implant/go/internal/beacon/tasks.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt")
+    phone_task = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                            "TaskRunner.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    kinds = ("wipe.survey", "wipe.run", "wipe.verify", "wipe.self",
+             "forensics.report", "forensics.timeline", "decommission")
+
+    # The desktop implant runs them.
+    for kind in kinds:
+        assert f'"{kind}"' in rust_task, kind
+        assert f"| `{kind}` |" in protocol, kind
+
+    # The Go implant runs them too: the fourth implementation is not a
+    # toy either.
+    for kind in kinds:
+        assert f'"{kind}"' in go_task, kind
+
+    # The phone answers the same names.
+    for kind in kinds:
+        assert f'"{kind}"' in phone_task, kind
+
+    # The three implementations share the same four answers.
+    for module in (rust, go, phone):
+        for marker in ("wipe.survey", "wipe.run", "wipe.verify",
+                       "wipe.self", "forensics.report", "forensics.timeline"):
+            assert marker in module, marker
+
+    # And the reference server answers them all.
+    token = b"wipe-token-0123456789abcdef"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-wipe", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        for kind, args in (
+            ("wipe.survey", {}),
+            ("wipe.run", {"what": ["state", "history"]}),
+            ("wipe.verify", {}),
+            ("forensics.report", {}),
+            ("forensics.timeline", {}),
+        ):
+            task_id = client.submit("agent-wipe", kind, args)
+            assert wait_until(
+                lambda: client.task(task_id).get("state") in ("done", "failed"),
+                timeout=15), f"{kind} never came back"
+            record = client.task(task_id)
+            assert record.get("state") == "done", record
+            output = record.get("output") or record.get("out") or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", "replace")
+            assert output, f"{kind} answered nothing"
+            assert kind.split(".")[0] in output, (kind, output)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_wipe_says_what_it_could_not_remove():
+    """A wipe that claims a clean machine it did not clean is a lie.
+
+    The limits of the platform are named and explained, and the history
+    of the user is scrubbed and never deleted: the lines that mention
+    the implant go, the rest of the file stays.
+    """
+    rust = read_text("implant/rust/src/forensics.rs")
+    go = read_text("implant/go/internal/beacon/forensics.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt")
+
+    # The limits are reported, not pretended away.
+    for module in (rust, go, phone):
+        assert "limit" in module, "the wipe has no limits"
+        assert "out of reach" in module or "out of the reach" in module, (
+            "the wipe does not say what it cannot reach")
+    assert "limit.mft" in rust, "the windows limits are not named"
+    assert "limit.utmp" in go, "the posix limits are not named"
+    assert "limit.logcat" in phone, "the limits of the phone are not named"
+
+    # The history of the user is scrubbed, not deleted.
+    assert '"scrub"' in rust, "the history is not scrubbed"
+    assert "filter(|line| !mentions(line, &markers))" in rust, (
+        "the scrub of the history would delete the lines of the user")
+    assert "forensicMentions(line, markers)" in go, (
+        "the scrub of the history would delete the lines of the user")
+    assert "filter { line ->" in phone or "filter" in phone, (
+        "the phone does not scrub the history")
+
+    # The wipe says which family it touched, and what is left.
+    for module in (rust, go, phone):
+        assert "are still on this host" in module or "still on this phone" in module, (
+            "the wipe does not say what is left")
+
+
+def test_the_end_of_the_engagement_is_the_work_of_an_admin():
+    """The two kinds that burn a host are one door, not five.
+
+    They are refused to everybody but an admin whichever path they
+    travel, and the console asks before it destroys anything.
+    """
+    rbac = read_text("server/internal/rbac/rbac.go")
+    operator = read_text("server/internal/link/operator.go")
+    console = read_text("operator/umbra_cli/cli.py")
+
+    # The roles of the seven commands.
+    for command, role in (
+        ("forensics.survey", "Viewer"),
+        ("forensics.report", "Viewer"),
+        ("forensics.verify", "Viewer"),
+        ("forensics.timeline", "Viewer"),
+        ("forensics.wipe", "Operator"),
+        ("forensics.self", "Admin"),
+        ("forensics.decommission", "Admin"),
+    ):
+        assert re.search(rf'"{command}":\s+{role},', rbac), command
+
+    # The guard sits in every path that queues a kind.
+    for path in ("task.submit", "task.bulk", "task.chain", "schedule.add",
+                 "alias.run"):
+        section = operator.split(f'case "{path}"', 1)[1].split("case ", 1)[0]
+        assert "forensicGuard(" in section, path
+    assert "forensicGuardedKinds" in operator, "the guarded kinds are not named"
+    assert '"wipe.self":    true,' in operator, "wipe.self is not guarded"
+    assert '"decommission": true,' in operator, "decommission is not guarded"
+
+    # The console asks before it ends an engagement.
+    assert "type 'vanish' to continue" in console, (
+        "the console destroys the implant without asking")
+    assert "type 'decommission' to continue" in console, (
+        "the console ends the engagement without asking")
+
+    # And the console knows the seven shortcuts.
+    for command in ("survey", "forensics", "scrub", "verify", "journal",
+                    "vanish", "decommission"):
+        assert f'add_parser("{command}"' in console, command
+
+
+def test_the_journal_of_the_engagement_is_off_until_the_operator_asks():
+    """An implant that writes a record of its own actions carries evidence.
+
+    The journal of the engagement is a trace like any other, so it is
+    written only while the operator asks for it -- and the wipe removes
+    it like any other artefact.
+    """
+    rust = read_text("implant/rust/src/forensics.rs")
+    rust_beacon = read_text("implant/rust/src/beacon.rs")
+    go = read_text("implant/go/internal/beacon/forensics.go")
+    go_beacon = read_text("implant/go/internal/beacon/beacon.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt")
+    phone_beacon = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                             "Beacon.kt")
+
+    # The flag of the journal.
+    assert "journal.on" in rust, "the journal of the desktop has no flag"
+    assert "journal.on" in go, "the journal of the go implant has no flag"
+    assert "JOURNAL_FLAG" in phone, "the journal of the phone has no flag"
+
+    # The beacon writes only while it is on.
+    assert "if crate::forensics::journal_enabled()" in rust_beacon, (
+        "the rust beacon writes the journal whatever the operator says")
+    assert "if forensicJournalEnabled()" in go_beacon, (
+        "the go beacon writes the journal whatever the operator says")
+    assert "Wipe.journalEnabled(stateDir)" in phone_beacon, (
+        "the phone writes the journal whatever the operator says")
+
+    # The journal lives in the state of the implant, so the wipe of the
+    # state takes it with it.
+    assert 'join(".umbra").join("journal.state")' in rust, (
+        "the journal of the desktop does not live in the state")
+    assert "journal.state" in go, "the journal of the go implant is elsewhere"
+
+
+def test_the_dead_man_switch_ends_an_implant_nobody_watches():
+    """An implant that outlives its engagement is an implant nobody owns.
+
+    The switch is armed by the operator, every check-in renews the
+    window and the silence of the team ends the implant by itself.  It
+    lives in the state directory of the implant, so a reboot does not
+    disarm it, and arming it is the work of an admin: it is the end of
+    an engagement waiting to happen.
+    """
+    rust = read_text("implant/rust/src/forensics.rs")
+    rust_task = read_text("implant/rust/src/task.rs")
+    rust_beacon = read_text("implant/rust/src/beacon.rs")
+    go = read_text("implant/go/internal/beacon/forensics.go")
+    go_task = read_text("implant/go/internal/beacon/tasks.go")
+    go_beacon = read_text("implant/go/internal/beacon/beacon.go")
+    phone = read_text("implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt")
+    phone_task = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                           "TaskRunner.kt")
+    phone_beacon = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                             "Beacon.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+    rbac = read_text("server/internal/rbac/rbac.go")
+
+    # The kind exists in the three implants and in the documentation.
+    assert '"wipe.deadman"' in rust_task
+    assert '"wipe.deadman"' in go_task
+    assert '"wipe.deadman"' in phone_task
+    assert "| `wipe.deadman` |" in protocol
+
+    # The switch has a file of its own in the state directory.
+    for module, marker in ((rust, "deadman.state"), (go, "deadman.state"),
+                           (phone, "deadman.state")):
+        assert marker in module, module[:40]
+
+    # The window is armed, renewed and read.
+    assert "deadman_arm" in rust
+    assert "deadman_renew" in rust
+    assert "deadman_fired" in rust
+    assert "forensicDeadmanArm" in go
+    assert "forensicDeadmanRenew" in go
+    assert "forensicDeadmanFired" in go
+    assert "deadmanArm" in phone
+    assert "deadmanRenew" in phone
+    assert "deadmanFired" in phone
+
+    # The beacon fires the switch and renews it on every check-in: the
+    # switch is only quiet when the team is.
+    assert "deadman" in rust_beacon.lower()
+    assert "deadman" in go_beacon.lower()
+    assert "deadman" in phone_beacon.lower()
+
+    # The command is the work of an admin.
+    assert re.search(r'"forensics.deadman":\s+Admin,', rbac), (
+        "the dead man's switch is not an admin command")
+
+
+def test_the_report_of_the_wipe_is_signed():
+    """The proof of what was removed outlives the host.
+
+    The implant signs the report with the key of the agent and a label
+    that keeps a signature over a report from being a signature over a
+    frame; the server checks it in constant time and records the
+    answer in the metadata of the task.
+    """
+    rust_task = read_text("implant/rust/src/task.rs")
+    go = read_text("implant/go/internal/beacon/forensics.go")
+    phone_task = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                           "TaskRunner.kt")
+    agent = read_text("server/internal/link/agent.go")
+    mock = read_text("tools/mock_server.py")
+
+    # The label is the same everywhere.
+    for module in (rust_task, go, phone_task, agent, mock):
+        assert "umbra/w1/attest" in module, module[:40]
+
+    # The signature is an HMAC-SHA256 and the comparison is constant
+    # time: the signature is public, but the habit is worth keeping.
+    assert "hmac" in agent.lower()
+    assert "hmac.Equal" in agent, "the comparison of the signature is not constant time"
+    assert "hmac.Equal" in mock or "compare_digest" in mock, (
+        "the comparison of the signature is not constant time")
+
+    # The server records the answer of the check.
+    assert '"attested"' in agent, "the server does not record the attestation"
+    assert "verifyAttestation" in agent
+
+    # And the reference server signs its reports the way the implants do.
+    assert "_verify_attestation" in mock
+
+
+def test_the_end_of_an_engagement_reaches_a_group_of_hosts():
+    """A wipe of one host is a chore; a wipe of a fleet is an operation.
+
+    The command names one host or a group of them, and the console
+    walks the group host by host: the survey, the wipe and the
+    verification, so the operator sees the host that did not answer.
+    """
+    operator = read_text("server/internal/link/operator.go")
+    cli = read_text("operator/umbra_cli/cli.py")
+    client = read_text("operator/umbra_cli/client.py")
+    mock = read_text("tools/mock_server.py")
+
+    # The command takes one host or a group.
+    assert "forensicTaskKind" in operator
+    assert "selectTargets" in operator, "the command cannot name a group"
+    for command in ("forensics.survey", "forensics.wipe", "forensics.verify",
+                    "forensics.report", "forensics.timeline", "forensics.self",
+                    "forensics.decommission", "forensics.deadman"):
+        assert f'case "{command}"' in operator, command
+
+    # The console has a command for the group.
+    assert "cleanup" in cli, "the console has no command for a group of hosts"
+    assert 'rpc("forensics.deadman"' in client, (
+        "the console cannot arm the dead man's switch")
+    assert 'rpc("forensics.wipe"' in client, (
+        "the console cannot wipe a group of hosts")
+
+    # The reference server answers the group the same way.
+    assert "_forensic_task_kind" in mock
+    assert "_select_agents" in mock
+
+
+def test_the_attestation_of_the_reference_server_holds():
+    """The proof of the wipe is checked on the way in.
+
+    The reference server verifies the signature of a report the way the
+    Go server does and records it in the metadata of the task, so the
+    console and the tests see the same answer.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"attest-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-attest", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        task_id = client.submit("agent-attest", "wipe.survey", {})
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the survey never came back"
+        record = client.task(task_id)
+        assert record.get("state") == "done", record
+        meta = record.get("meta") or {}
+        assert meta.get("attested") is True, (
+            "the server did not verify the attestation of the report")
+        assert meta.get("attest"), "the signature did not reach the server"
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_group_wipe_and_the_dead_man_switch_work_end_to_end():
+    """The two new commands travel the whole way.
+
+    The wipe of a group reaches every host that matched the filter, and
+    the dead man's switch is armed on one host and answered by it.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    token = b"group-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    one = FakeAgent(server.address, AGENT_PSK, "agent-one", interval=0.2)
+    two = FakeAgent(server.address, AGENT_PSK, "agent-two", interval=0.2)
+    one.start()
+    two.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: len(client.agents()) >= 2, timeout=10), (
+            "the agents never showed up")
+
+        # The wipe of a group: every host that matched is queued.
+        res = client.rpc("forensics.wipe",
+                         {"filter": {"state": "online"}, "what": ["state"]})
+        assert res.ok, res.error
+        rows = res.data.get("tasks") or []
+        assert len(rows) == 2, rows
+        assert all(row.get("task_id") for row in rows), rows
+
+        # The dead man's switch: the console arms it on one host.
+        res = client.forensics_deadman("agent-one", 60)
+        assert res.get("task_id"), res
+        task_id = str(res["task_id"])
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the switch never came back"
+        record = client.task(task_id)
+        assert record.get("state") == "done", record
+        output = record.get("output") or record.get("out") or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        # The wording is the one the three implants use.
+        assert "ends itself" in output, output
+    finally:
+        client.close()
+        one.stop()
+        two.stop()
+        server.stop()
