@@ -1333,6 +1333,23 @@ agent and the label `umbra/w1/attest`.  The server checks the signature
 and writes `attested: true` in the metadata of the task, so the record of
 what was removed stays readable after the host is gone.
 
+**The machine of the operator is a host too.**  The notebook of the
+console, the exports, the downloads and the commands that were typed
+into the shell are traces of the engagement, and the end of an
+engagement takes them away:
+
+```bash
+umbra clean --dry-run         # what would go: nothing is touched
+umbra clean                   # the notebook and the lines of the console
+```
+
+The history is **scrubbed**, never deleted: the lines that name the
+console (or the address of the server) go, the rest of the file stays.
+The notebook goes as a whole, because a notebook with holes in it is
+worse than no notebook.  The ledger of the server is not touched: it is
+the record of the engagement, not a trace of it -- ship it off the box
+instead.
+
 **A fleet is wiped host by host.**  The seven commands take one host or a
 group of them, and the console walks the group: the survey, the wipe and
 the verification of every host, one after the other, so the operator sees

@@ -2124,6 +2124,13 @@ and with `umbra cleanup` for a group of hosts: the console walks the
 group host by host -- the survey, the wipe and the verification -- and
 prints the host that did not answer instead of hiding it.
 
+**The machine of the operator.**  The end of an engagement also cleans
+the machine the operator works on: `umbra clean` removes the notebook
+of the console and the files of its state directory, and scrubs the
+lines of the shell history that name the engagement while the rest of
+the history stays.  The ledger of the server is not a trace of the
+engagement: it is the record of it, and it is kept.
+
 ## 8. Transports
 
 **TCP** — one connection per beacon cycle:

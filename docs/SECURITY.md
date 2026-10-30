@@ -677,7 +677,14 @@ exactly the kind of thing the log exists to show.
     that cannot reach the server at all never renews the window, and the
     state directory of the implant is removed by the wipe, so a host that
     is wiped before the window ends carries no switch.
-21. **A wipe of a group is a wipe of every host that matched.**  The
+21. **The hygiene of the operator's machine is the hygiene of a host.**
+    The console scrubs the lines of the shell history that name the
+    engagement and removes its own notebook, but the machine of the
+    operator is a workstation: the swap, the free blocks of the disk,
+    the backups of the mail client and the snapshot of the filesystem
+    are out of the reach of a console, and the scrubbing of a history
+    file never reaches the journal of the terminal that recorded it.
+22. **A wipe of a group is a wipe of every host that matched.**  The
     filter of the group is written in the console and evaluated by the
     server, and the operator sees the list of the hosts before the wipe
     begins.  A host that is added to the group between the list and the
