@@ -497,6 +497,14 @@ Task kinds understood by the reference implants:
 | `app.dump` | `package`, optional `path` | the databases of an application: the files, and the copy of them when the phone is rooted |
 | `anti.forensic` | — | removes the material of the engagement from the phone and keeps the implant alive |
 | `evade.suicide` | optional `wipe` | ends the implant: the watchers, the capture, the persistence, the state and the application |
+| `window.list` | — | the windows of the desktop: the process, the class, the title and whether the window is on the screen |
+| `clipboard.watch` | optional `action` (`start`/`stop`/`poll`/`status`), optional `interval_ms` | the watcher of the clipboard of the desktop: what the user copied is queued for the operator |
+| `screen.stream` | optional `frames` (1–30), optional `fps` (1–30) | the screen of the desktop, streamed as partial results |
+| `wifi.profiles` | — | the saved networks of the desktop, and the keys of them that the user of the machine may read |
+| `browser.creds` | optional `raw` | the material of the browsers of the desktop: the accounts, the services, and the secrets when the operator asks for them |
+| `av.survey` | — | the security software of the desktop: the products of the security centre and the services that watch the machine |
+| `usb.history` | — | the USB keys of the desktop: the history of the machine and the devices that are attached now |
+| `proc.memory` | `pid` | the memory of a process: the dump of the process, and the strings that look like a credential |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -770,9 +778,11 @@ The list is a promise, and it is kept honest twice: the server refuses a
 kind that is not on the list, and the consistency checker of the repository
 compares the list with the task table of the implant
 (`tools/check_consistency.py`, the `TASK_KINDS` check). The Go implant is
-the small one — sixteen kinds — and everything it cannot do (the modules,
-the persistence, the desktop, the other transports) is answered with an
-error and not with a silence.
+the small one — twenty-four kinds — and everything it cannot do (the
+modules, the persistence, the other transports) is answered with an error
+and not with a silence.  The senses of the desktop are on it as well:
+the window table, the clipboard, the screen, the networks, the browsers,
+the security software, the USB keys and the memory.
 
 **The artifact store.** The team server keeps files: a payload, a
 configuration, a tool. The operator drops a file into the store once
@@ -1925,6 +1935,70 @@ keeps the implant alive.  `evade.suicide` ends everything: the watchers,
 the capture of the screen, the persistence entries, the state and the
 service -- and the application itself when the platform lets it, which is
 only when the implant is the owner of the profile of the phone.
+
+### 7.2v The senses of the desktop
+
+A workstation is not a phone with a bigger screen: it has a window table, a
+clipboard that belongs to the session, a screen that moves, a radio that
+remembers the networks it was given, browsers that keep the passwords of
+the user, security software that watches the machine and USB keys that
+carry the identity of the person.  The eight tasks of this section are the
+ones that answer for them:
+
+| family | task | what the operator gets |
+|---|---|---|
+| the window table | `window.list` | one line per window: the process, the class, the title, and whether the window is on the screen |
+| the clipboard | `clipboard.watch` | what the user copied, queued in a file that survives a reboot |
+| the screen in motion | `screen.stream` | the pictures, one frame at a time, as partial results |
+| the radio | `wifi.profiles` | the saved networks, and the keys of the ones the user may read |
+| the browsers | `browser.creds` | the accounts and the services, and the material when `raw` is asked for |
+| the watchmen | `av.survey` | the products of the security centre, and the services that watch the machine |
+| the keys | `usb.history` | the history of the USB devices, and the ones that are attached now |
+| the memory | `proc.memory` | the dump of a process, and the strings of it that look like a credential |
+
+**One name, three platforms.**  The implant answers with the tool of the
+platform, and where the platform has an API that says more than its tools
+do, the API is used directly:
+
+| family | Windows | macOS | Linux |
+|---|---|---|---|
+| the window table | `EnumWindows` (the API of the platform, through the FFI) | the accessibility of the system (`osascript`) | `wmctrl`, and `xdotool` when it is not there |
+| the clipboard | the API of the platform | `pbpaste` | `xclip`, `wl-paste`, `xsel` |
+| the screen | the API of the platform | `screencapture` | `import`, `scrot`, `maim` |
+| the radio | `netsh wlan show profiles` | `networksetup` | `nmcli` |
+| the browsers | the databases of the profile, and the blobs of DPAPI | the databases of the profile | the databases of the profile |
+| the watchmen | the security centre (`SecurityCenter2`), `sc query` | the process table | the process table, `aa-status` |
+| the keys | the registry (`USBSTOR`), `Get-PnpDevice` | `ioreg` | `/sys/bus/usb/devices` |
+| the memory | `MiniDumpWriteDump` | `vmmap` | `/proc/<pid>/maps` and `/proc/<pid>/mem` |
+
+**The truth of the machine.**  Every family says what it could not read.  A
+wireless key that belongs to another user of the machine is not readable,
+a browser that is locked is not readable, the memory of a process of
+another user is not readable, and the report says so instead of pretending
+that the machine has nothing to give.  The `raw` flag of `browser.creds`
+is the only thing that puts a secret on the wire, and the secret of a
+record is left out of the answer when the operator did not ask for it.
+
+**The clipboard.**  The watcher of the desktop works like the watcher of
+the phone: `start` begins it, `poll` takes what was copied since the last
+poll, `stop` ends it.  The queue lives in the state of the implant
+(`~/.umbra/watch.state`), so it survives a reboot, and the queue of one
+watcher does not empty the queue of the other.
+
+**The screen.**  The pictures of `screen.stream` travel as partial results
+(§7.2c): the task stays open while the frames travel, and the final result
+closes it.  The stream is bounded (thirty frames, thirty pictures a
+second), because a screen that never stops is a channel that never stops.
+
+**The phone answers these names too.**  The Android implant knows the eight
+families and answers with the truth of the phone: the windows the
+accessibility service saw (`window.list`), the watcher of the clipboard
+(`clipboard.watch`), the pictures of the media projection (`screen.stream`),
+the security software that is installed (`av.survey`), the USB devices
+(`usb.history`), and the memory of a process when the phone is rooted
+(`proc.memory`).  The two families the platform keeps to itself are refused
+with the reason: the saved networks of the phone (`wifi.profiles`) and the
+databases of its browsers (`browser.creds`).
 
 ## 8. Transports
 

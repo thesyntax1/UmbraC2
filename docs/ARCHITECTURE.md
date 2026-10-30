@@ -362,7 +362,14 @@ The phone is a peer of the team, not a toy:
   (`Overlay.kt`) are the parts the platform watches: the capture of the
   screen needs the button of the user, the overlay needs the permission to
   draw over the other applications, and the guide says which of them are
-  granted.
+  granted;
+* the senses of the desktop have their own layer on the desktop side
+  (`senses.rs` in Rust, `senses.go` in Go): the window table, the
+  clipboard, the screen in motion, the saved networks, the browsers, the
+  security software, the USB keys and the memory of a process.  The
+  Android implant answers the same eight names (`Desktop.kt`) with the
+  truth of the phone: what the platform allows is answered, and what it
+  hides is refused with the reason.
 
 ## 5. The Go implant
 
@@ -391,8 +398,8 @@ Go and nothing else.
 It is deliberately small, and the capability list it advertises in the
 handshake is the list of what it can really do:
 
-* sixteen task kinds, and no module loader, no persistence and no desktop
-  access: those are the Rust beacon;
+* twenty-four task kinds, and no module loader and no persistence: those
+  are the Rust beacon;
 * the link is TCP only: the other transports are the Rust beacon as well;
 * the shell task needs a POSIX shell and the process table is read from
   `/proc`, so the implant says so on a host that has neither.
@@ -591,7 +598,7 @@ the kinds it cannot run); the mac is a first-class target of the Rust
 implant (the persistence, the registry equivalents and the desktop); and
 the Go implant is the fourth implementation of the protocol, in the
 standard library of Go and with nothing else (`implant/go`, no `go.sum`):
-it checks in, takes the batch, runs the sixteen task kinds it advertises
+it checks in, takes the batch, runs the twenty-four task kinds it advertises
 and answers the ones it does not know with an error instead of a silence;
 it carries its own copy of the protocol core and is proved against the
 same conformance vectors as the other three; and its self test runs a

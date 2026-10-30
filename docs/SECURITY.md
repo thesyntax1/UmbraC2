@@ -612,6 +612,25 @@ exactly the kind of thing the log exists to show.
     to draw over the other applications is one of the permissions the user
     of the phone grants.
 
+14. **The senses of a desktop are the senses of the person at the
+    keyboard.**  The window table, the clipboard, the screen, the saved
+    networks, the browsers, the USB keys and the memory of a process are
+    the working environment of a person: they carry the name of the
+    document, the password that was copied, the account of the intranet
+    and the serial number of the key of the person.  These tasks are used
+    here only against machines the operator is authorised to test, and
+    the report of every one of them names what it could not read: a
+    wireless key of another user, a locked browser and the memory of a
+    process of another user stay closed.
+15. **The secrets of the browsers and the keys of the networks are left
+    out by default.**  The records of `browser.creds` carry the account,
+    the service and the confidence of the match, and the secret itself is
+    only on the wire when the operator asks for it with `raw`.  The
+    material of a browser is a blob of the platform (DPAPI on Windows,
+    NSS on Firefox) and the implant opens only what the user of the
+    machine may open; what it cannot open is reported as such and never
+    guessed.
+
 ## 6. Hardening advice
 
 * Bind the operator listener to loopback; tunnel it.

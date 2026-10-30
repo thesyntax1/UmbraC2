@@ -64,6 +64,14 @@ server refuses to queue work that is not on it.
 | `sleep` | Changes the interval between two check-ins. |
 | `ping` | The answer of a host that is alive. |
 | `exit` | Stops the implant. |
+| `window.list` | The windows of the desktop: the process, the class and the title. |
+| `clipboard.watch` | The watcher of the clipboard: what the user copied is queued in a file that survives a reboot. |
+| `screen.stream` | The screen of the machine, one picture at a time, as partial results. |
+| `wifi.profiles` | The saved networks of the machine and the keys of them that the user may read. |
+| `browser.creds` | The accounts and the services of the browsers; the secrets only when the operator asks for them. |
+| `av.survey` | The security software of the machine: the products and the services that watch it. |
+| `usb.history` | The USB keys of the machine: the history of the bus and the devices that are attached. |
+| `proc.memory` | The memory of a process: the readable regions and the strings that look like a credential. |
 
 ## Building and running
 
@@ -127,6 +135,9 @@ implant/go/
 │   ├── beacon.go                 the cycle: check in, batch, heartbeat, tasks
 │   ├── link.go                   the client half of the handshake
 │   ├── tasks.go                  the task table and the capability list
+│   ├── senses.go                the senses of the desktop: the windows, the
+│   │                             clipboard, screen, networks, browsers, the
+│   │                             security software, the USB keys, the memory
 │   ├── sysinfo.go                the inventory, the network and the processes
 │   ├── selftest.go               the offline tests and the built-in server
 │   └── values.go                 the readers of the values that come off the wire

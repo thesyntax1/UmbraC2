@@ -990,7 +990,7 @@ the same size. The operator picks the one that fits the host.
 |---|---|---|
 | Rust (`implant/rust`) | Windows, Linux, macOS | everything: the module ecosystem, the persistence catalogue, the desktop, the pivot and the other transports |
 | Kotlin (`implant/android`) | Android | the foreground service, the persistence of the phone and the tunnel; no desktop and no modules |
-| Go (`implant/go`) | Linux, macOS, BSD | sixteen task kinds and nothing else: no modules, no persistence, no desktop, the link is TCP |
+| Go (`implant/go`) | Linux, macOS, BSD | twenty-four task kinds and nothing else: no modules, no persistence, the link is TCP; the senses of the desktop are here too |
 | Python (`operator/umbra_cli`, `tools/mock_server.py`) | the operator's machine | the reference: the console, the mock server and the vectors |
 
 Every one of them says in its handshake which task kinds it runs, and the
@@ -1154,6 +1154,68 @@ including the parts the platform refused: a permission that was not
 granted is reported as such, the call log of a phone that is not the
 default dialler says so, and the capture of the screen says that the
 user has to press the button of the system dialog.
+
+### The senses of the desktop
+
+A workstation answers eight tasks that a phone cannot, and the operator
+asks for them with the same names on every platform:
+
+```bash
+umbra task ws-01 --kind window.list                       # the windows of the session
+umbra task ws-01 --kind clipboard.watch --args '{"action":"start"}'
+umbra task ws-01 --kind clipboard.watch --args '{"action":"poll"}'
+umbra task ws-01 --kind screen.stream --args '{"frames":5,"fps":1}'
+umbra task ws-01 --kind wifi.profiles                     # the saved networks
+umbra task ws-01 --kind browser.creds                     # the accounts of the browsers
+umbra task ws-01 --kind browser.creds --args '{"raw":true}'   # and the secrets
+umbra task ws-01 --kind av.survey                         # the security software
+umbra task ws-01 --kind usb.history                       # the USB keys
+umbra task ws-01 --kind proc.memory --args '{"pid":4242}'
+```
+
+The console has a shortcut for each of them, so the operator does not
+have to remember the kind and the arguments:
+
+```bash
+umbra windows ws-01                            # the windows of the session
+umbra clipboard-watch ws-01 --action start     # the watcher of the clipboard
+umbra clipboard-watch ws-01 --action poll      # what was copied since the last poll
+umbra screen-stream ws-01 --frames 5 --fps 1  # the screen, frame by frame
+umbra wifi-profiles ws-01                      # the saved networks
+umbra browser-creds ws-01                      # the accounts of the browsers
+umbra browser-creds ws-01 --raw                # and the secrets
+umbra av-survey ws-01                          # the security software
+umbra usb-history ws-01                        # the USB keys
+umbra memory ws-01 4242                        # the memory of a process
+```
+
+The pictures of the screen travel as partial results, one frame at a time,
+so the stream does not need one frame of the protocol to hold it.  The
+dump of a process is a file in the state of the implant, and the operator
+pulls it with the ordinary `download` task:
+
+```bash
+umbra task ws-01 --kind proc.memory --args '{"pid":4242}'
+umbra task ws-01 --kind download --args '{"path":"/home/user/.umbra/memory-4242-1730000000000.dmp"}'
+```
+
+The clipboard watcher keeps its queue in the state of the implant
+(`~/.umbra/watch.state`), so it survives a reboot; `poll` takes what was
+copied since the last poll and empties the queue of that watcher only.
+
+What comes back is the truth of the machine.  A wireless key that belongs
+to another user is not readable, a browser that is locked is not readable,
+and the memory of a process of another user is not readable: the answer
+says so instead of pretending that the machine has nothing to give.  The
+secrets of the browsers are left out of the answer unless the operator
+asks for them with `raw`.
+
+The phone answers the same eight names with the truth of the phone: the
+windows the accessibility service saw, the watcher of the clipboard, the
+pictures of the media projection, the security software that is installed,
+the USB devices and -- on a rooted phone -- the memory of a process.  The
+saved networks of a phone and the databases of its browsers are refused
+by the platform, and the answer names the reason.
 
 ### The mac is a first-class target
 
