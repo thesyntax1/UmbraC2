@@ -17,6 +17,9 @@ pub const ROLE_AGENT: u8 = 1;
 pub const ROLE_OPERATOR: u8 = 2;
 
 pub const LABEL_BOOTSTRAP: &[u8] = b"umbra/v1/bootstrap";
+/// The label of the attestation: a signature over a report is not a
+/// signature over a frame.
+pub const LABEL_ATTEST: &[u8] = b"umbra/w1/attest";
 pub const LABEL_SESSION: &[u8] = b"umbra/v1/session";
 pub const LABEL_REKEY: &[u8] = b"umbra/v1/rekey";
 

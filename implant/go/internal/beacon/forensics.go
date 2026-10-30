@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/thesyntax1/UmbraC2/implant/go/internal/crypt"
 )
 
 // The zero-footprint wipe of a POSIX host.
@@ -444,7 +446,7 @@ func (b *Beacon) attested(out Outcome) Outcome {
 		out.Extra = map[string]any{}
 	}
 	mac := hmac.New(sha256.New, b.cfg.PSK)
-	mac.Write([]byte("umbra/w1/attest"))
+	mac.Write(crypt.LabelAttest)
 	mac.Write(out.Out)
 	out.Extra["attest"] = hex.EncodeToString(mac.Sum(nil))
 	return out

@@ -1,4 +1,12 @@
 {
+  "attest": {
+    "algorithm": "hmac-sha256",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "label": "umbra/w1/attest",
+    "mac": "28ab07d6605404f85c4542e3a5de25497876b68328671c45f3579dde5f3638ee",
+    "report_hex": "776970652e72756e3a2032206172746566616374732072656d6f7665642c2031323830302062797465732c2030206661696c757265730a",
+    "report_text": "wipe.run: 2 artefacts removed, 12800 bytes, 0 failures\n"
+  },
   "auth": {
     "ack": "e37fc7c7bf11bbe434b077c75e635d3abcd673539f4c04fc2f9e46fc85fb9e87",
     "client_nonce": "0102030405060708090a0b0c0d0e0f10",

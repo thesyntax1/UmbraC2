@@ -106,8 +106,7 @@ fn forensics_answer(
             // The attestation: the report is signed with the key of the
             // agent, so the operator keeps a proof of what the implant
             // removed even when the host is gone.
-            let attest =
-                crate::crypto::hmac_sha256(&ctx.psk, &attest_input(&bytes));
+            let attest = crate::crypto::hmac_sha256(&ctx.psk, &attest_input(&bytes));
             let mut outcome = Outcome::ok(bytes)
                 .with("attest", upk::s(&crate::config::hex_encode(&attest)));
             for (key, value) in extra {
@@ -125,7 +124,7 @@ fn forensics_answer(
 /// over a report is not a signature over a frame.
 fn attest_input(report: &[u8]) -> Vec<u8> {
     let mut input = Vec::with_capacity(report.len() + 16);
-    input.extend_from_slice(b"umbra/w1/attest");
+    input.extend_from_slice(crate::crypto::LABEL_ATTEST);
     input.extend_from_slice(report);
     input
 }

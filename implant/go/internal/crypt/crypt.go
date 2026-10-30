@@ -39,6 +39,9 @@ var (
 	LabelBootstrap = []byte("umbra/v1/bootstrap")
 	LabelSession   = []byte("umbra/v1/session")
 	LabelRekey     = []byte("umbra/v1/rekey")
+	// LabelAttest separates the signature of a report from every other
+	// signature of the framework.
+	LabelAttest = []byte("umbra/w1/attest")
 )
 
 var (

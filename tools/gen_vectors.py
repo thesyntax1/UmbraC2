@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import sys
@@ -372,6 +373,21 @@ def main() -> None:
         "spki_sha256": _pin_of_certificate(
             os.path.join(ROOT, "contracts", "pin-vector.pem")
         ),
+    }
+
+    # ---- the attestation of a report -----------------------------------
+    # The report of a wipe is signed with the key of the agent under the
+    # label of the attestation, so the four implementations have to
+    # produce the same bytes for the same report.
+    report = b"wipe.run: 2 artefacts removed, 12800 bytes, 0 failures\n"
+    out["attest"] = {
+        "algorithm": "hmac-sha256",
+        "label": "umbra/w1/attest",
+        "key": PSK.hex(),
+        "report_hex": report.hex(),
+        "report_text": report.decode(),
+        "mac": hmac.new(PSK, b"umbra/w1/attest" + report,
+                        hashlib.sha256).hexdigest(),
     }
 
     path = os.path.join(ROOT, "contracts", "vectors.json")

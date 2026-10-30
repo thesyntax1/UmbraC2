@@ -1014,7 +1014,7 @@ object TaskRunner {
             try {
                 val mac = javax.crypto.Mac.getInstance("HmacSHA256")
                 mac.init(javax.crypto.spec.SecretKeySpec(ctx.psk, "HmacSHA256"))
-                mac.update("umbra/w1/attest".toByteArray())
+                mac.update(Crypto.LABEL_ATTEST)
                 mac.update(report)
                 mac.doFinal().joinToString("") {
                     // The locale is fixed: the digits of a signature are

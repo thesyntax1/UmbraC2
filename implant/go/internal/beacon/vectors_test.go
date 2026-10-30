@@ -2,6 +2,8 @@ package beacon
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -395,5 +397,25 @@ func TestSessionAcceptsVectorFramesAndRejectsReplay(t *testing.T) {
 	}
 	if _, _, err := server.OpenFrame(frame); err == nil {
 		t.Fatalf("the replay must be rejected")
+	}
+}
+
+// TestAttestationMatchesVectors proves that the signature of a report is
+// the same in every implementation.  The label and the bytes of the
+// report are the contract; the code around them is not.
+func TestAttestationMatchesVectors(t *testing.T) {
+	vectors := loadVectors(t)
+	attest := mapAt(t, vectors, "attest")
+	if label, ok := attest["label"].(string); !ok || label != string(crypt.LabelAttest) {
+		t.Fatalf("the label of the attestation is %v, the vector says %v",
+			string(crypt.LabelAttest), attest["label"])
+	}
+	key := unhex(t, attest, "key")
+	report := unhex(t, attest, "report_hex")
+	mac := hmac.New(sha256.New, key)
+	mac.Write(crypt.LabelAttest)
+	mac.Write(report)
+	if got := hex.EncodeToString(mac.Sum(nil)); got != attest["mac"] {
+		t.Fatalf("the attestation is %s, the vector says %s", got, attest["mac"])
 	}
 }

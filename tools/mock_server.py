@@ -2950,8 +2950,8 @@ class MockServer:
         the bytes of the report, so a signature over a frame is not a
         signature over a report.  The comparison is constant time.
         """
-        mac = hmac.new(self.agent_psk, b"umbra/w1/attest" + report, hashlib.sha256)
-        return hmac.compare_digest(mac.hexdigest(), attest.strip().lower())
+        want = crypto.attest(self.agent_psk, report).hex()
+        return hmac.compare_digest(want, attest.strip().lower())
 
     def _complete_task(self, msg: Dict[str, Any]) -> None:
         task_id = str(msg.get("id", ""))
@@ -6944,8 +6944,7 @@ class FakeAgent(threading.Thread):
         report = ("\n".join(lines) + "\n").encode()
         # The attestation: the report is signed with the key of the agent,
         # the way the implants sign it, so the server can check it.
-        mac = hmac.new(self.psk, b"umbra/w1/attest" + report, hashlib.sha256)
-        meta["attest"] = mac.hexdigest()
+        meta["attest"] = crypto.attest(self.psk, report).hex()
         return 0, report, "", meta
 
     # -- the layer-3 tunnel (mirrors implant/rust/src/vpn.rs) --------------

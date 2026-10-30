@@ -30,6 +30,10 @@ object Crypto {
     val LABEL_SESSION = "umbra/v1/session".toByteArray()
     val LABEL_REKEY = "umbra/v1/rekey".toByteArray()
 
+    /** The label of the attestation: a signature over a report is not a
+     *  signature over a frame. */
+    val LABEL_ATTEST = "umbra/w1/attest".toByteArray()
+
     private val rng = SecureRandom()
     private val xdhParams = NamedParameterSpec("X25519")
 

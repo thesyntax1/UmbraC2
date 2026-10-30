@@ -229,3 +229,20 @@ fn session_accepts_vector_frames_and_rejects_replay() {
     assert_eq!(msg_type, wire::MSG_CHECKIN);
     assert!(server.open(&frame).is_err(), "replay must be rejected");
 }
+
+/// The signature of a report is the same in every implementation: the
+/// label and the bytes of the report are the contract, the code around
+/// them is not.
+#[test]
+fn attestation_matches_vectors() {
+    let vectors = vectors();
+    let attest = &vectors["attest"];
+    let label = attest["label"].as_str().expect("a label");
+    assert_eq!(label.as_bytes(), crypto::LABEL_ATTEST);
+    let key = unhex(attest["key"].as_str().expect("a key"));
+    let report = unhex(attest["report_hex"].as_str().expect("a report"));
+    let mut input = crypto::LABEL_ATTEST.to_vec();
+    input.extend_from_slice(&report);
+    let mac = crypto::hmac_sha256(&key, &input);
+    assert_eq!(hex_encode(&mac), attest["mac"].as_str().expect("a mac"));
+}

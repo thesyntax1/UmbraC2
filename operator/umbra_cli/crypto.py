@@ -62,6 +62,9 @@ ROLE_OPERATOR = 2
 LABEL_BOOTSTRAP = b"umbra/v1/bootstrap"
 LABEL_SESSION = b"umbra/v1/session"
 LABEL_REKEY = b"umbra/v1/rekey"
+# The label of the attestation: a signature over a report is not a
+# signature over a frame.
+LABEL_ATTEST = b"umbra/w1/attest"
 
 
 class AeadError(Exception):
@@ -77,6 +80,16 @@ def sha256(data: bytes) -> bytes:
 
 def hmac_sha256(key: bytes, data: bytes) -> bytes:
     return _hmac.new(key, data, hashlib.sha256).digest()
+
+
+def attest(key: bytes, report: bytes) -> bytes:
+    """Sign a report of the engagement.
+
+    The report is signed with the key of the agent over a label and the
+    bytes of the report, so the proof of what was removed can be checked
+    long after the host is gone.
+    """
+    return hmac_sha256(key, LABEL_ATTEST + report)
 
 
 def hkdf_extract(salt: bytes, ikm: bytes) -> bytes:

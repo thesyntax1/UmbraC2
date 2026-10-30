@@ -299,14 +299,11 @@ func (l *AgentLink) verifyAttestation(output []byte, attest string) bool {
 		return false
 	}
 	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(attestLabel))
+	mac.Write(crypt.LabelAttest)
 	mac.Write(output)
 	want := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(want), []byte(strings.ToLower(strings.TrimSpace(attest))))
 }
-
-// attestLabel is the domain separation of the attestation.
-const attestLabel = "umbra/w1/attest"
 
 // agentKey is the key of this agent: the key bound to its id when there
 // is one, the fleet key otherwise.

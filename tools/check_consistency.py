@@ -125,6 +125,16 @@ LABEL_SPECS = {
     "kotlin": r'val LABEL_([A-Z]+) = "(umbra/v1/[a-z]+)"\.toByteArray',
 }
 
+# The label of the attestation lives in a namespace of its own: it is not
+# a session label, it signs a report of the engagement, and a signature
+# over a report must never be a signature over a frame.
+ATTEST_SPECS = {
+    "python": r'^LABEL_(ATTEST) = b"(umbra/w1/[a-z]+)"',
+    "go": r"Label(Attest)\s*= \[\]byte\(\"(umbra/w1/[a-z]+)\"\)",
+    "rust": r'pub const LABEL_(ATTEST): &\[u8\] = b"(umbra/w1/[a-z]+)"',
+    "kotlin": r'val LABEL_(ATTEST) = "(umbra/w1/[a-z]+)"\.toByteArray',
+}
+
 
 def camel_to_snake(name: str) -> str:
     """Normalise Go's CamelCase to the UPPER_SNAKE used by the other languages."""
@@ -598,6 +608,9 @@ def main() -> int:
 
     print("\n== domain separation labels ==")
     failures += compare_table("LABEL", LABEL_SPECS, corpus, camel_to_snake, numeric=False)
+
+    print("\n== the label of the attestation ==")
+    failures += compare_table("ATTEST", ATTEST_SPECS, corpus, camel_to_snake, numeric=False)
 
     print("\n== message table vs docs/PROTOCOL.md ==")
     documented = doc_message_table()
