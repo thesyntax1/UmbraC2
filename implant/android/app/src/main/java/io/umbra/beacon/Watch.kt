@@ -384,11 +384,17 @@ object ClipboardWatch {
     /** Whether the watcher runs. */
     fun running(): Boolean = registered
 
-    /** What the phone says about the watcher. */
-    fun status(context: Context): String {
-        return "clipboard.sniff: the watcher is " +
+    /**
+     * What the phone says about the watcher.
+     *
+     * The label names the task the operator asked: the watcher answers
+     * to `clipboard.sniff` and to `clipboard.watch`, and the answer says
+     * which one it was.
+     */
+    fun status(context: Context, label: String = "clipboard.sniff"): String {
+        return "$label: the watcher is " +
             (if (registered) "running" else "stopped") +
-            "\nclipboard.sniff: the queue holds " +
+            "\n$label: the queue holds " +
             Watch.count(context.filesDir.absolutePath) + " items\n"
     }
 

