@@ -17,6 +17,7 @@ import io
 import json
 import re
 import os
+import tempfile
 import socket
 import sys
 import threading
@@ -9768,3 +9769,61 @@ def test_the_ledger_of_the_operator_is_tamper_evident():
     finally:
         client.close()
         server.stop()
+
+
+def test_the_machine_of_the_operator_is_a_host_too():
+    """The notebook of the console and the typed commands are traces.
+
+    The end of an engagement takes them away: the notebook goes as a
+    whole, and the lines of the shell history that name the engagement
+    are scrubbed while the rest of the file stays.
+    """
+    from umbra_cli import hygiene  # noqa: WPS433
+
+    cli = read_text("operator/umbra_cli/cli.py")
+    assert "run_clean" in cli, "the console cannot clean its own machine"
+    assert "hygiene.scrub_history" in cli
+    assert "hygiene.remove_traces" in cli
+
+    # The history is scrubbed, not deleted: the lines of the operator
+    # that have nothing to do with the engagement stay.
+    with tempfile.TemporaryDirectory() as tmp:
+        history = os.path.join(tmp, ".bash_history")
+        with open(history, "w", encoding="utf-8") as handle:
+            handle.write("ls -la\n")
+            handle.write("umbra survey web-01\n")
+            handle.write("cat /etc/hosts\n")
+        before = open(history, "r", encoding="utf-8").read()
+        assert "umbra survey web-01" in before
+
+        original = hygiene.HISTORY_FILES
+        try:
+            hygiene.HISTORY_FILES = (history,)
+            result = hygiene.scrub_history(["umbra "], dry_run=True)
+            assert result["removed"] == 1, result
+            assert open(history, "r", encoding="utf-8").read() == before, (
+                "the dry run touched the history")
+
+            result = hygiene.scrub_history(["umbra "])
+            assert result["removed"] == 1, result
+            after = open(history, "r", encoding="utf-8").read()
+            assert "umbra survey web-01" not in after, after
+            assert "ls -la" in after, "the history of the operator was destroyed"
+            assert "cat /etc/hosts" in after, "the history of the operator was destroyed"
+        finally:
+            hygiene.HISTORY_FILES = original
+
+    # The notebook is removed as a whole.
+    with tempfile.TemporaryDirectory() as tmp:
+        notebook = os.path.join(tmp, "state.db")
+        with open(notebook, "w", encoding="utf-8") as handle:
+            handle.write("sqlite")
+        export = os.path.join(tmp, "export.json")
+        with open(export, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        found = hygiene.local_traces(notebook)
+        assert notebook in found, found
+        result = hygiene.remove_traces(found)
+        assert not os.path.exists(notebook), "the notebook is still there"
+        assert not os.path.exists(export), "the export is still there"
+        assert result["removed"], result
