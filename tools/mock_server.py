@@ -72,6 +72,9 @@ AGENT_CAPS = [
     "resolve", "env", "touch", "evade.report", "evade.posture",
     "evade.profile", "evade.shape", "evade.killswitch", "hygiene.memory",
     "hygiene.process", "host.guide", "wmi.exec", "smb.exec", "winrm.exec", "dcom.exec",
+    # The window of the phone: the accessibility service is what gives the
+    # operator the screen and a hand on it.
+    "ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global", "ui.events",
     "ldap.query", "ssh.exec",
     # The reconnaissance of the profiles, the map of the domain and the
     # suggestions that follow from the findings.
@@ -5994,6 +5997,51 @@ class FakeAgent(threading.Thread):
             )
         return "\n".join(lines) + "\n"
 
+    def _window(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The window of the fake phone, seen through the accessibility service.
+
+        The mock is not a phone, so it answers with the shape of the answer:
+        the same lines the phone sends, so the console and the tests see
+        one shape everywhere.
+        """
+        needle = str(args.get("needle", "") or "")
+        value = str(args.get("value", "") or "")
+        direction = str(args.get("direction", "forward") or "forward")
+        action = str(args.get("action", "back") or "back")
+        lines = [
+            "ui: the accessibility service is enabled",
+            "ui: package: com.android.settings",
+            "ui:   [android:id/title] Settings",
+            "ui:   [android:id/summary] Network & internet",
+            "ui: nodes: 42",
+        ]
+        if kind == "ui.screen":
+            lines.append("ui: the window shows the text of the application")
+        elif kind == "ui.events":
+            lines = [
+                "ui: the accessibility service is enabled",
+                "ui:   com.android.settings | android.app.Activity | Settings",
+            ]
+        elif kind == "ui.tap":
+            lines.append(
+                "ui: pressed: [android:id/title] Settings (the window accepted it)"
+            )
+            if needle:
+                lines.append("ui: the needle was \"{}\"".format(needle))
+        elif kind == "ui.text":
+            lines.append(
+                "ui: wrote into: [android:id/edit] Search (the window accepted it)"
+            )
+            if value:
+                lines.append("ui: the text was \"{}\"".format(value))
+        elif kind == "ui.scroll":
+            lines.append("ui: scrolled {} (the window accepted it)".format(direction))
+        elif kind == "ui.global":
+            lines.append("ui: global {} (the phone accepted it)".format(action))
+        meta = {"ui": {"action": kind, "needle": needle, "value": value,
+                       "direction": direction, "global": action}}
+        return 0, ("\n".join(lines) + "\n").encode(), "", meta
+
     def _evasion(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """The posture engine of the fake host."""
         if kind == "host.guide":
@@ -6372,6 +6420,9 @@ class FakeAgent(threading.Thread):
                        f"({len(hosts)} hosts x {len(ports)} ports)\n")
             return 0, report.encode(), "", {"open": len(open_ports),
                                             "probes": probes}
+        if kind in ("ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global",
+                    "ui.events"):
+            return self._window(kind, args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):

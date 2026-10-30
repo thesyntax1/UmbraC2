@@ -8669,6 +8669,107 @@ def test_the_guide_of_the_host_says_what_the_manufacturer_does():
         server.stop()
 
 
+def test_the_accessibility_service_gives_the_operator_the_screen_of_the_phone():
+    """The window of the phone, seen through the accessibility service.
+
+    An application on a phone cannot see what the user is looking at; the
+    accessibility service is the one permission that can.  It is also the
+    loudest permission of the phone, so the technique has to be visible in
+    the report and the guide has to say whether it is on.
+
+    The test checks the three halves of it: the phone asks for the window
+    content and the service really reads it and acts on it, the kinds are
+    advertised and implemented, and the reference server answers them.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    config = read_text("implant/android/app/src/main/res/xml/"
+                       "accessibility_service_config.xml")
+    service = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                        "UmbraAccessibilityService.kt")
+    bridge = read_text("implant/android/app/src/main/java/io/umbra/beacon/Ui.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    vendor = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "Vendor.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The phone asks for the window content and for the events that carry
+    # it.  Without that the service may only keep the implant alive.
+    assert 'android:canRetrieveWindowContent="true"' in config, (
+        "the accessibility service does not ask for the window content")
+    assert "typeWindowContentChanged" in config, (
+        "the accessibility service does not watch the content of the window")
+    assert "flagReportViewIds" in config, (
+        "the accessibility service cannot name the nodes it presses")
+
+    # The service reads the window and acts on it.
+    assert "rootInActiveWindow" in service, "the service does not read the window"
+    assert "AccessibilityNodeInfo.ACTION_CLICK" in service, (
+        "the service cannot press a button")
+    assert "AccessibilityNodeInfo.ACTION_SET_TEXT" in service, (
+        "the service cannot write into a field")
+    assert "performGlobalAction" in service, (
+        "the service cannot press the system keys")
+    assert "AccessibilityNodeInfo.ACTION_SCROLL_FORWARD" in service, (
+        "the service cannot scroll the window")
+
+    # The bridge carries the answer back to the task.
+    assert "CountDownLatch" in bridge, "the bridge does not wait for the answer"
+    assert "fun screen(root: AccessibilityNodeInfo?)" in bridge, (
+        "the bridge does not walk the tree of the window")
+    assert "fun matches(" in bridge and "fun fields(" in bridge, (
+        "the bridge cannot find the node to press")
+    assert "the accessibility service is not enabled" in runner, (
+        "a phone without the service would pretend that nothing happened")
+
+    # The guide says whether the service is on.
+    assert "Ui.isEnabled()" in vendor, "the guide does not say it"
+
+    # The kinds are advertised, implemented and documented.
+    kinds = ("ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global",
+             "ui.events")
+    for kind in kinds:
+        assert f'"{kind}"' in runner, kind
+        assert f"| `{kind}` |" in protocol, kind
+
+    # And the reference server answers them.
+    token = b"window-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-window", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        for kind, args in (
+            ("ui.screen", {}),
+            ("ui.events", {}),
+            ("ui.tap", {"needle": "Allow"}),
+            ("ui.text", {"needle": "Search", "value": "proxy"}),
+            ("ui.scroll", {"direction": "forward"}),
+            ("ui.global", {"action": "home"}),
+        ):
+            task_id = client.submit("agent-window", kind, args)
+            assert wait_until(
+                lambda: client.task(task_id).get("state") in ("done", "failed"),
+                timeout=15), f"{kind} never came back"
+            record = client.task(task_id)
+            assert record.get("state") == "done", record
+            output = record.get("output") or record.get("out") or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", "replace")
+            assert "ui:" in output, record
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
 def test_a_key_that_is_bound_to_one_agent_may_not_claim_another():
     """The identity of a host is proved by its key, not by the name it says.
 

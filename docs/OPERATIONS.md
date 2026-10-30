@@ -1048,6 +1048,38 @@ The state of the phone changes the traffic as well: a phone whose screen
 is off stretches its check-in, because the screen of a phone is the
 closest thing it has to the presence of a person in front of it.
 
+### The window of the phone
+
+The accessibility service is the one permission that turns a phone into an
+input and an output for the operator.  Android keeps an enabled
+accessibility service alive, so it is also a persistence technique, and it
+is the loudest one: the user of the phone sees it in the settings of
+Android and Android shows a notification while it runs.  The report of the
+persistence says so, and the guide of the host (`host.guide`) says whether
+it is on.
+
+```bash
+umbra task phone-01 --kind ui.screen                  # what is on the screen
+umbra task phone-01 --kind ui.events                  # the windows that changed
+umbra task phone-01 --kind ui.tap --args '{"needle":"Allow"}'
+umbra task phone-01 --kind ui.text --args '{"needle":"Search","value":"proxy"}'
+umbra task phone-01 --kind ui.global --args '{"action":"home"}'
+```
+
+What the operator gets with it:
+
+* the **text of the screen** the user is looking at: the application in the
+  foreground and the visible text of its window;
+* the **log of the windows** that changed, with the package and the text
+  that came with the event -- what the phone was used for while nobody was
+  looking;
+* a **hand on the phone**: press a button, write into a field, scroll, and
+  the system keys (back, home, the recent apps, the notification shade).
+
+The answers are the truth of the phone: a task that could not be done says
+so instead of pretending that nothing happened, and the operator sees
+whether the window accepted the action.
+
 ### The mac is a first-class target
 
 The Rust implant carries the whole catalogue on a mac, and the things that

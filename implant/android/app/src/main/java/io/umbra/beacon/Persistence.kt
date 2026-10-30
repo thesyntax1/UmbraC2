@@ -134,7 +134,7 @@ object Persistence {
             "accessibility" -> Entry(
                 tech.id, label.ifEmpty { "accessibility" }, tech.trigger,
                 UmbraAccessibilityService.COMPONENT,
-                "the operator has to enable it in the settings of Android: it is visible to the user",
+                "the operator has to enable it in the settings of Android: it is visible to the user, and it gives the operator the screen of the phone",
                 "installed", now,
             )
 

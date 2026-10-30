@@ -560,6 +560,16 @@ exactly the kind of thing the log exists to show.
     needs the accessibility permission of the user.  The implant says so
     instead of pretending to listen, and the tap is created listen-only, so
     the keyboard of the user is never taken away from them.
+11. **The accessibility service of a phone sees the screen.** An enabled
+    accessibility service may read the window of every application and act
+    on it, so the operator of a phone with that service enabled can read
+    what the user is looking at and press the buttons of the phone.  The
+    technique is visible -- it is listed in the settings of Android and
+    Android shows a notification while it runs -- and the report of the
+    persistence says so, but a phone with that service enabled is no longer
+    a private device.  The implant does not pretend otherwise: the guide of
+    the host says whether the service is on, and a task that needs it fails
+    with a clear message when it is off.
 
 ## 6. Hardening advice
 

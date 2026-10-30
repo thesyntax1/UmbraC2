@@ -771,6 +771,12 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         // presence of the person in front of it and the persistence that
         // is installed; on a phone it is the rules of the manufacturer.
         "host.guide" => Outcome::ok(crate::evade::guide().into_bytes()),
+        // The window of the phone is the job of the phone implant: the
+        // desktop has no accessibility service to look through, and it
+        // says so instead of pretending that nothing happened.
+        "ui.screen" | "ui.tap" | "ui.text" | "ui.scroll" | "ui.global" | "ui.events" => {
+            Outcome::err(2, "the window of the phone needs the phone implant")
+        }
         "hygiene.process" => match crate::hygiene::process(&args) {
             Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
             Err(e) => Outcome::err(1, e),

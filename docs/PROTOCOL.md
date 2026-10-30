@@ -474,6 +474,12 @@ Task kinds understood by the reference implants:
 | `hygiene.memory` | — | the memory hygiene: what holds a secret and what was wiped |
 | `hygiene.process` | optional `copy`, `name`, `cwd`, `clean_env`, `ppid` | the process hygiene: the name, the directory, the environment and the parent |
 | `host.guide` | optional `action` (`report`, `show`), `step` | what keeps the implant alive on this host, and what stops it |
+| `ui.screen` | — | the text of the window the user of the phone is looking at (accessibility) |
+| `ui.tap` | `needle`, optional `index` | presses the button that carries the needle (accessibility) |
+| `ui.text` | `needle`, `value` | writes a text into the editable field that carries the needle (accessibility) |
+| `ui.scroll` | optional `direction` (`forward`, `back`) | scrolls the window of the phone (accessibility) |
+| `ui.global` | `action` (`back`, `home`, `recents`, `notifications`, `power`, `volume_up`, `volume_down`, `screenshot`) | the system keys of the phone (accessibility) |
+| `ui.events` | — | the windows that changed, oldest first (accessibility) |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -1818,6 +1824,37 @@ The state of the phone changes the traffic as well: a phone whose screen
 is off stretches its check-in, because the screen of a phone is the
 closest thing it has to the presence of a person in front of it.
 
+
+### 7.2t The window of the phone
+
+An application on a phone cannot see what the user is looking at.  The one
+permission that can is the **accessibility service**, and the one that comes
+with it is that the user of the phone sees it: it is listed in the settings
+of Android, with the name of the application, and Android shows a
+notification while it runs.  The technique is in the catalogue of the
+persistence (`accessibility`) and the report of the persistence says that it
+is visible.
+
+With the service enabled the phone answers six tasks:
+
+| kind | what it does | what the operator gets |
+|---|---|---|
+| `ui.screen` | walks the tree of the window in the foreground | the application in the foreground and the visible text of its window |
+| `ui.events` | the log of the windows that changed | the package, the window and the text that came with the event |
+| `ui.tap` | clicks the node that carries the needle | the node that was pressed and whether the window accepted it |
+| `ui.text` | writes into the editable node that carries the needle | the field that was written into and whether the window accepted it |
+| `ui.scroll` | scrolls the window | whether the window accepted it |
+| `ui.global` | the system keys (back, home, recents, notifications, power, volume, screenshot) | whether the phone accepted it |
+
+The answers are the truth of the phone: a task that could not be done says
+so, and a task that was done says what was done.  The service is not asked
+for anything it cannot do, and the operator is told in the guide of the
+host (`host.guide`, step `accessibility`) whether it is on.
+
+The work happens on the main thread of the phone, because that is where the
+window lives; the task waits on its own thread and the answer travels back
+through the bridge (`Ui.kt`).  A task that arrives while the service is off
+fails with a clear message instead of pretending that nothing happened.
 
 ## 8. Transports
 
