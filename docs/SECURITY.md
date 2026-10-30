@@ -570,6 +570,47 @@ exactly the kind of thing the log exists to show.
     a private device.  The implant does not pretend otherwise: the guide of
     the host says whether the service is on, and a task that needs it fails
     with a clear message when it is off.
+12. **The senses of a phone are the senses of a person.** The location, the
+    messages, the call log, the address book, the clipboard, the microphone
+    and the camera of a phone belong to the person who carries it, and the
+    implant takes all of them when the user of the phone grants the
+    permissions.  The platform limits what a phone can be made to do, and
+    the implant says what the limit is instead of pretending that the
+    phone has nothing to give:
+
+    * the **call log** belongs to the default dialler and to the carrier
+      applications since Android 10; an ordinary application asks the user
+      for the permission, and the answer says "not granted" when it was
+      refused;
+    * the **messages** reach an application only when the platform still
+      delivers the broadcast, which since Android 19 means the default
+      messenger; the watcher says whether the phone is the default
+      messenger;
+    * the **clipboard** belongs to the application that has the focus since
+      Android 10, so the watcher sees a copy only when the implant is in
+      the foreground or when it is the keyboard of the phone;
+    * the **capture of the screen** needs the button of the system dialog,
+      every time it starts, and the phone shows a notification while it
+      runs;
+    * the **microphone** and the **camera** of a phone show an indicator in
+      the status bar, and the foreground service that carries them says so
+      in its own notification;
+    * the **databases of the other applications** are not readable without
+      root, and the answer says that instead of returning an empty list.
+
+    The guide of the host lists every permission with its state, so the
+    operator knows exactly what the user of the phone granted -- and an
+    engagement that is not authorised has no business asking for them.
+13. **The false screen is a deception.** The overlay of the `phish.overlay`
+    task draws a form over the application the operator named, and what
+    the user types into it travels to the operator.  The technique is in
+    the catalogue of every mobile red team, and it is used here only
+    against a phone the operator is authorised to test: the phone of the
+    engagement, on the agreement of the owner of the device.  The overlay
+    is on the screen of the phone while it waits, the operator may dismiss
+    it at any moment, and the guide of the host says that the permission
+    to draw over the other applications is one of the permissions the user
+    of the phone grants.
 
 ## 6. Hardening advice
 

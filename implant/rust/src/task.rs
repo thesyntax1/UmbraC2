@@ -777,6 +777,30 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         "ui.screen" | "ui.tap" | "ui.text" | "ui.scroll" | "ui.global" | "ui.events" => {
             Outcome::err(2, "the window of the phone needs the phone implant")
         }
+        // The senses of the phone are the job of the phone implant: a
+        // desktop has no radio, no camera and no address book, and it
+        // says so instead of pretending that nothing happened.
+        "gps.locate" | "wifi.dump" | "bluetooth.scan" | "contacts.dump" => {
+            Outcome::err(2, "the senses of the phone need the phone implant")
+        }
+        "sms.dump" | "call.logs" | "emulator.detect" => {
+            Outcome::err(2, "the senses of the phone need the phone implant")
+        }
+        // The watchers of the phone watch a phone: the desktop has no
+        // message broadcast and no clipboard of the platform.
+        "sms.watch" | "clipboard.sniff" => {
+            Outcome::err(2, "the watchers of the phone need the phone implant")
+        }
+        // The ears and the eyes of a phone are the phone implant's work.
+        "media.mic" | "media.camera" | "live.screen" | "ui.stream" => {
+            Outcome::err(2, "the ears and the eyes of the phone need the phone implant")
+        }
+        // The false screen, the databases of the applications and the end
+        // of the engagement on a phone are all the work of the phone
+        // implant.
+        "phish.overlay" | "app.dump" | "anti.forensic" | "evade.suicide" => {
+            Outcome::err(2, "the phone implant does this on a phone")
+        }
         "hygiene.process" => match crate::hygiene::process(&args) {
             Ok((text, extra)) => with_extra(Outcome::ok(text.into_bytes()), extra),
             Err(e) => Outcome::err(1, e),

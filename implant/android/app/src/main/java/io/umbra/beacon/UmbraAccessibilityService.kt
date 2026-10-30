@@ -45,6 +45,15 @@ class UmbraAccessibilityService : AccessibilityService() {
         // came with the event.  It is what the operator reads when the
         // phone was used while nobody was looking.
         Ui.record(event)
+        // The false screen waits for the application the operator named,
+        // and this is the event that tells it that the application came
+        // to the front.
+        if (event != null && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val packageName = event.packageName?.toString() ?: ""
+            if (packageName.isNotEmpty()) {
+                Overlay.onWindow(this, packageName)
+            }
+        }
     }
 
     override fun onInterrupt() {

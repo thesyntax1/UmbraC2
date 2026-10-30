@@ -76,6 +76,16 @@ AGENT_CAPS = [
     # operator the screen and a hand on it.
     "ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global", "ui.events",
     "ldap.query", "ssh.exec",
+    # The senses of the phone: the location, the networks around it, the
+    # people and the words of it.
+    "gps.locate", "wifi.dump", "bluetooth.scan", "contacts.dump",
+    "sms.dump", "call.logs", "emulator.detect",
+    # The watchers: the things that happen without the operator asking.
+    "sms.watch", "clipboard.sniff",
+    # The ears and the eyes of the phone, and the screen it shows.
+    "media.mic", "media.camera", "live.screen", "ui.stream",
+    # The false screen, the databases and the end of the engagement.
+    "phish.overlay", "app.dump", "anti.forensic", "evade.suicide",
     # The reconnaissance of the profiles, the map of the domain and the
     # suggestions that follow from the findings.
     "recon.suggest", "domain.map",
@@ -6042,6 +6052,161 @@ class FakeAgent(threading.Thread):
                        "direction": direction, "global": action}}
         return 0, ("\n".join(lines) + "\n").encode(), "", meta
 
+    def _senses(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The senses of the fake phone.
+
+        The mock is not a phone, so it answers with the shape of the
+        answer: the same lines the phone sends, so the console and the
+        tests see one shape everywhere.  The phone reports the
+        permissions it does not have, and the mock does the same, so a
+        test that reads the mock knows what a real phone would answer.
+        """
+        action = str(args.get("action", "status") or "status")
+        limit = int(args.get("limit", 200) or 200)
+        lines: List[str] = []
+        meta: Dict[str, Any] = {}
+        if kind == "gps.locate":
+            lines = [
+                "gps.locate: 2 rows",
+                "  source=fix | provider=gps | lat=41.008200 | lon=28.978400"
+                " | alt=52.0 | speed=0.10 | bearing=0.0 | accuracy=8.0"
+                " | time=1730000000000",
+                "  source=last_known | provider=network | lat=41.008100"
+                " | lon=28.978300 | alt=51.0 | speed=0.00 | bearing=0.0"
+                " | accuracy=1200.0 | time=1729999000000",
+            ]
+            meta = {"rows": 2}
+        elif kind == "wifi.dump":
+            lines = [
+                "wifi.dump: 3 rows",
+                "  source=connection | ssid=home-wifi | bssid=aa:bb:cc:dd:ee:ff"
+                " | rssi=-52 | frequency=2437 | link_speed=300",
+                "  source=scan | ssid=home-wifi | bssid=aa:bb:cc:dd:ee:ff"
+                " | rssi=-52 | frequency=2437 | capabilities=WPA2",
+                "  source=scan | ssid=neighbour | bssid=11:22:33:44:55:66"
+                " | rssi=-71 | frequency=5180 | capabilities=WPA2",
+                "wifi.dump: the saved networks are not readable: since Android 10"
+                " only the owner of the profile sees them",
+            ]
+            meta = {"rows": 3}
+        elif kind == "bluetooth.scan":
+            lines = [
+                "bluetooth.scan: 2 rows",
+                "  source=paired | name=Headset | address=AA:BB:CC:DD:EE:F0"
+                " | type=3 | bonded=yes",
+                "  source=discovery | name=Speaker | address=AA:BB:CC:DD:EE:F1"
+                " | type=1 | bonded=no",
+            ]
+            meta = {"rows": 2}
+        elif kind == "contacts.dump":
+            lines = [
+                "contacts.dump: 2 rows",
+                "  id=1 | name=Deniz Aydin | number=+905550000001",
+                "  id=2 | name=Deniz Aydin | email=deniz@example.org",
+                "contacts.dump: read 2 contact records",
+            ]
+            meta = {"rows": 2}
+        elif kind == "sms.dump":
+            lines = [
+                "sms.dump: 2 rows",
+                "  id=41 | address=+905550000002 | type=inbox | date=1730000000000"
+                " | read=0 | body=your code is 482913",
+                "  id=40 | address=+905550000002 | type=sent | date=1729999000000"
+                " | read=1 | body=thank you",
+                "sms.dump: read 2 messages, 2 of them with a body",
+            ]
+            meta = {"rows": 2}
+        elif kind == "call.logs":
+            lines = [
+                "call.logs: 1 rows",
+                "  id=7 | number=+905550000003 | name=unknown | duration=42"
+                " | date=1730000000000 | type=missed",
+                "call.logs: read 1 calls",
+            ]
+            meta = {"rows": 1}
+        elif kind == "emulator.detect":
+            lines = [
+                "emulator.detect: this phone looks like a real phone (confidence 8%)",
+                "emulator.detect: fingerprint = google/husky/husky:14/up1a.231105.003/11216751:user/release-keys",
+                "emulator.detect: model = Pixel 7",
+                "emulator.detect: hardware = husky",
+                "emulator.detect: brand = google",
+                "emulator.detect: accelerometer = present",
+                "emulator.detect: no signal fired",
+            ]
+            meta = {"emulated": False, "confidence": 8}
+        elif kind in ("sms.watch", "clipboard.sniff"):
+            if action == "start":
+                lines = ["{}: the watcher is running".format(kind)]
+            elif action == "stop":
+                lines = ["{}: the watcher was stopped".format(kind)]
+            elif action == "poll":
+                lines = [
+                    "{}: the queue of the watcher is empty".format(kind),
+                ]
+                meta = {"watch_total": 0}
+            else:
+                lines = [
+                    "{}: the watcher is running".format(kind),
+                    "{}: the queue holds 0 items".format(kind),
+                ]
+            meta["watch"] = kind
+        elif kind in ("media.mic", "media.camera"):
+            lines = [
+                "{}: the capture is at /data/user/0/io.umbra.beacon/files/{}".format(
+                    kind, "mic-1730000000000.m4a" if kind == "media.mic" else "camera-1730000000000.jpg"),
+                "{}: 4096 bytes, sha256 {}".format(
+                    kind, "0" * 64),
+            ]
+            meta = {"capture": kind}
+        elif kind in ("live.screen", "ui.stream"):
+            if action == "request":
+                lines = ["{}: the phone asks the user for the capture of the screen".format(kind)]
+            elif action == "capture":
+                lines = [
+                    "{}: the picture is at /data/user/0/io.umbra.beacon/files/screen-1730000000000.jpg"
+                    " (4096 bytes, sha256 {})".format(kind, "0" * 64),
+                ]
+            elif action == "frames":
+                lines = ["{}: 0 pictures".format(kind)]
+                meta = {"frames": 0}
+            else:
+                lines = ["{}: the capture of the screen was never asked for".format(kind)]
+            meta["projection"] = kind
+        elif kind == "phish.overlay":
+            if action == "arm":
+                lines = [
+                    "phish.overlay: the overlay waits for 'com.example.bank'"
+                    " with the fields username, password",
+                ]
+            elif action == "dismiss":
+                lines = ["phish.overlay: the overlay was dismissed"]
+            else:
+                lines = ["phish.overlay: no overlay is armed"]
+            meta = {"overlay": action}
+        elif kind == "app.dump":
+            lines = [
+                "app.dump: 1 rows",
+                "  package=com.example.chat | path=/data/data/com.example.chat/databases/msgstore.db"
+                " | size=1048576 | copied=yes",
+                "app.dump: the phone is rooted",
+            ]
+            meta = {"rows": 1}
+        elif kind == "anti.forensic":
+            lines = [
+                "anti.forensic: removed 2 files, 8192 bytes",
+                "anti.forensic: removed watch.queue",
+                "anti.forensic: removed mic-1730000000000.m4a",
+            ]
+        elif kind == "evade.suicide":
+            lines = [
+                "evade.suicide: the implant is leaving the phone",
+                "evade.suicide: the watcher of the messages was stopped",
+                "evade.suicide: the persistence entries were taken away",
+                "evade.suicide: the beacon was stopped",
+            ]
+        return 0, ("\n".join(lines) + "\n").encode(), "", meta
+
     def _evasion(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
         """The posture engine of the fake host."""
         if kind == "host.guide":
@@ -6423,6 +6588,12 @@ class FakeAgent(threading.Thread):
         if kind in ("ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global",
                     "ui.events"):
             return self._window(kind, args)
+        if kind in ("gps.locate", "wifi.dump", "bluetooth.scan", "contacts.dump",
+                    "sms.dump", "call.logs", "emulator.detect", "sms.watch",
+                    "clipboard.sniff", "media.mic", "media.camera", "live.screen",
+                    "ui.stream", "phish.overlay", "app.dump", "anti.forensic",
+                    "evade.suicide"):
+            return self._senses(kind, args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):

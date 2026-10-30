@@ -351,7 +351,18 @@ The phone is a peer of the team, not a toy:
   cannot run are answered with an error and a reason, not with a silence;
 * the foreground service carries a notification and a wake lock, so the
   beacon survives the doze of the phone;
-* the tunnel works: the phone may open a pivot callback to the team server.
+* the tunnel works: the phone may open a pivot callback to the team server;
+* the senses of the phone are their own layer (`Sense.kt`, `Lab.kt`): the
+  place, the networks around it, the people and the words of it, and the
+  verdict of the laboratory, every collector reporting the permission it
+  needed;
+* the watchers (`Watch.kt`) keep a durable queue of what arrived, and they
+  wake the beacon so the operator reads it while it is still useful;
+* the ears and the eyes (`Media.kt`, `Projection.kt`) and the false screen
+  (`Overlay.kt`) are the parts the platform watches: the capture of the
+  screen needs the button of the user, the overlay needs the permission to
+  draw over the other applications, and the guide says which of them are
+  granted.
 
 ## 5. The Go implant
 

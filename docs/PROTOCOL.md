@@ -480,6 +480,23 @@ Task kinds understood by the reference implants:
 | `ui.scroll` | optional `direction` (`forward`, `back`) | scrolls the window of the phone (accessibility) |
 | `ui.global` | `action` (`back`, `home`, `recents`, `notifications`, `power`, `volume_up`, `volume_down`, `screenshot`) | the system keys of the phone (accessibility) |
 | `ui.events` | — | the windows that changed, oldest first (accessibility) |
+| `gps.locate` | — | where the phone is: the fresh fix and the last known position, with the provider, the altitude, the speed and the accuracy |
+| `wifi.dump` | — | the networks around the phone: the connection, the results of the scan and the saved networks |
+| `bluetooth.scan` | — | the bluetooth devices around the phone: the paired ones and the ones the discovery heard |
+| `contacts.dump` | optional `limit` | the address book of the phone: the name, the number and the mail address |
+| `sms.dump` | optional `limit` | the messages of the phone: the sender, the kind, the date and the body |
+| `call.logs` | optional `limit` | the call log of the phone: the number, the name, the duration and the kind |
+| `emulator.detect` | — | the verdict of the laboratory: whether the phone looks like an emulator, and the reasons behind it |
+| `sms.watch` | optional `action` (`start`/`stop`/`poll`/`status`) | the watcher of the messages: the message that arrives is queued for the operator |
+| `clipboard.sniff` | optional `action` (`start`/`stop`/`poll`/`status`) | the watcher of the clipboard: what the user copied is queued for the operator |
+| `media.mic` | optional `seconds` | the sound of the room: the file of the recording and its digest |
+| `media.camera` | optional `facing` (`back`/`front`) | the picture of the camera: the file of the picture and its digest |
+| `live.screen` | optional `action` (`request`/`capture`/`status`) | one picture of the screen of the phone |
+| `ui.stream` | optional `action` (`request`/`start`/`frames`/`stop`/`status`), optional `fps`, `count` | the pictures of the screen of the phone, streamed as partial results |
+| `phish.overlay` | optional `action` (`arm`/`dismiss`/`status`), optional `package`, `title`, `prompt`, `fields`, `button` | the false screen: the form that is drawn over the application the operator named |
+| `app.dump` | `package`, optional `path` | the databases of an application: the files, and the copy of them when the phone is rooted |
+| `anti.forensic` | — | removes the material of the engagement from the phone and keeps the implant alive |
+| `evade.suicide` | optional `wipe` | ends the implant: the watchers, the capture, the persistence, the state and the application |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -1855,6 +1872,59 @@ The work happens on the main thread of the phone, because that is where the
 window lives; the task waits on its own thread and the answer travels back
 through the bridge (`Ui.kt`).  A task that arrives while the service is off
 fails with a clear message instead of pretending that nothing happened.
+
+### 7.2u The senses of the phone
+
+A phone is not a workstation, and the implant of a phone is not the
+implant of a workstation.  It has a radio, an address book, a camera, a
+microphone and a screen that belongs to the platform.  The seventeen tasks
+of this section are the ones that only a phone can answer, and every one
+of them reports the permission it needed:
+
+| family | tasks | what the platform insists on |
+|---|---|---|
+| the place | `gps.locate`, `wifi.dump`, `bluetooth.scan` | the location permission, the wifi state, the bluetooth scan |
+| the people and the words | `contacts.dump`, `sms.dump`, `call.logs` | the contacts, the messages, the call log |
+| the watchers | `sms.watch`, `clipboard.sniff` | the message broadcast, the clipboard of the focused application |
+| the ears and the eyes | `media.mic`, `media.camera` | the microphone, the camera, and a foreground service that says so |
+| the screen | `live.screen`, `ui.stream` | the user has to press the button of the system dialog |
+| the false screen | `phish.overlay` | the permission to draw over the other applications |
+| the laboratory | `emulator.detect` | nothing: it only reads |
+| the end | `app.dump`, `anti.forensic`, `evade.suicide` | root for the databases of the other applications |
+
+**The watchers.**  A collector answers a question; a watcher waits for the
+phone to have something to say.  The queue of the watchers lives in the
+state of the implant, so it survives a reboot, and the phone asks the
+beacon to connect again the moment something arrives: the operator reads
+the code of the second factor while the person is still waiting for it.
+The operator polls the queue with the `poll` action, and the queue of one
+watcher does not empty the queue of the other.
+
+**The screen.**  The capture of the screen is the one capability the
+platform never gives away: the user of the phone has to press the button
+of the system dialog, every time the capture starts.  The implant opens
+that dialog, and the answer says that the user has to press it.  The
+pictures travel as partial results (§7.2c), one frame at a time, so the
+stream of a screen does not need a frame of the protocol to hold it.
+
+**The false screen.**  The overlay waits for the application the operator
+named and draws a form over it; what the user types travels to the queue
+of the watchers.  The overlay needs the permission to draw over the other
+applications, it is on the screen of the phone while it waits, and the
+operator may dismiss it at any moment.
+
+**The laboratory.**  The verdict of `emulator.detect` is a score with the
+reasons behind it: the strings of the build, the properties of the
+system, the files of the machine, the sensors (an emulator has no
+accelerometer, or one that never moves), the battery (a plug that never
+runs down) and the radio (the number of the simulator is the same on every
+installation).
+
+**The end.**  `anti.forensic` removes the material of the engagement and
+keeps the implant alive.  `evade.suicide` ends everything: the watchers,
+the capture of the screen, the persistence entries, the state and the
+service -- and the application itself when the platform lets it, which is
+only when the implant is the owner of the profile of the phone.
 
 ## 8. Transports
 
