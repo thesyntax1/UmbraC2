@@ -653,7 +653,8 @@ def run_forensics_and_wait(client: OperatorClient, console: Console, agent_id: s
         emit(result) if as_json else print_task_result(result)
 
 
-def run_clean(client: OperatorClient, console: Console, args: Any) -> int:
+def run_clean(client: Optional[OperatorClient],
+              console: Optional[Console], args: Any) -> int:
     """The traces of the engagement on the machine of the operator.
 
     The notebook of the console and the files of the state directory go
@@ -678,7 +679,9 @@ def run_clean(client: OperatorClient, console: Console, args: Any) -> int:
             print("nothing was changed")
             return 0
     markers = list(hygiene.DEFAULT_MARKERS)
-    server = str(getattr(client, "server", "") or "")
+    server = str(getattr(args, "server", "") or "")
+    if client is not None:
+        server = str(getattr(client, "server", "") or server)
     if server:
         markers.append(server)
     history = hygiene.scrub_history(markers, dry_run=bool(args.dry_run))
@@ -3389,6 +3392,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "db":
         # The notebook is local: it works without a server or a token.
         return run_db_command(args)
+    if args.cmd == "clean":
+        # The hygiene of the machine of the operator is a local fact: it
+        # works without a server or a token.
+        return run_clean(None, None, args)
     if args.cmd == "pin":
         # The pin of a certificate is a local fact: it works without a
         # server and without a token.
