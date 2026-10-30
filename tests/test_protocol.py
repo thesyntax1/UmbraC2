@@ -9713,3 +9713,58 @@ def test_the_attestation_of_a_report_is_the_same_everywhere():
     key = bytes.fromhex(attest["key"])
     assert crypto.attest(key, report).hex() == attest["mac"], (
         "the signature of the report is not the one of the contract")
+
+
+def test_the_ledger_of_the_operator_is_tamper_evident():
+    """The trail of the operator is a chain of hashes.
+
+    The record of what the operator did is evidence too, and evidence
+    that can be edited is not evidence.  Every entry carries the hash of
+    the entry before it, and the verification walks the chain and names
+    the line where it breaks.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    go_audit = read_text("server/internal/audit/audit.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+
+    # The server keeps the chain and knows how to walk it.
+    assert "func ChainHash(" in go_audit, "the ledger has no chain"
+    assert "func Verify(" in go_audit, "the ledger cannot be verified"
+    assert "ChainHash(l.head, e)" in go_audit, "the entries are not linked"
+    assert 'case "audit.verify"' in operator, "the server cannot verify"
+    assert re.search(r'"audit.verify":\s+Operator,', rbac), (
+        "the verification of the ledger is not an operator's work")
+    assert 'rpc("audit.verify"' in client_src, (
+        "the console cannot verify the ledger")
+
+    # And it works.
+    token = b"ledger-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        client.agents()
+        res = client.rpc("audit.verify")
+        assert res.ok, res.error
+        assert res.data.get("ok") is True, res.data
+        assert int(res.data.get("entries", 0)) >= 1, res.data
+        assert res.data.get("head"), res.data
+
+        # A line that was edited after the fact breaks the chain, and
+        # the verification says which line it was.
+        with server._lock:
+            server.audit_entries[0]["cmd"] = "engagement.wipe"
+        res = client.rpc("audit.verify")
+        assert res.ok, res.error
+        assert res.data.get("ok") is False, res.data
+        assert int(res.data.get("broken_at", 0)) == 1, res.data
+        assert res.data.get("reason"), res.data
+    finally:
+        client.close()
+        server.stop()
