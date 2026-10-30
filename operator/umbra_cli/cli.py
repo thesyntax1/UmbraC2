@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from . import __version__, crypto, db, image, netio, wire
+from . import __version__, crypto, db, hygiene, image, netio, wire
 from .client import CHUNK_MAX, OperatorClient, OperatorError
 from .flows import render_bulk_table, render_workflows, run_bulk, run_plan, split_params
 from .plan import PlanError, load_plan, plan_params, plan_steps
@@ -651,6 +651,49 @@ def run_forensics_and_wait(client: OperatorClient, console: Console, agent_id: s
         result = client.wait_for_result(task_id, timeout=timeout)
         console.note_result(task_id, result)
         emit(result) if as_json else print_task_result(result)
+
+
+def run_clean(client: OperatorClient, console: Console, args: Any) -> int:
+    """The traces of the engagement on the machine of the operator.
+
+    The notebook of the console and the files of the state directory go
+    as a whole, and the lines of the shell history that name the
+    engagement are scrubbed: the rest of the file stays, because the
+    history of the operator is not a trace of the engagement.
+    """
+    history_wanted = bool(args.history)
+    notebook_wanted = bool(args.notebook)
+    if not history_wanted and not notebook_wanted:
+        # Both, when the operator says nothing: the end of an
+        # engagement is not a moment for half measures.
+        history_wanted = True
+        notebook_wanted = True
+    if not args.dry_run and not args.yes:
+        print("this removes the notebook of the console and the lines of the")
+        print("shell history that name the engagement.")
+        print("the ledger of the server is not touched: it is the record of")
+        print("the engagement, not a trace of it.")
+        answer = input("type 'clean' to continue: ").strip()
+        if answer != "clean":
+            print("nothing was changed")
+            return 0
+    markers = list(hygiene.DEFAULT_MARKERS)
+    server = str(getattr(client, "server", "") or "")
+    if server:
+        markers.append(server)
+    history = hygiene.scrub_history(markers, dry_run=bool(args.dry_run))
+    traces = hygiene.remove_traces(
+        hygiene.local_traces(getattr(args, "db", "") or ""),
+        dry_run=bool(args.dry_run))
+    summary = hygiene.summarise(history, traces)
+    if getattr(args, "json", False):
+        emit({"history": history, "traces": traces, "summary": summary})
+    else:
+        print(summary)
+        for problem in list(history.get("problems") or []) + list(
+                traces.get("problems") or []):
+            print(f"  could not be touched: {problem}", file=sys.stderr)
+    return 0
 
 
 def run_cleanup(client: OperatorClient, console: Console, args: Any) -> int:
@@ -2030,6 +2073,7 @@ def print_help() -> None:
   journal <agent>           the timeline of the engagement on a host
   vanish <agent>            the implant leaves the host (asks twice)
   decommission <agent>      the end of the engagement on a host (asks twice)
+  clean                     the traces of the engagement on this machine
   deadman <agent>           the dead man's switch of a host
   cleanup                   wipe the traces of many hosts at once
   wipe                      clear the record of the engagement (asks twice)
@@ -2737,6 +2781,17 @@ def build_parser() -> argparse.ArgumentParser:
     decommission.add_argument("--yes", action="store_true", help="do not ask")
     decommission.add_argument("--wait", action="store_true")
     decommission.add_argument("--timeout", type=float, default=180.0)
+
+    clean = sub.add_parser("clean",
+                            help="the traces of the engagement on this machine")
+    clean.add_argument("--history", action="store_true",
+                       help="take the lines of the console out of the history "
+                            "of the shell")
+    clean.add_argument("--notebook", action="store_true",
+                       help="remove the notebook and the files of the console")
+    clean.add_argument("--dry-run", action="store_true",
+                       help="say what would go, touch nothing")
+    clean.add_argument("--yes", action="store_true", help="do not ask")
 
     deadman = sub.add_parser("deadman",
                              help="the dead man's switch of a host")
@@ -3852,6 +3907,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     return 0
             run_forensics_and_wait(client, console, args.agent, "forensics.decommission",
                                     {}, args.wait, args.timeout, args.json)
+        elif args.cmd == "clean":
+            # The machine of the operator is a host too: the notebook of
+            # the console and the commands that were typed are traces of
+            # the engagement.
+            run_clean(client, console, args)
         elif args.cmd == "deadman":
             # The dead man's switch: the implant ends itself when the
             # operator stops checking in.
