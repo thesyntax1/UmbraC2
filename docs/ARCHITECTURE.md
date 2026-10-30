@@ -493,7 +493,10 @@ operator side); roles and authorisation (`rbac`: viewer/operator/admin per RPC, 
 server-side and audited); operator chat and recurring tasks (`schedule.*` with a
 1 s scheduler tick, persisted with the state file); operator audit log (`internal/audit`, `audit.tail`, `umbra audit`), which
 records every RPC with operator, peer, transport, task/agent id and outcome, and
-is rotated, fsynced per line, and readable from disk after a restart; and task
+is rotated, fsynced per line, and readable from disk after a restart.  The log
+is a chain of hashes: every entry carries the hash of the entry before it, the
+chain survives the rotation and the restart, and `audit.verify` walks it and
+names the line where it breaks; and task
 cancel end-to-end (`TASK_CANCEL` control frames read by both reference implants,
 state preserved when a late result arrives).
 

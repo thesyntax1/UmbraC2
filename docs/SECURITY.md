@@ -461,6 +461,14 @@ whole.  A task queued through `task.submit` is redacted as a whole when
 its kind is one of those, so the payload never reaches the disk.  The log
 still says *what* was attempted; it never says *with what*.
 
+**The ledger of the operator is tamper-evident, not honest.**  Every entry
+of the audit trail carries the hash of the entry before it, so the trail is
+a chain and `umbra audit --verify` walks it and names the line where it
+breaks.  The chain proves that the *file* was not edited after the fact;
+it does not prove that the server wrote the truth, that the process was
+not compromised, or that the file was shipped off the box before the
+editing.  A ledger that nobody carries off the host protects nothing.
+
 **The secrets are not in the process list.**  A secret that is typed on
 the command line is a secret that every other program on the machine can
 read out of `/proc`.  The console therefore takes the operator token

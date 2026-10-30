@@ -27,7 +27,8 @@ establishment, beacon check-in, task dispatch and result collection, beacon
 sleep/jitter control, key rotation, live operator event stream, agent inventory
 and task history persisted across restarts, TCP and HTTP transports, and an
 append-only operator audit trail (`umbra audit`) with per-operator RPC rate
-limiting.
+limiting -- a trail of chained hashes, so `umbra audit --verify` can say
+whether a line was edited after the fact.
 
 Added on top of that core:
 

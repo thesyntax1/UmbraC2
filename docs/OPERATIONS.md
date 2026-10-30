@@ -1499,9 +1499,15 @@ before the reply is sent:
   huge `--args` blob cannot make a line unbounded.
 * An audit write failure is logged and the RPC still completes — a full disk
   must not stop an engagement, but it must be visible in `journalctl`.
+* Every entry carries the hash of the entry before it, so the ledger is a
+  chain: a line that was edited, removed or added after the fact breaks
+  every link after it.  `umbra audit --verify` walks the chain and says
+  which line broke it; the head of the chain is the proof of the whole
+  ledger and can be written down or given to a third party.
 * Read it back with `umbra audit --limit 20` (newest first), or from the file:
 
 ```bash
+umbra audit --verify                    # is the ledger intact?
 jq -c 'select(.ok == false)' data/audit.jsonl | tail
 jq -r '[.at, .operator, .cmd] | @tsv' data/audit.jsonl | tail -20
 ```

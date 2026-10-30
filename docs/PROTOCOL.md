@@ -580,6 +580,7 @@ Operator RPC commands, with the minimum role each requires:
 | `task.get` | viewer | one task |
 | `task.list` | viewer | tasks; optional filters: `id` (agent), `kind`, `state` |
 | `audit.tail` | viewer | recent operator actions |
+| `audit.verify` | operator | walk the chain of hashes of the ledger and say where it breaks |
 | `chat.history` | viewer | recent chat |
 | `schedule.list` | viewer | recurring tasks |
 | `task.submit` | operator | queue a task |
