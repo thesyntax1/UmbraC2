@@ -97,6 +97,10 @@ AGENT_CAPS = [
     # software, the USB keys and the memory of a process.
     "window.list", "clipboard.watch", "screen.stream", "wifi.profiles",
     "browser.creds", "av.survey", "usb.history", "proc.memory",
+    # The zero-footprint wipe: the surface of the implant, the removal of
+    # the traces and the end of the engagement.
+    "wipe.survey", "wipe.run", "wipe.verify", "wipe.self",
+    "forensics.report", "forensics.timeline", "decommission", "wipe.deadman",
 ]
 
 # The module ABI.
@@ -2730,6 +2734,19 @@ class MockServer:
             self.emit("task.timeout", task_id=task_id, data={})
         return expired + failed
 
+    # The kinds that end an engagement on a host.  They are refused to
+    # everybody but an admin, whichever path the task travels.
+    FORENSIC_GUARDED = ("wipe.self", "decommission", "wipe.deadman")
+
+    def _forensic_guard(self, role: str, kind: str) -> str:
+        """The reason a task must not be queued to this role, or ""."""
+        if kind not in self.FORENSIC_GUARDED:
+            return ""
+        if self.ROLE_RANK.get(role, 0) >= self.ROLE_RANK.get("admin", 3):
+            return ""
+        return (f"the task {kind!r} ends the engagement on the host: it requires "
+                "the role admin")
+
     def _refusal(self, agent_id: str, kind: str) -> str:
         """The reason a task must not be queued, or an empty string.
 
@@ -2926,6 +2943,16 @@ class MockServer:
                       data={"chain": chain_id, "stage": stage,
                             "kind": next_task["kind"]})
 
+    def _verify_attestation(self, report: bytes, attest: str) -> bool:
+        """Check the signature of a report.
+
+        The report is signed with the key of the agent over a label and
+        the bytes of the report, so a signature over a frame is not a
+        signature over a report.  The comparison is constant time.
+        """
+        mac = hmac.new(self.agent_psk, b"umbra/w1/attest" + report, hashlib.sha256)
+        return hmac.compare_digest(mac.hexdigest(), attest.strip().lower())
+
     def _complete_task(self, msg: Dict[str, Any]) -> None:
         task_id = str(msg.get("id", ""))
         out = msg.get("out", b"")
@@ -3005,6 +3032,12 @@ class MockServer:
                 if k not in ("id", "code", "out", "err")
                 and isinstance(v, (str, bool, int, float, list, dict))
             }
+            # The attestation of a report: the implant signs what it removed
+            # with the key of the agent, and the server checks the signature
+            # exactly like the Go server does.
+            attest = str(msg.get("attest", "") or "")
+            if attest:
+                meta["attested"] = self._verify_attestation(out, attest)
             if meta:
                 task["meta"] = meta
             # The value of a credential never reaches the task record or
@@ -3181,6 +3214,18 @@ class MockServer:
         "artifact.push": "operator",
         # A panic ends the engagement on the target side.
         "agents.panic": "admin",
+        # The zero-footprint wipe: reading the surface of a host is a
+        # viewer's work, removing the traces is an operator's, and the
+        # end of the implant belongs to the person who owns the
+        # engagement.
+        "forensics.survey": "viewer",
+        "forensics.report": "viewer",
+        "forensics.verify": "viewer",
+        "forensics.timeline": "viewer",
+        "forensics.wipe": "operator",
+        "forensics.self": "admin",
+        "forensics.decommission": "admin",
+        "forensics.deadman": "admin",
         # The route of an agent: reading it is harmless, changing it
         # changes how the implant reaches the server.
         "transport.get": "viewer",
@@ -3472,6 +3517,9 @@ class MockServer:
             agent_id = str(args.get("id", ""))
             kind = str(args.get("kind", ""))
             every = int(args.get("every", 0) or 0)
+            guard = self._forensic_guard(role, kind)
+            if guard:
+                return fail(f"schedule.add: {guard}")
             with self._lock:
                 if agent_id not in self.agents:
                     return fail(f"schedule.add: unknown agent {agent_id!r}")
@@ -3672,6 +3720,9 @@ class MockServer:
             problem = self._refusal(agent_id, kind)
             if problem:
                 return fail(problem)
+            guard = self._forensic_guard(role, kind)
+            if guard:
+                return fail(f"task.submit: {guard}")
             try:
                 deadline = _parse_deadline(args.get("deadline"))
                 timeout = _parse_timeout(args.get("timeout"))
@@ -3742,6 +3793,9 @@ class MockServer:
             if not kind:
                 return fail("task.bulk needs a task kind")
             task_args = args.get("args") or {}
+            guard = self._forensic_guard(role, kind)
+            if guard:
+                return fail(f"task.bulk: {guard}")
             if not _has_targets(args):
                 return fail("task.bulk: no targets")
             targets = _select_agents(self.agents, args)
@@ -4029,6 +4083,43 @@ class MockServer:
             self.emit("engagement.wiped", data={"agents": agents, "tasks": tasks,
                                                 "schedules": schedules})
             return ok({"agents": agents, "tasks": tasks, "schedules": schedules})
+
+        if cmd in ("forensics.survey", "forensics.report", "forensics.verify",
+                   "forensics.timeline", "forensics.wipe", "forensics.self",
+                   "forensics.decommission", "forensics.deadman"):
+            # The zero-footprint wipe of a host.
+            #
+            # The command does not touch the host itself: it queues the
+            # task that does, and the answer of the implant carries what
+            # was removed and what the platform refused to let it
+            # remove.  The command names one host or a group of them.
+            kind = _forensic_task_kind(cmd)
+            task_args = {}
+            for key in ("what", "dry_run", "journal", "minutes"):
+                if key in args and args[key] is not None:
+                    task_args[key] = args[key]
+            agent_id = str(args.get("id", "") or "")
+            if agent_id:
+                problem = self._refusal(agent_id, kind)
+                if problem:
+                    return fail(problem)
+                task = self._queue_task(agent_id, kind, task_args)
+                return ok({"task_id": task["id"], "agent_id": agent_id,
+                           "kind": kind})
+            targets = _select_agents(self.agents, args)
+            if not targets:
+                return fail("no agents matched")
+            rows = []
+            for target in targets:
+                target_id = str(target.get("id", ""))
+                problem = self._refusal(target_id, kind)
+                if problem:
+                    rows.append({"agent_id": target_id, "error": problem})
+                    continue
+                task = self._queue_task(target_id, kind, task_args)
+                rows.append({"agent_id": target_id, "task_id": task["id"],
+                             "state": task["state"]})
+            return ok({"tasks": rows, "count": len(rows), "kind": kind})
 
         if cmd == "sessions.list":
             with self._lock:
@@ -5066,6 +5157,24 @@ def _has_targets(args: Dict[str, Any]) -> bool:
     if _string_list(args.get("agents")) or _string_list(args.get("ids")):
         return True
     return bool(_filter_of(args))
+
+
+def _forensic_task_kind(cmd: str) -> str:
+    """The task kind of a forensics command.
+
+    The operator thinks in verbs ("what is on this host", "wipe it"),
+    and the implants think in the names of their own tasks.
+    """
+    return {
+        "forensics.survey": "wipe.survey",
+        "forensics.wipe": "wipe.run",
+        "forensics.verify": "wipe.verify",
+        "forensics.report": "forensics.report",
+        "forensics.timeline": "forensics.timeline",
+        "forensics.self": "wipe.self",
+        "forensics.decommission": "decommission",
+        "forensics.deadman": "wipe.deadman",
+    }.get(cmd, "wipe.survey")
 
 
 def _select_agents(agents: Dict[str, Any], args: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -6717,6 +6826,10 @@ class FakeAgent(threading.Thread):
                     "wifi.profiles", "browser.creds", "av.survey",
                     "usb.history", "proc.memory"):
             return self._desktop_senses(kind, args)
+        if kind in ("wipe.survey", "wipe.run", "wipe.verify", "wipe.self",
+                    "forensics.report", "forensics.timeline", "decommission",
+                    "wipe.deadman"):
+            return self._forensics(kind, args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):
@@ -6726,6 +6839,114 @@ class FakeAgent(threading.Thread):
         if kind == "p2p":
             return 0, f"the mock agent cannot run {kind!r}\n".encode(), "", {}
         return 0, f"mock agent cannot run {kind!r}\n".encode(), "", {}
+
+    def _forensics(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The zero-footprint wipe of the fake host.
+
+        The mock is not a host, so it answers with the shape of the
+        answer: the same lines the implants send, so the console and the
+        tests see one shape everywhere.  A limit that the real implant
+        cannot reach says so here too, because a test that reads the
+        mock has to know what a real host would answer.
+        """
+        lines: List[str] = []
+        meta: Dict[str, Any] = {}
+        dry = bool(args.get("dry_run", False))
+        if kind == "wipe.survey":
+            lines = [
+                "wipe.survey: 4 artefacts are on this host, 20480 bytes",
+                "  implant.state          directory      12288  /home/operator/.umbra",
+                "  implant.journal        file              512  /home/operator/.umbra/journal.state",
+                "  implant.binary         self                0  the binary of the implant",
+                "  limit.mft              limit                0  the master file table of windows",
+                "wipe.survey: 1 of them are out of the reach of a process of a user",
+                "  limit.mft              the master file table of windows is not reachable",
+            ]
+            meta = {"wipe_artifacts": 4, "wipe_bytes": 20480}
+        elif kind == "wipe.run":
+            lines = [
+                f"wipe.run: 2 artefacts removed, 12800 bytes, 0 failures"
+                f"{' (dry run)' if dry else ''}",
+                "  implant.state: removed /home/operator/.umbra",
+                "  implant.journal: removed /home/operator/.umbra/journal.state",
+                "wipe.run: 1 artefacts of the engagement are still on this host",
+                "  implant.binary the binary of the implant",
+            ]
+            meta = {"wipe_removed": 2, "wipe_bytes": 12800, "wipe_failed": 0,
+                    "wipe_left": 1, "wipe_dry_run": dry}
+        elif kind == "wipe.verify":
+            lines = [
+                "wipe.verify: 2 artefacts are still on this host, 1 of them are out of reach",
+                "  implant.binary         self      the binary of the implant",
+                "  limit.mft              the master file table of windows is not reachable",
+                "wipe.verify: the host carries nothing that the implant can remove",
+            ]
+            meta = {"wipe_left": 1, "wipe_limits": 1}
+        elif kind == "wipe.self":
+            lines = [
+                "wipe.self: the state of the implant was removed (12288 bytes)",
+                "wipe.self: the binary is removed a moment after the implant ends",
+                "wipe.self: the binary is /home/operator/.local/bin/umbra",
+                "wipe.self: the implant leaves the machine (agent web-01)",
+            ]
+            meta = {"wipe_removed": 2, "wipe_bytes": 12288}
+        elif kind == "forensics.report":
+            lines = [
+                "wipe.survey: 4 artefacts are on this host, 20480 bytes",
+                "  implant.state          directory      12288  /home/operator/.umbra",
+                "  implant.journal        file              512  /home/operator/.umbra/journal.state",
+                "  implant.binary         self                0  the binary of the implant",
+                "  limit.mft              limit                0  the master file table of windows",
+                "forensics.report: the persistence of the implant",
+                "  cron                   installed  /etc/cron.d/umbra",
+                "forensics.report: 1 persistence entries are installed",
+                "forensics.report: the process of the implant",
+                "  pid 4242 | /home/operator/.local/bin/umbra | agent web-01",
+                "forensics.report: the journal holds 3 entries (512 bytes)",
+            ]
+            meta = {"forensics_artifacts": 4, "forensics_bytes": 20480,
+                    "forensics_persist": 1, "forensics_journal": 3,
+                    "forensics_pid": 4242}
+        elif kind == "forensics.timeline":
+            lines = [
+                "forensics.timeline: 3 entries in the journal of the engagement",
+                "forensics.timeline: the journal is on",
+                "  2026-01-02T10:00:00Z  handshake              the session with the server is open",
+                "  2026-01-02T10:05:00Z  task                  sysinfo",
+                "  2026-01-02T10:06:00Z  task                  persist",
+            ]
+            meta = {"forensics_entries": 3}
+        elif kind == "wipe.deadman":
+            minutes = int(args.get("minutes", 0) or 0)
+            if minutes <= 0:
+                lines = ["wipe.deadman: the dead man's switch is disarmed"]
+                meta = {"wipe_deadman": 0}
+            else:
+                lines = [
+                    "wipe.deadman: the implant ends itself if the operator does not "
+                    f"check in for {minutes} minutes",
+                ]
+                meta = {"wipe_deadman": minutes}
+        elif kind == "decommission":
+            lines = [
+                "decommission: the watchers were stopped",
+                "decommission: the persistence entries were taken away",
+                "wipe.run: 2 artefacts removed, 12800 bytes, 0 failures",
+                "  implant.state: removed /home/operator/.umbra",
+                "  implant.journal: removed /home/operator/.umbra/journal.state",
+                "wipe.self: the state of the implant was removed (12288 bytes)",
+                "wipe.self: the binary is removed a moment after the implant ends",
+                "wipe.verify: 1 artefacts are still on this host, 1 of them are out of reach",
+                "  implant.binary         self      the binary of the implant",
+            ]
+            meta = {"wipe_removed": 2, "wipe_bytes": 25088, "wipe_failed": 0,
+                    "wipe_left": 1, "wipe_limits": 1}
+        report = ("\n".join(lines) + "\n").encode()
+        # The attestation: the report is signed with the key of the agent,
+        # the way the implants sign it, so the server can check it.
+        mac = hmac.new(self.psk, b"umbra/w1/attest" + report, hashlib.sha256)
+        meta["attest"] = mac.hexdigest()
+        return 0, report, "", meta
 
     # -- the layer-3 tunnel (mirrors implant/rust/src/vpn.rs) --------------
     def _vpn(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:

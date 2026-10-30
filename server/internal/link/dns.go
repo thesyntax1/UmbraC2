@@ -88,7 +88,7 @@ func (s *Server) ServeDNS(agentID string, ch *dnstun.Channel) {
 	}
 	defer s.Hub.UnregisterSession(rec.ID, fmt.Sprintf("%x", info.SessionID))
 
-	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "dns", Log: s.Log}
+	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "dns", Log: s.Log, Keys: s.Keys}
 	budget := int64(s.Cfg.Server.Limits.MaxFrameBytesPerConn)
 	for {
 		raw, err := stream.ReadFrame()

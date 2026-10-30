@@ -153,7 +153,7 @@ func (s *Server) handleBeaconHandshake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "http", Log: s.Log}
+	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: "http", Log: s.Log, Keys: s.Keys}
 	// The transport key is the session id both sides already share from
 	// HELLO_ACK, so nothing transport-specific leaks into the protocol.
 	sid := hex.EncodeToString(info.SessionID)

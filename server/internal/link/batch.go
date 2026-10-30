@@ -95,7 +95,7 @@ func (s *Server) HandleBatch(agentID, transport string, in []byte) ([]byte, erro
 		_, _ = out.Write(stream.out.Bytes())
 		bs = &batchSession{
 			sess:  sess,
-			link:  &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: transport, Log: s.Log},
+			link:  &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: transport, Log: s.Log, Keys: s.Keys},
 			agent: rec.ID,
 			sid:   fmt.Sprintf("%x", info.SessionID),
 			seen:  time.Now(),

@@ -612,6 +612,113 @@ def run_task_and_wait(client: OperatorClient, console: Console, agent_id: str,
         emit(result) if as_json else print_task_result(result)
 
 
+def run_forensics_and_wait(client: OperatorClient, console: Console, agent_id: str,
+                           command: str, task_args: Dict[str, Any], wait: bool,
+                           timeout: float, as_json: bool) -> None:
+    """Queue a forensics command and, when asked, wait for its result.
+
+    The wipe of a host has its own commands on the server, because it
+    ends an engagement and the role of the console has to know it: the
+    surface of a host is a viewer's work, the removal of the traces is
+    an operator's, and the end of the implant belongs to the person who
+    owns the engagement.
+    """
+    if command == "forensics.survey":
+        res = client.forensics_survey(agent_id)
+    elif command == "forensics.report":
+        res = client.forensics_report(agent_id)
+    elif command == "forensics.wipe":
+        res = client.forensics_wipe(agent_id, task_args.get("what") or [],
+                                    bool(task_args.get("dry_run")))
+    elif command == "forensics.verify":
+        res = client.forensics_verify(agent_id)
+    elif command == "forensics.timeline":
+        res = client.forensics_timeline(agent_id, str(task_args.get("journal", "")))
+    elif command == "forensics.self":
+        res = client.forensics_self(agent_id)
+    elif command == "forensics.deadman":
+        res = client.forensics_deadman(agent_id, int(task_args.get("minutes") or 0))
+    else:
+        res = client.forensics_decommission(agent_id)
+    task_id = str(res.get("task_id", ""))
+    kind = str(res.get("kind", command))
+    console.note_task(task_id, agent_id, kind, task_args)
+    if as_json and not wait:
+        emit({"task_id": task_id, "agent": agent_id, "kind": kind})
+    else:
+        print(f"queued {task_id}")
+    if wait:
+        result = client.wait_for_result(task_id, timeout=timeout)
+        console.note_result(task_id, result)
+        emit(result) if as_json else print_task_result(result)
+
+
+def run_cleanup(client: OperatorClient, console: Console, args: Any) -> int:
+    """The end of an engagement on many hosts.
+
+    The operator asks for the survey of every host that matches the
+    filter, wipes the traces of each of them and asks for the
+    verification, and the console prints what each one answered: the
+    artefacts that were there, what was removed and what is left.
+
+    The flow is deliberately in the console and not in the server: the
+    survey of one host must not wait for the wipe of another, and the
+    operator has to see the host that did not answer.
+    """
+    filters = parse_filter(args.filter)
+    agents = client.agents(**filters)
+    if not agents:
+        print("no host matched the filter")
+        return 1
+    families = [f.strip() for f in args.what.split(",") if f.strip()]
+    rows = []
+    for agent in agents:
+        agent_id = str(agent.get("id", ""))
+        if not agent_id:
+            continue
+        before = cleanup_step(client, console, agent_id, "forensics.survey", {})
+        wiped = cleanup_step(client, console, agent_id, "forensics.wipe",
+                             {"what": families})
+        after = cleanup_step(client, console, agent_id, "forensics.verify", {})
+        rows.append([
+            agent_id,
+            before.get("wipe_artifacts", "-"),
+            wiped.get("wipe_removed", "-"),
+            wiped.get("wipe_failed", "-"),
+            after.get("wipe_left", "-"),
+        ])
+    table(["agent", "artefacts", "removed", "failed", "left"], rows)
+    return 0
+
+
+def cleanup_step(client: OperatorClient, console: Console, agent_id: str,
+                 command: str, task_args: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one step of the cleanup and read its counters.
+
+    A host that does not answer is not a failure of the cleanup: the
+    row says that nothing was read, and the operator sees which host it
+    was.
+    """
+    try:
+        if command == "forensics.survey":
+            res = client.forensics_survey(agent_id)
+        elif command == "forensics.wipe":
+            res = client.forensics_wipe(agent_id, task_args.get("what") or [])
+        else:
+            res = client.forensics_verify(agent_id)
+        task_id = str(res.get("task_id", ""))
+        if not task_id:
+            return {}
+        console.note_task(task_id, agent_id, command, task_args)
+        record = client.wait_for_result(task_id, timeout=180.0)
+        console.note_result(task_id, record)
+        meta = record.get("meta") or {}
+        return meta if isinstance(meta, dict) else {}
+    except Exception as exc:  # noqa: BLE001 - one host must not stop the run
+        print(f"{agent_id}: {command} failed: {exc}", file=sys.stderr)
+        return {}
+
+
 def print_task_result(task: Dict[str, Any]) -> None:
     print(f"task    : {task.get('id')}")
     print(f"agent   : {task.get('agent_id')}")
@@ -1896,6 +2003,15 @@ def print_help() -> None:
   browse [path]             list the files under a path
   report [agent]            write a report about an agent
   sessions                  the interactive sessions that are open
+  survey <agent>            what the engagement left on a host
+  forensics <agent>         the surface of a host, as an analyst sees it
+  scrub <agent> [family…]   remove the traces of a host (state, history, ...)
+  verify <agent>            what is left on a host after the wipe
+  journal <agent>           the timeline of the engagement on a host
+  vanish <agent>            the implant leaves the host (asks twice)
+  decommission <agent>      the end of the engagement on a host (asks twice)
+  deadman <agent>           the dead man's switch of a host
+  cleanup                   wipe the traces of many hosts at once
   wipe                      clear the record of the engagement (asks twice)
   events [limit]            the recent events of the server's journal
   watch [on|off]            toggle automatic result printing
@@ -2547,6 +2663,75 @@ def build_parser() -> argparse.ArgumentParser:
     watch = sub.add_parser("watch", help="stream events until interrupted")
     wipe = sub.add_parser("wipe", help="clear the record of the engagement")
     wipe.add_argument("--yes", action="store_true", help="do not ask")
+
+    # -- the zero-footprint wipe ------------------------------------------
+    # The wipe of a host is not a task like any other: it ends an
+    # engagement, so it has its own commands and it asks before it
+    # destroys anything.
+    survey = sub.add_parser("survey", help="what the engagement left on a host")
+    survey.add_argument("agent")
+    survey.add_argument("--wait", action="store_true")
+    survey.add_argument("--timeout", type=float, default=120.0)
+
+    forensics = sub.add_parser("forensics",
+                               help="the surface of a host, as an analyst sees it")
+    forensics.add_argument("agent")
+    forensics.add_argument("--wait", action="store_true")
+    forensics.add_argument("--timeout", type=float, default=120.0)
+
+    scrub = sub.add_parser("scrub", help="remove the traces of a host")
+    scrub.add_argument("agent")
+    scrub.add_argument("--what", default="",
+                       help="the families to touch: state, history, recent, "
+                            "cache, log, system or all")
+    scrub.add_argument("--dry-run", action="store_true",
+                       help="look without touching anything")
+    scrub.add_argument("--wait", action="store_true")
+    scrub.add_argument("--timeout", type=float, default=180.0)
+
+    verify = sub.add_parser("verify", help="what is left on a host after the wipe")
+    verify.add_argument("agent")
+    verify.add_argument("--wait", action="store_true")
+    verify.add_argument("--timeout", type=float, default=120.0)
+
+    journal = sub.add_parser("journal", help="the timeline of the engagement on a host")
+    journal.add_argument("agent")
+    journal.add_argument("--on", action="store_true", help="turn the journal on")
+    journal.add_argument("--off", action="store_true", help="turn the journal off")
+    journal.add_argument("--wait", action="store_true")
+    journal.add_argument("--timeout", type=float, default=120.0)
+
+    vanish = sub.add_parser("vanish", help="the implant leaves the host")
+    vanish.add_argument("agent")
+    vanish.add_argument("--yes", action="store_true", help="do not ask")
+    vanish.add_argument("--wait", action="store_true")
+    vanish.add_argument("--timeout", type=float, default=180.0)
+
+    decommission = sub.add_parser("decommission",
+                                  help="the end of the engagement on a host")
+    decommission.add_argument("agent")
+    decommission.add_argument("--yes", action="store_true", help="do not ask")
+    decommission.add_argument("--wait", action="store_true")
+    decommission.add_argument("--timeout", type=float, default=180.0)
+
+    deadman = sub.add_parser("deadman",
+                             help="the dead man's switch of a host")
+    deadman.add_argument("agent")
+    deadman.add_argument("--minutes", type=int, default=0,
+                         help="the minutes of silence after which the implant "
+                              "ends itself; zero disarms the switch")
+    deadman.add_argument("--wait", action="store_true")
+    deadman.add_argument("--timeout", type=float, default=120.0)
+
+    cleanup = sub.add_parser("cleanup",
+                             help="the end of an engagement on many hosts")
+    cleanup.add_argument("--filter", default="state=online",
+                         help="the hosts to clean: state=online, tag=dc, ...")
+    cleanup.add_argument("--what", default="state,history,cache",
+                         help="the families to touch: state, history, recent, "
+                              "cache, log, system or all")
+    cleanup.add_argument("--yes", action="store_true", help="do not ask")
+    cleanup.add_argument("--timeout", type=float, default=180.0)
     sessions_cmd = sub.add_parser("sessions", help="the interactive sessions that are open")
     events_cmd = sub.add_parser("events", help="the recent events of the server's journal")
     events_cmd.add_argument("--limit", type=int, default=50)
@@ -3583,6 +3768,77 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"removed {res.get('agents', 0)} agents, "
                       f"{res.get('tasks', 0)} tasks and "
                       f"{res.get('schedules', 0)} schedules")
+        elif args.cmd == "survey":
+            # What the engagement left on the host.  It changes nothing.
+            run_forensics_and_wait(client, console, args.agent, "forensics.survey",
+                                    {}, args.wait, args.timeout, args.json)
+        elif args.cmd == "forensics":
+            # The surface of the host, as an analyst would find it.
+            run_forensics_and_wait(client, console, args.agent, "forensics.report",
+                                    {}, args.wait, args.timeout, args.json)
+        elif args.cmd == "scrub":
+            # The removal of the traces.  The families are the ones the
+            # operator names; the report says which family was touched.
+            families = [f.strip() for f in args.what.split(",") if f.strip()]
+            run_forensics_and_wait(client, console, args.agent, "forensics.wipe",
+                                    {"what": families, "dry_run": bool(args.dry_run)},
+                                    args.wait, args.timeout, args.json)
+        elif args.cmd == "verify":
+            # What is left after the wipe.
+            run_forensics_and_wait(client, console, args.agent, "forensics.verify",
+                                    {}, args.wait, args.timeout, args.json)
+        elif args.cmd == "journal":
+            # The timeline of the engagement on the host.  The journal is
+            # a trace of its own, so it is off until the operator says so.
+            state = "on" if args.on else ("off" if args.off else "")
+            run_forensics_and_wait(client, console, args.agent, "forensics.timeline",
+                                    {"journal": state}, args.wait, args.timeout, args.json)
+        elif args.cmd == "vanish":
+            # The implant leaves the host.  There is no way back, so the
+            # operator is asked twice.
+            if not args.yes:
+                print("this removes the implant from the host: its state, its journal "
+                      "and its binary.")
+                print("the machine keeps everything that is not the implant.")
+                answer = input("type 'vanish' to continue: ").strip()
+                if answer != "vanish":
+                    print("nothing was changed")
+                    return 0
+            run_forensics_and_wait(client, console, args.agent, "forensics.self",
+                                    {}, args.wait, args.timeout, args.json)
+        elif args.cmd == "decommission":
+            # The end of the engagement on the host: the watchers stop, the
+            # persistence goes, the traces are wiped and the implant leaves
+            # the machine.  There is no way back, so the operator is asked
+            # twice.
+            if not args.yes:
+                print("this ends the engagement on the host: the watchers stop, the "
+                      "persistence is taken away,")
+                print("the traces are wiped and the implant leaves the machine.")
+                answer = input("type 'decommission' to continue: ").strip()
+                if answer != "decommission":
+                    print("nothing was changed")
+                    return 0
+            run_forensics_and_wait(client, console, args.agent, "forensics.decommission",
+                                    {}, args.wait, args.timeout, args.json)
+        elif args.cmd == "deadman":
+            # The dead man's switch: the implant ends itself when the
+            # operator stops checking in.
+            run_forensics_and_wait(client, console, args.agent, "forensics.deadman",
+                                    {"minutes": int(args.minutes)},
+                                    args.wait, args.timeout, args.json)
+        elif args.cmd == "cleanup":
+            # The end of an engagement on many hosts: the survey of each
+            # one, the wipe of the traces and the verification.
+            if not args.yes:
+                print("this wipes the traces of every host that matches the filter.")
+                print("the implants keep running: remove them with vanish or")
+                print("decommission when the engagement is over.")
+                answer = input("type 'cleanup' to continue: ").strip()
+                if answer != "cleanup":
+                    print("nothing was changed")
+                    return 0
+            run_cleanup(client, console, args)
         elif args.cmd == "panic":
             # The end of an engagement on the target side.  The beacons are
             # told to exit and the server stops feeding them, so the

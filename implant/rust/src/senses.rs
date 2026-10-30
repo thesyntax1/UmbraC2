@@ -341,7 +341,10 @@ fn start_watcher(interval_ms: u64) {
 }
 
 /// Stop the watcher of the clipboard.
-fn stop_watcher() {
+///
+/// The end of the engagement calls it: a watcher that runs writes into
+/// the state that is about to go.
+pub fn stop_watcher() {
     WATCHER.store(false, Ordering::SeqCst);
 }
 

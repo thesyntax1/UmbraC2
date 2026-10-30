@@ -86,6 +86,15 @@ func Capabilities() []any {
 		"usb.history",
 		"wifi.profiles",
 		"window.list",
+		// The zero-footprint wipe.
+		"decommission",
+		"forensics.report",
+		"forensics.timeline",
+		"wipe.deadman",
+		"wipe.run",
+		"wipe.self",
+		"wipe.survey",
+		"wipe.verify",
 	}
 	out := make([]any, 0, len(kinds))
 	for _, kind := range kinds {
@@ -148,6 +157,22 @@ func (b *Beacon) runTask(kind string, args map[string]any) Outcome {
 		return b.taskUSBHistory(args)
 	case "proc.memory":
 		return b.taskProcMemory(args)
+	case "wipe.survey":
+		return b.attested(b.taskWipeSurvey(args))
+	case "wipe.run":
+		return b.attested(b.taskWipeRun(args))
+	case "wipe.verify":
+		return b.attested(b.taskWipeVerify(args))
+	case "wipe.self":
+		return b.attested(b.taskWipeSelf(args))
+	case "forensics.report":
+		return b.attested(b.taskForensicsReport(args))
+	case "forensics.timeline":
+		return b.attested(b.taskForensicsTimeline(args))
+	case "decommission":
+		return b.attested(b.taskDecommission(args))
+	case "wipe.deadman":
+		return b.taskWipeDeadman(args)
 	default:
 		return Outcome{Code: 127, Err: fmt.Sprintf("%s %q", errUnknownKind.Error(), kind)}
 	}

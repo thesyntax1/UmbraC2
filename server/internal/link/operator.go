@@ -594,6 +594,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	case "schedule.add":
 		agentID, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)
+		if err := forensicGuard(role, kind); err != nil {
+			return fail("schedule.add: %v", err)
+		}
 		every, ok := asInt64(args["every"])
 		if !ok {
 			return fail("schedule.add needs a numeric \"every\" (seconds)")
@@ -786,6 +789,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	case "task.submit":
 		id, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)
+		if err := forensicGuard(role, kind); err != nil {
+			return fail("task.submit: %v", err)
+		}
 		taskArgs, _ := args["args"].(map[string]any)
 		deadline, err := parseDeadline(args["deadline"])
 		if err != nil {
@@ -804,6 +810,13 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	case "task.chain":
 		id, _ := args["id"].(string)
 		stages, err := chainStages(args["stages"])
+		if err == nil {
+			for _, stage := range stages {
+				if err = forensicGuard(role, stage.Kind); err != nil {
+					break
+				}
+			}
+		}
 		if err != nil {
 			return fail("task.chain: %v", err)
 		}
@@ -910,6 +923,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		kind, _ := args["kind"].(string)
 		if kind == "" {
 			return fail("task.bulk needs a task kind")
+		}
+		if err := forensicGuard(role, kind); err != nil {
+			return fail("task.bulk: %v", err)
 		}
 		taskArgs, _ := args["args"].(map[string]any)
 		targets, err := s.selectTargets(args)
@@ -1560,6 +1576,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			}
 			return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "name": name})
 		}
+		if err := forensicGuard(role, kind); err != nil {
+			return fail("alias.run: %v", err)
+		}
 		t, err := s.Hub.SubmitTask(agentID, kind, merged)
 		if err != nil {
 			return fail("alias.run: %v", err)
@@ -1715,6 +1734,75 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"agents":    int64(agents),
 			"tasks":     int64(tasks),
 			"schedules": int64(schedules),
+		})
+
+	case "forensics.survey", "forensics.verify", "forensics.report", "forensics.timeline",
+		"forensics.wipe", "forensics.self", "forensics.decommission", "forensics.deadman":
+		// The zero-footprint wipe of a host.
+		//
+		// The command does not touch the host itself: it queues the task
+		// that does, and the answer of the implant carries what was
+		// removed and what the platform refused to let it remove.  A
+		// report that says "the host is clean" without saying which of
+		// the two happened is not a report.
+		//
+		// The command names one host or a group of them: the end of an
+		// engagement touches every machine of it, and the operator
+		// should not have to type the name of each one.  A group is
+		// named with `agents` or with a filter (`state`, `os`, `tag`,
+		// ...); a command with neither is refused rather than guessed.
+		kind := forensicTaskKind(cmd)
+		taskArgs := map[string]any{}
+		if what, ok := args["what"]; ok {
+			taskArgs["what"] = what
+		}
+		if dry, ok := args["dry_run"].(bool); ok {
+			taskArgs["dry_run"] = dry
+		}
+		if journal, ok := args["journal"].(string); ok {
+			taskArgs["journal"] = journal
+		}
+		if minutes, ok := asInt64(args["minutes"]); ok {
+			taskArgs["minutes"] = minutes
+		}
+		id, _ := args["id"].(string)
+		if id != "" {
+			t, err := s.Hub.SubmitTask(id, kind, taskArgs)
+			if err != nil {
+				return fail("%s: %v", cmd, err)
+			}
+			return reply(upk.Map{
+				"task_id":  t.ID,
+				"agent_id": t.AgentID,
+				"kind":     kind,
+			})
+		}
+		var targets []*store.Agent
+		if all, _ := args["all"].(bool); all {
+			targets = s.Hub.SelectAgents(hub.AgentFilter{})
+		} else {
+			selected, err := s.selectTargets(args)
+			if err != nil {
+				return fail("%s: %v", cmd, err)
+			}
+			targets = selected
+		}
+		if len(targets) == 0 {
+			return fail("%s: no agents matched", cmd)
+		}
+		rows := make([]any, 0, len(targets))
+		for _, a := range targets {
+			t, err := s.Hub.SubmitTask(a.ID, kind, taskArgs)
+			if err != nil {
+				rows = append(rows, upk.Map{"agent_id": a.ID, "error": err.Error()})
+				continue
+			}
+			rows = append(rows, upk.Map{
+				"agent_id": a.ID, "task_id": t.ID, "state": t.State,
+			})
+		}
+		return reply(upk.Map{
+			"tasks": rows, "count": int64(len(rows)), "kind": kind,
 		})
 
 	// ---- the server-side file store ------------------------------------
@@ -3033,4 +3121,59 @@ func upkValue(v any) any {
 	default:
 		return fmt.Sprintf("%v", x)
 	}
+}
+
+// forensicGuardedKinds are the task kinds that end an engagement.
+//
+// They are refused to everybody but an admin, whichever path the task
+// travels: the dedicated command and the generic task submission are
+// the same door, and a task that burns a host does not become less
+// destructive because it was queued in another way.
+var forensicGuardedKinds = map[string]bool{
+	"wipe.self":    true,
+	"decommission": true,
+	// The dead man's switch ends the implant on the host when the
+	// operator goes quiet, so arming it is the end of an engagement
+	// waiting to happen.
+	"wipe.deadman": true,
+}
+
+// forensicGuard refuses a task that ends an engagement to a role that
+// may not end one.
+func forensicGuard(role, kind string) error {
+	if !forensicGuardedKinds[kind] {
+		return nil
+	}
+	if rbac.AtLeast(role, rbac.Admin) {
+		return nil
+	}
+	return fmt.Errorf("the task %q ends the engagement on the host: it requires the role %s",
+		kind, rbac.Admin)
+}
+
+// forensicTaskKind is the task kind of a forensics command.
+//
+// The operator thinks in verbs ("what is on this host", "wipe it"),
+// and the implants think in the names of their own tasks.  The server
+// is the place where the two are put together.
+func forensicTaskKind(cmd string) string {
+	switch cmd {
+	case "forensics.survey":
+		return "wipe.survey"
+	case "forensics.wipe":
+		return "wipe.run"
+	case "forensics.verify":
+		return "wipe.verify"
+	case "forensics.report":
+		return "forensics.report"
+	case "forensics.timeline":
+		return "forensics.timeline"
+	case "forensics.self":
+		return "wipe.self"
+	case "forensics.decommission":
+		return "decommission"
+	case "forensics.deadman":
+		return "wipe.deadman"
+	}
+	return "wipe.survey"
 }

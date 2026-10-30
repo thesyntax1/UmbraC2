@@ -114,6 +114,24 @@ var requirements = map[string]string{
 	"creds.search": Viewer,
 	"creds.export": Operator,
 
+	// ---- the zero-footprint wipe ------------------------------------------
+	// Reading the surface of a host is harmless: the survey, the report,
+	// the verification and the timeline only look.
+	"forensics.survey":   Viewer,
+	"forensics.report":   Viewer,
+	"forensics.verify":   Viewer,
+	"forensics.timeline": Viewer,
+	// The wipe removes files on a host, so it is an operator action.
+	"forensics.wipe": Operator,
+	// The self-destruction and the decommissioning are the end of an
+	// engagement on that host, so they belong to the person who owns it.
+	"forensics.self":        Admin,
+	"forensics.decommission": Admin,
+	// Arming the dead man's switch ends the implant on the host when the
+	// operator goes quiet: it is the end of an engagement waiting to
+	// happen, so it belongs to the person who owns it.
+	"forensics.deadman": Admin,
+
 	// ---- burning an engagement ------------------------------------------
 	// A panic tells every selected beacon to exit and stops the server
 	// from feeding it any more work.  It is the end of an engagement, so

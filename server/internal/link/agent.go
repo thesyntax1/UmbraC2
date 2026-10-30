@@ -1,6 +1,9 @@
 package link
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +14,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
@@ -26,6 +30,11 @@ type AgentLink struct {
 	AgentID   string
 	Transport string
 	Log       *slog.Logger
+
+	// Keys is the runtime keyring.  It is optional: a link without it
+	// cannot verify the attestation of a report, and says so instead of
+	// pretending that it did.
+	Keys *keyring.Keyring
 
 	closed bool
 }
@@ -263,8 +272,59 @@ func (l *AgentLink) onResult(msg map[string]any) ([][]byte, error) {
 		l.Hub.AppendTaskOutput(l.AgentID, taskID, output, resultMeta(msg))
 		return nil, nil
 	}
-	l.Hub.CompleteTask(l.AgentID, taskID, code, output, errMsg, resultMeta(msg))
+	meta := resultMeta(msg)
+	// The attestation of a report: the implant signs what it removed with
+	// the key of the agent, so the operator keeps a proof of it even when
+	// the host is gone.  The server checks the signature and says whether
+	// it holds.
+	if attest, ok := msg["attest"].(string); ok && attest != "" {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["attested"] = l.verifyAttestation(output, attest)
+	}
+	l.Hub.CompleteTask(l.AgentID, taskID, code, output, errMsg, meta)
 	return nil, nil
+}
+
+// verifyAttestation checks the signature of a report.
+//
+// The report is signed with the key of the agent over a label and the
+// bytes of the report, so a signature over a frame is not a signature
+// over a report.  The comparison is constant time: the signature is
+// public, but the habit is worth keeping.
+func (l *AgentLink) verifyAttestation(output []byte, attest string) bool {
+	key := l.agentKey()
+	if len(key) == 0 {
+		return false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(attestLabel))
+	mac.Write(output)
+	want := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(want), []byte(strings.ToLower(strings.TrimSpace(attest))))
+}
+
+// attestLabel is the domain separation of the attestation.
+const attestLabel = "umbra/w1/attest"
+
+// agentKey is the key of this agent: the key bound to its id when there
+// is one, the fleet key otherwise.
+func (l *AgentLink) agentKey() []byte {
+	if l.Keys != nil {
+		for _, candidate := range l.Keys.AgentKeyCandidates() {
+			if candidate.ID == l.AgentID {
+				return candidate.PSK
+			}
+		}
+		for _, candidate := range l.Keys.AgentCandidates() {
+			return candidate
+		}
+	}
+	if l.Hub != nil && l.Hub.Config() != nil {
+		return l.Hub.Config().AgentPSK
+	}
+	return nil
 }
 
 // resultMeta picks the extra fields a beacon attached to a RESULT body (offset,
@@ -431,7 +491,7 @@ func (s *Server) runAgent(stream FrameStream, conn net.Conn, sess *session.Sessi
 	// entry, and this goroutine must not delete its successor's record.
 	defer s.Hub.UnregisterSession(rec.ID, fmt.Sprintf("%x", info.SessionID))
 
-	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: transport, Log: s.Log}
+	link := &AgentLink{Hub: s.Hub, Session: sess, AgentID: rec.ID, Transport: transport, Log: s.Log, Keys: s.Keys}
 	budget := int64(s.Cfg.Server.Limits.MaxFrameBytesPerConn)
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(s.Cfg.IdleTimeout()))

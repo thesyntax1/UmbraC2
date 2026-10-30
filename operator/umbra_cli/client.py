@@ -549,6 +549,97 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # ---- the zero-footprint wipe ---------------------------------------
+    #
+    # The wipe of a host is not a task like any other: it ends an
+    # engagement, so it has its own commands on the server and its own
+    # roles.  Reading the surface of a host is a viewer's work; removing
+    # the traces is an operator's; ending the implant on the host belongs
+    # to the person who owns the engagement.
+
+    def forensics_survey(self, agent_id: str) -> Dict[str, Any]:
+        """Look at the traces of a host without touching anything."""
+        res = self.rpc("forensics.survey", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_report(self, agent_id: str) -> Dict[str, Any]:
+        """The surface of a host: what an analyst would find on it."""
+        res = self.rpc("forensics.report", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_wipe(self, agent_id: str,
+                       what: Optional[List[str]] = None,
+                       dry_run: bool = False) -> Dict[str, Any]:
+        """Remove the traces of a host.
+
+        The families are the ones the operator names: ``state``,
+        ``history``, ``recent``, ``cache``, ``log``, ``system`` or
+        ``all``.  The dry run looks without touching anything.
+        """
+        payload: Dict[str, Any] = {"id": agent_id}
+        if what:
+            payload["what"] = list(what)
+        if dry_run:
+            payload["dry_run"] = True
+        res = self.rpc("forensics.wipe", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_verify(self, agent_id: str) -> Dict[str, Any]:
+        """Look at a host after the wipe and say what is left."""
+        res = self.rpc("forensics.verify", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_timeline(self, agent_id: str,
+                           journal: str = "") -> Dict[str, Any]:
+        """The timeline of the engagement on a host.
+
+        The journal of the engagement is a trace of its own, so it is
+        off until the operator turns it on: ``journal="on"`` and
+        ``journal="off"``.
+        """
+        payload: Dict[str, Any] = {"id": agent_id}
+        if journal:
+            payload["journal"] = journal
+        res = self.rpc("forensics.timeline", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_self(self, agent_id: str) -> Dict[str, Any]:
+        """The self-destruction of the implant on a host."""
+        res = self.rpc("forensics.self", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_decommission(self, agent_id: str) -> Dict[str, Any]:
+        """The end of the engagement on a host, in one task."""
+        res = self.rpc("forensics.decommission", {"id": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def forensics_deadman(self, agent_id: str, minutes: int = 0) -> Dict[str, Any]:
+        """Arm or disarm the dead man's switch of a host.
+
+        The switch ends the implant on the host when the operator stops
+        checking in; every check-in renews the window.  Zero minutes
+        disarms it.
+        """
+        payload: Dict[str, Any] = {"id": agent_id, "minutes": int(minutes)}
+        res = self.rpc("forensics.deadman", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def sessions(self) -> List[Dict[str, Any]]:
         """The interactive sessions that are open, per agent.
 
