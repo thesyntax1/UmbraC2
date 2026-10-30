@@ -674,6 +674,18 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data
 
+    def audit_verify(self) -> Dict[str, Any]:
+        """Check the chain of the ledger of the server.
+
+        The ledger of the operator is a chain of hashes: a line that was
+        edited after the fact breaks the chain, and the answer says which
+        line it was.
+        """
+        res = self.rpc("audit.verify")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def set_sleep(self, agent_id: str, sleep: int, jitter: int) -> None:
         res = self.rpc("agents.sleep", {"id": agent_id, "sleep": sleep, "jitter": jitter})
         if not res.ok:

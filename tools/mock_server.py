@@ -1034,6 +1034,8 @@ class MockServer:
         self.open_sessions: Dict[str, Dict[str, Any]] = {}
         # Mirrors the Go server's audit trail: one entry per operator RPC.
         self.audit_entries: List[Dict[str, Any]] = []
+        # The tip of the chain of the ledger.
+        self._audit_head_value = ""
         self.chat: List[Dict[str, Any]] = []
         self.schedules: Dict[str, Dict[str, Any]] = {}
         # Named subscriber queues, so a directed event can be addressed to one
@@ -3157,6 +3159,9 @@ class MockServer:
         "whoami": "viewer",
         "server.stats": "viewer",
         "audit.tail": "viewer",
+        # The verification of the ledger walks the whole trail, so it is
+        # the work of an operator.
+        "audit.verify": "operator",
         "operators.list": "viewer",
         "agents.list": "viewer",
         "agents.info": "viewer",
@@ -3348,10 +3353,22 @@ class MockServer:
             "ms": int((time.monotonic() - started) * 1000),
         }
         with self._lock:
+            # The ledger of the operator is a chain of hashes: a line
+            # that was edited after the fact breaks the chain.
+            entry["hash"] = _audit_chain_hash(self._audit_head(), entry)
+            self._audit_head_value = entry["hash"]
             self.audit_entries.append(entry)
             if len(self.audit_entries) > 2000:
                 del self.audit_entries[:1000]
+                # The chain starts again where the trail starts: the
+                # oldest entries are gone, so the first entry of the
+                # trail follows the empty head.
+                _rechain_audit(self.audit_entries)
         return resp
+
+    def _audit_head(self) -> str:
+        """The hash of the last entry of the ledger."""
+        return self._audit_head_value
 
     def _handle(self, req: Dict[str, Any], operator: str = "mock") -> Dict[str, Any]:
         rid = req.get("rid", 0)
@@ -4151,6 +4168,26 @@ class MockServer:
             new_task = self._queue_task(agent_id, kind, task_args)
             return ok({"task_id": new_task["id"], "agent_id": agent_id,
                        "kind": kind, "retried": task_id})
+
+        if cmd == "audit.verify":
+            # The verification of the ledger: the chain is walked and the
+            # first broken link is named.
+            with self._lock:
+                entries = list(self.audit_entries)
+            head = ""
+            for number, entry in enumerate(entries, 1):
+                want = _audit_chain_hash(head, entry)
+                if want != entry.get("hash", ""):
+                    return ok({
+                        "entries": number - 1,
+                        "ok": False,
+                        "broken_at": number,
+                        "head": head,
+                        "reason": "the entry does not follow the one before it",
+                    })
+                head = str(entry.get("hash", ""))
+            return ok({"entries": len(entries), "ok": True, "broken_at": 0,
+                       "head": head, "reason": ""})
 
         if cmd == "audit.tail":
             # The mock keeps the same append-only JSONL format in memory so the
@@ -5157,6 +5194,26 @@ def _has_targets(args: Dict[str, Any]) -> bool:
     if _string_list(args.get("agents")) or _string_list(args.get("ids")):
         return True
     return bool(_filter_of(args))
+
+
+def _rechain_audit(entries: List[Dict[str, Any]]) -> None:
+    """Link the entries of the trail again from the empty head."""
+    head = ""
+    for entry in entries:
+        entry["hash"] = _audit_chain_hash(head, entry)
+        head = str(entry["hash"])
+
+
+def _audit_chain_hash(head: str, entry: Dict[str, Any]) -> str:
+    """The link of a ledger entry to the one before it.
+
+    The hash covers the bytes of the entry and the hash of the entry
+    before it, so a line that was edited, removed or added after the
+    fact breaks every link after it.
+    """
+    body = {key: value for key, value in entry.items() if key != "hash"}
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(head.encode() + b"|" + raw).hexdigest()
 
 
 def _forensic_task_kind(cmd: str) -> str:

@@ -63,6 +63,10 @@ var requirements = map[string]string{
 	"whoami":         Viewer,
 	"server.stats":   Viewer,
 	"audit.tail":     Viewer,
+	// The verification of the ledger walks the whole file, so it is the
+	// work of an operator: a viewer reads the trail, an operator proves
+	// that it has not been edited.
+	"audit.verify":   Operator,
 	"operators.list": Viewer,
 	"agents.list":    Viewer,
 	"agents.info":    Viewer,

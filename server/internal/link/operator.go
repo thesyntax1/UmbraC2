@@ -443,7 +443,28 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				"ms":        e.Millis,
 			})
 		}
-		return reply(upk.Map{"entries": out, "enabled": s.audit.Enabled()})
+		return reply(upk.Map{"entries": out, "enabled": s.audit.Enabled(),
+			"head": s.audit.Head()})
+
+	case "audit.verify":
+		// The verification of the ledger: the chain of the hashes says
+		// whether a line was edited after the fact.  The answer names the
+		// line where the chain breaks, because "something is wrong" is
+		// not a finding an operator can act on.
+		if s.audit == nil || !s.audit.Enabled() {
+			return fail("audit.verify: this server has no audit log")
+		}
+		result, err := audit.Verify(s.audit.Path())
+		if err != nil {
+			return fail("audit.verify: %v", err)
+		}
+		return reply(upk.Map{
+			"entries":   int64(result.Entries),
+			"ok":        result.OK,
+			"broken_at": int64(result.BrokenAt),
+			"head":      result.Head,
+			"reason":    result.Reason,
+		})
 
 	case "server.stats":
 		return reply(toUpkMap(s.Hub.Stats()))

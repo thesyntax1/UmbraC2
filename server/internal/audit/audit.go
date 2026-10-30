@@ -12,7 +12,10 @@ package audit
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +44,28 @@ type Entry struct {
 	TaskID    string    `json:"task_id,omitempty"`
 	Detail    string    `json:"detail,omitempty"`
 	Millis    int64     `json:"ms"`
+	// Hash is the link of the entry to the entry before it.  The chain
+	// of the hashes is what makes the ledger tamper-evident: a line
+	// that was edited after the fact breaks the chain, and the break
+	// says where.
+	Hash string `json:"hash,omitempty"`
+}
+
+// ChainHash computes the link of an entry to the one before it.
+//
+// The hash covers the bytes of the entry and the hash of the entry
+// before it, so a line that was edited, removed or added breaks every
+// link after it.  The head of the chain is the proof of the whole
+// ledger: it can be written down, signed or given to a third party.
+func ChainHash(head string, e Entry) string {
+	// The hash of the entry is not part of the bytes it signs.
+	e.Hash = ""
+	body, err := json.Marshal(e)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(append([]byte(head+"|"), body...))
+	return hex.EncodeToString(sum[:])
 }
 
 // Now stamps the entry and fills in the coarse outcome fields.
@@ -200,6 +225,9 @@ type Logger struct {
 	// keep a bounded in-memory ring so audit.tail does not have to re-read the
 	// file for the common "show me the last N" case.
 	ring []Entry
+
+	// head is the hash of the last entry written: the tip of the chain.
+	head string
 }
 
 // Options configures a Logger.
@@ -253,7 +281,67 @@ func (l *Logger) open() error {
 	}
 	l.f = f
 	l.size = info.Size()
+	// The chain continues where the file left off: the head of the last
+	// line is the head of the chain, or the empty string for a fresh
+	// ledger.  A rotation reopens the file of a logger that already has
+	// a head, and that head is the one of the chain.
+	if l.head == "" {
+		l.head = l.readHead()
+	}
 	return nil
+}
+
+// readHead reads the ledger and returns the hash of its last entry.  A
+// ledger that cannot be parsed has no head: the chain starts again, and
+// the verification says so.
+func (l *Logger) readHead() string {
+	head := ""
+	for _, file := range ledgerFiles(l.path) {
+		if h := lastHash(file); h != "" {
+			head = h
+		}
+	}
+	return head
+}
+
+// ledgerFiles lists the files of a ledger, oldest first.
+//
+// The chain of a ledger continues through a rotation: the first entry of
+// a fresh file follows the last entry of the file before it, so the
+// verification has to walk the rotations before the current file.
+func ledgerFiles(path string) []string {
+	out := make([]string, 0, 6)
+	for i := 5; i >= 1; i-- {
+		name := fmt.Sprintf("%s.%d", path, i)
+		if _, err := os.Stat(name); err == nil {
+			out = append(out, name)
+		}
+	}
+	return append(out, path)
+}
+
+// lastHash returns the hash of the last entry of a file of the ledger.
+func lastHash(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	head := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			return ""
+		}
+		head = e.Hash
+	}
+	return head
 }
 
 // Path returns the configured file ("" when disabled).
@@ -280,14 +368,17 @@ func (l *Logger) Record(e Entry) error {
 	e.Err = Clip(e.Err)
 	e.Detail = Clip(e.Detail)
 
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// The entry is linked to the one before it before it is written, so
+	// the chain on the disk is the chain in the memory.
+	e.Hash = ChainHash(l.head, e)
 	raw, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("audit: encode entry: %w", err)
 	}
 	raw = append(raw, '\n')
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	if l.size+int64(len(raw)) > l.maxLen {
 		if err := l.rotateLocked(); err != nil {
@@ -304,8 +395,87 @@ func (l *Logger) Record(e Entry) error {
 	}
 	l.size += int64(len(raw))
 	l.lines++
+	l.head = e.Hash
 	l.pushLocked(e)
 	return nil
+}
+
+// VerifyResult is the answer of the verification of a ledger.
+type VerifyResult struct {
+	// Entries is the number of the entries that were checked.
+	Entries int `json:"entries"`
+	// OK says whether the chain holds from the first line to the last.
+	OK bool `json:"ok"`
+	// BrokenAt is the number of the line where the chain breaks.
+	BrokenAt int `json:"broken_at,omitempty"`
+	// Head is the hash of the last entry: the tip of the chain.
+	Head string `json:"head"`
+	// Reason says why the chain broke.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Verify walks a ledger and checks the chain of its hashes.
+//
+// The walk stops at the first broken link and says which line it was:
+// an entry that was edited, removed or added after the fact cannot be
+// put back without breaking every link after it, and that is the whole
+// point of the chain.
+func Verify(path string) (VerifyResult, error) {
+	out := VerifyResult{OK: true}
+	if strings.TrimSpace(path) == "" {
+		return out, errors.New("audit: the ledger has no file")
+	}
+	head := ""
+	line := 0
+	for _, file := range ledgerFiles(path) {
+		f, err := os.Open(file)
+		if err != nil {
+			return out, fmt.Errorf("audit: open %s: %w", file, err)
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line++
+			text := strings.TrimSpace(scanner.Text())
+			if text == "" {
+				continue
+			}
+			var e Entry
+			if err := json.Unmarshal([]byte(text), &e); err != nil {
+				_ = f.Close()
+				out.OK = false
+				out.BrokenAt = line
+				out.Reason = "the line is not a ledger entry"
+				return out, nil
+			}
+			if want := ChainHash(head, e); want != e.Hash {
+				_ = f.Close()
+				out.OK = false
+				out.BrokenAt = line
+				out.Reason = "the entry does not follow the one before it"
+				return out, nil
+			}
+			head = e.Hash
+			out.Entries++
+		}
+		err = scanner.Err()
+		_ = f.Close()
+		if err != nil {
+			return out, fmt.Errorf("audit: read %s: %w", file, err)
+		}
+	}
+	out.Head = head
+	return out, nil
+}
+
+// Head returns the hash of the last entry written: the tip of the chain.
+func (l *Logger) Head() string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.head
 }
 
 func (l *Logger) pushLocked(e Entry) {

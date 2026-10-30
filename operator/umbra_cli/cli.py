@@ -970,6 +970,26 @@ def print_team(payload: Dict[str, Any]) -> None:
         print(f"  [{fmt_ts(m.get('at'))}] {m.get('from', '?')}{target}: {short(m.get('text', ''), 80)}")
 
 
+def print_audit_verification(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the verification of the ledger.
+
+    The answer is a sentence an operator can act on: the chain holds,
+    or it breaks at a line and says why.
+    """
+    out = stream or sys.stdout
+    entries = int(payload.get("entries", 0) or 0)
+    head = str(payload.get("head", "") or "")
+    if payload.get("ok"):
+        print(f"the ledger is intact: {entries} entries, the chain ends at "
+              f"{head[:16]}", file=out)
+        return
+    broken = int(payload.get("broken_at", 0) or 0)
+    reason = str(payload.get("reason", "") or "the chain is broken")
+    print(f"the ledger is broken at line {broken}: {reason}", file=out)
+    print("the entries before that line are the ones that can still be "
+          "trusted", file=out)
+
+
 def print_audit(payload: Dict[str, Any], stream: Any = None) -> None:
     """Render the audit trail: one line per operator action, newest first."""
     out = stream or sys.stdout
@@ -2018,6 +2038,7 @@ def print_help() -> None:
   sleep <secs> [jitter%]    change the beacon interval
   kill [agent-id]           tell an agent to exit
   audit [limit]             recent operator actions (audit trail)
+  audit --verify            check the chain of the ledger of the server
   stats                     server statistics
   rpc <cmd> [json]          send one raw command to the server
   batch <plan-file> [k=v]   run a plan file, step by step
@@ -2562,6 +2583,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit_cmd = sub.add_parser("audit", help="recent operator actions (audit trail)")
     audit_cmd.add_argument("--limit", type=int, default=50)
+    audit_cmd.add_argument("--verify", action="store_true",
+                           help="check the chain of the ledger: a line that "
+                                "was edited after the fact breaks it")
 
     info = sub.add_parser("info", help="show one agent")
     info.add_argument("agent")
@@ -3579,11 +3603,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "stats":
             emit(client.stats())
         elif args.cmd == "audit":
-            payload = client.audit(args.limit)
-            if args.json:
-                emit(payload)
+            if args.verify:
+                payload = client.audit_verify()
+                if args.json:
+                    emit(payload)
+                else:
+                    print_audit_verification(payload)
             else:
-                print_audit(payload)
+                payload = client.audit(args.limit)
+                if args.json:
+                    emit(payload)
+                else:
+                    print_audit(payload)
         elif args.cmd == "info":
             emit(client.agent_info(args.agent))
         elif args.cmd == "run":

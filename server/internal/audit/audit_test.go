@@ -318,3 +318,92 @@ func TestASecretTaskWhoseArgumentsAreNotAMapIsRedactedWhole(t *testing.T) {
 		t.Errorf("a harmless argument was changed: %v", got["id"])
 	}
 }
+
+// The ledger of the operator is a chain of hashes: a line that was edited
+// after the fact breaks every link after it, and the verification says
+// where the chain broke.
+func TestTheLedgerIsAChainOfHashes(t *testing.T) {
+	log, path := openTemp(t, audit.Options{})
+	for i := 0; i < 3; i++ {
+		err := log.Record(audit.Entry{Operator: "alice", Cmd: "agents.list", OK: true})
+		if err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	result, err := audit.Verify(path)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("the chain of a fresh ledger must hold: %+v", result)
+	}
+	if result.Entries != 3 {
+		t.Fatalf("the ledger holds %d entries, the test wrote 3", result.Entries)
+	}
+	if result.Head == "" || result.Head != log.Head() {
+		t.Fatalf("the head of the chain is %q, the logger says %q", result.Head, log.Head())
+	}
+
+	// A line that was edited after the fact breaks the chain.
+	lines := readLines(t, path)
+	if len(lines) != 3 {
+		t.Fatalf("the ledger holds %d lines", len(lines))
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	edited := strings.Replace(string(raw), `"cmd":"agents.list"`, `"cmd":"engagement.wipe"`, 1)
+	if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	result, err = audit.Verify(path)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("an edited line must break the chain")
+	}
+	if result.BrokenAt != 1 {
+		t.Fatalf("the chain broke at line %d, the edit was on line 1", result.BrokenAt)
+	}
+	if result.Reason == "" {
+		t.Fatalf("the verification must say why the chain broke")
+	}
+}
+
+// The chain continues where the file left off: a server that is restarted
+// does not start a new ledger.
+func TestTheChainContinuesAfterARestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	first, err := audit.Open(audit.Options{Path: path})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := first.Record(audit.Entry{Operator: "alice", Cmd: "agents.list", OK: true}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	head := first.Head()
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	second, err := audit.Open(audit.Options{Path: path})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if second.Head() != head {
+		t.Fatalf("the head after the restart is %q, the ledger said %q", second.Head(), head)
+	}
+	if err := second.Record(audit.Entry{Operator: "bob", Cmd: "task.submit", OK: true}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	result, err := audit.Verify(path)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !result.OK || result.Entries != 2 {
+		t.Fatalf("the chain must hold across the restart: %+v", result)
+	}
+}
