@@ -152,7 +152,45 @@
         <thead><tr><th>operator</th><th>role</th><th>focus</th><th>idle</th><th>state</th></tr></thead>
         <tbody></tbody>
       </table>
+      <table id="otp">
+        <thead><tr><th>operator</th><th>second factor</th><th>age</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
+    <div class="note">The second factor is the phone of the operator: the code of the moment is asked for before the server answers the handshake, so the token alone is not enough any more.</div>
+  </section>
+
+  <section>
+    <h2>tripwires</h2>
+    <div class="scroll">
+      <table id="canaries">
+        <thead><tr><th>id</th><th>host</th><th>label</th><th>state</th><th>last look</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The tripwires are small files with a secret in them, planted where nothing of the engagement belongs; a file that was touched says so.</div>
+  </section>
+
+  <section>
+    <h2>baseline</h2>
+    <div class="scroll">
+      <table id="baseline">
+        <thead><tr><th>id</th><th>host</th><th>path</th><th>state</th><th>changes</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The baseline is the paths the team watches on the hosts: the size, the digest and the time of the last change of each of them, and the drift of them.</div>
+  </section>
+
+  <section>
+    <h2>approvals</h2>
+    <div class="scroll">
+      <table id="approvals">
+        <thead><tr><th>request</th><th>kind</th><th>agent</th><th>state</th><th>requested by</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The two-person rule is the queue of the operations that wait for a second pair of eyes; the operator who asked cannot decide.</div>
   </section>
 
   <section>
@@ -504,6 +542,69 @@
   }
 
   // The presence of the team: who is here, and who went quiet.
+  // The tripwires of the engagement: the canaries the team planted on
+  // the hosts, and what the last look said of them.
+  function refreshCanaries() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "canary.list", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#canaries tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.canaries) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.id || "";
+        tr.insertCell().textContent = row.agent_id || "";
+        tr.insertCell().textContent = row.label || "";
+        tr.insertCell().textContent = row.state || "";
+        tr.insertCell().textContent = row.checked_at || "never";
+      });
+    });
+  }
+
+  // The baseline of the hosts: the paths the team watches, and whether
+  // the files have drifted since the last look.
+  function refreshBaseline() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "baseline.list", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#baseline tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.entries) || []).forEach(function (entry) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = entry.id || "";
+        tr.insertCell().textContent = entry.agent_id || "";
+        tr.insertCell().textContent = entry.path || "";
+        tr.insertCell().textContent = entry.state || "";
+        tr.insertCell().textContent = entry.changes || 0;
+      });
+    });
+  }
+
+  // The queue of the two-person rule: the requests that wait for a
+  // decision and the ones that were decided.
+  function refreshApprovals() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "approval.list", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#approvals tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.requests) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.id || "";
+        tr.insertCell().textContent = row.kind || "";
+        tr.insertCell().textContent = row.agent_id || "";
+        tr.insertCell().textContent = row.state || "";
+        tr.insertCell().textContent = row.requested_by || "";
+      });
+    });
+  }
+
   function refreshOperators() {
     return api("/api/operators").then(function (data) {
       var body = document.querySelector("#operators tbody");
@@ -515,6 +616,33 @@
         row.insertCell().textContent = op.focus || "-";
         row.insertCell().textContent = (op.idle_sec || 0) + "s";
         row.insertCell().textContent = op.stale ? "stale" : (op.silent ? "silent" : "here");
+      });
+    });
+  }
+
+  // The second factors of the operators: who has one, how old the
+  // secret is, and whether it is asked for.
+  function refreshOTP() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "operator.otp.status", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#otp tbody");
+      body.innerHTML = "";
+      var rows = (answer.data && answer.data.operators) || [];
+      if (!rows.length) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = "no operator has a second factor";
+        tr.insertCell().textContent = "";
+        tr.insertCell().textContent = "";
+        return;
+      }
+      rows.forEach(function (op) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = op.operator || "";
+        tr.insertCell().textContent = op.enabled ? "on" : "off";
+        tr.insertCell().textContent = op.age || "";
       });
     });
   }
@@ -589,7 +717,8 @@
     refreshAgents().then(refreshTasks).then(refreshStats).then(refreshEvents)
       .then(refreshReach).then(refreshPersistence).then(refreshCredentials)
       .then(refreshOperators).then(refreshWorkflows).then(refreshAlerts)
-      .then(refreshQueue).then(refreshOutput).catch(function (err) {
+      .then(refreshCanaries).then(refreshBaseline).then(refreshApprovals)
+      .then(refreshOTP).then(refreshQueue).then(refreshOutput).catch(function (err) {
         state.textContent = "error: " + err.message;
         state.className = "off";
       });
