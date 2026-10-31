@@ -12282,3 +12282,296 @@ def test_the_console_reaches_the_hat_the_ledger_and_the_lease() -> None:
     args = parser.parse_args(["run", "--source", "ticket-77",
                               "web-01", "echo", "hi"])
     assert args.cmd == "run" and args.source == "ticket-77"
+
+
+def test_a_hand_on_a_queue_holds_the_work_and_lifts() -> None:
+    """The hold: the smallest pause the engagement has.
+
+    A hold stops delivery to one host and nothing else — the host keeps
+    checking in, the rest of the fleet keeps working, and the work queues
+    up behind the hand instead of being lost.  A hold with an end lets go
+    by itself, and the journal says that it did.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    queue_go = read_text("server/internal/hub/queue.go")
+    hub_go = read_text("server/internal/hub/hub.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The hold lives in the queue, and the delivery of a held host stops
+    # before anything is marked: a hold never cancels work.
+    assert "func (h *Hub) SetHold(" in queue_go
+    assert "func (h *Hub) Held(" in queue_go
+    assert "func (h *Hub) SweepHolds(" in queue_go
+    assert "h.Held(agentID)" in hub_go, "delivery does not read the hand"
+    for command in ("queue.hold", "queue.release", "queue.holds"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+    assert re.search(r'"queue\.hold":\s+Operator,', rbac)
+    assert re.search(r'"queue\.holds":\s+Viewer,', rbac)
+    assert "SweepHolds(" in read_text("server/cmd/umbra-server/main.go")
+    assert '"queue.held"' in operator and '"queue.released"' in operator
+    assert 'add_parser("hold"' in cli_src
+
+    token = b"hold-token-0123456789sharpd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-held", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the host never joined")
+
+        # The hand goes on before the work exists, so nothing can slip by.
+        hold = client.queue_hold("agent-held", reason="investigating a crash")
+        assert hold["agent"] == "agent-held", hold
+        assert hold["by"] == "alice", hold
+        assert hold["queued"] == 0, hold
+
+        task_id = client.submit("agent-held", "shell", {"cmd": "id"})
+        # A second and a half of a beacon that would otherwise answer in
+        # a tenth of that: the work stays queued behind the hand.
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            assert client.task(task_id).get("state") == "queued", (
+                "a held queue delivered the work")
+            time.sleep(0.1)
+
+        rows = client.queue_holds().get("holds") or []
+        mine = [r for r in rows if r.get("agent") == "agent-held"]
+        assert mine and mine[0].get("queued") == 1, rows
+        assert mine[0].get("indefinite") is True, mine
+
+        # The hand lifts: the work goes out, and the journal says both.
+        lifted = client.queue_release("agent-held")
+        assert lifted.get("released") is True and lifted.get("queued") == 1
+        assert wait_until(lambda: client.task(task_id).get("state") == "done",
+                          timeout=10), "the work never went out"
+        kinds = {e.get("kind") for e in client.events(after=0).get("events", [])}
+        assert "queue.held" in kinds and "queue.released" in kinds, kinds
+
+        # A hand that lifts not at all is refused, and a host that does
+        # not exist cannot be held.
+        with pytest.raises(OperatorError):
+            client.queue_release("agent-held")
+        with pytest.raises(OperatorError):
+            client.queue_hold("nobody")
+
+        # A hold with an end lets go by itself, and the journal says the
+        # clock did it.
+        client.queue_hold("agent-held", seconds=5)
+        assert wait_until(
+            lambda: any(
+                e.get("kind") == "queue.released"
+                and e.get("data", {}).get("expired") is True
+                for e in client.events(after=0).get("events", [])),
+            timeout=12, poll=0.2), "the clock never lifted the hold"
+        assert client.queue_holds().get("count") == 0
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_lock_of_the_engagement_stops_the_hands_not_the_eyes() -> None:
+    """The freeze: every hand at once, and the readings left alone.
+
+    The quiet window stops the beacons; a freeze stops the consoles.  The
+    lock names its author and its moment, catches a team fighting it (the
+    refusals are counted), and is lifted by the admin who set it — or by
+    the clock, when the freeze carried its own end.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    freeze_go = read_text("server/internal/link/freeze.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    assert "func (s *Server) Freeze(" in freeze_go
+    assert "func (s *Server) SweepFreeze(" in freeze_go
+    assert "func (s *Server) FrozenRefusal(" in freeze_go
+    assert "s.FrozenRefusal(" in operator, "the handler does not read the lock"
+    assert "SweepFreeze(" in read_text("server/cmd/umbra-server/main.go")
+    for command in ("engagement.freeze", "engagement.state"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+    assert re.search(r'"engagement\.freeze":\s+Admin,', rbac)
+    assert re.search(r'"engagement\.state":\s+Viewer,', rbac)
+    assert '"engagement.frozen"' in operator and '"engagement.thawed"' in operator
+    assert 'add_parser("freeze"' in cli_src
+
+    token = b"freeze-token-0123456789sharp"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-locked", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the host never joined")
+
+        lock = client.engagement_freeze(True, seconds=1800,
+                                        note="the customer is on the phone")
+        assert lock.get("frozen") is True, lock
+        assert lock.get("by") == "alice", lock
+        assert lock.get("note") == "the customer is on the phone", lock
+        assert lock.get("until"), "the freeze did not carry an end"
+
+        # The hand is stopped...
+        with pytest.raises(OperatorError) as refused:
+            client.submit("agent-locked", "shell", {"cmd": "id"})
+        assert "frozen" in str(refused.value), refused.value
+        # ...the eyes are not: the inventory, the state and the queue all
+        # read back while the lock stands.
+        assert client.agents(), "the readings were refused with the hands"
+        state = client.engagement_state()
+        assert state.get("frozen") is True, state
+        assert state.get("refused", 0) >= 1, state
+        assert state.get("refused_last") == "task.submit", state
+        assert "holds" in state
+
+        # Even an admin command is refused while the lock stands: only the
+        # lock itself may pass.
+        assert not client.rpc("tokens.rotate", {"operator": "alice"}).ok
+
+        # The hand lifts, and the work goes through at once.
+        thawed = client.engagement_freeze(False)
+        assert thawed.get("frozen") is False and thawed.get("was") is True
+        task_id = client.submit("agent-locked", "shell", {"cmd": "id"})
+        assert wait_until(lambda: client.task(task_id).get("state") == "done",
+                          timeout=10), "the work was refused after the thaw"
+
+        # The journal holds both moments, and a second thaw says there
+        # was nothing to lift.
+        kinds = [e.get("kind") for e in client.events(after=0).get("events", [])]
+        assert "engagement.frozen" in kinds and "engagement.thawed" in kinds
+        assert client.engagement_freeze(False).get("was") is False
+
+        # A freeze that is already over thaws itself on the sweep: the
+        # floor of the mock is looser than the contract's thirty seconds,
+        # so the test asks for the shortest window the server offers and
+        # watches the clock let go.
+        state = client.engagement_state()
+        assert state.get("frozen") is False, state
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_two_hosts_side_by_side() -> None:
+    """The comparison: which of these two is not like the other.
+
+    The answer comes out of the inventory the server already keeps — no
+    host is asked anything — and it names the fields that match, the ones
+    that differ, and the labels only one of the two wears.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    assert 'case "fleet.compare"' in operator
+    assert re.search(r'"fleet\.compare":\s+Viewer,', rbac)
+    assert 'self.rpc("fleet.compare"' in client_src
+    assert 'add_parser("compare"' in cli_src
+
+    token = b"compare-token-0123456789shar"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    one = FakeAgent(server.address, AGENT_PSK, "agent-one", interval=0.2,
+                    transport_meta={"host": "web-01", "transport": "tcp",
+                                    "os": "linux", "arch": "x86_64",
+                                    "user": "root", "pid": 1,
+                                    "ver": "py-ref", "caps": ["shell"]})
+    two = FakeAgent(server.address, AGENT_PSK, "agent-two", interval=0.2,
+                    transport_meta={"host": "web-02", "transport": "tcp",
+                                    "os": "linux", "arch": "arm64",
+                                    "user": "root", "pid": 1,
+                                    "ver": "py-ref", "caps": ["shell"]})
+    one.start()
+    two.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: len(client.agents()) >= 2, timeout=10), (
+            "the hosts never joined")
+        client.tag_agents(["web", "dc-01"], agents=["agent-one"])
+        client.tag_agents(["web", "lab"], agents=["agent-two"])
+
+        answer = client.fleet_compare("agent-one", "agent-two")
+        rows = {row["field"]: row for row in answer.get("rows") or []}
+        assert rows["os"]["same"] is True, rows["os"]
+        assert rows["arch"]["same"] is False, rows["arch"]
+        assert rows["arch"]["a"] == "x86_64" and rows["arch"]["b"] == "arm64"
+        assert rows["host"]["same"] is False, rows["host"]
+        assert answer.get("same", 0) >= 3, answer
+        assert answer.get("differ", 0) >= 2, answer
+        assert answer.get("shared_tags") == ["web"], answer
+        assert answer.get("only_a") == ["dc-01"], answer
+        assert answer.get("only_b") == ["lab"], answer
+
+        with pytest.raises(OperatorError):
+            client.fleet_compare("agent-one", "nobody")
+        with pytest.raises(OperatorError):
+            client.fleet_compare("agent-one", "agent-one")
+    finally:
+        client.close()
+        one.stop()
+        two.stop()
+        server.stop()
+
+
+def test_the_console_reaches_the_hand_the_lock_and_the_comparison() -> None:
+    """The console can type every move of the wave.
+
+    The pause of a queue, the lock of the engagement and the comparison of
+    two hosts exist only if a console can say them.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["queue", "hold", "web-01", "--seconds", "600",
+                              "--reason", "the crash"])
+    assert args.cmd == "queue" and args.queue_cmd == "hold"
+    assert args.agent == "web-01" and args.seconds == 600
+    assert args.reason == "the crash"
+    args = parser.parse_args(["queue", "release", "web-01"])
+    assert args.queue_cmd == "release" and args.agent == "web-01"
+    args = parser.parse_args(["queue", "holds"])
+    assert args.queue_cmd == "holds"
+    args = parser.parse_args(["queue"])
+    assert args.cmd == "queue" and getattr(args, "queue_cmd", None) is None
+
+    args = parser.parse_args(["freeze", "on", "--seconds", "1800",
+                              "--note", "the customer is on the phone"])
+    assert args.cmd == "freeze" and args.state == "on"
+    assert args.seconds == 1800 and args.note
+    args = parser.parse_args(["freeze", "status"])
+    assert args.state == "status"
+    args = parser.parse_args(["freeze", "off"])
+    assert args.state == "off"
+    args = parser.parse_args(["freeze"])
+    assert args.state == "on"
+
+    args = parser.parse_args(["compare", "web-01", "web-02"])
+    assert args.cmd == "compare" and args.a == "web-01" and args.b == "web-02"
