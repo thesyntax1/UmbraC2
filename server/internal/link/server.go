@@ -58,6 +58,12 @@ type Server struct {
 	taskLedgerSeq int
 	taskLedgerMu  sync.Mutex
 
+	// freezeState is the engagement while the hands are tied: a freeze
+	// stops every command that would change anything and leaves the
+	// readings alone, so an incident can be understood before it is
+	// touched.
+	freezeState freezeState
+
 	// Keys is the runtime keyring: the credentials the server accepts and
 	// the ones it accepts while a rotation is settling.  It is built out
 	// of the configuration at start-up and rotated by the `keys.rotate`

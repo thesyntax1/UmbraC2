@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
@@ -97,6 +99,9 @@ type queueCounters struct {
 	second int64
 	// breakers holds the circuit breaker of every host that failed.
 	breakers map[string]*breaker
+	// holds are the pauses the operators put on the queues of single
+	// hosts: the work stays queued and the host is not asked for it.
+	holds map[string]Hold
 	// quiet stops the traffic while it is on.
 	quiet bool
 	// quietUntil is when the quiet mode ends by itself.
@@ -144,9 +149,122 @@ func (h *Hub) queue() *queueCounters {
 			policy:   defaultQueuePolicy(),
 			perAgent: map[string]int{},
 			breakers: map[string]*breaker{},
+			holds:    map[string]Hold{},
 		}
 	}
 	return h.counters
+}
+
+// Hold is the pause an operator puts on the queue of one host.
+//
+// A hold is not a punishment and not a failure state: it is the hand of an
+// operator on one queue.  The work of the host keeps queueing up, nothing is
+// delivered until the hold lifts, and a hold may carry an end of its own so a
+// forgotten pause cannot last for ever.  The quiet window stops the whole
+// fleet; a hold stops one host, and that difference is the whole point of it.
+type Hold struct {
+	AgentID string    `json:"agent"`
+	By      string    `json:"by"`
+	Reason  string    `json:"reason,omitempty"`
+	Since   time.Time `json:"since"`
+	Until   time.Time `json:"until,omitempty"`
+}
+
+// SetHold puts a hold on the queue of one host.
+//
+// The caller decides who holds the queue and until when; a zero `until`
+// means the hold stands until it is lifted by hand.  A second hold on the
+// same host replaces the first and keeps its author honest: the line that
+// lifts it later names the operator who put it there.
+func (h *Hub) SetHold(agentID, by, reason string, until time.Time) Hold {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	counters := h.queue()
+	if counters.holds == nil {
+		counters.holds = map[string]Hold{}
+	}
+	hold := Hold{
+		AgentID: agentID,
+		By:      strings.TrimSpace(by),
+		Reason:  strings.TrimSpace(reason),
+		Since:   time.Now().UTC(),
+		Until:   until.UTC(),
+	}
+	counters.holds[agentID] = hold
+	return hold
+}
+
+// ReleaseHold lifts the hold of a host and says whether there was one.
+func (h *Hub) ReleaseHold(agentID string) (Hold, bool) {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	counters := h.queue()
+	hold, ok := counters.holds[agentID]
+	if ok {
+		delete(counters.holds, agentID)
+	}
+	return hold, ok
+}
+
+// HoldOf is the hold of a host, if the host is held at all.
+func (h *Hub) HoldOf(agentID string) (Hold, bool) {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	hold, ok := h.queue().holds[agentID]
+	return hold, ok
+}
+
+// Holds is every hold of the fleet, oldest first.
+func (h *Hub) Holds() []Hold {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	counters := h.queue()
+	out := make([]Hold, 0, len(counters.holds))
+	for _, hold := range counters.holds {
+		out = append(out, hold)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Since.Equal(out[j].Since) {
+			return out[i].AgentID < out[j].AgentID
+		}
+		return out[i].Since.Before(out[j].Since)
+	})
+	return out
+}
+
+// Held says whether the queue of a host is held right now.
+//
+// A hold whose end has passed is not a hold: the sweep of the server will
+// say so to the team, but the queue does not wait for the sweep to resume.
+func (h *Hub) Held(agentID string) bool {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	hold, ok := h.queue().holds[agentID]
+	if !ok {
+		return false
+	}
+	if hold.Until.IsZero() {
+		return true
+	}
+	return time.Now().Before(hold.Until)
+}
+
+// SweepHolds lifts every hold whose end has passed and returns them, so the
+// server can tell the team that the hand of an operator let go.
+func (h *Hub) SweepHolds(now time.Time) []Hold {
+	h.qmu.Lock()
+	defer h.qmu.Unlock()
+	counters := h.queue()
+	var out []Hold
+	for agentID, hold := range counters.holds {
+		if hold.Until.IsZero() || now.Before(hold.Until) {
+			continue
+		}
+		delete(counters.holds, agentID)
+		out = append(out, hold)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
+	return out
 }
 
 // allowDelivery says whether a task may be handed to an agent right now.

@@ -3885,9 +3885,36 @@ def build_parser() -> argparse.ArgumentParser:
     quiet.add_argument("--until", type=int, default=0,
                        help="the unix time the window ends by itself")
 
-    queue = sub.add_parser("queue", help="the state of the queue")
+    queue = sub.add_parser("queue", help="the state of the queue, and the hand on it")
     queue.add_argument("--dead", action="store_true",
                        help="show only the dead letter queue")
+    queue_sub = queue.add_subparsers(dest="queue_cmd")
+    q_hold = queue_sub.add_parser("hold",
+                                  help="put a hand on the queue of one host")
+    q_hold.add_argument("agent")
+    q_hold.add_argument("--seconds", type=int, default=0,
+                        help="the hold lifts itself after this many seconds "
+                             "(zero: until a hand lifts it)")
+    q_hold.add_argument("--reason", default="",
+                        help="why the queue is held, for the team")
+    q_release = queue_sub.add_parser("release", help="lift the hand from a queue")
+    q_release.add_argument("agent")
+    queue_sub.add_parser("holds", help="the pauses of the fleet and their work")
+
+    freeze = sub.add_parser("freeze",
+                            help="tie every hand of the engagement until it thaws")
+    freeze.add_argument("state", nargs="?", default="on",
+                        choices=["on", "off", "status"],
+                        help="freeze, thaw, or read the lock")
+    freeze.add_argument("--seconds", type=int, default=0,
+                        help="thaw by itself after this many seconds "
+                             "(zero: until an admin thaws it)")
+    freeze.add_argument("--note", default="", help="why, for the team")
+
+    compare = sub.add_parser("compare",
+                             help="two hosts side by side: what differs")
+    compare.add_argument("a", help="the first agent")
+    compare.add_argument("b", help="the second agent")
 
     keys = sub.add_parser("keys", help="the credentials of the server")
     keys_sub = keys.add_subparsers(dest="keys_cmd")
@@ -5300,11 +5327,98 @@ def main(argv: Optional[List[str]] = None) -> int:
                 else:
                     print("the server is loud again")
         elif args.cmd == "queue":
-            answer = client.queue()
+            action = getattr(args, "queue_cmd", "") or ""
+            if action == "hold":
+                hold = client.queue_hold(args.agent, seconds=args.seconds,
+                                         reason=args.reason)
+                if args.json:
+                    emit(hold)
+                else:
+                    until = (f"{hold.get('seconds')} seconds"
+                             if hold.get("seconds") else "a hand")
+                    print(f"the queue of {hold.get('agent')} is held by "
+                          f"{hold.get('by')} until {until}; "
+                          f"{hold.get('queued', 0)} task(s) wait behind it")
+            elif action == "release":
+                lifted = client.queue_release(args.agent)
+                if args.json:
+                    emit(lifted)
+                else:
+                    print(f"the queue of {lifted.get('agent')} is free again "
+                          f"after {lifted.get('held_sec', 0)}s; "
+                          f"{lifted.get('queued', 0)} task(s) go out")
+            elif action == "holds":
+                answer = client.queue_holds()
+                holds = answer.get("holds") or []
+                if args.json:
+                    emit(answer)
+                elif not holds:
+                    print("no hand is on a queue")
+                else:
+                    for hold in holds:
+                        reason = hold.get("reason") or "-"
+                        print(f"{hold.get('agent')}: held by {hold.get('by')} "
+                              f"for {hold.get('held_sec', 0)}s, "
+                              f"{hold.get('queued', 0)} waiting ({reason})")
+            else:
+                answer = client.queue()
+                if args.json:
+                    emit(answer)
+                else:
+                    print_queue(answer)
+        elif args.cmd == "freeze":
+            state = args.state
+            if state == "status":
+                answer = client.engagement_state()
+                if args.json:
+                    emit(answer)
+                else:
+                    if answer.get("frozen"):
+                        until = answer.get("until") or "a hand"
+                        print(f"frozen by {answer.get('by')} since "
+                              f"{answer.get('since')}, until {until}; "
+                              f"{answer.get('refused', 0)} hand(s) stopped, "
+                              f"{answer.get('holds', 0)} queue(s) held")
+                    else:
+                        print(f"the engagement is open "
+                              f"({answer.get('holds', 0)} queue(s) held)")
+            else:
+                on = state == "on"
+                answer = client.engagement_freeze(on=on,
+                                                  seconds=args.seconds,
+                                                  note=args.note)
+                if args.json:
+                    emit(answer)
+                else:
+                    if on:
+                        until = (answer.get("until")
+                                 or "an admin lifts it")
+                        print(f"the engagement is frozen by "
+                              f"{answer.get('by')} until {until}")
+                    elif answer.get("was"):
+                        print(f"the engagement is open again after "
+                              f"{answer.get('held_sec', 0)}s")
+                    else:
+                        print("the engagement was not frozen")
+        elif args.cmd == "compare":
+            answer = client.fleet_compare(args.a, args.b)
             if args.json:
                 emit(answer)
             else:
-                print_queue(answer)
+                left = answer.get("a") or {}
+                right = answer.get("b") or {}
+                print(f"{left.get('id')} ({left.get('host')})  vs  "
+                      f"{right.get('id')} ({right.get('host')})")
+                for row in answer.get("rows") or []:
+                    mark = "=" if row.get("same") else "!"
+                    print(f"  {mark} {row.get('field'):<10} "
+                          f"{row.get('a') or '-'} / {row.get('b') or '-'}")
+                shared = ", ".join(answer.get("shared_tags") or []) or "-"
+                print(f"  shared tags: {shared}")
+                only_a = ", ".join(answer.get("only_a") or []) or "-"
+                only_b = ", ".join(answer.get("only_b") or []) or "-"
+                print(f"  only {left.get('id')}: {only_a}")
+                print(f"  only {right.get('id')}: {only_b}")
         elif args.cmd == "keys":
             if getattr(args, "keys_cmd", "") != "rotate":
                 print("umbra keys rotate --target agent")

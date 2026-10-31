@@ -850,15 +850,21 @@ func substituteValue(value any, text string) any {
 // NextTasks marks and returns the tasks to ship in the current beacon cycle.
 //
 // The queue is predictable: the quiet window stops everything, an open
-// circuit breaker stops one host, the work in flight and the rate of the
-// host and the throughput of the server cap what goes out, and the tasks
-// themselves are ordered by priority.
+// circuit breaker stops one host, a hold stops the queue an operator put a
+// hand on, the work in flight and the rate of the host and the throughput
+// of the server cap what goes out, and the tasks themselves are ordered by
+// priority.
 func (h *Hub) NextTasks(agentID string, max int) []*store.Task {
 	if quiet, _ := h.Quiet(); quiet {
 		// The maintenance window: the beacon checks in and gets nothing.
 		return nil
 	}
 	if h.BreakerOpen(agentID) {
+		return nil
+	}
+	if h.Held(agentID) {
+		// The operator put a hand on this queue: the work stays here,
+		// waiting for the hand to lift.
 		return nil
 	}
 	if max <= 0 {

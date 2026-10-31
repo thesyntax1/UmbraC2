@@ -501,11 +501,31 @@ func run() error {
 		for {
 			select {
 			case <-ticker.C:
-				srv.SweepSilences(time.Now().UTC())
+				now := time.Now().UTC()
+				srv.SweepSilences(now)
 				if srv.Pivot != nil {
 					// The landlady of the doors sweeps on the same
 					// round: a door with a lease closes itself.
-					srv.Pivot.SweepLeases(time.Now().UTC())
+					srv.Pivot.SweepLeases(now)
+				}
+				// A hold and a freeze may carry their own end: the
+				// hand lets go, and the team is told that it did.
+				for _, hold := range srv.Hub.SweepHolds(now) {
+					srv.Hub.Emit(hub.Event{Kind: "queue.released",
+						AgentID: hold.AgentID,
+						Data: map[string]any{
+							"by": "the clock", "held_by": hold.By,
+							"held_sec": int64(now.Sub(hold.Since).Seconds()),
+							"expired":  true,
+						}})
+				}
+				if moment, ended := srv.SweepFreeze(now); ended {
+					srv.Hub.Emit(hub.Event{Kind: "engagement.thawed",
+						Data: map[string]any{
+							"by": "the clock", "held_by": moment.By,
+							"held_sec": int64(now.Sub(moment.Since).Seconds()),
+							"expired":  true,
+						}})
 				}
 			case <-persist:
 				return

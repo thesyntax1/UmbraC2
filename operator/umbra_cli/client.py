@@ -1840,6 +1840,66 @@ class OperatorClient:
             raise OperatorError(res.error)
         return dict(res.data)
 
+    # -- the hand on the queue and the lock of the engagement -------------
+    def queue_hold(self, agent_id: str, seconds: int = 0,
+                   reason: str = "") -> Dict[str, Any]:
+        """Put a hand on the queue of one host.
+
+        The work of the host keeps queueing up and nothing is delivered
+        until the hand lifts.  `seconds` of zero means the hold stands
+        until it is lifted by hand.
+        """
+        res = self.rpc("queue.hold", {"agent": agent_id,
+                                      "seconds": int(seconds),
+                                      "reason": reason})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def queue_release(self, agent_id: str) -> Dict[str, Any]:
+        """Lift the hand from a queue; the queued work goes out next time."""
+        res = self.rpc("queue.release", {"agent": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def queue_holds(self) -> Dict[str, Any]:
+        """The pauses of the fleet, with the work waiting behind each."""
+        res = self.rpc("queue.holds")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def engagement_freeze(self, on: bool = True, seconds: int = 0,
+                          note: str = "") -> Dict[str, Any]:
+        """Tie the hands of the engagement, or thaw it again.
+
+        A freeze refuses every command that would change anything and
+        leaves the readings alone; `seconds` of zero means it stands
+        until an admin thaws it.
+        """
+        args: Dict[str, Any] = {"on": bool(on), "seconds": int(seconds)}
+        if note:
+            args["note"] = note
+        res = self.rpc("engagement.freeze", args)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def engagement_state(self) -> Dict[str, Any]:
+        """The lock in force, the hands it stopped and the paused queues."""
+        res = self.rpc("engagement.state")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
+    def fleet_compare(self, a: str, b: str) -> Dict[str, Any]:
+        """Two hosts side by side: what is the same and what differs."""
+        res = self.rpc("fleet.compare", {"a": a, "b": b})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return dict(res.data)
+
     # -- the credentials of the server ------------------------------------
     def rotate_keys(self, target: str = "agent", psk: str = "") -> Dict[str, Any]:
         """Replace the key the beacons authenticate with.

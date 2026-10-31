@@ -139,6 +139,11 @@ def _substitute_output(args: Dict[str, Any], output: bytes) -> Dict[str, Any]:
     return {k: walk(v) for k, v in args.items()}
 
 
+def _stamp(ts: float) -> str:
+    """A unix time as the UTC stamp the protocol writes."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(ts)))
+
+
 def _now() -> int:
     return int(time.time())
 
@@ -1074,6 +1079,13 @@ class MockServer:
         # The queue: the quiet window, the breakers of the hosts and the
         # tasks that keep failing.
         self.quiet = False
+        # The holds: an operator's hand on one queue, and the freeze: the
+        # lock of the whole engagement while an incident is understood.
+        self.holds: Dict[str, Dict[str, Any]] = {}
+        self.frozen: Optional[Dict[str, Any]] = None
+        self.freeze_refused = 0
+        self.freeze_last = ""
+        self.freeze_thawed_by = ""
         self.delivery_log: List[List[str]] = []
         self.quiet_until = 0
         self.breakers: Dict[str, int] = {}
@@ -2508,9 +2520,43 @@ class MockServer:
                 self._due_schedules()
                 self._sweep_silences()
                 self._sweep_leases()
+                self._sweep_hands()
             except Exception:  # pragma: no cover - dev helper
                 pass
             self._stop.wait(0.1)
+
+    def _sweep_hands(self) -> None:
+        """Let go of the hands that set their own end.
+
+        A hold and a freeze may carry the moment they lift.  The clock
+        lets go of them and the team hears of it, exactly the way it
+        hears of a lease that ran out; a hand set without an end is never
+        let go of by the clock, because the person who set it meant it.
+        """
+        now = _now()
+        released: List[Tuple[str, Dict[str, Any]]] = []
+        with self._lock:
+            for agent_id, hold in list(self.holds.items()):
+                if hold.get("until") and float(hold["until"]) <= now:
+                    released.append((agent_id, dict(hold)))
+                    self.holds.pop(agent_id, None)
+            thawed = self.frozen
+            if thawed is not None and thawed.get("until") \
+                    and float(thawed["until"]) <= now:
+                self.frozen = None
+            else:
+                thawed = None
+        for agent_id, hold in released:
+            self.emit("queue.released", agent_id,
+                      data={"by": "the clock", "held_by": hold.get("by", ""),
+                            "held_sec": int(now - int(hold.get("since", now))),
+                            "expired": True})
+        if thawed is not None:
+            self.emit("engagement.thawed",
+                      data={"by": "the clock",
+                            "held_by": thawed.get("by", ""),
+                            "held_sec": int(now - int(thawed.get("since", now))),
+                            "expired": True})
 
     def _sweep_leases(self) -> None:
         """Close every door whose lease ran out.
@@ -3162,6 +3208,13 @@ class MockServer:
                 return out
             if self.breakers.get(agent_id, 0) >= BREAKER_THRESHOLD:
                 return out
+            hold = self.holds.get(agent_id)
+            if hold is not None and not hold.get("until"):
+                # The hand of an operator on this queue: the work stays
+                # here, waiting for the hand to lift.
+                return out
+            if hold is not None and float(hold["until"]) > _now():
+                return out
             candidates = [t for t in self.tasks.values()
                           if t["agent_id"] == agent_id and t["state"] == "queued"]
             candidates.sort(key=lambda t: (-int(t.get("priority", 0) or 0),
@@ -3742,6 +3795,15 @@ class MockServer:
         "tokens.rotate": "admin",
         "tokens.list": "viewer",
         "server.queue": "viewer",
+        # A hold is a hand on one queue, a freeze is the lock of the whole
+        # engagement; reading either is harmless, comparing two hosts is a
+        # reading twice.
+        "queue.hold": "operator",
+        "queue.release": "operator",
+        "queue.holds": "viewer",
+        "engagement.freeze": "admin",
+        "engagement.state": "viewer",
+        "fleet.compare": "viewer",
         "task.priority": "operator",
         "schedule.remove": "admin",
         "events.test": "admin",
@@ -4009,6 +4071,22 @@ class MockServer:
         if not self.allowed(role, cmd):
             return fail(
                 f"permission denied: {cmd!r} requires role {self.min_role(cmd)} (you are {role})"
+            )
+        # A frozen engagement refuses every hand that would change it: the
+        # readings and the lock itself are the two exceptions, and the
+        # refusal is counted so the state reading can say how loud the
+        # team was while it was held.
+        frozen = self.frozen
+        if frozen is not None and cmd != "engagement.freeze" \
+                and self.min_role(cmd) != "viewer":
+            self.freeze_refused += 1
+            self.freeze_last = cmd
+            until = "until it is lifted by hand"
+            if frozen.get("until"):
+                until = "until " + _stamp(frozen["until"])
+            return fail(
+                f"the engagement is frozen by {frozen.get('by', '?')} since "
+                f"{_stamp(frozen.get('since', _now()))}, {until}: {cmd!r} is refused"
             )
         self.token_last_used[operator] = time.time()
 
@@ -4462,6 +4540,190 @@ class MockServer:
             if self.quiet_until:
                 answer["until"] = self.quiet_until
             return ok(answer)
+
+        if cmd == "queue.hold":
+            # The hand of an operator on one queue: the work of the host
+            # keeps queueing up, nothing is delivered until the hold
+            # lifts, and a hold may carry its own end.
+            agent_id = str(args.get("agent", "") or "").strip()
+            if not agent_id:
+                return fail("queue.hold needs agent")
+            with self._lock:
+                if agent_id not in self.agents:
+                    return fail(f"queue.hold: there is no agent called {agent_id!r}")
+                seconds = int(args.get("seconds", 0) or 0)
+                if seconds < 0:
+                    return fail("queue.hold: seconds cannot be negative")
+                if 0 < seconds < 5:
+                    return fail("queue.hold: a hold lasts at least five seconds, or zero for ever")
+                if seconds > 604800:
+                    return fail("queue.hold: a hold lasts at most a week")
+                hold = {
+                    "agent": agent_id,
+                    "by": operator,
+                    "reason": str(args.get("reason", "") or "").strip(),
+                    "since": _now(),
+                    "until": (_now() + seconds) if seconds else 0,
+                }
+                self.holds[agent_id] = hold
+                queued = sum(1 for t in self.tasks.values()
+                             if t["agent_id"] == agent_id and t["state"] == "queued")
+                data = dict(hold, queued=queued)
+            self.emit("queue.held", agent_id, data=dict(data))
+            return ok(data)
+
+        if cmd == "queue.release":
+            agent_id = str(args.get("agent", "") or "").strip()
+            if not agent_id:
+                return fail("queue.release needs agent")
+            with self._lock:
+                hold = self.holds.pop(agent_id, None)
+                if hold is None:
+                    return fail(f"queue.release: the queue of {agent_id!r} was not held")
+                queued = sum(1 for t in self.tasks.values()
+                             if t["agent_id"] == agent_id and t["state"] == "queued")
+                held_sec = _now() - int(hold["since"])
+                data = {"agent": agent_id, "released": True,
+                        "held_by": hold["by"], "held_sec": held_sec,
+                        "queued": queued}
+            self.emit("queue.released", agent_id,
+                      data={"by": operator, "held_by": hold["by"],
+                            "held_sec": held_sec})
+            return ok(data)
+
+        if cmd == "queue.holds":
+            with self._lock:
+                holds = [dict(h) for h in self.holds.values()]
+                queued = {}
+                for t in self.tasks.values():
+                    if t["state"] == "queued":
+                        queued[t["agent_id"]] = queued.get(t["agent_id"], 0) + 1
+            rows = []
+            now = _now()
+            for hold in holds:
+                row = dict(hold)
+                row["held_sec"] = int(now - int(hold["since"]))
+                row["queued"] = int(queued.get(hold["agent"], 0))
+                row["indefinite"] = not hold.get("until")
+                if hold.get("until"):
+                    row["left_sec"] = int(hold["until"] - now)
+                rows.append(row)
+            rows.sort(key=lambda r: r["since"])
+            return ok({"holds": rows, "count": len(rows)})
+
+        if cmd == "engagement.freeze":
+            on = args.get("on", True)
+            if isinstance(on, str):
+                on = on.strip().lower() in ("1", "true", "on", "yes")
+            if not on:
+                with self._lock:
+                    moment = self.frozen
+                    if moment is None:
+                        return ok({"frozen": False, "was": False})
+                    self.frozen = None
+                    self.freeze_thawed_by = operator
+                    held_sec = _now() - int(moment["since"])
+                self.emit("engagement.thawed",
+                          data={"by": operator, "held_by": moment["by"],
+                                "held_sec": held_sec, "expired": False})
+                return ok({"frozen": False, "was": True,
+                           "held_by": moment["by"], "held_sec": held_sec})
+            seconds = int(args.get("seconds", 0) or 0)
+            if seconds < 0:
+                return fail("engagement.freeze: seconds cannot be negative")
+            if 0 < seconds < 30:
+                return fail("engagement.freeze: a freeze lasts at least thirty seconds, or zero for ever")
+            if seconds > 86400:
+                return fail("engagement.freeze: a freeze lasts at most a day")
+            moment = {"by": operator,
+                      "note": str(args.get("note", "") or "").strip(),
+                      "since": _now(),
+                      "until": (_now() + seconds) if seconds else 0}
+            with self._lock:
+                self.frozen = moment
+                self.freeze_refused = 0
+                self.freeze_last = ""
+            data = {"frozen": True, "by": operator, "since": moment["since"]}
+            if moment["note"]:
+                data["note"] = moment["note"]
+            if moment["until"]:
+                data["until"] = moment["until"]
+                data["seconds"] = seconds
+            self.emit("engagement.frozen", data=dict(data))
+            return ok(data)
+
+        if cmd == "engagement.state":
+            with self._lock:
+                moment = dict(self.frozen) if self.frozen else None
+                refused = self.freeze_refused
+                last_cmd = self.freeze_last
+                thawed_by = self.freeze_thawed_by
+                holds = len(self.holds)
+            out: Dict[str, Any] = {"frozen": moment is not None,
+                                   "refused": int(refused), "holds": holds}
+            if moment is not None:
+                out.update({"by": moment["by"], "since": moment["since"]})
+                if moment.get("until"):
+                    out["until"] = moment["until"]
+                    out["left_sec"] = int(moment["until"] - _now())
+                if moment.get("note"):
+                    out["note"] = moment["note"]
+                out["refused_last"] = last_cmd
+            if thawed_by:
+                out["thawed_by"] = thawed_by
+            return ok(out)
+
+        if cmd == "fleet.compare":
+            a_id = str(args.get("a", "") or "").strip()
+            b_id = str(args.get("b", "") or "").strip()
+            if not a_id or not b_id:
+                return fail("fleet.compare needs two agents: a and b")
+            if a_id == b_id:
+                return fail("fleet.compare needs two different agents")
+            with self._lock:
+                a = dict(self.agents.get(a_id) or {})
+                b = dict(self.agents.get(b_id) or {})
+            if not a:
+                return fail(f"fleet.compare: there is no agent called {a_id!r}")
+            if not b:
+                return fail(f"fleet.compare: there is no agent called {b_id!r}")
+            fields = ("host", "os", "arch", "user", "transport", "version",
+                      "state", "sleep", "jitter")
+            rows = []
+            same = 0
+            for field in fields:
+                left = str(a.get(field, "") or "")
+                right = str(b.get(field, "") or "")
+                equal = left == right
+                if equal:
+                    same += 1
+                rows.append({"field": field, "a": left, "b": right, "same": equal})
+            for field in ("caps", "tags"):
+                left = ",".join(str(x) for x in (a.get(field) or []))
+                right = ",".join(str(x) for x in (b.get(field) or []))
+                equal = left == right
+                if equal:
+                    same += 1
+                rows.append({"field": field, "a": left, "b": right, "same": equal})
+            a_tags = [str(t) for t in (a.get("tags") or [])]
+            b_tags = [str(t) for t in (b.get("tags") or [])]
+            b_low = {t.lower() for t in b_tags}
+            a_low = {t.lower() for t in a_tags}
+            now = _now()
+            return ok({
+                "a": {"id": a_id, "host": a.get("host", ""),
+                      "state": a.get("state", ""),
+                      "quiet_sec": int(now - float(a.get("last_seen", now)))},
+                "b": {"id": b_id, "host": b.get("host", ""),
+                      "state": b.get("state", ""),
+                      "quiet_sec": int(now - float(b.get("last_seen", now)))},
+                "rows": rows,
+                "same": same,
+                "differ": len(rows) - same,
+                "shared_tags": sorted(t for t in a_tags if t.lower() in b_low),
+                "only_a": sorted(t for t in a_tags if t.lower() not in b_low),
+                "only_b": sorted(t for t in b_tags if t.lower() not in a_low),
+            })
 
         if cmd == "server.queue":
             with self._lock:

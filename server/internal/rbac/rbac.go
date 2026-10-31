@@ -89,6 +89,19 @@ var requirements = map[string]string{
 	// The digest of the ledger of who asked is a reading, not a change,
 	// so a viewer may carry it home.
 	"task.ledger-dig": Viewer,
+	// A hold is a hand on one queue: lifting and setting it changes what
+	// a host is asked to do, so it is operator work, while reading the
+	// pauses of the fleet is not.
+	"queue.hold":    Operator,
+	"queue.release": Operator,
+	"queue.holds":   Viewer,
+	// A freeze ties every hand in the engagement at once.  It is the
+	// heaviest thing an operator can do, so it belongs to an admin; the
+	// reading of the lock is harmless.
+	"engagement.freeze": Admin,
+	"engagement.state":  Viewer,
+	// Comparing two hosts is reading the inventory twice.
+	"fleet.compare": Viewer,
 	// The sorting hat colours new joins: writing and erasing its
 	// sentences changes the fleet, reading them does not.
 	"tag.rule.add":    Operator,

@@ -379,6 +379,14 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return fail("permission denied: %q requires role %s (you are %s)",
 			strings.TrimSpace(cmd), rbac.MinRole(strings.TrimSpace(cmd)), role)
 	}
+	// A frozen engagement refuses every hand that would change it before
+	// anything else happens: before the token is marked as used, before
+	// the rate budget is spent, and before a single byte of work is
+	// queued.  The readings and the lock itself are the two exceptions.
+	if why := s.FrozenRefusal(strings.TrimSpace(cmd)); why != "" {
+		return fail("%s", why)
+	}
+
 	// The last use of a token is the last time it made a call: it is what
 	// tells an admin which of the tokens nobody needs any more.  A call
 	// that was refused does not count: the token was not used.
@@ -557,6 +565,272 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 
 			"dead_letter":       deadRows,
 			"dead_letter_count": int64(len(deadRows)),
+		})
+
+	case "queue.hold":
+		// The hand of an operator on one queue: the work of the host
+		// keeps queueing up, nothing is delivered until the hold lifts,
+		// and a hold may carry its own end so a forgotten pause cannot
+		// last for ever.
+		agentID := strings.TrimSpace(stringArg(args, "agent"))
+		if agentID == "" {
+			return fail("queue.hold needs agent")
+		}
+		if _, ok := s.Hub.Store().Agent(agentID); !ok {
+			return fail("queue.hold: there is no agent called %q", agentID)
+		}
+		seconds, _ := asInt64(args["seconds"])
+		if seconds < 0 {
+			return fail("queue.hold: seconds cannot be negative")
+		}
+		if seconds > 0 && seconds < 5 {
+			return fail("queue.hold: a hold lasts at least five seconds, or zero for ever")
+		}
+		if seconds > 604800 {
+			return fail("queue.hold: a hold lasts at most a week")
+		}
+		var until time.Time
+		if seconds > 0 {
+			until = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+		}
+		hold := s.Hub.SetHold(agentID, op.Name, stringArg(args, "reason"), until)
+		data := map[string]any{
+			"agent":  hold.AgentID,
+			"by":     hold.By,
+			"since":  hold.Since.Format(time.RFC3339),
+			"queued": int64(len(s.Hub.Store().Candidates(agentID, 1000))),
+		}
+		if hold.Reason != "" {
+			data["reason"] = hold.Reason
+		}
+		if !hold.Until.IsZero() {
+			data["until"] = hold.Until.Format(time.RFC3339)
+			data["seconds"] = seconds
+		}
+		s.Hub.Emit(hub.Event{Kind: "queue.held", AgentID: agentID, Data: data})
+		return reply(upk.Map(data))
+
+	case "queue.release":
+		// Lifting the hand: the queued work of the host goes out on its
+		// next check-in, because a hold never cancels anything.
+		agentID := strings.TrimSpace(stringArg(args, "agent"))
+		if agentID == "" {
+			return fail("queue.release needs agent")
+		}
+		hold, ok := s.Hub.ReleaseHold(agentID)
+		if !ok {
+			return fail("queue.release: the queue of %q was not held", agentID)
+		}
+		s.Hub.Emit(hub.Event{Kind: "queue.released", AgentID: agentID,
+			Data: map[string]any{
+				"by": op.Name, "held_by": hold.By,
+				"held_sec": int64(time.Since(hold.Since).Seconds()),
+			}})
+		return reply(upk.Map{
+			"agent":    agentID,
+			"released": true,
+			"held_by":  hold.By,
+			"held_sec": int64(time.Since(hold.Since).Seconds()),
+			"queued":   int64(len(s.Hub.Store().Candidates(agentID, 1000))),
+		})
+
+	case "queue.holds":
+		// The pauses of the fleet, oldest first, each with the work that
+		// is waiting behind it.
+		holds := s.Hub.Holds()
+		rows := make([]any, 0, len(holds))
+		now := time.Now().UTC()
+		for _, hold := range holds {
+			row := upk.Map{
+				"agent":     hold.AgentID,
+				"by":        hold.By,
+				"since":     hold.Since.Format(time.RFC3339),
+				"held_sec":  int64(now.Sub(hold.Since).Seconds()),
+				"queued":    int64(len(s.Hub.Store().Candidates(hold.AgentID, 1000))),
+				"indefinite": hold.Until.IsZero(),
+			}
+			if hold.Reason != "" {
+				row["reason"] = hold.Reason
+			}
+			if !hold.Until.IsZero() {
+				row["until"] = hold.Until.Format(time.RFC3339)
+				row["left_sec"] = int64(hold.Until.Sub(now).Seconds())
+			}
+			rows = append(rows, row)
+		}
+		return reply(upk.Map{"holds": rows, "count": int64(len(rows))})
+
+	case "engagement.freeze":
+		// The lock of the engagement.  A freeze with an end is the one an
+		// operator sets before leaving a screen; a freeze without one
+		// stands until a hand lifts it.
+		on, _ := args["on"].(bool)
+		if _, ok := args["on"]; !ok {
+			// No explicit state: setting a freeze is the common case,
+			// so an empty call freezes rather than silently thawing.
+			on = true
+		}
+		if !on {
+			moment, was := s.Thaw(op.Name)
+			if !was {
+				return reply(upk.Map{"frozen": false, "was": false})
+			}
+			s.Hub.Emit(hub.Event{Kind: "engagement.thawed", Data: map[string]any{
+				"by":      op.Name,
+				"held_by": moment.By,
+				"held_sec": int64(time.Since(moment.Since).Seconds()),
+				"expired": false,
+			}})
+			return reply(upk.Map{
+				"frozen":   false,
+				"was":      true,
+				"held_by":  moment.By,
+				"held_sec": int64(time.Since(moment.Since).Seconds()),
+			})
+		}
+		seconds, _ := asInt64(args["seconds"])
+		if seconds < 0 {
+			return fail("engagement.freeze: seconds cannot be negative")
+		}
+		if seconds > 0 && seconds < 30 {
+			return fail("engagement.freeze: a freeze lasts at least thirty seconds, or zero for ever")
+		}
+		if seconds > 86400 {
+			return fail("engagement.freeze: a freeze lasts at most a day")
+		}
+		var until time.Time
+		if seconds > 0 {
+			until = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+		}
+		moment := s.Freeze(op.Name, stringArg(args, "note"), until)
+		data := upk.Map{
+			"frozen": true,
+			"by":     moment.By,
+			"since":  moment.Since.Format(time.RFC3339),
+		}
+		if moment.Note != "" {
+			data["note"] = moment.Note
+		}
+		if !moment.Until.IsZero() {
+			data["until"] = moment.Until.Format(time.RFC3339)
+			data["seconds"] = seconds
+		}
+		s.Hub.Emit(hub.Event{Kind: "engagement.frozen", Data: map[string]any(data)})
+		return reply(data)
+
+	case "engagement.state":
+		// What the engagement is doing right now: the lock, the hands it
+		// stopped, and the pauses of single queues.
+		out := upk.Map{"frozen": false, "refused": int64(0)}
+		if moment, on, refused := s.FreezeState(); on {
+			out["frozen"] = true
+			out["by"] = moment.By
+			out["since"] = moment.Since.Format(time.RFC3339)
+			out["until"] = ""
+			if !moment.Until.IsZero() {
+				out["until"] = moment.Until.Format(time.RFC3339)
+				out["left_sec"] = int64(time.Until(moment.Until).Seconds())
+			}
+			if moment.Note != "" {
+				out["note"] = moment.Note
+			}
+			out["refused"] = int64(refused)
+			out["refused_last"] = s.LastRefused()
+		}
+		if by := s.ThawedBy(); by != "" {
+			out["thawed_by"] = by
+		}
+		out["holds"] = int64(len(s.Hub.Holds()))
+		return reply(out)
+
+	case "fleet.compare":
+		// Two hosts side by side: what is the same, what differs, and the
+		// labels only one of them wears.  The question is the one an
+		// analyst asks of a fleet of two hundred: which of these is not
+		// like the others.
+		aID := strings.TrimSpace(stringArg(args, "a"))
+		bID := strings.TrimSpace(stringArg(args, "b"))
+		if aID == "" || bID == "" {
+			return fail("fleet.compare needs two agents: a and b")
+		}
+		if aID == bID {
+			return fail("fleet.compare needs two different agents")
+		}
+		a, ok := s.Hub.Store().Agent(aID)
+		if !ok {
+			return fail("fleet.compare: there is no agent called %q", aID)
+		}
+		b, ok := s.Hub.Store().Agent(bID)
+		if !ok {
+			return fail("fleet.compare: there is no agent called %q", bID)
+		}
+		now := time.Now().UTC()
+		fields := []struct {
+			name string
+			a, b string
+		}{
+			{"host", a.Host, b.Host},
+			{"os", a.OS, b.OS},
+			{"arch", a.Arch, b.Arch},
+			{"user", a.User, b.User},
+			{"transport", a.Transport, b.Transport},
+			{"version", a.Version, b.Version},
+			{"state", a.State, b.State},
+			{"sleep", strconv.Itoa(a.Sleep), strconv.Itoa(b.Sleep)},
+			{"jitter", strconv.Itoa(a.Jitter), strconv.Itoa(b.Jitter)},
+			{"caps", strings.Join(a.Caps, ","), strings.Join(b.Caps, ",")},
+			{"tags", strings.Join(a.Tags, ","), strings.Join(b.Tags, ",")},
+		}
+		rows := make([]any, 0, len(fields))
+		same := 0
+		for _, f := range fields {
+			equal := f.a == f.b
+			if equal {
+				same++
+			}
+			rows = append(rows, upk.Map{"field": f.name, "a": f.a, "b": f.b, "same": equal})
+		}
+		shared := make([]string, 0)
+		onlyA := make([]string, 0)
+		onlyB := make([]string, 0)
+		bTags := map[string]bool{}
+		for _, tag := range b.Tags {
+			bTags[strings.ToLower(tag)] = true
+		}
+		aTags := map[string]bool{}
+		for _, tag := range a.Tags {
+			aTags[strings.ToLower(tag)] = true
+		}
+		for _, tag := range a.Tags {
+			if bTags[strings.ToLower(tag)] {
+				shared = append(shared, tag)
+			} else {
+				onlyA = append(onlyA, tag)
+			}
+		}
+		for _, tag := range b.Tags {
+			if !aTags[strings.ToLower(tag)] {
+				onlyB = append(onlyB, tag)
+			}
+		}
+		sort.Strings(shared)
+		sort.Strings(onlyA)
+		sort.Strings(onlyB)
+		return reply(upk.Map{
+			"a": upk.Map{
+				"id": a.ID, "host": a.Host, "state": a.State,
+				"quiet_sec": int64(now.Sub(a.LastSeen).Seconds()),
+			},
+			"b": upk.Map{
+				"id": b.ID, "host": b.Host, "state": b.State,
+				"quiet_sec": int64(now.Sub(b.LastSeen).Seconds()),
+			},
+			"rows":        rows,
+			"same":        int64(same),
+			"differ":      int64(len(fields) - same),
+			"shared_tags": shared,
+			"only_a":      onlyA,
+			"only_b":      onlyB,
 		})
 
 	case "task.priority":
