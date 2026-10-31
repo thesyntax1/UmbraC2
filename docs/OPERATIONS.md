@@ -2379,6 +2379,52 @@ a drumbeat, and the promise survives a restart in `silences.json`.  For
 a host nobody has ever seen, the clock starts when the promise is made:
 ten quiet seconds later, the absence of the ghost is news.
 
+## 5z. The welcome of a new host
+
+```bash
+umbra onboard add "first five minutes" sysinfo hash:path=/etc/passwd
+umbra onboard add windows-round sysinfo env --tag windows --repeat --cooldown 3600
+umbra onboard list                       # the shelf, the gates, the fires
+umbra onboard run w-0001 web-01          # by hand: the gates stay home
+umbra onboard remove w-0001
+```
+
+Every engagement greets a new host the same way; the playbook is the
+greeting, written down once, and it fires the moment the host first calls
+home.  The stages go through the same queue as every task — with the same
+breakers and dead letters — so the welcome inherits the health rules of
+the fleet for free.  A pack that goes once answers only the first hello of
+each host; a `--repeat` pack greets the returns too, held back by its
+cooldown; and the ledger `onboard.json` remembers the fires across a
+restart, so a bounced server does not greet twice.  Every fire — the
+automatic one and the one by hand — speaks to the team as `onboard.fired`.
+
+## 5z2. The map of the doors
+
+```bash
+umbra pivot-map                          # the tree of who is behind whom
+```
+
+The pivot list is a table of doors; the map is the shape of the reach.
+Every hop of the way home of a door is a branch, the door hangs on the
+last hop, and the counts say the hosts, the doors and the depth of the
+deepest chain.  A host nobody tunnels through sits on the first row; the
+hosts deeper in the tree are further in.
+
+## 5z3. The evidence keeps its word
+
+```bash
+umbra artifact-verify                    # every blob, asked again
+umbra artifact-verify loot/one.txt       # one blob alone
+```
+
+The digest of a blob is its name on the disk; the verify reads the bytes
+again and asks whether every blob still answers to its name.  The rows
+that pass and the rows that do not are spelled out — with the digest the
+manifest holds and the digest the bytes give — and the command exits one
+when a blob is broken, so a nightly cron pages the team when the store no
+longer keeps its word.
+
 ## 6. Monitoring
 
 ```bash

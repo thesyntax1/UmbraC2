@@ -513,6 +513,36 @@ the thing that wakes it: a watch for silence that knocked on the door
 would be a heartbeat of our own making inside the network of somebody
 else.
 
+## 3.12g The welcome, the map and the word of the evidence
+
+The welcome packs are the sharpest tool of this wave, so their edges are
+named.  A playbook runs without a human hand: the arrival of a host is
+the trigger, and the stages queue under the authority of the server,
+not under the name of the operator who wrote the pack.  Three rails keep
+that safe.  Only an operator can write a pack down, only an operator can
+run one by hand, and both land in the audit log like everything else.
+The stages queue through the same `SubmitTask` as typed work, so they
+meet the same breakers, deadlines and dead letters — a pack cannot grow
+its own way into the fleet.  And the shelf is bounded, 64 plays and 16
+stages, with the cooldown per host: a mistake by a tired operator can
+annoy a host, it cannot melt the queue.
+
+The map of the doors discloses the shape of the reach to every viewer,
+which is a choice: the tree names hosts and shows who stands behind
+whom, and that is exactly what a planning console must know.  It is
+computed from the tunnels of the moment, it stores nothing, and it
+exposes no bytes — the counters are how far the pipes went, not what
+went through them.
+
+The verify of the evidence is a reader with opinions.  It is a viewer
+command because a check of integrity threatens nothing, and it refuses
+to become a writer: it reads the bytes and reports, it never restores.
+The answer names a broken blob by name and digest — the digests are not
+secrets (a name of a file is not its contents), while the bytes stay in
+the store.  When the store is sealed, the manifest digests cover the
+clear bytes, so a verify that crosses a sealed store has thrown its own
+seal check first, and the answer says which one spoke.
+
 ## 3.13 The versions of the protocol
 
 The handshake version is not a security boundary, and it is worth saying

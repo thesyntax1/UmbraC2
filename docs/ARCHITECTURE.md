@@ -221,6 +221,17 @@ turns a long pause into an `agent.silent` event, so the nothing
 travels the way the something does — to the consoles and down the
 wires.
 
+`onboard` is the shelf of the welcome packs: the first five minutes of
+a new host, written down once.  The hub hands every event to it (a tap
+of its own, next to the wires), and on an `agent.new` the shelf queues
+the stages of every matching pack — the tap keeps no goroutine of its
+own, because the queueing of a stage is already the work of a blink.
+The stages go through `Hub.SubmitTask`, on purpose: a playbook is the
+same work an operator would type, so it meets the same breakers and
+the same dead letters, and it is never a side door into the fleet.
+The ledger beside the state file (`0600`) remembers the fires, so a
+restarted server does not greet a host twice.
+
 Four packages keep no ledger at all, because they only read: `attack`
 is the wall of the techniques the team uses — a table that lies the
 task kinds next to the ATT&CK techniques they belong to, and the walk
@@ -230,9 +241,15 @@ credentials, each hit with the piece of the text around it; `rhythm`
 is the shape of the check-ins of the beacons, tapped from the same
 stream the wires drink from (`Hub.AddTap`), kept in memory because the
 shape of a host is the shape of today; and the reuse of the keys is
-computed from the vault itself, by digest, when it is asked for.  What
-these four know is computed when it is asked for, so they can never
-disagree with the ledgers they read.
+computed from the vault itself, by digest, when it is asked for.  Two
+more answers are drawn without keeping anything, in the handler that
+serves them: the map of the doors folds the tunnels of the pivot
+manager into a tree when it is asked, because a drawing is not a
+ledger; and the verify of the evidence reads the blobs of the store
+again when it is asked, because the second opinion of the bytes must
+not be written down once and trusted forever.  What these views know
+is computed when it is asked for, so they can never disagree with the
+ledgers they read.
 
 
 

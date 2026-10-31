@@ -649,6 +649,12 @@ Operator RPC commands, with the minimum role each requires:
 | `silence.add` | operator | promise to worry about a quiet host: `agent`, `seconds` (5..604800), optional `cooldown` (default ten times the pause). One watch per host |
 | `silence.list` | viewer | the watches, each with how quiet its host is now and when it last spoke |
 | `silence.remove` | operator | forget a watch: `id` |
+| `onboard.add` | operator | write down a welcome pack: `name`, `stages` (each `kind` plus `args`; at most 16), optional `tag` and `prefix` gates, `once` (default true), `cooldown` (seconds, default one hour) |
+| `onboard.list` | viewer | the plays on the shelf: the stages, the gate, and the memory of the fires |
+| `onboard.remove` | operator | take a play out of the shelf: `id` |
+| `onboard.run` | operator | run a play over a host by hand: `id`, `agent`. The gates and the "once" stay home; emits `onboard.fired` |
+| `pivot.map` | viewer | the doors as a tree: `tree` (nested branches under `server`), flat `rows` with `host`, `parent`, `depth` and the counters, plus `hosts`, `doors`, `deepest` |
+| `artifact.verify` | viewer | re-hash the store: every blob next to its manifest digest, `checked`, `broken`, and whether the store is `sealed`. Optional `name` asks about one blob |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -1545,6 +1551,7 @@ The kinds the server emits:
 | `agent.online` | a host is back | the inventory of the host |
 | `agent.offline` | a host has been quiet for longer than its grace window | — |
 | `agent.silent` | a silence watch fired: a host has been quiet past the pause an operator promised to worry about | `watch`, `seconds`, `quiet_for`, `promised` |
+| `onboard.fired` | a welcome pack went to a host: the stages of its greeting are queued | `playbook`, `queued`, `failed` (on manual runs) |
 | `agent.heartbeat` | the host is alive between two check-ins | `version`, `busy`, `abi` |
 | `agent.policy` | the cadence of the host was changed | `sleep`, `jitter` |
 | `agent.route` | the route of the host was changed | `primary`, `fallback`, `front`, `inspect` |
@@ -2383,6 +2390,40 @@ memory of the day and never talks to the host: a watch for silence
 that knocked on the door would wake what it watches.  The ledger lives
 beside the state file, written for the server alone, because a restart
 must not forget who promised to worry.
+
+**The welcome of a new host.**  Every engagement greets a new host the
+same way: the survey, the security posture, the file that proves the
+day.  `onboard.add` writes that greeting down once — the stages, the
+gate of which hosts they are for, whether it fires once or on every
+return — and the pack fires the moment the host first calls home, as
+`agent.new`: the tasks of the welcome go through the same queue, the
+same breakers and the same dead letters as the work an operator types,
+so a playbook is a servant and never a second way into the fleet.  A
+pack that goes once answers only the first hello of each host, and the
+ledger beside the state file remembers the fires across a restart, so
+a bounced server does not greet twice.  `onboard.run` runs a play by
+hand — the gates and the "once" stay home, because the operator who
+runs a pack by hand means exactly that — and both fires speak to the
+team as `onboard.fired`.
+
+**The map of the doors.**  `pivot.list` is a table of doors;
+`pivot.map` is the shape of the reach: every hop of the way home of a
+door is a branch, and the door hangs on the last hop.  The tree grows
+under the server, the rows say the parent of each door and its depth,
+and the counts say how many hosts carry the reach and how deep the
+deepest chain goes.  The manager of the tunnels vouches for every hop
+it built — a hop that had failed to exist would not be in the map at
+all — so the map draws what the tunnels told it, and nothing else.
+
+**The evidence keeps its word.**  The manifest of the store says what
+each blob must be, and the digest of the blob is its name on the
+disk.  `artifact.verify` reads the bytes again and asks whether every
+blob still answers to its name: the rows that pass and the rows that
+do not are spelled out, with the digest the manifest holds and the
+digest the bytes give, so a swapped blob is named, not only counted.
+The verify is a view of the store — it reads, it does not restore — and
+it says whether the store is sealed, so the team knows what the
+digests are worth.
 
 **The file of a host.**  `dossier.get` puts everything the server knows
 about one host on one page: the identity, the health with the reasons

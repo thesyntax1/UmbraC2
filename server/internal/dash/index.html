@@ -255,6 +255,44 @@
   </section>
 
   <section>
+    <h2>the welcome packs</h2>
+    <div class="scroll">
+      <table id="onboards">
+        <thead><tr><th>play</th><th>name</th><th>fires</th><th>last to</th><th>stages</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The first five minutes of a new host, written down once: a pack fires the moment the host first calls home, through the same queue as typed work.</div>
+  </section>
+
+  <section>
+    <h2>the doors</h2>
+    <div class="scroll">
+      <table id="pivotmap">
+        <thead><tr><th>host</th><th>depth</th><th>doors</th><th>via</th><th>state</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note" id="pivotnote">The tree of the doors: every hop of the way home is a branch, and the door hangs on the last hop.</div>
+  </section>
+
+  <section>
+    <h2>the word of the evidence</h2>
+    <form id="verifyForm">
+      <input id="verifyName" placeholder="blob name (empty = all)">
+      <button type="submit">verify</button>
+      <span id="verifyState" class="note"></span>
+    </form>
+    <div class="scroll">
+      <table id="verify">
+        <thead><tr><th>blob</th><th>size</th><th>verdict</th><th>checked</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The store asked again: the digest of a blob is its name on the disk, so a swapped blob is a blob that no longer answers to its name.</div>
+  </section>
+
+  <section>
     <h2>the reused keys</h2>
     <div class="scroll">
       <table id="reuse">
@@ -760,6 +798,93 @@
     });
   }
 
+  // The welcome packs: the shelf, and how often each play went out.
+  function refreshOnboards() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "onboard.list", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#onboards tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.playbooks) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.id || "";
+        tr.insertCell().textContent = row.name || "";
+        tr.insertCell().textContent = row.fires || 0;
+        tr.insertCell().textContent = row.last_agent || "-";
+        tr.insertCell().textContent = ((row.stages || []).map(function (s) {
+          return s.kind || "?";
+        })).join(", ");
+      });
+    });
+  }
+
+  // The map of the doors: the tree flattened for the table, so the
+  // depth of each chain is a column.
+  function refreshPivotMap() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "pivot.map", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#pivotmap tbody");
+      var noteEl = document.getElementById("pivotnote");
+      body.innerHTML = "";
+      var data = answer.data || {};
+      noteEl.textContent = (data.doors || 0) + " doors behind " +
+        (data.hosts || 0) + " hosts, deepest " + (data.deepest || 0) +
+        " hops";
+      var rows = [];
+      (function walkout(node) {
+        (node.children || []).forEach(function (kid) {
+          rows.push(kid);
+          walkout(kid);
+        });
+      })(data.tree || {});
+      rows.forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent =
+          "  ".repeat(Math.max(0, (row.depth || 1) - 1)) + (row.agent_id || "");
+        tr.insertCell().textContent = row.depth || 0;
+        tr.insertCell().textContent = row.tunnels || 0;
+        tr.insertCell().textContent = row.hostname || "-";
+        tr.insertCell().textContent = row.tunnels ? "open" : "-";
+      });
+    });
+  }
+
+  // The verify of the evidence: on demand, not on every tick.
+  document.getElementById("verifyForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var state = document.getElementById("verifyState");
+    api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "artifact.verify",
+        args: { name: document.getElementById("verifyName").value.trim() } })
+    }).then(function (answer) {
+      var data = answer.data || {};
+      state.textContent = (data.checked || 0) + " checked, " +
+        (data.broken || 0) + " broken" + (data.sealed ? " (sealed)" : "");
+      state.className = (data.broken || 0) ? "note off" : "note on";
+      var body = document.querySelector("#verify tbody");
+      body.innerHTML = "";
+      (data.artifacts || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.name || "";
+        tr.insertCell().textContent = row.size || 0;
+        tr.insertCell().textContent = row.verified ? "answers" :
+          ("broken: " + String(row.found || "?").slice(0, 16) + "…");
+        tr.insertCell().textContent =
+          String(row.checked || "").slice(0, 19).replace("T", " ");
+      });
+    }).catch(function (err) {
+      state.textContent = "refused: " + err.message;
+      state.className = "note off";
+    });
+  });
+
   // The keys that open more than one door: the reuse of the secrets,
   // named by twelve hexits and never by value.
   function refreshReuse() {
@@ -915,6 +1040,7 @@
       .then(refreshCanaries).then(refreshBaseline).then(refreshApprovals)
       .then(refreshAttack).then(refreshHooks)
       .then(refreshRhythm).then(refreshSilences).then(refreshReuse)
+      .then(refreshOnboards).then(refreshPivotMap)
       .then(refreshOTP).then(refreshQueue).then(refreshOutput).catch(function (err) {
         state.textContent = "error: " + err.message;
         state.className = "off";
