@@ -11063,8 +11063,8 @@ def test_the_wires_carry_the_events_to_the_place_the_team_chose():
 
     # The hub hands every event to the wire, after the consoles and the
     # alert rules.
-    assert "func (h *Hub) SetTap(" in hub_go, "the hub has no tap"
-    assert "h.tap(ev)" in hub_go, "the tap is never called"
+    assert "func (h *Hub) AddTap(" in hub_go, "the hub has no tap"
+    assert "tap(ev)" in hub_go, "the tap is never called"
 
     # The server answers the four commands of the wires.
     for command in ("hook.add", "hook.list", "hook.remove", "hook.test"):
@@ -11406,3 +11406,282 @@ def test_the_console_reaches_the_wires_the_wall_and_the_box():
 
     for runner in ("run_hook", "run_attack", "run_search"):
         assert f"def {runner}(" in cli_src, f"the console lacks {runner}"
+
+
+def test_the_rhythm_says_how_a_host_breathes():
+    """The rhythm of the beacons: the shape of the check-ins.
+
+    An implant calls home on a clock somebody set; the rhythm says the
+    shape of what it actually does.  A beacon that calls home like a
+    metronome is a beacon a watcher can set a clock by, so the fleet
+    list puts the clocks first, and a host with two check-ins is
+    "young", because two check-ins are not a shape.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer, FakeAgent  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    rhythm_go = read_text("server/internal/rhythm/rhythm.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    assert "package rhythm" in rhythm_go, "there is no rhythm"
+    assert "func (r *Registry) Record(" in rhythm_go
+    assert "func (r *Registry) Stats(" in rhythm_go
+    assert "func (r *Registry) Fleet(" in rhythm_go
+    assert "ev.Kind != \"agent.heartbeat\"" in rhythm_go, (
+        "the rhythm counts more than the beats")
+
+    for command in ("rhythm.get", "rhythm.fleet"):
+        assert re.search(rf'case [^:\n]*"{command}"', operator), (
+            f"the server has no {command}")
+        assert re.search(rf'"{command}":\s+Viewer,', rbac)
+        assert f'self.rpc("{command}"' in client_src
+        assert f"`{command}`" in protocol
+    assert "run_rhythm" in cli_src and re.search(r'sub\.add_parser\(\s*"rhythm"', cli_src)
+
+    token = b"breath-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-breath", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10)
+
+        # Two check-ins are not a shape yet.
+        assert wait_until(lambda: client.rpc("rhythm.get", {
+            "agent": "agent-breath"}).ok, timeout=10), "no beat ever arrived"
+        early = client.rhythm_get("agent-breath")
+        assert early["shape"] in ("young", "steady", "breathing",
+                                  "a metronome", "wandering"), early
+        assert early["beats"] >= 1, early
+
+        # After a window the host has a shape and the console can read it.
+        assert wait_until(lambda: client.rhythm_get(
+            "agent-breath").get("beats", 0) >= 6, timeout=15), (
+            "the host never breathed often enough")
+        stats = client.rhythm_get("agent-breath")
+        assert stats["beats"] >= 6, stats
+        assert stats["interval_ms"] >= 150, stats
+        assert stats["longest_ms"] >= stats["shortest_ms"] >= 0, stats
+        assert "eta" in stats and "cv" in stats, stats
+
+        # The fleet puts the hosts in order, the clocks first.
+        fleet = client.rhythm_fleet()
+        assert fleet["count"] >= 1, fleet
+        assert any(row["agent_id"] == "agent-breath"
+                   for row in fleet["fleet"]), fleet
+
+        # A host that never called home has no shape; the answer says so.
+        with pytest.raises(Exception):
+            client.rhythm_get("no-such-host")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_same_key_opens_other_doors():
+    """The reuse of a secret: one digest, more than one host.
+
+    The vault keeps the digest of every material, so the same password
+    on two hosts is provable as reuse without the password ever leaving
+    the vault.  The answer names the first hexits of the digest, the
+    hosts and the accounts — and no value.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer, FakeAgent  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    store_go = read_text("server/internal/store/store.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    assert "func (s *Store) CredentialReuse(" in store_go, (
+        "the vault does not count the reused keys")
+    assert 'case "creds.reuse"' in operator
+    assert re.search(r'"creds.reuse":\s+Viewer,', rbac)
+    assert 'self.rpc("creds.reuse"' in client_src
+    assert "run_creds_reuse" in cli_src
+    assert re.search(r'sub\.add_parser\(\s*"creds-reuse"', cli_src)
+    assert "`creds.reuse`" in protocol
+
+    token = b"reuse-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    alpha = FakeAgent(server.address, AGENT_PSK, "agent-alpha", interval=0.2)
+    beta = FakeAgent(server.address, AGENT_PSK, "agent-beta", interval=0.2)
+    alpha.start()
+    beta.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: len(client.agents()) >= 2, timeout=10)
+
+        # The catalogue of the fake agents is the same on both hosts,
+        # so the same secrets come home from both.
+        for name in ("agent-alpha", "agent-beta"):
+            task_id = client.submit(name, "creds", {"raw": True})
+            assert wait_until(
+                lambda tid=task_id: client.task(tid).get("state") == "done",
+                timeout=15), f"{name} never answered"
+
+        reuse = client.creds_reuse()
+        assert reuse["count"] >= 1, "the reused keys stayed invisible"
+        group = reuse["groups"][0]
+        assert group["count"] >= 2, group
+        assert len(group["hosts"]) >= 2, group
+        assert len(group["digest"]) == 12, (
+            "the group says more of the digest than a pointer needs")
+        assert "secret" not in group and "value" not in group, group
+        assert group["accounts"] and group["targets"], group
+
+        # Before any collection the vault had nothing to say.
+        fresh = client.creds_reuse()
+        assert fresh["count"] == reuse["count"]
+    finally:
+        client.close()
+        alpha.stop()
+        beta.stop()
+        server.stop()
+
+
+def test_the_news_of_nothing_pages_the_team():
+    """The watches of the silences: the news of nothing on the wires.
+
+    The alarms of the day fire when something happens; a host that went
+    quiet does nothing.  The watch turns the nothing into an
+    `agent.silent` event — and a wire that carries it pages the chat
+    room the team chose, which is why the wave of the wires and the
+    wave of the silences were built to fit together.
+    """
+    import http.server
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer, FakeAgent  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    silence_go = read_text("server/internal/silence/silence.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    assert "package silence" in silence_go, "there is no watch of silences"
+    assert "func (r *Registry) Add(" in silence_go
+    assert "func (r *Registry) Due(" in silence_go
+    assert "0o600" in silence_go, "the ledger is not written for the owner only"
+    for command in ("silence.add", "silence.list", "silence.remove"):
+        assert re.search(rf'case [^:\n]*"{command}"', operator), (
+            f"the server has no {command}")
+        assert f'self.rpc("{command}"' in client_src
+        assert f"`{command}`" in protocol
+    assert re.search(r'"silence.add":\s+Operator,', rbac)
+    assert re.search(r'"silence.list":\s+Viewer,', rbac)
+    assert re.search(r'"silence.remove":\s+Operator,', rbac)
+    assert "run_silence" in cli_src and re.search(r'sub\.add_parser\(\s*"silence"', cli_src)
+
+    posts = []
+    posts_lock = threading.Lock()
+
+    class Listener(http.server.BaseHTTPRequestHandler):
+        """The pager of the team."""
+
+        def do_POST(self):  # noqa: N802 - the library names the method
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            with posts_lock:
+                posts.append(body and json.loads(body) or {})
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    site = http.server.HTTPServer(("127.0.0.1", 0), Listener)
+    threading.Thread(target=site.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{site.server_address[1]}/pager"
+
+    token = b"news-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-news", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10)
+
+        # A wire to the pager, and a promise to worry about the host.
+        client.hook_add(url, kinds=["agent.silent"])
+        promised = client.silence_add("agent-news", seconds=5)
+        assert promised["id"].startswith("s-"), promised
+        assert promised["cooldown"] == 50, promised
+
+        # One promise per silence: the second one is refused out loud.
+        with pytest.raises(Exception):
+            client.silence_add("agent-news", seconds=30)
+
+        # While the host calls home, nothing is news.
+        listed = client.silence_list()
+        assert listed["count"] == 1, listed
+        assert listed["watches"][0].get("quiet_for", 99) < 10, listed
+
+        # The host stops calling home: the nothing becomes the word.
+        agent.stop()
+        assert wait_until(lambda: any(
+            p.get("kind") == "agent.silent" for p in posts), timeout=15), (
+            "the silence never paged")
+        with posts_lock:
+            page = next(p for p in posts if p.get("kind") == "agent.silent")
+        assert page["agent_id"] == "agent-news", page
+        assert page["data"]["watch"] == promised["id"], page
+        assert page["data"]["quiet_for"] >= page["data"]["seconds"], page
+
+        # The ledger of the watches says that it spoke.
+        listed = client.silence_list()
+        assert listed["watches"][0].get("last_fired"), listed
+
+        removed = client.silence_remove(promised["id"])
+        assert removed.get("removed") is True, removed
+        assert client.silence_list()["count"] == 0
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        site.shutdown()
+
+
+def test_the_console_reaches_the_rhythm_the_reuse_and_the_silence():
+    """The console has a command for each of the three."""
+    from umbra_cli import cli  # noqa: WPS433
+
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["rhythm"])
+    assert args.cmd == "rhythm" and args.agent == ""
+    args = parser.parse_args(["rhythm", "web-01"])
+    assert args.agent == "web-01"
+    assert "run_rhythm" in cli_src
+
+    args = parser.parse_args(["creds-reuse"])
+    assert args.cmd == "creds-reuse"
+    assert "run_creds_reuse" in cli_src
+
+    args = parser.parse_args(["silence", "list"])
+    assert args.cmd == "silence" and args.silence_cmd == "list"
+    args = parser.parse_args(["silence", "add", "web-01", "--seconds", "120",
+                              "--cooldown", "900"])
+    assert args.silence_cmd == "add" and args.agent == "web-01"
+    assert args.seconds == 120 and args.cooldown == 900
+    args = parser.parse_args(["silence", "remove", "s-0001"])
+    assert args.silence_cmd == "remove" and args.id == "s-0001"
+    assert "run_silence" in cli_src
