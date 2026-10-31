@@ -8,16 +8,16 @@
 > The rule: a row is green only if the command in it ran and exited zero on
 > the commit named at the top.  Everything else says what it is.
 
-Commit of record: `411ecd1` (+ the two documentation commits after it).
+Commit of record: `d9aa1a9` (CI run 41227557468).
 Reviewed: 2026-10-31.
 
 ## The summary
 
 | Module | Build | Tests | CI job | Verdict |
 |---|---|---|---|---|
-| Go server | green on 1.22.10 **and** 1.27.3 | 25 packages, `-race` clean | **green** | verified on two toolchains |
-| Go beacon | green on 1.22.10 and 1.27.3 | 5 packages, `-race` clean | **green** | verified on two toolchains |
-| Python console + protocol | n/a | 378 passed in a clean venv from the hashed lock | **green** | verified from a lock file |
+| Go server | green on 1.22.10 **and** 1.27.3 | 25 packages, `-race` clean | **green** (1.22 and stable) | verified on two toolchains |
+| Go beacon | green on 1.22.10 and 1.27.3 | 5 packages, `-race` clean | **green** (1.22 and stable) | verified on two toolchains |
+| Python console + protocol | n/a | 378 passed in a clean venv from the hashed lock | **green** (3.11 and 3.12) | verified from a lock file |
 | Rust beacon | **red** | 36 compile errors | **red** | not verified |
 | Android implant | **red** | Kotlin compilation error | **red** | not verified |
 | Dashboard | built by `go build` | Go test + jsdom smoke | green (inside `go server`) | verified, not in a browser |
@@ -48,8 +48,8 @@ cd server && go build ./... && go vet ./... && go test ./... -count=1 -race
 `GOPROXY=off` is part of the evidence: the module has no requirements, so the
 build must succeed with the network switched off.  It does.
 
-**CI.** `ci.yml` job `go server`, matrix `1.22` and `stable`, green on run
-41223934045 (`9455226`) and every run after it: `gofmt` gate, `go vet`,
+**CI.** `ci.yml` job `go server (1.22)` and `go server (stable)`, both green
+on run 41227557468 (`d9aa1a9`): `gofmt` gate, `go vet`,
 `go test -race`, `go build -trimpath`, `go vet -race`, and a check that
 `go.sum` stays empty.
 
@@ -58,7 +58,7 @@ build must succeed with the network switched off.  It does.
 **Local:** go1.22.10 and go1.27.3, `go test ./... -race` = 5 packages ok,
 `gofmt` empty, `go build ./...` ok.  The beacon also runs `--selftest` in CI.
 
-**CI:** job `go implant`, same matrix, green — including `go mod verify`, the
+**CI:** `go implant (1.22)` and `go implant (stable)`, both green — including `go mod verify`, the
 empty-`go.sum` gate, `--selftest`, and a start against an unreachable server
 that must exit cleanly.
 
@@ -85,9 +85,10 @@ GO=/path/to/go /tmp/locked-venv/bin/pytest tests/ -q
   exceed.  They now wait 20 s and assert with a message; a flaky proof is a
   proof nobody can use.
 
-**CI:** job `protocol`, matrix Python 3.11 and 3.12, installs from the hashed
-lock, runs the consistency checkers, `pytest tests`, and regenerates
-`contracts/vectors.json` to prove the vectors are reproducible.
+**CI:** `protocol (python 3.11)` and `protocol (python 3.12)`, both green;
+each installs from the hashed lock with `--require-hashes`, runs the
+consistency checkers, `pytest tests`, and regenerates `contracts/vectors.json`
+to prove the vectors are reproducible.
 
 ## 4. Rust beacon
 

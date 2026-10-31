@@ -280,6 +280,7 @@ code that exists and has never been executed here.
 | `node tools/dash_smoke.mjs` | the dashboard renders; the hostile name stays text | this audit |
 | GitHub Actions, `ci.yml` on `9455226` (run 41223934045) | **green**: `go server`, `go implant`, `protocol`; **red**: `rust beacon` ×2, `rust beacon macOS`, `android` | CI |
 | GitHub Actions, `ci.yml` on `e458440` (run 41226570798) and `411ecd1` (run 41227067330) | same split; Rust reports **36 compile errors**, Android a Kotlin compilation failure | CI |
+| GitHub Actions, `ci.yml` on `d9aa1a9` (run 41227557468) | **green**: `go server` ×2 toolchains, `go implant` ×2, `protocol` on Python 3.11 and 3.12; **red**: `rust beacon` ×2, `rust beacon macOS`, `android` | CI |
 | GitHub Actions, `diagnostics.yml` on `9455226` | **green** (6 jobs) | CI |
 | `go test ./...` under go1.22.10 and go1.27.3, build + vet + test + `-race` | 25 packages ok both versions, `gofmt` empty, beacon 5 packages ok | this pass |
 | `pip install --require-hashes -r requirements-dev.lock` in a fresh venv, then `pytest tests/ -q` | **378 passed** (the first clean-env run surfaced two timing-sensitive tests, which were fixed) | this pass |
