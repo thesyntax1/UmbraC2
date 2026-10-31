@@ -584,7 +584,7 @@ Operator RPC commands, with the minimum role each requires:
 | `task.get` | viewer | one task |
 | `task.list` | viewer | tasks; optional filters: `id` (agent), `kind`, `state` |
 | `audit.tail` | viewer | recent operator actions |
-| `audit.verify` | operator | walk the chain of hashes of the ledger and say where it breaks |
+| `audit.verify` | operator | walk the chain of hashes of the ledger and say where it breaks. Optional `expect`: the head the operator carried from the outside, which the ledger must end with (`matched`); the answer also says how many `files` were walked, which generations are missing (`gaps`), and whether the ledger still agrees with its own `anchor` (`anchored`, `anchor_ok`) |
 | `chat.history` | viewer | recent chat |
 | `schedule.list` | viewer | recurring tasks |
 | `task.submit` | operator | queue a task; optional `deadline`, `timeout`, `source` (the shelf it came from) and `idem` (the key of a retried request: a second submission with the same key inside five minutes answers with the task the first made, `duplicate: true`) |
@@ -638,7 +638,7 @@ Operator RPC commands, with the minimum role each requires:
 | `baseline.list` | viewer | the paths the team watches: optional `agent` and `state` (`unknown`, `present`, `changed`, `missing` or `appeared`) |
 | `baseline.remove` | operator | stop watching a path: `id`; the file on the host stays where it is |
 | `baseline.check` | operator | look at the watched paths of a host: `agent`; the findings travel in the metadata of the answer, and the server writes the drift into the ledger |
-| `operator.otp.status` | viewer | who has a second factor, whether it is on, and how old the secret is. The secrets are never in the answer |
+| `operator.otp.status` | viewer | who has a second factor, whether it is on, and how old the secret is; `sealed` says whether the file of the secrets is encrypted at rest. The secrets are never in the answer |
 | `operator.otp.rotate` | operator | make a new secret for an operator: optional `operator` (default: yourself) and `issuer` (the name the phone shows). The secret is in the answer once and never again |
 | `operator.otp.remove` | operator | take the second factor of an operator away: optional `operator` (default: yourself). The console of that operator works with the token alone from then on |
 | `hook.add` | operator | write a wire down: `url` (http or https), optional `kinds` (a name ending in `*` matches a beginning; the empty list is all) and `secret` (the word the posts are signed with, HMAC-SHA256 in the `X-Umbra-Signature` header). The server posts and never asks |
@@ -1559,6 +1559,40 @@ other. It reads the snapshot of both hosts and returns every field side
 by side with whether it matches, then the labels the two share and the
 labels only one of them wears. Nothing is asked of the hosts: the answer
 comes out of the inventory the server already keeps.
+
+### 7.2q0 The ledger under a rotation, and the head carried home
+
+A chain of hashes proves that a line was not edited *after the line
+before it was written*.  It does not prove that the file is the file:
+somebody who can write the ledger can drop its first half, or write a new
+one from the first line to the last, and the chain of the new file is
+whole.  The protocol answers that in three steps, each strictly stronger
+than the one before.
+
+**The bound is read.**  `audit_keep_files` says how many generations the
+rotation keeps, and the verification walks exactly that many: the check
+covers the whole record, not the newest five files of a policy that keeps
+thirty.  A generation that is missing inside the range is a hole, and the
+answer names it (`gaps`) instead of stepping over it — a deleted rotation
+is the ordinary shape of a cover-up.
+
+**The anchor.**  Every few hundred entries, and at every stop, the server
+writes the head of the chain into `<audit>.head` beside the ledger, and
+the verification replays the chain looking for that link.  A ledger that
+was rewritten from the first line never contains it, so the check fails
+even though every link of the rewrite is valid.  The anchor is honest
+about its own limits: it lives next to the ledger, so an attacker who can
+rewrite one can rewrite the other.  What it catches is the ordinary
+failure — a truncated file, a restore from a backup older than the
+ledger, a rotation deleted by hand — and what it costs is one small file.
+
+**The head carried home.**  `audit.verify {expect}` takes the head an
+operator wrote down somewhere the server cannot reach: a ticket, a board,
+a photograph of a screen.  The ledger then has to *end* there.  This is
+the only one of the three that a full rewrite cannot satisfy, and it is
+the reason the head is printed with every verification: the chain is what
+the server can prove about itself, and the carried head is what the
+people can prove about the server.
 
 ## 7.2q The credentials of the server
 
@@ -2550,10 +2584,23 @@ server accepts a window of one step (thirty seconds) on each side: the
 clock of a phone is not the clock of the server.  A code is spent by use:
 the step it answered to is remembered, so a code that opened one session
 cannot open a second inside its window — a second factor that can be
-replayed is only a password that changes every thirty seconds.  The
+replayed is only a password that changes every thirty seconds.  The step
+is written to the file of the secrets with them, because a restart in the
+middle of a window must not hand the same code a second life.  The
 comparison is constant time, the file of the secrets belongs to the server alone
 (`0o600`), and an operator may rotate or remove its own second factor
 while somebody else's is the work of an admin.
+
+**At rest.** Permissions are not encryption: a file that is only `0600`
+is protected against the wrong reader and not against the disk, a backup
+or a snapshot.  When the server has a vault key, the secrets of the
+second factors are sealed with AES-256-GCM under a key derived for them
+alone — HKDF over the vault key with the label `umbra/v1/otp`, so a
+sealed secret of the second factors never opens with the key of the
+credential vault — and the file says so.  A sealed file without the key
+is refused instead of being read as an empty registry, because an empty
+registry would quietly turn the second factor off for the whole team;
+`operator.otp.status` reports `sealed` so nobody has to guess.
 
 The console sends the code with `--otp` or `$UMBRA_OTP`, and
 `umbra otp code --secret ...` prints the code of the moment for a lab

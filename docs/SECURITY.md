@@ -77,9 +77,28 @@ Accountability is separate from authentication: every operator command is
 written to the audit log with the operator name, source address, transport and
 outcome, so a stolen token does not give the attacker an unattributable window.
 The log is append-only from the server's point of view (`O_APPEND`, `0600`,
-fsync per line, size rotation) and can be read back with `umbra audit`. See
-`docs/OPERATIONS.md` §5b. Operators are also rate limited (120 burst / 40 s⁻¹)
-so a runaway console cannot starve beacon traffic.
+fsync per line, size rotation bounded by `audit_keep_files`) and can be read
+back with `umbra audit`. See `docs/OPERATIONS.md` §5b. Operators are also rate
+limited (120 burst / 40 s⁻¹) so a runaway console cannot starve beacon traffic.
+
+**Honest limits of the ledger.** A chain of hashes is tamper-*evident*, not
+tamper-*proof*: whoever can write the file can write a new chain over the whole
+file. The server narrows that in two ways and says so out loud. The verification
+walks every generation the retention policy keeps (a deleted rotation is
+reported as a gap, not stepped over), and it compares the ledger with an anchor
+written beside it — which catches truncation, an old restore and a deleted
+rotation, but not an attacker who can rewrite both files. The only check a full
+rewrite cannot satisfy is the head an operator carries off the box
+(`umbra audit --verify --expect <head>`), so the runbook says to write the head
+down before a long night. Nothing here is a substitute for shipping the log
+off-box; it is what the server can prove on its own.
+
+**Secrets at rest.** The TOTP secrets of the second factors are sealed with
+AES-256-GCM under a key derived from `vault_key` (HKDF, label `umbra/v1/otp`),
+so the file is not plaintext even if the disk or a backup is read. Without a
+`vault_key` the file is only `0600`, the server warns at start-up, and
+`operator.otp.status` reports `sealed: false`: a posture that is fine in a lab
+and not fine on an engagement.
 
 ## 3. The attack surface of the new features
 

@@ -1529,9 +1529,45 @@ before the reply is sent:
 
 ```bash
 umbra audit --verify                    # is the ledger intact?
+umbra audit --verify --expect <head>    # and does it end where I wrote down?
 jq -c 'select(.ok == false)' data/audit.jsonl | tail
 jq -r '[.at, .operator, .cmd] | @tsv' data/audit.jsonl | tail -20
 ```
+
+**What a chain can and cannot prove.** The chain proves that no line was
+edited after the line before it was written. It does not prove that the
+file is the file: somebody who can write the ledger can write a new one
+from the first line to the last. Three things narrow that gap, in order of
+strength:
+
+1. **The bound is read.** `audit_keep_files` is the number of generations
+   the check walks, so a policy of thirty is verified across thirty and not
+   across the newest five. A generation missing inside the range is
+   reported as a hole — `gaps` in the answer, "the ledger is missing the
+   generations .4" on the console — because a deleted rotation is the
+   ordinary shape of a cover-up.
+2. **The anchor.** Every 256 entries and at every stop the server writes
+   `<audit>.head` with the head of the chain, and the verification replays
+   the ledger looking for that link. A rewritten ledger never contains it.
+   The file sits beside the ledger, so this catches truncation, a restore
+   from an old backup and a deleted rotation — not an attacker who can
+   write both files.
+3. **The head carried home.** Before a long night, run `umbra audit
+   --verify` and write the head into the ticket. The next morning,
+   `umbra audit --verify --expect <that head>` fails if the ledger is not
+   the one that was running. This is the only check a full rewrite cannot
+   satisfy, and it costs one line in a document the server cannot touch.
+
+**The secrets of the second factor.** `otp.json` holds the TOTP secrets of
+the team. It is `0600`, and when the server has a `vault_key` it is also
+sealed with AES-256-GCM under a key derived for it alone (HKDF, label
+`umbra/v1/otp`), so a copy of the disk or a backup is not a copy of every
+second factor. A sealed file without the key is refused at start-up
+instead of being read as empty: an empty registry would turn the second
+factor off for everybody without a word. `umbra otp status` says `sealed`
+so the posture is visible, and the spent step of every used code is
+written with the secrets — a restart in the middle of a window does not
+give a code a second life.
 
 Setting `audit_file` to `""` disables auditing; the server logs a warning at
 start-up when it is off, and `umbra audit` says so instead of showing an empty
