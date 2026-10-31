@@ -10230,3 +10230,432 @@ def test_the_console_reaches_the_hunt_the_health_and_the_cases():
     assert args.case_cmd == "add" and args.ref == "/tmp/x"
     args = parser.parse_args(["case", "close", "c-0001", "--note", "done"])
     assert args.case_cmd == "close" and args.note == "done"
+
+
+def test_the_two_person_rule_needs_a_second_pair_of_eyes():
+    """The two-person rule: the operator who asked cannot decide.
+
+    A destructive operation is not run on the word of one operator: the
+    operator who wants it writes a request, another operator decides,
+    and the decision does the work.  The refusal of the requester is
+    the whole point of the rule, so the test asks for it and expects
+    the refusal.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    approval_go = read_text("server/internal/approval/approval.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    config_src = read_text("server/internal/config/config.go")
+
+    # The queue is a package of its own, with a lock and a file.
+    assert "package approval" in approval_go, "there is no queue of approvals"
+    assert "func (q *Queue) Request(" in approval_go
+    assert "func (q *Queue) Decide(" in approval_go
+    assert "func (q *Queue) Save(" in approval_go
+    assert "func (q *Queue) Load(" in approval_go
+    assert "0o600" in approval_go, "the queue is not written for the owner only"
+    assert "ErrOwnRequest" in approval_go, (
+        "the queue lets the requester decide the request")
+
+    # The server answers the five commands of the rule.
+    for command in ("approval.request", "approval.list", "approval.get",
+                    "approval.approve", "approval.deny"):
+        assert re.search(rf'case [^:\n]*"{command}"', operator), (
+            f"the server has no {command}")
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # The reader of the queue is a viewer; the writer is an operator.
+    assert re.search(r'"approval.list":\s+Viewer,', rbac)
+    assert re.search(r'"approval.get":\s+Viewer,', rbac)
+    assert re.search(r'"approval.request":\s+Operator,', rbac)
+    assert re.search(r'"approval.approve":\s+Operator,', rbac)
+    assert re.search(r'"approval.deny":\s+Operator,', rbac)
+
+    # The rule is a policy of the deployment, and the deployment says
+    # which kinds need it.
+    assert "ApprovalRequired" in config_src, (
+        "the deployment cannot say which operations need a second pair of eyes")
+
+    # And the console has a command for it.
+    assert "run_approval" in cli_src
+    assert 'sub.add_parser("approval"' in cli_src
+
+    token = b"approval-token-012345678"
+    token_b = b"approval-second-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": token_b})
+    server.start()
+    alice = OperatorClient(server.address, token.decode(), "alice")
+    bob = OperatorClient(server.address, token_b.decode(), "bob")
+    try:
+        alice.connect()
+        bob.connect()
+
+        # The operator asks for an operation.
+        asked = alice.approval_request("forensics.wipe", agent_id="web-01",
+                                       reason="the engagement is over")
+        assert asked.get("id"), asked
+        assert asked.get("state") == "pending", asked
+        assert asked.get("requested_by") == "alice", asked
+        assert asked.get("kind") == "forensics.wipe", asked
+
+        # The queue shows the request to the whole team.
+        listed = alice.approval_list()
+        assert listed["count"] == 1, listed
+        assert listed["requests"][0]["id"] == asked["id"], listed
+
+        # The operator who asked cannot decide it: that is the rule.
+        with pytest.raises(Exception):
+            alice.approval_approve(asked["id"], "my own request")
+
+        # Another operator says no, and the note says why.
+        denied = bob.approval_deny(asked["id"], "the host is still in use")
+        assert denied.get("state") == "denied", denied
+        assert denied.get("decided_by") == "bob", denied
+        assert denied.get("note") == "the host is still in use", denied
+
+        # A decided request is not decided twice.
+        with pytest.raises(Exception):
+            bob.approval_approve(asked["id"], "too late")
+
+        # And the operator who asked for it is still refused afterwards.
+        with pytest.raises(Exception):
+            alice.approval_approve(asked["id"], "my own request")
+
+        # A second request, and this time somebody else says yes: the
+        # operation is queued on the host.
+        second = alice.approval_request("forensics.wipe", agent_id="web-01",
+                                        reason="the engagement is over")
+        approved = bob.approval_approve(second["id"], "the customer agreed")
+        assert approved.get("state") == "approved", approved
+        assert approved.get("decided_by") == "bob", approved
+        assert approved.get("task_id"), (
+            "the approved operation was not queued on the host")
+
+        # The request itself is readable by anybody.
+        fetched = bob.approval_get(second["id"])
+        assert fetched.get("state") == "approved", fetched
+        assert fetched.get("requested_by") == "alice", fetched
+    finally:
+        alice.close()
+        bob.close()
+        server.stop()
+
+
+def test_the_tripwires_say_that_nobody_else_was_on_the_host():
+    """The tripwires: a file that changes says that somebody was there.
+
+    The implant plants a small file with a secret in it, and the implant
+    remembers what it wrote.  When the file changes or disappears, the
+    verdict is "changed" or "missing", the ledger of the server says so,
+    and the operator learns about it while the engagement is still
+    running.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    canary_go = read_text("server/internal/canary/canary.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    rust_task = read_text("implant/rust/src/task.rs")
+    kotlin_task = read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    go_tasks = read_text("implant/go/internal/beacon/tasks.go")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The ledger is a package of its own, with a lock and a file.
+    assert "package canary" in canary_go, "there is no ledger of the tripwires"
+    assert "func (r *Registry) Plant(" in canary_go
+    assert "func (r *Registry) RecordCheck(" in canary_go
+    assert "func ParseVerdicts(" in canary_go
+    assert "0o600" in canary_go, "the ledger is not written for the owner only"
+
+    # The server answers the five commands of the tripwires.
+    for command in ("canary.plant", "canary.list", "canary.get",
+                    "canary.check", "canary.remove"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # The reader of the ledger is a viewer; the writer is an operator.
+    assert re.search(r'"canary.list":\s+Viewer,', rbac)
+    assert re.search(r'"canary.get":\s+Viewer,', rbac)
+    assert re.search(r'"canary.plant":\s+Operator,', rbac)
+    assert re.search(r'"canary.check":\s+Operator,', rbac)
+    assert re.search(r'"canary.remove":\s+Operator,', rbac)
+
+    # The task kind is understood by the three implants.
+    assert '"canary.plant" =>' in rust_task, "the rust beacon cannot plant"
+    assert '"canary.check" =>' in rust_task, "the rust beacon cannot look"
+    assert '"canary.plant" ->' in kotlin_task, "the android beacon cannot plant"
+    assert '"canary.check" ->' in kotlin_task, "the android beacon cannot look"
+    assert 'case "canary.plant":' in go_tasks, "the go beacon cannot plant"
+    assert 'case "canary.check":' in go_tasks, "the go beacon cannot look"
+
+    # The console has a command for it, and the document says what it is.
+    assert "run_canary" in cli_src
+    assert 'sub.add_parser("canary"' in cli_src
+    assert "| `canary.plant` |" in protocol
+    assert "| `canary.check` |" in protocol
+
+    token = b"canary-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-canary", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+
+        # A tripwire is planted on the host.
+        planted = client.canary_plant("agent-canary", "the web server")
+        assert planted.get("id"), planted
+        assert planted.get("state") == "planted", planted
+        canary_id = planted["id"]
+
+        # The secret of the file never travels to the console.
+        listed = client.canary_list()
+        assert listed["count"] == 1, listed
+        assert "token" not in listed["canaries"][0], listed
+        assert listed["canaries"][0]["label"] == "the web server", listed
+
+        # The planting reaches the host.
+        task_id = planted["task_id"]
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the planting never came back"
+        record = client.task(task_id)
+        assert record.get("state") == "done", record
+        meta = record.get("meta") or {}
+        assert meta.get("attested") is True, (
+            "the server did not verify the attestation of the planting")
+        path = meta.get("canary_path")
+        assert path, meta
+
+        # The look: the file is as it was planted.
+        checked = client.canary_check(agent_id="agent-canary")
+        check_task = checked["tasks"][0]["task_id"]
+        assert wait_until(
+            lambda: client.task(check_task).get("state") in ("done", "failed"),
+            timeout=15), "the look never came back"
+        assert wait_until(
+            lambda: client.canary_get(canary_id).get("state") == "intact",
+            timeout=10), "the ledger did not learn the verdict"
+        assert client.canary_get(canary_id).get("verdict"), (
+            "the verdict of the implant did not reach the ledger")
+
+        # Somebody else was on the machine: the file changed.
+        with open(path, "wb") as handle:
+            handle.write(b"somebody else was here")
+        checked = client.canary_check(agent_id="agent-canary")
+        check_task = checked["tasks"][0]["task_id"]
+        assert wait_until(
+            lambda: client.task(check_task).get("state") in ("done", "failed"),
+            timeout=15), "the look never came back"
+        assert wait_until(
+            lambda: client.canary_get(canary_id).get("state") == "changed",
+            timeout=10), "the ledger did not learn that the file was touched"
+
+        # And then the file is gone.
+        os.remove(path)
+        checked = client.canary_check(agent_id="agent-canary")
+        check_task = checked["tasks"][0]["task_id"]
+        assert wait_until(
+            lambda: client.task(check_task).get("state") in ("done", "failed"),
+            timeout=15), "the look never came back"
+        assert wait_until(
+            lambda: client.canary_get(canary_id).get("state") == "missing",
+            timeout=10), "the ledger did not learn that the file is gone"
+
+        # The operator stops watching it: the file stays where it is.
+        removed = client.canary_remove(canary_id)
+        assert removed.get("removed") is True, removed
+        assert client.canary_list()["count"] == 0
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_file_of_a_host_is_one_page():
+    """The dossier: everything the server knows about a host, on one page.
+
+    A dossier that says only "the host is fine" is a dossier nobody can
+    act on: the work that was run, the persistence, the tripwires and
+    the requests are counted, and what is not known is said as well.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    dossier_go = read_text("server/internal/dossier/dossier.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    server_go = read_text("server/internal/link/server.go")
+
+    # The dossier is a package of its own.
+    assert "package dossier" in dossier_go, "there is no file of a host"
+    assert "func Build(" in dossier_go
+    assert "func (d Dossier) Line()" in dossier_go
+
+    # The server answers the two commands of the dossier.
+    for command in ("dossier.get", "dossier.list"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # The reader of the dossier is a viewer.
+    assert re.search(r'"dossier.get":\s+Viewer,', rbac)
+    assert re.search(r'"dossier.list":\s+Viewer,', rbac)
+
+    # The server gathers it from the store, the health and the ledgers.
+    assert "func (s *Server) Dossier(" in server_go
+    assert "health.Score(" in server_go
+    assert "s.Canaries.ForHost(" in server_go
+    assert "s.Approvals.List(" in server_go
+
+    # And the console has a command for it.
+    assert "run_dossier" in cli_src
+    assert 'sub.add_parser("dossier"' in cli_src
+    assert "print_dossier" in cli_src
+
+    token = b"dossier-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        with server._lock:
+            now = int(time.time())
+            server.agents["web-01"] = {
+                "id": "web-01",
+                "host": "web-01.local",
+                "os": "linux",
+                "arch": "amd64",
+                "user": "root",
+                "state": "online",
+                "transport": "tcp",
+                "sleep": 60,
+                "jitter": 10,
+                "last_seen": now,
+                "first_seen": now - 3600,
+                "checkins": 7,
+                "version": "1.2.3",
+                "tags": ["dc-01"],
+                "persist": [
+                    {"technique": "systemd.user", "name": "the beacon",
+                     "trigger": "logon", "location": "/home/root/.config",
+                     "state": "installed"},
+                    {"technique": "cron.d", "name": "the beacon",
+                     "trigger": "boot", "location": "/etc/cron.d/beacon",
+                     "state": "broken"},
+                ],
+                "posture": {"label": "production server"},
+            }
+            server.tasks["t-1"] = {
+                "id": "t-1", "agent_id": "web-01", "kind": "hunt.scan",
+                "state": "done", "created": now - 60, "completed": now - 50,
+                "args": {}, "out": b"", "err": "",
+            }
+            server.tasks["t-2"] = {
+                "id": "t-2", "agent_id": "web-01", "kind": "wipe.survey",
+                "state": "failed", "created": now - 40, "completed": now - 30,
+                "args": {}, "out": b"", "err": "the host did not answer",
+            }
+            server.canaries["c-0001"] = {
+                "id": "c-0001", "label": "the web server", "token": "secret",
+                "agent_id": "web-01", "kind": "file", "state": "changed",
+                "planted_at": now - 120, "checked_at": now - 30, "note": "",
+                "verdict": "",
+            }
+            server.approvals["a-0001"] = {
+                "id": "a-0001", "kind": "forensics.wipe", "agent_id": "web-01",
+                "args": {}, "reason": "the engagement is over",
+                "requested_by": "alice", "requested_at": now - 60,
+                "state": "pending", "decided_by": "", "decided_at": 0,
+                "note": "", "expires_at": now + 600,
+            }
+
+        # The file of the host.
+        dossier = client.dossier_get("web-01")
+        assert dossier.get("id") == "web-01", dossier
+        assert dossier.get("host") == "web-01.local", dossier
+        assert dossier.get("tasks_done") == 1, dossier
+        assert dossier.get("tasks_failed") == 1, dossier
+        assert dossier.get("persist_broken") == 1, dossier
+        assert dossier.get("posture") == "production server", dossier
+        assert dossier.get("kinds", {}).get("hunt.scan") == 1, dossier
+        assert len(dossier.get("canaries") or []) == 1, dossier
+        assert len(dossier.get("approvals") or []) == 1, dossier
+        assert dossier.get("summary"), dossier
+        assert any("touched" in line for line in dossier["summary"]), dossier
+        assert dossier.get("gaps") is not None, dossier
+
+        # A host the server never saw is a gap, not a page of nothing.
+        with server._lock:
+            server.agents["ghost-01"] = {
+                "id": "ghost-01", "host": "ghost-01.local", "os": "linux",
+                "arch": "amd64", "state": "offline", "last_seen": 0,
+                "first_seen": 0, "checkins": 0,
+            }
+        ghost = client.dossier_get("ghost-01")
+        assert ghost.get("gaps"), ghost
+        assert any("never answered" in gap for gap in ghost["gaps"]), ghost
+
+        # The list of the files, the weakest host first.
+        listed = client.dossier_list()
+        assert listed["count"] == 2, listed
+        assert listed["dossiers"][0]["id"] == "ghost-01", listed
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_console_reaches_the_approvals_the_tripwires_and_the_dossiers():
+    """The console has a command for every part of the new work.
+
+    A command nobody can type is a command that does not exist, so the
+    parser knows the approvals, the tripwires and the dossiers.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["approval", "list"])
+    assert args.cmd == "approval" and args.approval_cmd == "list"
+    args = parser.parse_args(["approval", "request", "forensics.wipe",
+                               "--agent", "web-01", "--reason", "the end"])
+    assert args.approval_cmd == "request" and args.kind == "forensics.wipe"
+    assert args.agent == "web-01" and args.reason == "the end"
+    args = parser.parse_args(["approval", "approve", "a-0001", "--note", "ok"])
+    assert args.approval_cmd == "approve" and args.id == "a-0001"
+    args = parser.parse_args(["approval", "deny", "a-0001"])
+    assert args.approval_cmd == "deny" and args.id == "a-0001"
+
+    args = parser.parse_args(["canary", "list"])
+    assert args.cmd == "canary" and args.canary_cmd == "list"
+    args = parser.parse_args(["canary", "plant", "--agent", "web-01",
+                               "--label", "the web server"])
+    assert args.canary_cmd == "plant" and args.agent == "web-01"
+    assert args.label == "the web server"
+    args = parser.parse_args(["canary", "check", "--all", "--wait"])
+    assert args.canary_cmd == "check" and args.all is True
+    args = parser.parse_args(["canary", "remove", "c-0001"])
+    assert args.canary_cmd == "remove" and args.id == "c-0001"
+
+    args = parser.parse_args(["dossier", "list"])
+    assert args.cmd == "dossier" and args.dossier_cmd == "list"
+    args = parser.parse_args(["dossier", "show", "web-01"])
+    assert args.dossier_cmd == "show" and args.agent == "web-01"
