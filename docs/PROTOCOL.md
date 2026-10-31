@@ -587,7 +587,7 @@ Operator RPC commands, with the minimum role each requires:
 | `audit.verify` | operator | walk the chain of hashes of the ledger and say where it breaks |
 | `chat.history` | viewer | recent chat |
 | `schedule.list` | viewer | recurring tasks |
-| `task.submit` | operator | queue a task |
+| `task.submit` | operator | queue a task; optional `deadline`, `timeout`, `source` (the shelf it came from) and `idem` (the key of a retried request: a second submission with the same key inside five minutes answers with the task the first made, `duplicate: true`) |
 | `task.bulk` | operator | queue one task on many agents: `agents` (list) and/or `filter` |
 | `task.chain` | operator | queue a multi-stage task: `stages` is a list of `{kind, args}` |
 | `alerts.list` | viewer | the alert rules the server watches the event stream with |
@@ -2547,8 +2547,11 @@ a team wants when a phone is lost.
 The codes follow RFC 6238 with HMAC-SHA1 and six digits, which is what
 the authenticator applications of every phone understand, and the
 server accepts a window of one step (thirty seconds) on each side: the
-clock of a phone is not the clock of the server.  The comparison is
-constant time, the file of the secrets belongs to the server alone
+clock of a phone is not the clock of the server.  A code is spent by use:
+the step it answered to is remembered, so a code that opened one session
+cannot open a second inside its window — a second factor that can be
+replayed is only a password that changes every thirty seconds.  The
+comparison is constant time, the file of the secrets belongs to the server alone
 (`0o600`), and an operator may rotate or remove its own second factor
 while somebody else's is the work of an admin.
 

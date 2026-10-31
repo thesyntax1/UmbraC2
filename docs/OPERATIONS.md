@@ -1510,8 +1510,12 @@ before the reply is sent:
   unit) because that is the only directory the unit can write to
   (`ProtectSystem=strict`). Ship it off-box: a server that can rewrite its own
   audit log is not an audit log.
-* `audit_max_mb` (default 8) rotates the file to `*.1`…`*.5`; old files are
-  never truncated in place.
+* `audit_max_mb` (default 8) rotates the file to `*.1`…`*.N`, where N is
+  `audit_keep_files` (default 5, at most 100); old files are never truncated
+  in place.  The policy is a bound: a rotation writes a new file and removes
+  the one past the keep, so a long engagement occupies a known part of the
+  disk instead of all of it.  Write the number into the engagement plan —
+  "eight megabytes, five generations" is a sentence an auditor can check.
 * Free-form fields (arguments, errors) are clipped to 512 characters, so one
   huge `--args` blob cannot make a line unbounded.
 * An audit write failure is logged and the RPC still completes — a full disk
