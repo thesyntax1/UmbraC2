@@ -691,6 +691,41 @@ exactly the kind of thing the log exists to show.
     wipe is not in the list, and a host that answers late is not in the
     report: the console names the hosts that did not answer instead of
     hiding them.
+23. **The hunt is a hunt for what the host can reach.**  The indicators
+    are matched exactly, but the walk is bounded (20 000 files,
+    256 MiB, 24 levels), and a hunt that hit a bound says so.  A host
+    that hides a file outside the roots the operator named, or inside a
+    container it cannot enter, is not found by the hunt — the report
+    names the roots it walked and the limits it reached, and a finding
+    of "not found" is only a statement about what was looked at.
+24. **The hunt reads the host; it never changes it.**  This is the rule
+    that keeps the hunt admissible as evidence: an implant that removed
+    a file while it hunted would destroy the very thing the operator is
+    looking for.  The framework has no task that hunts and writes in
+    the same breath.
+25. **The health of the fleet is the health of what the server can see.**
+    The score is made of the last answer of the host, the record of its
+    work and the last posture it reported; a host that is alive but
+    partitioned answers nothing and is scored as lost, and a host that
+    answers but lies about its posture is only as good as its report.
+    The score says how the engagement is going, not whether the host is
+    trustworthy.
+26. **The chain of custody proves that nothing was edited; it does not
+    prove that the evidence was taken lawfully.**  The hash of an
+    artefact and the hash of every hand it passed through are in the
+    case, and an edit breaks the chain at the event where it happened.
+    What the case does not carry is the authority under which the
+    evidence was collected: the server records what the operator did,
+    not why they were allowed to do it.  The attestation of a report
+    (the `attest` field, the HMAC-SHA256 of the report under the key of
+    the agent) says that the bytes came from the agent and were not
+    changed on the way; it says nothing about the host they describe.
+27. **The catalogue of the indicators is as sensitive as the indicators.**
+    The catalogue is a list of the hashes, the paths and the mutexes
+    the team is looking for, and it is written with the mode `0600`
+    next to the state file.  It is not encrypted at rest the way the
+    artifact store can be, so a deployment that treats the catalogue as
+    sensitive has to protect the data directory itself.
 
 ## 6. Hardening advice
 

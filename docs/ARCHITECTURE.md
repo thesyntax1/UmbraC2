@@ -62,6 +62,9 @@ main: load config → build keyring → open store → start listeners
 | `stager` | stager generation | PowerShell and Bash, one per transport; the download stager, the store stager, the offline stager and the digest shim; the agent key never reaches the audit log |
 | `coff` | object inspection | the server parses a module before it is pushed to an agent |
 | `mtls` | TLS configuration | mutual TLS for the operator listener, plain TLS for the agent listener |
+| `hunt` | the catalogue of the indicators | the catalogue the team shares: a hash, a path, a mutex, a registry key, a certificate, a process or a service; it lives next to the state file and survives the wipe of the engagement |
+| `health` | the score of the fleet | five parts (reachability, cadence, capacity, persistence, posture), every part with its reason; the score of a host that is gone is capped, and a laboratory machine is `suspect` |
+| `casefile` | the evidence files | the cases of the engagement, the artefacts with their hashes and the chain of custody: append-only, every event carries the hash of the one before it |
 
 ### Connection handling
 
@@ -262,6 +265,7 @@ main → Config (compile-time defaults + env/flags) → Beacon::run
 | `persist` | the persistence manager and its technique catalogue |
 | `forensics` | the zero-footprint wipe: the catalogue of the artefacts of the platform, the survey, the wipe, the verification, the surface, the journal, the dead man's switch and the end |
 | `senses` | the senses of the desktop: the window table, the clipboard, the screen, the networks, the browsers, the security software, the USB keys and the memory of a process |
+| `hunt` | the hunt: the indicators of the team looked for on the host, with the roots it walked and the limits it reached |
 
 Choices worth knowing:
 
@@ -391,7 +395,13 @@ The phone is a peer of the team, not a toy:
   the metadata of the task.  The label keeps a signature over a report
   from being a signature over a frame, and the label and one report of
   the contract live in `contracts/vectors.json`, so the four
-  implementations prove they produce the same bytes.
+  implementations prove they produce the same bytes;
+* the hunt has its own layer on the three platforms (`hunt.rs` in Rust,
+  `hunt.go` in Go, `Hunt.kt` on the phone): the indicators of the team
+  are matched exactly, the walk is bounded, and the report names the
+  roots it walked, the limits it reached and the kinds that do not apply
+  to the platform.  The hunt only reads: there is no task that hunts and
+  writes in the same breath.
 
 ## 5. The Go implant
 

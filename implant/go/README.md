@@ -80,6 +80,7 @@ server refuses to queue work that is not on it.
 | `forensics.timeline` | The timeline of the engagement on the host; the journal is written only while it is on. |
 | `decommission` | The end of the engagement on the host: the watchers stop, the traces are wiped, the binary goes and the verification follows. |
 | `wipe.deadman` | The dead man's switch: the implant ends itself when the operator has not checked in for the number of minutes the operator named. Zero disarms the switch. |
+| `hunt.scan` | The indicators of the team looked for on the host: a path, a process, a service or a hash. The hunt only reads; the report names the roots it walked, the limits it reached and the kinds that do not apply to the platform. |
 
 ## Building and running
 

@@ -513,6 +513,7 @@ Task kinds understood by the reference implants:
 | `forensics.timeline` | optional `journal` (`on`/`off`) | the timeline of the engagement on the host; the journal is written only while it is on |
 | `decommission` | optional `keep_state` | the end of the engagement on the host: the watchers stop, the persistence goes, the traces are wiped, the binary goes and the verification follows |
 | `wipe.deadman` | optional `minutes` (zero disarms the switch) | arms the dead man's switch: the implant ends itself when the operator has not checked in for that many minutes |
+| `hunt.scan` | `indicators` (list of `id`, `kind`, `value`, `label`), optional `roots` (list of directories) | the indicators of the team that are on this host: one line per finding, plus the kinds that do not apply to the platform and the limits of the walk (it changes nothing; the report is attested) |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -600,6 +601,16 @@ Operator RPC commands, with the minimum role each requires:
 | `forensics.self` | admin | queue the self-destruction of the implant on a host: `id` |
 | `forensics.decommission` | admin | queue the end of the engagement on a host: `id` |
 | `forensics.deadman` | admin | arm the dead man's switch of a host: `id`, `minutes` (zero disarms it) |
+| `hunt.list` | viewer | the catalogue of the indicators of the team; optional `query` (the value, the label, the note or the source) and `kind` |
+| `hunt.add` | operator | put an indicator into the catalogue: `kind`, `value`, optional `label`, `note` and `source` |
+| `hunt.remove` | operator | take an indicator out of the catalogue: `id` |
+| `hunt.sweep` | operator | send the catalogue to the hosts: `id` for one host, or `agents`/`filter`/`all` for a group; optional `roots` (the directories the hunt may walk) and `indicators` (the indicators of the moment, which are not written into the catalogue) |
+| `health.fleet` | viewer | the score of every host, worst first: the score, the grade, the parts of the score with their reasons and the notes |
+| `case.list` | viewer | the cases of the engagement, newest first |
+| `case.get` | viewer | one case with its evidence and its chain of custody: the events, their hashes and the place the chain breaks, if it breaks |
+| `case.create` | operator | open a case: `title`, optional `notes`; the chain of custody starts with it |
+| `case.add` | operator | put a piece of evidence into a case: `id`, `kind`, `ref`, optional `sha256`, `agent_id`, `task_id`, `size` and `note` |
+| `case.close` | operator | close a case: `id`, optional `note`; the last hand of the chain says who closed it |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -2130,6 +2141,58 @@ of the console and the files of its state directory, and scrubs the
 lines of the shell history that name the engagement while the rest of
 the history stays.  The ledger of the server is not a trace of the
 engagement: it is the record of it, and it is kept.
+
+### 7.2x The hunt, the health and the evidence files
+
+Three subsystems that look at the engagement from the outside.  They
+share one rule: they describe, they never act on their own.
+
+**The catalogue of the indicators.**  `hunt.add` puts an indicator into
+the catalogue of the team: a `kind` (`hash`, `path`, `mutex`,
+`registry`, `certificate`, `process` or `service`), the `value` itself,
+and the words the team uses for it (`label`, `note`, `source`).  The
+catalogue is shared and it lives next to the state file of the server,
+so an indicator that was found once is still there for the next
+engagement.  `hunt.list` searches it over the value, the label, the
+note and the source -- the operator remembers the ticket and not the
+hash -- and `hunt.remove` takes an indicator out of it.
+
+**The sweep.**  `hunt.sweep` sends the catalogue to the hosts: one host
+with `id`, or a group with `agents`/`filter`/`all`.  The task is
+`hunt.scan`, and its arguments are the `indicators` (a list of `id`,
+`kind`, `value` and `label`) and the optional `roots` -- the
+directories the hunt may walk.  Without `roots` the implant walks the
+home of the user, the temporary directory and its working directory;
+the whole of the disk is a decision the operator has to write down.
+
+The answer carries the findings, the `hunt_skipped` (the kinds that do
+not apply to that platform) and the `hunt_limits` (the bounds the walk
+reached).  The hunt only reads: no task hunts and writes in the same
+breath, because an implant that removed a file while it hunted would
+destroy the evidence it is looking for.
+
+**The score of the fleet.**  `health.fleet` scores every host out of a
+hundred and sorts them worst first.  The score is made of five parts --
+reachability (30), cadence (15), capacity (20), persistence (20) and
+posture (15) -- and every part travels with the sentence that explains
+it.  The grades are `healthy` (90 and above), `fair` (70), `poor` (40)
+and `lost`.  Two rules keep the scale honest: a host that has never
+answered scores nothing, because nothing about it is known; and a host
+that reports itself as a laboratory machine gets the grade `suspect` and
+a score of at most 24, however well it works.
+
+**The evidence files.**  `case.create` opens a case, `case.add` puts a
+piece of evidence into it (with its `sha256`, the `agent_id` and the
+`task_id` it came from), `case.get` shows it with its chain of
+custody, `case.list` shows the cases, and `case.close` closes one.
+Every hand the evidence passes through is an event with the hash of the
+event before it, so an event that is edited or removed after the fact
+breaks the chain, and the answer names the event where it breaks.  The
+cases live next to the state file and they survive both the restart of
+the server and the wipe of the engagement.
+
+**The console.**  `umbra hunt list|add|remove|sweep`, `umbra health` and
+`umbra case list|show|create|add|close`.
 
 ## 8. Transports
 

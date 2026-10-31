@@ -1892,6 +1892,134 @@ expired is refused at the handshake, not at the first call.
 quietly demoted an admin to an operator would be a surprise of the
 worst kind.
 
+## 5k. The hunt: the indicators of the team
+
+A wipe takes the traces of *our* engagement away; a hunt looks for the
+traces of somebody else.  The team keeps a catalogue of indicators — a
+hash, a path, a mutex, a registry key, a certificate, a process, a
+service — and asks the hosts whether they carry one of them.
+
+The catalogue is shared by the team and it outlives the engagement: an
+indicator that was found once is worth checking everywhere, so it lives
+next to the state file of the server (`hunt.json`), not inside it, and
+`engagement.wipe` does not throw it away.
+
+```bash
+# an indicator goes into the catalogue
+umbra hunt add --kind hash \
+  --value e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+  --label "the loader of TICKET-1138" --source TICKET-1138
+
+# the catalogue, and the part of it that matches
+umbra hunt list
+umbra hunt list --query march          # the label, the note or the source
+umbra hunt list --kind mutex
+
+# the hunt itself: one host, or a group
+umbra hunt sweep --agent web-01 --wait
+umbra hunt sweep --filter state=online --wait
+```
+
+**The hunt never changes a host.**  It reads, it reports, and the
+operator decides what to do with what it found.  An implant that removed
+a file while it hunted would be an implant destroying evidence.
+
+**The answer carries its limits.**  Hashing a file costs its whole
+content, so the walk is bounded (20 000 files, 256 MiB, 24 levels deep),
+and when the bound is reached the report says so.  A hunt that looked at
+half of the disk and answers "not found" is a hunt that lies; the report
+of a hunt that hit a limit carries the line `limit …` and the operator
+reads it.
+
+**The kinds that do not apply are named.**  A mutex, a registry key and
+a certificate are concepts of Windows; on a Linux host or on a phone the
+report says that the kind does not apply to the machine instead of
+pretending that it was checked.
+
+**The roots are the operator's decision.**  Without `--roots` the hunt
+walks the home of the user, the temporary directory and the working
+directory.  Walking the whole of the disk is slow and reads the material
+of the user, so the framework does not do it on its own.
+
+**The report of the hunt is signed.**  It carries the `attest` field, the
+HMAC-SHA256 of the report under the key of the agent, and the server
+marks the task `attested: true` when the signature holds.  A hunt that
+goes into an evidence file (`umbra case add`) is a hunt that has to be
+provable, and the signature travels with the bytes of the report.
+
+## 5l. The health of the fleet
+
+The health command scores every host of the engagement and sorts them
+worst first, because the question an operator has at the end of an
+engagement is "which machine do I look at".
+
+```bash
+umbra health
+umbra health --json
+```
+
+| part | weight | what it measures |
+|---|---|---|
+| reachability | 30 | did the host answer, and how long ago |
+| cadence | 15 | does the beacon keep the interval the operator asked for |
+| capacity | 20 | does the host do the work, or does it fail it |
+| persistence | 20 | is what the operator installed still there |
+| posture | 15 | what does the implant think of the machine |
+
+Every part carries the sentence that explains it, and the console prints
+those sentences under the score: a number an operator cannot explain is
+a number nobody acts on.
+
+The grades are `healthy` (90 and above), `fair` (70), `poor` (40) and
+`lost` (below).  Two rules keep the scale honest:
+
+* a host that has **never answered** scores nothing: nothing about it is
+  known, not even the parts that are usually remembered;
+* a host that reports itself as a **laboratory machine, a virtual
+  machine or a sandbox** gets the grade `suspect` and a score of at most
+  24, however well it works: it is not a host of the engagement.
+
+A host that has gone quiet for ten of its own intervals is capped at 24
+as well, so it cannot be read as a healthy host that happens to be
+silent.
+
+## 5m. The evidence files
+
+A case is the folder the operator hands to somebody else: the lawyer,
+the customer, the court.  It says what was found, where it was found and
+on which host, and it proves that nothing in it was changed after it was
+taken.
+
+```bash
+umbra case create "the ticket of March" --notes "the loader of the ticket"
+umbra case add c-0001 --kind screenshot --ref /var/lib/umbra/web-01.png \
+  --sha256 9f2c… --agent web-01 --task t-9f3a --note "the screen of the host"
+umbra case show c-0001
+umbra case close c-0001 --note "the engagement is over"
+```
+
+**Every artefact is hashed when it enters the case**, and the hash is
+what proves that the bytes did not change since they were taken.  The
+server never reads the bytes of the evidence on its own: the hash and the
+reference are what the operator gives it.
+
+**The chain of custody is append-only.**  Every hand the evidence passes
+through — opened, added, closed — is an event with the hash of the event
+before it.  An event that is edited or removed after the fact breaks the
+chain, and the answer names the event where it breaks:
+
+```bash
+umbra case show c-0001
+# THE CHAIN IS BROKEN at event 2: the hash of the event does not fit
+```
+
+A case with a broken chain is still shown.  Hiding it would be the one
+thing worse than showing it.
+
+The cases live next to the state file (`cases.json`), they survive the
+restart of the server and they survive `engagement.wipe`, because the
+record of the engagement outlives the engagement.
+
 ## 6. Monitoring
 
 ```bash
