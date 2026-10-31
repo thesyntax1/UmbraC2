@@ -210,6 +210,12 @@ var requirements = map[string]string{
 	"silence.add":    Operator,
 	"silence.list":   Viewer,
 	"silence.remove": Operator,
+	"onboard.add":    Operator,
+	"onboard.list":   Viewer,
+	"onboard.remove": Operator,
+	"onboard.run":    Operator,
+	"pivot.map":       Viewer,
+	"artifact.verify": Viewer,
 
 	// Reading the queue of the approvals and one request of it is a read:
 	// a viewer sees what the team is waiting for.

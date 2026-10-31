@@ -1170,6 +1170,57 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the welcome of a new host -----------------------------------------
+    def onboard_add(self, name: str, stages: List[Dict[str, Any]],
+                    **opts: Any) -> Dict[str, Any]:
+        """Write down the first five minutes of every new host."""
+        payload: Dict[str, Any] = {"name": name, "stages": stages}
+        for key in ("tag", "prefix", "once", "cooldown"):
+            if key in opts and opts[key] is not None:
+                payload[key] = opts[key]
+        res = self.rpc("onboard.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def onboard_list(self) -> Dict[str, Any]:
+        """The shelf of the welcome packs."""
+        res = self.rpc("onboard.list", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def onboard_remove(self, pack_id: str) -> Dict[str, Any]:
+        """Take a play out of the shelf."""
+        res = self.rpc("onboard.remove", {"id": pack_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def onboard_run(self, pack_id: str, agent_id: str) -> Dict[str, Any]:
+        """Run a play over a host by hand: the filters stay home."""
+        res = self.rpc("onboard.run", {"id": pack_id, "agent": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the map of the doors ----------------------------------------------
+    def pivot_map(self) -> Dict[str, Any]:
+        """The pivot graph as a tree: who stands behind whom."""
+        res = self.rpc("pivot.map", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the evidence keeps its word ----------------------------------------
+    def artifact_verify(self, name: str = "") -> Dict[str, Any]:
+        """Hash the store again and ask whether the blobs still answer
+        to their names.  One name checks one blob; empty checks them all."""
+        res = self.rpc("artifact.verify", {"name": name} if name else {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     # -- the file of a host ------------------------------------------------
     def dossier_get(self, agent_id: str) -> Dict[str, Any]:
         """The file of one host: what the server knows and what it did."""

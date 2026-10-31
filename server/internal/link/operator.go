@@ -2,6 +2,7 @@ package link
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/note"
+	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
@@ -2806,6 +2808,152 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"id": entryID, "removed": true})
 
+	// ---- the welcome of a new host ---------------------------------------
+	case "onboard.add":
+		// The first five minutes of a host, written down once.  The
+		// pack queues its stages through the same queue as the work an
+		// operator types, with the same breakers and the same dead
+		// letters: a playbook is a servant, not a second way in.
+		if s.Onboards == nil {
+			return fail("onboard.add: this server welcomes nobody")
+		}
+		name, _ := args["name"].(string)
+		stages := make([]onboard.Stage, 0)
+		for _, raw := range argsList(args["stages"]) {
+			stageArgs, _ := raw["args"].(map[string]any)
+			kind, _ := raw["kind"].(string)
+			stages = append(stages, onboard.Stage{Kind: kind, Args: stageArgs})
+		}
+		tag, _ := args["tag"].(string)
+		prefix, _ := args["prefix"].(string)
+		cooldown, _ := asInt64(args["cooldown"])
+		once := true
+		if raw, ok := args["once"].(bool); ok {
+			once = raw
+		}
+		play, err := s.Onboards.Add(onboard.Playbook{
+			Name: name, Stages: stages, Tag: tag, Prefix: prefix,
+			Once: once, Cooldown: cooldown, Creator: op.Name,
+		})
+		if err != nil {
+			return fail("onboard.add: %v", err)
+		}
+		if err := s.Onboards.Save(); err != nil {
+			s.Log.Warn("the shelf of the playbooks could not be saved", "err", err)
+		}
+		return reply(playbookMap(play))
+
+	case "onboard.list":
+		if s.Onboards == nil {
+			return fail("onboard.list: this server welcomes nobody")
+		}
+		plays := s.Onboards.List()
+		rows := make([]any, 0, len(plays))
+		for _, play := range plays {
+			rows = append(rows, playbookMap(play))
+		}
+		return reply(upk.Map{"playbooks": rows, "count": int64(len(rows))})
+
+	case "onboard.remove":
+		if s.Onboards == nil {
+			return fail("onboard.remove: this server welcomes nobody")
+		}
+		entryID, _ := args["id"].(string)
+		if err := s.Onboards.Remove(entryID); err != nil {
+			return fail("onboard.remove: %v", err)
+		}
+		if err := s.Onboards.Save(); err != nil {
+			s.Log.Warn("the shelf of the playbooks could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": entryID, "removed": true})
+
+	case "onboard.run":
+		// The manual welcome: the operator who runs a pack by hand
+		// means exactly that, so the filters and the "once" stay home.
+		if s.Onboards == nil {
+			return fail("onboard.run: this server welcomes nobody")
+		}
+		entryID, _ := args["id"].(string)
+		agentID, _ := args["agent"].(string)
+		queued, failedCount, err := s.Onboards.Run(entryID, agentID)
+		if err != nil {
+			return fail("onboard.run: %v", err)
+		}
+		if err := s.Onboards.Save(); err != nil {
+			s.Log.Warn("the shelf of the playbooks could not be saved", "err", err)
+		}
+		s.Hub.Emit(hub.Event{Kind: "onboard.fired", AgentID: agentID,
+			From: op.Name, Data: map[string]any{
+				"playbook": entryID, "queued": int64(queued),
+				"failed": int64(failedCount),
+			}})
+		return reply(upk.Map{"id": entryID, "agent": agentID,
+			"queued": int64(queued), "failed": int64(failedCount)})
+
+	// ---- the map of the doors ---------------------------------------------
+	case "pivot.map":
+		// The pivots as a tree: which host stands behind which
+		// listener, and how deep the chain goes.  The tunnels know
+		// their own path; the map only draws what the tunnels told.
+		tunnels := []pivot.TunnelInfo{}
+		if s.Pivot != nil {
+			tunnels = s.Pivot.List()
+		}
+		return reply(pivotTree(tunnels))
+
+	// ---- the evidence keeps its word --------------------------------------
+	case "artifact.verify":
+		// The manifest of the store says what each blob must be; the
+		// verify reads the bytes and asks again.  The digest is the
+		// name of the blob on the disk, so a blob that was swapped is
+		// a blob that no longer answers to its name.
+		if s.Artifacts == nil {
+			return fail("artifact.verify: this server has no store")
+		}
+		name, _ := args["name"].(string)
+		rows := make([]any, 0)
+		checked, broken := 0, 0
+		entries := s.Artifacts.List()
+		for _, entry := range entries {
+			if name != "" && entry.Name != name {
+				continue
+			}
+			row := upk.Map{
+				"name":    entry.Name,
+				"sha256":  entry.SHA256,
+				"size":    entry.Size,
+				"created": entry.Created.Format(time.RFC3339),
+				"updated": entry.Updated.Format(time.RFC3339),
+				"checked": time.Now().UTC().Format(time.RFC3339),
+			}
+			blob, _, err := s.Artifacts.Read(entry.Name)
+			switch {
+			case err != nil:
+				row["verified"] = false
+				row["error"] = err.Error()
+				broken++
+			default:
+				sum := sha256.Sum256(blob)
+				seen := hex.EncodeToString(sum[:])
+				if seen == entry.SHA256 && int64(len(blob)) == entry.Size {
+					row["verified"] = true
+				} else {
+					row["verified"] = false
+					row["found"] = seen
+					row["found_size"] = int64(len(blob))
+					broken++
+				}
+			}
+			checked++
+			rows = append(rows, row)
+		}
+		if name != "" && checked == 0 {
+			return fail("artifact.verify: no such artifact %q", name)
+		}
+		return reply(upk.Map{"artifacts": rows, "checked": int64(checked),
+			"broken": int64(broken),
+			"sealed":   s.Artifacts.Encrypted()})
+
 	// ---- the baseline of the paths the team watches ----------------------
 	case "baseline.add":
 		// The path of the baseline is named and the host is named: the
@@ -4554,6 +4702,133 @@ func watchMap(w silence.Watch) upk.Map {
 		out["last_fired"] = w.LastFired.Format(time.RFC3339)
 	}
 	return out
+}
+
+// argsList reads a list of small maps from an RPC argument, for the
+// stages of a welcome pack: a list of {"kind", "args"} on the wire.
+func argsList(v any) []map[string]any {
+	items, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// playbookMap renders one welcome pack: the stages, the gate and the
+// memory of how often it went out.
+func playbookMap(play onboard.Playbook) upk.Map {
+	stages := make([]any, 0, len(play.Stages))
+	for _, stage := range play.Stages {
+		row := upk.Map{"kind": stage.Kind}
+		if len(stage.Args) > 0 {
+			row["args"] = stage.Args
+		}
+		stages = append(stages, row)
+	}
+	out := upk.Map{
+		"id":      play.ID,
+		"name":    play.Name,
+		"stages":  stages,
+		"once":    play.Once,
+		"creator": play.Creator,
+		"created": play.Created.Format(time.RFC3339),
+		"fires":   int64(play.Fires),
+		"failed":  int64(play.Failed),
+	}
+	if play.Tag != "" {
+		out["tag"] = play.Tag
+	}
+	if play.Prefix != "" {
+		out["prefix"] = play.Prefix
+	}
+	if play.Cooldown > 0 {
+		out["cooldown"] = play.Cooldown
+	}
+	if !play.LastFire.IsZero() {
+		out["last_fire"] = play.LastFire.Format(time.RFC3339)
+		out["last_agent"] = play.LastAgent
+	}
+	return out
+}
+
+// pivotTree draws the pivots as a tree: each hop of a tunnel's way
+// home is a branch, and the listener hangs on the last hop.
+//
+// The manager vouches for every hop it built, so the map draws what
+// the tunnels told it, and nothing else.
+func pivotTree(tunnels []pivot.TunnelInfo) upk.Map {
+	type branch struct {
+		id       string
+		tunnels  int
+		children map[string]*branch
+	}
+	root := &branch{id: "server", children: map[string]*branch{}}
+	hosts := make(map[string]bool)
+	rows := make([]any, 0, len(tunnels))
+	deepest := 0
+	for _, t := range tunnels {
+		hops := append([]string(nil), t.Path...)
+		if len(hops) == 0 && t.Through != "" {
+			hops = []string{t.Through}
+		}
+		hops = append(hops, t.AgentID)
+		where := root
+		depth := 0
+		for _, hop := range hops {
+			if hop == "" {
+				continue
+			}
+			depth++
+			next, ok := where.children[hop]
+			if !ok {
+				next = &branch{id: hop, children: map[string]*branch{}}
+				where.children[hop] = next
+			}
+			where = next
+			hosts[hop] = true
+		}
+		where.tunnels++
+		if depth > deepest {
+			deepest = depth
+		}
+		parent := ""
+		if len(hops) > 1 {
+			parent = hops[len(hops)-2]
+		}
+		rows = append(rows, upk.Map{"host": t.AgentID, "parent": parent,
+			"depth": int64(depth),
+			"mode":  t.Mode, "state": t.State,
+			"listen": t.Listen, "streams": int64(t.Streams),
+			"bytes_up": int64(t.BytesUp), "bytes_down": int64(t.BytesDown)})
+	}
+	// render folds the branches into the wire shape, the ids in order.
+	var render func(b *branch, depth int) upk.Map
+	render = func(b *branch, depth int) upk.Map {
+		ids := make([]string, 0, len(b.children))
+		for id := range b.children {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		kids := make([]any, 0, len(ids))
+		for _, id := range ids {
+			kids = append(kids, render(b.children[id], depth+1))
+		}
+		return upk.Map{"agent_id": b.id, "depth": int64(depth),
+			"tunnels": int64(b.tunnels), "children": kids}
+	}
+	return upk.Map{
+		"tree":    render(root, 0),
+		"rows":    rows,
+		"hosts":   int64(len(hosts)),
+		"doors":   int64(len(tunnels)),
+		"deepest": int64(deepest),
+	}
 }
 
 // baselineMap renders one watched path for the wire.

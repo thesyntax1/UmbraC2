@@ -31,6 +31,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/note"
+	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
@@ -110,6 +111,11 @@ type Server struct {
 	// long.  Optional: without it the silence commands refuse instead
 	// of pretending to worry.
 	Silences *silence.Registry
+	// Onboards is the shelf of the welcome packs: the first five
+	// minutes of a new host, written down once and queued the moment
+	// the host first calls home.  Optional: without it the onboard
+	// commands refuse instead of pretending to welcome.
+	Onboards *onboard.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -221,6 +227,33 @@ func (s *Server) SetRhythm(r *rhythm.Registry) {
 
 // SetSilences attaches the registry of the watches of the silences.
 func (s *Server) SetSilences(v *silence.Registry) { s.Silences = v }
+
+// SetOnboards attaches the shelf of the welcome packs, taps the hub
+// with it, and wires its queue and its tag lookup to the store and the
+// queue every other task lives and dies by — so a task a playbook
+// queued is not a second, quieter way into the fleet, it is the same
+// way.
+func (s *Server) SetOnboards(o *onboard.Registry) {
+	s.Onboards = o
+	if o == nil || s.Hub == nil {
+		return
+	}
+	s.Hub.AddTap(func(ev hub.Event) { o.Event(ev.Kind, ev.AgentID) })
+	o.SetQueue(func(agentID, kind string, args map[string]any) (string, error) {
+		task, err := s.Hub.SubmitTask(agentID, kind, args)
+		if err != nil {
+			return "", err
+		}
+		return task.ID, nil
+	})
+	o.SetLookup(func(agentID string) ([]string, bool) {
+		agent, ok := s.Hub.Store().Agent(agentID)
+		if !ok {
+			return nil, false
+		}
+		return append([]string(nil), agent.Tags...), true
+	})
+}
 
 // SweepSilences says the word for every watch whose host has been quiet
 // past its pause: one event per watch, named `agent.silent`, so the

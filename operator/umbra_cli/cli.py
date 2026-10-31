@@ -1531,6 +1531,166 @@ def run_silence(client: OperatorClient, console: Console, args: Any) -> int:
     return 2
 
 
+def run_onboard(client: OperatorClient, console: Console, args: Any) -> int:
+    """The welcome packs: the first five minutes of a new host, written
+    down once.
+
+    Every engagement greets a new host the same way — the survey, the
+    security posture, the file that proves the day.  The pack is that
+    greeting, written down, and it fires the moment the host first calls
+    home: not a second way into the fleet, but the same queue every
+    other task goes through.
+    """
+    action = getattr(args, "onboard_cmd", "") or "list"
+    if action == "list":
+        payload = client.onboard_list()
+        if args.json:
+            emit(payload)
+        else:
+            rows = payload.get("playbooks") or []
+            if not rows:
+                print("the shelf of the plays is empty")
+                return 0
+            print(f"{len(rows)} plays")
+            for row in rows:
+                gate = []
+                if row.get("tag"):
+                    gate.append(f"tag {row['tag']}")
+                if row.get("prefix"):
+                    gate.append(f"id {row['prefix']}…")
+                gated = ("  for " + " and ".join(gate)) if gate else ""
+                repeat = "on every return" if not row.get("once") else "once"
+                cooldown = (f", every {row.get('cooldown')}s"
+                            if not row.get("once") and row.get("cooldown") else "")
+                fired = (f"  fired {row.get('fires', 0)}x"
+                         + (f" (last to {row.get('last_agent')})"
+                            if row.get("last_agent") else ""))
+                stages = row.get("stages") or []
+                kinds = ", ".join(str(s.get("kind", "?")) for s in stages)
+                print(f"  {row.get('id', '?'):<8} {row.get('name', '?'):<24}"
+                      f"  {repeat}{cooldown}{gated}{fired}")
+                print(f"           stages: {kinds}")
+        return 0
+    if action == "add":
+        stages = []
+        for spec in args.stages:
+            kind, _, rest = spec.partition(":")
+            kind = kind.strip()
+            if not kind:
+                print("onboard add: a stage without a kind is no stage",
+                      file=sys.stderr)
+                return 2
+            stage: Dict[str, Any] = {"kind": kind}
+            if rest.strip():
+                stage["args"] = parse_kv(rest)
+            stages.append(stage)
+        payload = client.onboard_add(
+            args.name, stages, tag=args.tag or None, prefix=args.prefix or None,
+            once=(not args.repeat),
+            cooldown=(args.cooldown or None))
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the play {payload.get('id')} is written:"
+                  f" {payload.get('name')} will greet the new hosts with"
+                  f" {len(payload.get('stages') or [])} stages")
+        return 0
+    if action == "remove":
+        payload = client.onboard_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the play {payload.get('id')} is off the shelf")
+        return 0
+    if action == "run":
+        payload = client.onboard_run(args.id, args.agent)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the play {payload.get('id')} went to {payload.get('agent')}:"
+                  f" {payload.get('queued')} stages queued"
+                  + (f", {payload.get('failed')} failed"
+                     if payload.get("failed") else ""))
+        return 0
+    print(f"unknown onboard command: {action}", file=sys.stderr)
+    return 2
+
+
+def run_pivot_map(client: OperatorClient, console: Console, args: Any) -> int:
+    """The doors as a tree: who stands behind whom.
+
+    The pivot list is a table of doors; the map is the shape of the
+    reach — every hop of the way home of a door is a branch, and the
+    door hangs on the last hop.  A host nobody tunnels through sits on
+    the first row; the hosts deeper are further in.
+    """
+    payload = client.pivot_map()
+    if args.json:
+        emit(payload)
+        return 0
+    tree = payload.get("tree") or {}
+    rows = payload.get("rows") or []
+    if not rows:
+        print("no doors are open")
+        return 0
+    print(f"{payload.get('doors', 0)} doors behind {payload.get('hosts', 0)} hosts,"
+          f" deepest chain {payload.get('deepest', 0)} hops"
+          + (f", {payload.get('detached')} detached"
+             if payload.get("detached") else ""))
+
+    def walk(node: Dict[str, Any], prefix: str, root: bool = False) -> None:
+        kids = node.get("children") or []
+        if root:
+            mark = node.get("agent_id", "server")
+            print(mark)
+        for i, kid in enumerate(kids):
+            last = i == len(kids) - 1
+            elbow = "└─" if last else "├─"
+            doors = kid.get("tunnels", 0)
+            tail = f"  ({doors} door{'s' if doors != 1 else ''})" if doors else ""
+            print(f"{prefix}{elbow} {kid.get('agent_id', '?')}{tail}")
+            walk(kid, prefix + ("    " if last else "│   "))
+
+    walk(tree, "", root=True)
+    return 0
+
+
+def run_artifact_verify(client: OperatorClient, console: Console, args: Any) -> int:
+    """Hash the store again: does each blob still answer to its name?
+
+    The manifest says what a blob must be; the verify reads the bytes and
+    asks again.  The digest is the name of the blob on the disk, so a blob
+    that was swapped is a blob that no longer answers to its name — and
+    the console says which one, not just that something is wrong.
+    """
+    payload = client.artifact_verify(args.name or "")
+    if args.json:
+        emit(payload)
+        return 0
+    rows = payload.get("artifacts") or []
+    if not rows:
+        print("the store holds nothing")
+        return 0
+    sealed = "sealed" if payload.get("sealed") else "in the clear"
+    for row in rows:
+        if row.get("verified"):
+            print(f"  ✔ {row.get('name', '?'):<32} {row.get('size', '?')} bytes")
+        else:
+            found = row.get("found", "?")
+            print(f"  ✘ {row.get('name', '?'):<32} the blob no longer answers"
+                  f" to its name")
+            print(f"      manifest says {row.get('sha256', '?')[:20]}…")
+            print(f"      the bytes say {found[:20]}…"
+                  f" ({row.get('found_size', '?')} bytes)")
+    broken = payload.get("broken", 0)
+    checked = payload.get("checked", 0)
+    if broken:
+        print(f"{checked} checked ({sealed}), {broken} broken", file=sys.stderr)
+        return 1
+    print(f"{checked} checked ({sealed}), every blob answers to its name")
+    return 0
+
+
 def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
     """The file of a host: what the server knows and what it did.
     The dossier is one page: the identity, the health, the work, the
@@ -3315,6 +3475,36 @@ def parse_filter(text: str) -> Dict[str, str]:
     return out
 
 
+def parse_kv(text: str) -> Dict[str, Any]:
+    """Parse the arguments of a stage (\"path=/etc/passwd,recursive=true\").
+
+    The stages of a welcome pack carry the same arguments a task would:
+    the words stay words, "true" and "false" become booleans, and the
+    numbers become numbers, so the queue sees the same shape an operator
+    would queue by hand.
+    """
+    out: Dict[str, Any] = {}
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        key, value = key.strip(), value.strip()
+        if not key:
+            continue
+        low = value.lower()
+        if low == "true":
+            out[key] = True
+        elif low == "false":
+            out[key] = False
+        else:
+            try:
+                out[key] = int(value)
+            except ValueError:
+                out[key] = value
+    return out
+
+
 # ---------------------------------------------------------------------------
 # local state database
 # ---------------------------------------------------------------------------
@@ -4457,6 +4647,55 @@ def build_parser() -> argparse.ArgumentParser:
     silence_remove.add_argument("id")
     silence_remove.add_argument("--json", action="store_true")
 
+    onboard_cmd = sub.add_parser(
+        "onboard",
+        help="the welcome packs: the first five minutes of a new host")
+    onboard_sub = onboard_cmd.add_subparsers(dest="onboard_cmd")
+
+    onboard_list = onboard_sub.add_parser("list", help="the plays on the shelf")
+    onboard_list.add_argument("--json", action="store_true")
+
+    onboard_add = onboard_sub.add_parser(
+        "add", help="write down the first five minutes")
+    onboard_add.add_argument("name")
+    onboard_add.add_argument(
+        "stages", nargs="+",
+        help="the stages, each as kind:key=value,... — "
+             "e.g. sysinfo hash:path=/etc/passwd")
+    onboard_add.add_argument("--tag", default="",
+                             help="only hosts carrying the tag receive it")
+    onboard_add.add_argument("--prefix", default="",
+                             help="only hosts whose id begins with it receive it")
+    onboard_add.add_argument("--repeat", action="store_true",
+                             help="fire also on returns of a host, "
+                                  "not only its first hello")
+    onboard_add.add_argument("--cooldown", type=int, default=0,
+                             help="seconds between the returns a --repeat "
+                                  "pack answers (default 3600)")
+    onboard_add.add_argument("--json", action="store_true")
+
+    onboard_remove = onboard_sub.add_parser("remove", help="take a play out")
+    onboard_remove.add_argument("id")
+    onboard_remove.add_argument("--json", action="store_true")
+
+    onboard_run = onboard_sub.add_parser(
+        "run", help="run a play over a host by hand")
+    onboard_run.add_argument("id")
+    onboard_run.add_argument("agent")
+    onboard_run.add_argument("--json", action="store_true")
+
+    pivot_map_cmd = sub.add_parser(
+        "pivot-map",
+        help="the doors as a tree: who stands behind whom")
+    pivot_map_cmd.add_argument("--json", action="store_true")
+
+    artifact_verify_cmd = sub.add_parser(
+        "artifact-verify",
+        help="hash the store again: does each blob answer to its name?")
+    artifact_verify_cmd.add_argument("name", nargs="?", default="",
+                                     help="one blob; without one, all of them")
+    artifact_verify_cmd.add_argument("--json", action="store_true")
+
     persist_list = sub.add_parser("persist-list",
                                   help="what is installed on an agent")
     persist_list.add_argument("agent")
@@ -5120,6 +5359,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_rhythm(client, console, args)
         elif args.cmd == "silence":
             return run_silence(client, console, args)
+        elif args.cmd == "onboard":
+            return run_onboard(client, console, args)
+        elif args.cmd == "pivot-map":
+            return run_pivot_map(client, console, args)
+        elif args.cmd == "artifact-verify":
+            return run_artifact_verify(client, console, args)
         elif args.cmd == "baseline":
             return run_baseline(client, console, args)
         elif args.cmd == "otp":

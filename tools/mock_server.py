@@ -1178,6 +1178,14 @@ class MockServer:
         # when a host has been quiet for too long.
         self.silences: Dict[str, Dict[str, Any]] = {}
         self._silence_seq = 0
+        # The shelf of the welcome packs: the first five minutes of a
+        # new host, written down once, and fired the moment the host
+        # first calls home.
+        self.onboards: Dict[str, Dict[str, Any]] = {}
+        self._onboard_seq = 0
+        # which packs fired on which host, and when: the "once" and the
+        # cooldown live in the memory, like the Go registry's fired map.
+        self.onboard_fired: Dict[str, Dict[str, float]] = {}
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -2336,6 +2344,67 @@ class MockServer:
             opener = link
         return opener, opener.open_stream(host, port)
 
+    def _pivot_map(self) -> Dict[str, Any]:
+        """The pivots as a tree: which host stands behind which listener.
+
+        The same picture as the Go server's pivot.tree: every hop of a
+        tunnel's walk home is a branch, and the door hangs on the last
+        hop.  The manager vouches for every hop it built, so the map
+        draws what the tunnels told it, and nothing else.
+        """
+        with self._lock:
+            tunnels = [dict(t) for t in self.pivots.values()]
+
+        def new_branch(ident: str) -> Dict[str, Any]:
+            return {"agent_id": ident, "depth": 0, "tunnels": 0,
+                    "children": []}
+
+        root = new_branch("server")
+        index: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        rows: List[Dict[str, Any]] = []
+        hosts: set = set()
+        deepest = 0
+        for tun in tunnels:
+            hops = list(tun.get("path", []) or [])
+            if not hops and tun.get("through"):
+                hops = [tun["through"]]
+            hops = [h for h in hops if h] + [tun.get("agent_id", "")]
+            where = root
+            depth = 0
+            for i, hop in enumerate(hops):
+                if not hop:
+                    continue
+                depth += 1
+                key = (where["agent_id"], hop)
+                kid = index.get(key)
+                if kid is None:
+                    kid = new_branch(hop)
+                    kid["depth"] = depth
+                    where["children"].append(kid)
+                    index[key] = kid
+                where = kid
+                hosts.add(hop)
+            where["tunnels"] += 1
+            deepest = max(deepest, depth)
+            row = {"host": tun.get("agent_id", ""),
+                   "parent": hops[-2] if len(hops) > 1 else "",
+                   "depth": depth, "mode": tun.get("mode", ""),
+                   "state": tun.get("state", ""),
+                   "listen": tun.get("listen", ""),
+                   "streams": tun.get("streams", 0),
+                   "bytes_up": tun.get("bytes_up", 0),
+                   "bytes_down": tun.get("bytes_down", 0)}
+            rows.append(row)
+
+        def sort_kids(node: Dict[str, Any]) -> None:
+            node["children"].sort(key=lambda b: b["agent_id"])
+            for kid in node["children"]:
+                sort_kids(kid)
+
+        sort_kids(root)
+        return {"tree": root, "rows": rows, "hosts": len(hosts),
+                "doors": len(tunnels), "deepest": deepest}
+
     def _pivot_topology(self) -> Dict[str, Any]:
         """The picture of the reach.
 
@@ -2513,6 +2582,57 @@ class MockServer:
             beats.append(_now())
             if len(beats) > 256:
                 del beats[:len(beats) - 256]
+        # The welcome packs land the moment the host first calls home,
+        # and the returning hosts are greeted too, when a pack asks.
+        self._fire_onboards(agent_id, is_new)
+
+    def _fire_onboards(self, agent_id: str, is_new: bool) -> None:
+        """Queue the welcome packs that match the arrival of a host.
+
+        The rules are the rules of the Go registry: a pack that goes
+        once answers only the first hello of each host, a returning host
+        answers the other packs as long as the cooldown has passed, and
+        the stage of a pack goes to the same queue as every task, so the
+        host sees no difference.
+        """
+        with self._lock:
+            packs = [dict(p) for p in self.onboards.values()]
+            tags = [str(t) for t in self.agents.get(agent_id, {}).get("tags", [])]
+        now = _now()
+        jobs: List[Tuple[str, List[Dict[str, Any]]]] = []
+        for pack in packs:
+            if pack["once"] and not is_new:
+                continue
+            fired = self.onboard_fired.get(pack["id"], {}).get(agent_id, 0.0)
+            if pack["once"] and fired:
+                continue
+            if not pack["once"] and not is_new:
+                cooldown = int(pack.get("cooldown") or 3600)
+                if fired and now - fired < cooldown:
+                    continue
+            if pack.get("tag") and pack["tag"] not in tags:
+                continue
+            if pack.get("prefix") and not agent_id.startswith(pack["prefix"]):
+                continue
+            jobs.append((pack["id"], [dict(s) for s in pack["stages"]]))
+        for pack_id, stages in jobs:
+            queued = 0
+            for stage in stages:
+                try:
+                    self._queue_task(agent_id, str(stage["kind"]),
+                                     dict(stage.get("args") or {}))
+                    queued += 1
+                except Exception:
+                    pass
+            with self._lock:
+                pack = self.onboards.get(pack_id)
+                if pack is not None:
+                    pack["fires"] += 1
+                    pack["last_fire"] = now
+                    pack["last_agent"] = agent_id
+                self.onboard_fired.setdefault(pack_id, {})[agent_id] = now
+            self.emit("onboard.fired", agent_id,
+                      data={"playbook": pack_id, "queued": queued})
 
     def _agent_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
         sess = result.session
@@ -3570,6 +3690,12 @@ class MockServer:
         "rhythm.fleet": "viewer",
         "creds.reuse": "viewer",
         "silence.add": "operator",
+        "onboard.add": "operator",
+        "onboard.list": "viewer",
+        "onboard.remove": "operator",
+        "onboard.run": "operator",
+        "pivot.map": "viewer",
+        "artifact.verify": "viewer",
         "silence.list": "viewer",
         "silence.remove": "operator",
         # The second factor: reading who has one is a read; making one
@@ -5398,6 +5524,129 @@ class MockServer:
                     return fail(f"silence.remove: no such watch {watch_id!r}")
                 del self.silences[watch_id]
             return ok({"id": watch_id, "removed": True})
+
+        # ---- the welcome of a new host ------------------------------------
+        if cmd == "onboard.add":
+            # The first five minutes of a host, written down once.
+            name = str(args.get("name", "") or "").strip()
+            if not name:
+                return fail("onboard.add: the playbook was not named")
+            stages: List[Dict[str, Any]] = []
+            for row in args.get("stages") or []:
+                stage = dict(row or {})
+                kind = str(stage.get("kind", "") or "").strip()
+                if not kind:
+                    return fail("onboard.add: a stage is not a task kind")
+                stages.append({"kind": kind,
+                               "args": dict(stage.get("args") or {})})
+            if not stages:
+                return fail("onboard.add: a playbook without stages welcomes nobody")
+            if len(stages) > 16:
+                return fail("onboard.add: the pack is a deployment, not a welcome")
+            with self._lock:
+                if len(self.onboards) >= 64:
+                    return fail("onboard.add: the shelf of the playbooks is full")
+                for pack in self.onboards.values():
+                    if pack["name"] == name:
+                        return fail("onboard.add: a playbook has this name already")
+                self._onboard_seq += 1
+                pack_id = f"w-{self._onboard_seq:04d}"
+                pack = {
+                    "id": pack_id, "name": name, "stages": stages,
+                    "tag": str(args.get("tag", "") or "").strip(),
+                    "prefix": str(args.get("prefix", "") or "").strip(),
+                    "once": bool(args.get("once", True)),
+                    "cooldown": int(args.get("cooldown") or 3600),
+                    "creator": operator, "created": _now(),
+                    "fires": 0, "last_fire": 0.0, "last_agent": "",
+                    "failed": 0,
+                }
+                self.onboards[pack_id] = pack
+                out = dict(pack)
+            return ok(out)
+
+        if cmd == "onboard.list":
+            with self._lock:
+                rows = [dict(p) for p in self.onboards.values()]
+            rows.sort(key=lambda pack: pack["id"])
+            return ok({"playbooks": rows, "count": len(rows)})
+
+        if cmd == "onboard.remove":
+            pack_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if pack_id not in self.onboards:
+                    return fail(f"onboard.remove: no such playbook {pack_id!r}")
+                del self.onboards[pack_id]
+                self.onboard_fired.pop(pack_id, None)
+            return ok({"id": pack_id, "removed": True})
+
+        if cmd == "onboard.run":
+            # The manual welcome: by hand, the filters and the "once"
+            # stay home.
+            pack_id = str(args.get("id", "") or "").strip()
+            agent_id = str(args.get("agent", "") or "").strip()
+            with self._lock:
+                pack = self.onboards.get(pack_id)
+                if pack is None:
+                    return fail(f"onboard.run: no such playbook {pack_id!r}")
+                if agent_id not in self.agents:
+                    return fail(f"onboard.run: no such agent {agent_id!r}")
+                stages = [dict(s) for s in pack["stages"]]
+            queued = 0
+            failed_count = 0
+            for stage in stages:
+                try:
+                    self._queue_task(agent_id, str(stage["kind"]),
+                                     dict(stage.get("args") or {}))
+                    queued += 1
+                except Exception:
+                    failed_count += 1
+            with self._lock:
+                pack = self.onboards.get(pack_id)
+                if pack is not None:
+                    pack["fires"] += 1
+                    pack["failed"] += failed_count
+                    pack["last_fire"] = _now()
+                    pack["last_agent"] = agent_id
+                self.onboard_fired.setdefault(pack_id, {})[agent_id] = _now()
+            self.emit("onboard.fired", agent_id, sender=operator,
+                      data={"playbook": pack_id, "queued": queued,
+                            "failed": failed_count})
+            return ok({"id": pack_id, "agent": agent_id,
+                       "queued": queued, "failed": failed_count})
+
+        # ---- the map of the doors ------------------------------------------
+        if cmd == "pivot.map":
+            return ok(self._pivot_map())
+
+        # ---- the evidence keeps its word -----------------------------------
+        if cmd == "artifact.verify":
+            name = str(args.get("name", "") or "").strip()
+            rows: List[Dict[str, Any]] = []
+            checked = broken = 0
+            with self._lock:
+                entries = [dict(e) for name_e, e in self.artifacts.items()
+                           if not name or name_e == name]
+            for entry in sorted(entries, key=lambda e: e["name"]):
+                data = entry.get("data", b"")
+                seen = hashlib.sha256(data).hexdigest()
+                ok_row = seen == entry.get("sha256") and len(data) == int(entry.get("size") or -1)
+                row = {
+                    "name": entry["name"], "sha256": entry.get("sha256", ""),
+                    "size": int(entry.get("size") or 0),
+                    "created": entry.get("created"), "updated": entry.get("updated"),
+                    "checked": _now(), "verified": ok_row,
+                }
+                if not ok_row:
+                    row["found"] = seen
+                    row["found_size"] = len(data)
+                    broken += 1
+                checked += 1
+                rows.append(row)
+            if name and not checked:
+                return fail(f"artifact.verify: no such artifact {name!r}")
+            return ok({"artifacts": rows, "checked": checked,
+                       "broken": broken, "sealed": False})
 
         # ---- the file of a host --------------------------------------------
         if cmd in ("dossier.get", "dossier.list"):

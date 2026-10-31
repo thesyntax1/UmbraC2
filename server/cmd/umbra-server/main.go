@@ -46,6 +46,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
 	"github.com/thesyntax1/UmbraC2/server/internal/mtls"
 	"github.com/thesyntax1/UmbraC2/server/internal/note"
+	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
@@ -273,6 +274,17 @@ func run() error {
 		logger.Warn("the ledger of the silences could not be read", "err", err)
 	}
 	srv.SetSilences(silences)
+
+	// The shelf of the welcome packs: the first five minutes of a new
+	// host, written down once and fired the moment the host first
+	// calls home.  The ledger lives beside the state file, and the
+	// packs queue their stages through the hub like any other work.
+	onboards := onboard.New()
+	onboards.SetPath(onboardPath(cfg.Server.DataFile))
+	if err := onboards.Load(); err != nil {
+		logger.Warn("the shelf of the playbooks could not be read", "err", err)
+	}
+	srv.SetOnboards(onboards)
 
 	// The baseline of the watched paths: the size, the digest and the
 	// drift of each, on the hosts the team watches.  The file belongs
@@ -667,6 +679,20 @@ func otpPath(dataFile string) string {
 		return filepath.Join("data", "otp.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "otp.json")
+}
+
+// onboardPath is where the ledger of the welcome packs is kept.
+//
+// The pack must survive a restart: the host that returns after the
+// server was bounced is still greeted once, not twice, and the pack
+// the team wrote on Friday still waits for the host that comes home
+// on Monday.  The file lives beside the state file, for the server
+// alone.
+func onboardPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "onboard.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "onboard.json")
 }
 
 // canaryPath is where the ledger of the tripwires is kept.
