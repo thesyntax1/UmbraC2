@@ -13,7 +13,7 @@ Everything a deployment owns lives under the data directory named in
 |---|---|---|---|
 | `state.json` (+ `.bak`, `.bak.1` …) | agents, tasks, chat, schedules, tags, notes, holds | time and work | **no** — this is the engagement |
 | `audit.jsonl` (+ rotated generations) | the operator ledger, a hash chain | every operator call | **no** — this is the record |
-| `audit.head` | the anchored head of the chain (`0600`) | constant | no, and it is what makes a truncation visible |
+| `audit.jsonl.head` | the anchored head of the chain (`0600`) | constant | no, and it is what makes a truncation visible |
 | `approval.json` | the queue of the two-person rule | decisions | no |
 | `otp.json` | the sealed second factors of the operators | operators | no — and it must be restored with the vault key |
 | `artifacts/` | the file store, optionally encrypted | uploads | no |
@@ -84,7 +84,7 @@ Said plainly, because an unstated loss is the loss that hurts:
 * **The second factors, if the vault key is not restored with them.** `otp.json`
   is sealed under `vault_key`; without the key it is a file of noise and every
   operator has to re-enrol.
-* **`audit.head` if it is restored from an older copy than the ledger**: the
+* **`audit.jsonl.head` if it is restored from an older copy than the ledger**: the
   ledger then looks like it grew after the anchor, which is exactly what a
   normal run looks like.  Restore the anchor *with* the ledger, or restore
   neither and re-anchor.

@@ -127,3 +127,46 @@ func entryDigest(t *testing.T, store *Store, name string) string {
 	}
 	return entry.SHA256
 }
+
+// TestANameCannotLeaveTheStore is the evidence for SEC-013: the store key is a
+// name, not a path, and every spelling that could climb out of the directory
+// is refused before the file is opened.
+//
+// The decision is enforced in checkName, which Append calls first; this test
+// is what makes the decision a verification row instead of a promise in a
+// document.
+func TestANameCannotLeaveTheStore(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	bad := []string{
+		"",
+		" ",
+		".",
+		"..",
+		"../outside",
+		"a/b",
+		`a\b`,
+		"nul\x00byte",
+		strings.Repeat("x", MaxNameLength+1),
+	}
+	for _, name := range bad {
+		if _, err := st.Append(name, 0, []byte("x")); !errors.Is(err, ErrBadName) {
+			t.Errorf("Append(%q) returned %v, want ErrBadName", name, err)
+		}
+	}
+	// And the directory is still the only thing the store wrote to.
+	if _, err := os.Stat(filepath.Join(dir, "..", "outside")); !os.IsNotExist(err) {
+		t.Fatalf("a refused name created a file outside the store: %v", err)
+	}
+	for _, name := range []string{"beacon.exe", "a.b-c_d", "ünïcode-name"} {
+		// A name that is not a pending upload is refused with ErrOffset,
+		// which proves it got past the name check: the check is the only
+		// thing this test is about.
+		if _, err := st.Append(name, 0, []byte("x")); errors.Is(err, ErrBadName) {
+			t.Errorf("Append(%q) refused a legitimate name: %v", name, err)
+		}
+	}
+}

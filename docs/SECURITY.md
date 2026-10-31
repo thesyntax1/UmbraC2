@@ -809,6 +809,12 @@ exactly the kind of thing the log exists to show.
 
 ## 5. Known limitations (v0.1)
 
+> The decisions this page describes are indexed by id, with the code and the
+> test that enforce each one, in [`SECURITY-DECISIONS.md`](SECURITY-DECISIONS.md).
+> The architectural limits that an evaluator asks about first — tenancy, the
+> single process, the audit trail's edge — are in
+> [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md).
+
 1. **No TLS in the implants.** The TCP and WebSocket transports of the Rust
    beacon are plain TCP: the payload is AEAD-sealed, but traffic shape and
    port are visible. Because the client side has no TLS stack, a

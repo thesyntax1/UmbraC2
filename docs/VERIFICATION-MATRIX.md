@@ -234,7 +234,7 @@ code that exists and has never been executed here.
 | Queue, breakers, holds | Implemented (thin) | `server/internal/hub` | 4 functions for a 5-file package |
 | Credential vault | Partially | `server/internal/hub` | stores/reveals tested through `link`; no unit test of the vault |
 | Dashboard | Implemented | `server/internal/dash` | 4 Go functions + the jsdom smoke test |
-| Artifact store | Implemented | `server/internal/artifact` | 4 functions, traversal refused |
+| Artifact store | Implemented | `server/internal/artifact` | 5 functions, incl. **new** `TestANameCannotLeaveTheStore` (traversal refused) |
 | Pivot manager | **Not Verified** | `server/internal/pivot` | 6 files, 0 tests; exercised only through `link` e2e |
 | Layer-3 tunnel (`vpn`) | **Not Verified** | `server/internal/vpn` | 2 files, 0 tests |
 | Armory (signed extensions) | **Not Verified** | `server/internal/armory` | 3 files, 0 tests; signature path unexercised |

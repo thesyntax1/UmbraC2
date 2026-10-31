@@ -228,6 +228,8 @@ UmbraC2/
 | [docs/SECURITY.md](docs/SECURITY.md) | threat model, cryptographic choices, attack surface, limitations |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | the certificate rotation, the recovery procedure, the maintenance window, the stuck queue |
 | [docs/VERIFICATION-MATRIX.md](docs/VERIFICATION-MATRIX.md) | what works, what is only claimed, and the test behind each row |
+| [docs/SECURITY-DECISIONS.md](docs/SECURITY-DECISIONS.md) | the register of security decisions: id, enforcement, test, status |
+| [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md) | tenancy, the single process, and what has never been executed |
 | [docs/BACKUP-RECOVERY.md](docs/BACKUP-RECOVERY.md) | what is on the disk, what a restore can lose, the measured RTO, the drill |
 
 ## Tests
