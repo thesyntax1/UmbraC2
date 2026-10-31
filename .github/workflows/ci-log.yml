@@ -1,0 +1,108 @@
+name: ci-log
+
+# TEMPORARY, and deleted the moment ci.yml is green.
+#
+# The job log of a failed GitHub Actions run lives on a blob host that the
+# network this repository is maintained from cannot reach: the API only hands
+# back a redirect to it.  That makes a red job an exit code and a dozen
+# annotation lines, which is not enough to fix 36 compiler errors without
+# guessing.
+#
+# So this workflow runs the two failing builds, writes the *whole* compiler
+# output into a file, and commits it to a branch of its own.  A branch is
+# reachable with `git fetch`, which is all the audit needs.  It never touches
+# main and it never runs the tests -- it is a postbox, not a gate.
+
+on:
+  push:
+    branches: ["arena/af25ce6b-umbrac2"]
+
+permissions:
+  contents: read
+
+jobs:
+  rust-log:
+    name: rust log
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4              # zizmor: ignore[unpinned-uses]
+      - uses: dtolnay/rust-toolchain@stable    # zizmor: ignore[unpinned-uses]
+
+      - name: cargo check, full output
+        working-directory: implant/rust
+        run: |
+          {
+            echo "cargo: $(cargo --version)"
+            echo "rustc: $(rustc --version)"
+            echo "head:  $(git rev-parse HEAD)"
+            echo
+          } > /tmp/rust.log
+          cargo check --locked --all-targets --message-format=short >> /tmp/rust.log 2>&1 || true
+          echo >> /tmp/rust.log
+          echo "=== one error per line ===" >> /tmp/rust.log
+          grep -E '^(src|tests)/|^error' /tmp/rust.log | head -200 >> /tmp/rust-summary.txt || true
+          wc -l /tmp/rust.log
+
+      - name: publish it
+        run: |
+          set -e
+          mkdir -p ci-log
+          cp /tmp/rust.log ci-log/rust-check.log
+          [ -f /tmp/rust-summary.txt ] && cp /tmp/rust-summary.txt ci-log/rust-summary.txt
+          git config user.name "umbra-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -B ci/log-rust
+          git add -f ci-log
+          git commit -m "log: cargo check of $(git rev-parse --short HEAD)" || true
+          git push --force origin ci/log-rust
+
+  android-log:
+    name: android log
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4              # zizmor: ignore[unpinned-uses]
+      - uses: actions/setup-java@v5            # zizmor: ignore[unpinned-uses]
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4   # zizmor: ignore[unpinned-uses]
+        with:
+          gradle-version: "8.7"
+
+      - name: assembleDebug, full output
+        working-directory: implant/android
+        env:
+          UMBRA_HOST: 127.0.0.1
+          UMBRA_PORT: "4001"
+          UMBRA_TRANSPORT: tcp
+          UMBRA_PSK: 00000000000000000000000000000000000000000000000000000000000000ff
+          UMBRA_AGENT_ID: ci-build
+        run: |
+          {
+            echo "java:   $(java -version 2>&1 | head -1)"
+            echo "gradle: $(gradle --version 2>/dev/null | grep '^Gradle' || true)"
+            echo "head:   $(git rev-parse HEAD)"
+            echo
+          } > /tmp/android.log
+          gradle --no-daemon assembleDebug >> /tmp/android.log 2>&1 || true
+          grep -E '^e: |^w: .*error|FAILURE|What went wrong' /tmp/android.log | head -100 > /tmp/android-summary.txt || true
+          wc -l /tmp/android.log
+
+      - name: publish it
+        run: |
+          set -e
+          mkdir -p ci-log
+          cp /tmp/android.log ci-log/android-build.log
+          [ -f /tmp/android-summary.txt ] && cp /tmp/android-summary.txt ci-log/android-summary.txt
+          git config user.name "umbra-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -B ci/log-android
+          git add -f ci-log
+          git commit -m "log: assembleDebug of $(git rev-parse --short HEAD)" || true
+          git push --force origin ci/log-android
