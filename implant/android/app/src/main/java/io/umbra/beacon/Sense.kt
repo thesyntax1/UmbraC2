@@ -293,7 +293,8 @@ object Sense {
                     "source" to "scan",
                     "ssid" to scrubSsid(scan.SSID),
                     "bssid" to (scan.BSSID ?: ""),
-                    "rssi" to "${scan.rssi}",
+                    // ScanResult calls the signal strength level.
+                    "rssi" to "${scan.level}",
                     "frequency" to "${scan.frequency}",
                     "capabilities" to (scan.capabilities ?: ""),
                     "timestamp" to "${scan.timestamp}",
