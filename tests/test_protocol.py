@@ -9827,3 +9827,406 @@ def test_the_machine_of_the_operator_is_a_host_too():
         assert not os.path.exists(notebook), "the notebook is still there"
         assert not os.path.exists(export), "the export is still there"
         assert result["removed"], result
+
+
+def test_the_catalogue_of_the_indicators_is_shared_and_searchable():
+    """The hunt: the indicators of the team live in one catalogue.
+
+    An indicator that was found once is worth checking everywhere, so
+    the catalogue is shared, it is written to the disk next to the state
+    of the server, and it is searched by the words of the team and not
+    only by the hash.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    hunt_go = read_text("server/internal/hunt/hunt.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The catalogue is a package of its own, with a lock and a file.
+    assert "package hunt" in hunt_go, "there is no catalogue of the indicators"
+    assert "func (c *Catalogue) Add(" in hunt_go
+    assert "func (c *Catalogue) Search(" in hunt_go
+    assert "func (c *Catalogue) Save(" in hunt_go
+    assert "func (c *Catalogue) Load(" in hunt_go
+    assert "0o600" in hunt_go, "the catalogue is not written for the owner only"
+
+    # The server answers the four commands of the hunt.
+    for command in ("hunt.add", "hunt.list", "hunt.remove", "hunt.sweep"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # The reader of the catalogue is a viewer; the writer is an operator.
+    assert re.search(r'"hunt.list":\s+Viewer,', rbac)
+    assert re.search(r'"hunt.add":\s+Operator,', rbac)
+    assert re.search(r'"hunt.remove":\s+Operator,', rbac)
+    assert re.search(r'"hunt.sweep":\s+Operator,', rbac)
+
+    # And the console has a command for it.
+    assert "run_hunt" in cli_src
+    assert 'sub.add_parser("hunt"' in cli_src
+
+    token = b"hunt-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+
+        # An indicator goes into the catalogue.
+        added = client.hunt_add("hash", "a" * 64, label="the loader of March",
+                                source="TICKET-1138")
+        assert added.get("id"), added
+        assert added.get("kind") == "hash", added
+        assert added.get("value") == "a" * 64, added
+
+        # The catalogue is searched by the words of the team.
+        listed = client.hunt_list(query="March")
+        assert listed["count"] == 1, listed
+        assert listed["indicators"][0]["label"] == "the loader of March", listed
+        assert listed["indicators"][0]["source"] == "TICKET-1138", listed
+
+        # The same indicator is not added twice.
+        with pytest.raises(Exception):
+            client.hunt_add("hash", "a" * 64)
+
+        # An indicator without a value is refused.
+        with pytest.raises(Exception):
+            client.hunt_add("path", "  ")
+
+        # And it leaves the catalogue when the team says so.
+        removed = client.hunt_remove(added["id"])
+        assert removed.get("removed") is True, removed
+        assert client.hunt_list()["count"] == 0
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_hunt_runs_on_every_implementation():
+    """The hunt is a task kind: the rust, the kotlin and the go beacon.
+
+    The hunt never changes the host: it reads, it reports, and the
+    operator decides what to do with what it found.  Every implant says
+    so in the limits of its answer, because a hunt that looked at half of
+    the disk and says "not found" is a hunt that lies.
+    """
+    rust = read_text("implant/rust/src/hunt.rs")
+    rust_task = read_text("implant/rust/src/task.rs")
+    rust_lib = read_text("implant/rust/src/lib.rs")
+    kotlin = read_text("implant/android/app/src/main/java/io/umbra/beacon/Hunt.kt")
+    kotlin_task = read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    go_hunt = read_text("implant/go/internal/beacon/hunt.go")
+    go_tasks = read_text("implant/go/internal/beacon/tasks.go")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The task kind is understood by the three implants.
+    assert '"hunt.scan" =>' in rust_task, "the rust beacon cannot hunt"
+    assert '"hunt.scan" ->' in kotlin_task, "the android beacon cannot hunt"
+    assert 'case "hunt.scan":' in go_tasks, "the go beacon cannot hunt"
+
+    # The module of the hunt is a file of its own in every language.
+    assert "pub mod hunt;" in rust_lib, "the rust module of the hunt is missing"
+    assert "object Hunt" in kotlin, "the kotlin module of the hunt is missing"
+    assert "package beacon" in go_hunt, "the go module of the hunt is missing"
+
+    # The hunt never changes the host, and the limits are reported.
+    for source, name in ((rust, "rust"), (kotlin, "kotlin"), (go_hunt, "go")):
+        assert "never changes" in source, (
+            f"the {name} hunt does not say that it only reads")
+        assert "limit" in source.lower(), f"the {name} hunt reports no limit"
+
+    # The kinds of the indicator are the same everywhere.
+    for kind in ("hash", "path", "process", "service", "mutex", "registry",
+                 "certificate"):
+        assert kind in rust, f"the rust hunt does not know {kind}"
+        assert kind in go_hunt, f"the go hunt does not know {kind}"
+
+    # And the document says what the kind is.
+    assert "| `hunt.scan` |" in protocol, "the hunt is not in the protocol"
+
+
+def test_the_report_of_the_hunt_is_provable():
+    """The hunt is signed like every other report of the engagement.
+
+    A hunt that goes into an evidence file has to be provable: the
+    report carries the signature of the agent, and the server checks it
+    the way it checks the signature of a wipe.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    rust_task = read_text("implant/rust/src/task.rs")
+    kotlin_task = read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    go_tasks = read_text("implant/go/internal/beacon/tasks.go")
+    mock = read_text("tools/mock_server.py")
+
+    # Every implant signs the report of the hunt.
+    assert '"hunt.scan" => attested_answer(ctx, crate::hunt::scan(args))' in (
+        rust_task), "the rust beacon does not sign the report of the hunt"
+    assert "attested(Hunt.render(report, items))" in kotlin_task, (
+        "the android beacon does not sign the report of the hunt")
+    assert "b.attested(b.taskHuntScan(args))" in go_tasks, (
+        "the go beacon does not sign the report of the hunt")
+    assert 'meta["attest"] = crypto.attest(self.psk, report).hex()' in mock, (
+        "the reference server does not sign the report of the hunt")
+
+    token = b"hunt-attest-token-01234567"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-hunt", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+        client.hunt_add("hash", "b" * 64, label="the loader of April")
+        swept = client.hunt_sweep(agent_id="agent-hunt")
+        task_id = swept["task_id"]
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the hunt never came back"
+        record = client.task(task_id)
+        assert record.get("state") == "done", record
+        meta = record.get("meta") or {}
+        assert meta.get("attested") is True, (
+            "the server did not verify the attestation of the hunt")
+        assert meta.get("attest"), "the signature did not reach the server"
+        assert "hunt_found" in meta, "the numbers of the hunt are missing"
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_fleet_is_scored_and_explained():
+    """The fleet is scored, and the score carries its reasons.
+
+    A score an operator cannot explain is a score nobody acts on, so
+    every part of the score says why it is what it is, and the hosts are
+    sorted worst first: the operator reads the top of the list.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    health_go = read_text("server/internal/health/health.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The score is a package of its own, with the five parts of it.
+    assert "package health" in health_go, "there is no score of the fleet"
+    for part in ("reachability", "cadence", "capacity", "persistence",
+                 "posture"):
+        assert part in health_go, f"the score has no {part}"
+    assert "func ScoreFleet(" in health_go
+    assert "func Grade(" in health_go
+
+    # The server answers the one command of the health.
+    assert 'case "health.fleet"' in operator, "the server has no health.fleet"
+    assert 'self.rpc("health.fleet"' in client_src, (
+        "the console cannot reach health.fleet")
+    assert re.search(r'"health.fleet":\s+Viewer,', rbac)
+    assert 'sub.add_parser("health"' in cli_src
+    assert "print_health_fleet" in cli_src
+
+    token = b"health-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        payload = client.health_fleet()
+        assert payload.get("count") == 0, payload
+        assert payload.get("average") == 0, payload
+        assert "counts" in payload, payload
+
+        # A host that checked in is scored, and the score has reasons.
+        with server._lock:
+            now = int(time.time())
+            server.agents["web-01"] = {
+                "id": "web-01",
+                "host": "web-01.local",
+                "os": "linux",
+                "arch": "amd64",
+                "user": "root",
+                "state": "online",
+                "transport": "tcp",
+                "sleep": 60,
+                "jitter": 10,
+                "last_seen": now,
+                "checkins": 3,
+                "caps": [],
+                "persist": [{"technique": "cron", "state": "installed"}],
+                "posture": {"label": "production server"},
+            }
+            server.agents["ghost-01"] = {
+                "id": "ghost-01",
+                "host": "ghost-01.local",
+                "os": "linux",
+                "arch": "amd64",
+                "user": "root",
+                "state": "offline",
+                "transport": "tcp",
+                "sleep": 60,
+                "jitter": 10,
+                "last_seen": 0,
+                "checkins": 0,
+                "caps": [],
+                "persist": [],
+                "posture": {},
+            }
+        payload = client.health_fleet()
+        assert payload.get("count") == 2, payload
+        reports = payload["reports"]
+        # The worst host comes first.
+        assert reports[0]["agent_id"] == "ghost-01", reports
+        assert reports[0]["score"] < reports[1]["score"], reports
+        assert reports[0]["grade"] in ("lost", "poor"), reports
+        assert reports[0]["notes"], "the lost host has no reason"
+        parts = {p["name"] for p in reports[1]["parts"]}
+        assert parts == {"reachability", "cadence", "capacity", "persistence",
+                         "posture"}, reports
+        for part in reports[1]["parts"]:
+            assert part["note"], f"the part {part['name']} has no reason"
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_chain_of_custody_cannot_be_edited():
+    """The evidence of the engagement is a chain of hashes.
+
+    Every piece of evidence is hashed when it enters the case, and every
+    hand the evidence passes through is written into a chain that is
+    append-only.  An event that is edited after the fact breaks the
+    chain, and the answer names the event where it breaks.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    case_go = read_text("server/internal/casefile/casefile.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The case is a package of its own, with a chain of hashes.
+    assert "package casefile" in case_go, "there is no registry of the cases"
+    assert "func Verify(" in case_go, "the chain cannot be verified"
+    assert "func (r *Registry) Export(" in case_go, (
+        "the case file cannot be written for the handover")
+
+    for command in ("case.create", "case.list", "case.get", "case.add",
+                    "case.close"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    assert re.search(r'"case.list":\s+Viewer,', rbac)
+    assert re.search(r'"case.get":\s+Viewer,', rbac)
+    assert re.search(r'"case.create":\s+Operator,', rbac)
+    assert re.search(r'"case.add":\s+Operator,', rbac)
+    assert re.search(r'"case.close":\s+Operator,', rbac)
+
+    assert 'sub.add_parser("case"' in cli_src
+    assert "run_case" in cli_src
+
+    token = b"case-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+
+        # A case is opened by somebody, at a time.
+        opened = client.case_create("the ticket of March", "the loader")
+        case_id = opened.get("id")
+        assert case_id, opened
+        assert opened.get("head"), opened
+
+        # A piece of evidence enters the case with its hash.
+        artefact = client.case_add(case_id, "screenshot", "/var/lib/web-01.png",
+                                   sha256="ab" * 32, agent_id="web-01",
+                                   task_id="t-1", note="the screen")
+        assert artefact.get("sha256") == "ab" * 32, artefact
+        assert artefact.get("taken_by") == "alice", artefact
+
+        # The case carries the evidence and the chain.
+        got = client.case_get(case_id)
+        assert got.get("intact") is True, got
+        assert len(got.get("artefacts") or []) == 1, got
+        assert len(got.get("events") or []) == 2, got
+        for event in got["events"]:
+            assert event.get("hash"), event
+            assert event.get("prev") is not None, event
+
+        # An event that is edited after the fact breaks the chain, and
+        # the answer names the event where it breaks.
+        with server._lock:
+            server.cases[case_id]["events"][0]["note"] = "somebody changed it"
+        broken = client.case_get(case_id)
+        assert broken.get("intact") is False, broken
+        assert int(broken.get("broken_at", 0)) == 1, broken
+        assert broken.get("reason"), broken
+
+        # The list says that the chain is broken, too.
+        listed = client.case_list()
+        assert listed["count"] == 1, listed
+        assert listed["cases"][0]["intact"] is False, listed
+
+        # A closed case takes no more evidence.
+        closed = client.case_close(case_id, "the engagement is over")
+        assert closed.get("state") == "closed", closed
+        with pytest.raises(Exception):
+            client.case_add(case_id, "report", "/tmp/x", sha256="cd" * 32)
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_console_reaches_the_hunt_the_health_and_the_cases():
+    """The console has a command for every part of the new work.
+
+    A command nobody can type is a command that does not exist, so the
+    parser knows the hunt, the health and the cases, and each of them
+    reaches the server.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["hunt", "list"])
+    assert args.cmd == "hunt" and args.hunt_cmd == "list"
+    args = parser.parse_args(["hunt", "add", "--kind", "hash", "--value", "ab"])
+    assert args.hunt_cmd == "add" and args.kind == "hash"
+    args = parser.parse_args(["hunt", "remove", "i-0001"])
+    assert args.hunt_cmd == "remove" and args.id == "i-0001"
+    args = parser.parse_args(["hunt", "sweep", "--all", "--roots", "/tmp,/opt"])
+    assert args.hunt_cmd == "sweep" and args.all is True
+
+    args = parser.parse_args(["health"])
+    assert args.cmd == "health"
+
+    args = parser.parse_args(["case", "list"])
+    assert args.cmd == "case" and args.case_cmd == "list"
+    args = parser.parse_args(["case", "show", "c-0001"])
+    assert args.case_cmd == "show" and args.id == "c-0001"
+    args = parser.parse_args(["case", "create", "the ticket of March"])
+    assert args.case_cmd == "create" and args.title == "the ticket of March"
+    args = parser.parse_args(["case", "add", "c-0001", "--ref", "/tmp/x"])
+    assert args.case_cmd == "add" and args.ref == "/tmp/x"
+    args = parser.parse_args(["case", "close", "c-0001", "--note", "done"])
+    assert args.case_cmd == "close" and args.note == "done"
