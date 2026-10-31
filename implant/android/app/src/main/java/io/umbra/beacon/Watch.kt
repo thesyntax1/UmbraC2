@@ -233,7 +233,9 @@ object SmsWatch {
      */
     private fun isDefaultMessenger(context: Context): Boolean {
         return try {
-            val roleManager = context.getSystemService(Context.ROLE_MANAGER) as? RoleManager
+            // There is no Context.ROLE_MANAGER: the role manager is asked
+            // for by its class, which is the documented way since API 23.
+            val roleManager = context.getSystemService(RoleManager::class.java)
             roleManager?.isRoleHeld(RoleManager.ROLE_SMS) ?: false
         } catch (_: Throwable) {
             false
@@ -353,11 +355,15 @@ object ClipboardWatch {
         if (registered) return "the watcher of the clipboard is already running"
         val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         if (manager == null) return "the phone has no clipboard"
+        // The listener of the platform takes no handler: it is called on the
+        // thread of the caller, so the capture is posted to the main looper
+        // itself.  The hidden two-argument overload was what asked for one.
+        val main = Handler(Looper.getMainLooper())
         val created = ClipboardManager.OnPrimaryClipChangedListener {
-            capture(context, manager)
+            main.post { capture(context, manager) }
         }
         return try {
-            manager.addPrimaryClipChangedListener(created, Handler(Looper.getMainLooper()))
+            manager.addPrimaryClipChangedListener(created)
             listener = created
             registered = true
             "the watcher of the clipboard is running"
