@@ -435,6 +435,55 @@ provable.
 clean: it proves that the paths that were named are as they were, or
 that they are not.  A machine that was never watched says nothing.
 
+## 3.12d The wires to the outside world
+
+The wires (`internal/hook`) are the way the news of the engagement
+leaves the server on purpose: an operator with the right role writes
+down a URL, and the server posts the matching events to it.
+
+**The wire tells and never asks.**  The server posts and reads nothing
+back but a status; it follows no redirect, so the words of the team
+cannot be talked into landing on a server nobody chose.  Each post is
+bounded (four seconds) and the posts are bounded in number (sixteen in
+the air at once): a receiver that hangs, answers slowly, or is a
+machine of the adversary cannot take a console or an agent into the
+wait with it, and the events that overflow are dropped loudly into the
+delivery book.
+
+**The posts are signed.**  When a wire has a secret, the body carries
+`X-Umbra-Signature: sha256=<HMAC-SHA256 hex>`.  The receiver checks it
+against its own copy of the word, so the world between the server and
+the wire cannot invent news.  The secrets live in `hooks.json`, written
+for the server alone (`0600`), and no answer of the server — not the
+list, not the dossier, not the digging box — ever contains one.
+
+**What the wires cannot do.**  A wire cannot call the server back:
+there is no answer channel, no inbound command, nothing that looks at
+what the receiver says beyond its status.  And the validation refuses
+what is not an address — http or https, a host, no fragment — but
+whether the place is the right one stays the call of the team: an
+address inside the network of the engagement is a way for its news to
+travel there, and the ledger says openly who wrote the wire down and
+when.
+
+## 3.12e The wall and the digging box
+
+Neither counts as a trust boundary, and both are honest about why.
+
+The wall (`attack.coverage`) is a statement, not a sensor: it counts
+the finished tasks of the team against a fixed table.  It says that
+`shell` was used three times on two hosts; it does not say that the
+host is mine, and a zero says the door was not tried — nothing more.
+
+The digging box (`search.query`) reads and never changes, so it is the
+read of a viewer.  Three of its manners are security, not courtesy:
+the bytes that do not look like words stay unsearched, so the box
+cannot be turned into a slow printer of screenshots; the secret of a
+credential is never part of what is searched or shown, so the box
+cannot be trolled for material equality; and the answer caps at two
+hundred hits, so a needle of one letter does not become a copy of the
+server's memory.
+
 ## 3.13 The versions of the protocol
 
 The handshake version is not a security boundary, and it is worth saying

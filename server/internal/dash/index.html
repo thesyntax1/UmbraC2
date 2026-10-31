@@ -194,6 +194,45 @@
   </section>
 
   <section>
+    <h2>the wall</h2>
+    <div class="note" id="attackHead">The ATT&amp;CK techniques the team has used are counted against the catalogue; a door nobody tried is a zero.</div>
+    <div class="scroll">
+      <table id="attack">
+        <thead><tr><th>technique</th><th>name</th><th>tactic</th><th>tasks</th><th>hosts</th><th>last</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note" id="attackUnmapped"></div>
+  </section>
+
+  <section>
+    <h2>the wires</h2>
+    <div class="scroll">
+      <table id="hooks">
+        <thead><tr><th>wire</th><th>url</th><th>kinds</th><th>last post</th><th>when</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The wires carry the events to the places the team chose — a chat room, a pager, a ticket queue. The posts are signed with the word of each wire, and the wire tells and never asks.</div>
+  </section>
+
+  <section>
+    <h2>the box</h2>
+    <form id="digForm" class="row">
+      <input id="digNeedle" placeholder="the needle" autocomplete="off" />
+      <select id="digScope">
+        <option value="all">everything</option>
+        <option value="tasks">the tasks</option>
+        <option value="notes">the notes</option>
+        <option value="creds">the creds</option>
+      </select>
+      <button type="submit">dig</button>
+    </form>
+    <pre id="digOut"></pre>
+    <div class="note">One needle through the records: the tasks, the notes and the credentials. Small letters match any casing; a capital means what it says.</div>
+  </section>
+
+  <section>
     <h2>workflows</h2>
     <div class="scroll">
       <table id="workflows">
@@ -586,6 +625,63 @@
 
   // The queue of the two-person rule: the requests that wait for a
   // decision and the ones that were decided.
+  // The wall of the techniques: the finished work of the team counted
+  // against the catalogue of the trade.  The doors nobody tried are no
+  // rows of the table; the count of them is said next to the heading.
+  function refreshAttack() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "attack.coverage", args: {} })
+    }).then(function (answer) {
+      var data = answer.data || {};
+      var body = document.querySelector("#attack tbody");
+      body.innerHTML = "";
+      ((data.techniques) || []).forEach(function (row) {
+        if (!row.tasks) {
+          return;
+        }
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.id || "";
+        tr.insertCell().textContent = row.name || "";
+        tr.insertCell().textContent = row.tactic || "";
+        tr.insertCell().textContent = row.tasks || 0;
+        tr.insertCell().textContent = (row.agents || []).length;
+        tr.insertCell().textContent = (row.last || "never").slice(0, 10);
+      });
+      document.getElementById("attackHead").textContent =
+        "The wall: " + (data.covered || 0) + " of " + (data.total || 0) +
+        " techniques were used; a door nobody tried is a zero.";
+      var unmapped = (data.unmapped || []);
+      document.getElementById("attackUnmapped").textContent = unmapped.length
+        ? "kinds nobody mapped against the catalogue: " + unmapped.join(", ")
+        : "";
+    });
+  }
+
+  // The wires to the outside world: where the events are posted, and
+  // how the last post went.
+  function refreshHooks() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "hook.list", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#hooks tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.hooks) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.id || "";
+        tr.insertCell().textContent = row.url || "";
+        tr.insertCell().textContent = (row.kinds || []).join(", ") || "all";
+        var last = row.last || {};
+        tr.insertCell().textContent = last.err ? ("err: " + last.err)
+          : (last.status || "-");
+        tr.insertCell().textContent = (last.when || "-");
+      });
+    });
+  }
+
   function refreshApprovals() {
     return api("/api/rpc", {
       method: "POST",
@@ -718,6 +814,7 @@
       .then(refreshReach).then(refreshPersistence).then(refreshCredentials)
       .then(refreshOperators).then(refreshWorkflows).then(refreshAlerts)
       .then(refreshCanaries).then(refreshBaseline).then(refreshApprovals)
+      .then(refreshAttack).then(refreshHooks)
       .then(refreshOTP).then(refreshQueue).then(refreshOutput).catch(function (err) {
         state.textContent = "error: " + err.message;
         state.className = "off";
@@ -730,6 +827,50 @@
     state.textContent = "connected";
     state.className = "on";
     tick();
+  });
+
+  // The digging box: one needle through the records, each hit with
+  // the piece of the text around it.
+  document.getElementById("digForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var needle = document.getElementById("digNeedle").value.trim();
+    var out = document.getElementById("digOut");
+    if (!needle) {
+      out.textContent = "the needle was not written";
+      return;
+    }
+    api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "search.query", args: {
+        query: needle,
+        scope: document.getElementById("digScope").value
+      } })
+    }).then(function (answer) {
+      var data = answer.data || {};
+      var lines = [];
+      if (!data.count) {
+        out.textContent = "nothing carries that word";
+        return;
+      }
+      lines.push(data.count + " records carry the word");
+      [["tasks", "the tasks"], ["notes", "the notes"], ["creds", "the creds"]]
+        .forEach(function (pair) {
+          var rows = data[pair[0]] || [];
+          if (!rows.length) {
+            return;
+          }
+          lines.push("  " + pair[1]);
+          rows.forEach(function (hit) {
+            var record = hit.task_id || hit.note_id || hit.cred_id || "?";
+            lines.push("    " + record + "  [" + (hit.field || "?") + "]  " +
+                       (hit.snippet || ""));
+          });
+        });
+      out.textContent = lines.join("\n");
+    }).catch(function (err) {
+      out.textContent = "error: " + err.message;
+    });
   });
 
   document.getElementById("rpcForm").addEventListener("submit", function (ev) {

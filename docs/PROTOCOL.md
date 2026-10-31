@@ -637,6 +637,12 @@ Operator RPC commands, with the minimum role each requires:
 | `operator.otp.status` | viewer | who has a second factor, whether it is on, and how old the secret is. The secrets are never in the answer |
 | `operator.otp.rotate` | operator | make a new secret for an operator: optional `operator` (default: yourself) and `issuer` (the name the phone shows). The secret is in the answer once and never again |
 | `operator.otp.remove` | operator | take the second factor of an operator away: optional `operator` (default: yourself). The console of that operator works with the token alone from then on |
+| `hook.add` | operator | write a wire down: `url` (http or https), optional `kinds` (a name ending in `*` matches a beginning; the empty list is all) and `secret` (the word the posts are signed with, HMAC-SHA256 in the `X-Umbra-Signature` header). The server posts and never asks |
+| `hook.list` | viewer | the wires of the team, with the last post of each: `status`, `latency_ms` and `err` of the last delivery. The secret is never in the answer |
+| `hook.remove` | operator | take a wire out of the ledger: `id`. The posts it made stay made |
+| `hook.test` | operator | ring a wire once, marked `"test": true` so nobody is paged: `id`. The answer is the delivery itself |
+| `attack.coverage` | viewer | the wall of the ATT&CK techniques the team uses: optional `agent`. The answer is every technique with `tasks`, `agents` and `last`, the counts `covered`/`total`, and the `unmapped` kinds nobody taught the wall |
+| `search.query` | viewer | dig one needle through the tasks, the notes and the credentials: `query`, optional `scope` (`all`, `tasks`, `notes` or `creds`), `agent` and `limit` (≤ 200). A needle of small letters matches any casing; a capital means what it says. The secret of a credential is never searched and never shown |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -2290,6 +2296,49 @@ of the whole team, `note.show` shows one line, and `note.remove` takes
 it away.  The ledger lives next to the state file of the server, it is
 written for the server alone, and the dossier of a host carries the
 notes about it on the same page.
+
+**The wires to the outside world.**  A console watches the events by
+staying connected; the team that wants the news somewhere else — a
+chat room, a pager, a ticket queue — writes down a URL, and the server
+posts every event that matches to it.  A wire carries a list of kinds:
+a name matches exactly, a name ending in `*` matches a beginning, and
+the empty list carries everything.  The body of a post is the event
+the console would have seen, numbered the way the journal numbered it;
+when the wire has a secret the body is signed (`X-Umbra-Signature:
+sha256=…`, HMAC-SHA256 in hex), and the header `X-Umbra-Event` names
+the kind.  The wire is one-way: the server tells and never asks, the
+posts run in goroutines of their own so a slow receiver keeps nothing
+waiting, and when more posts run than the server allows the event is
+dropped down that wire and the delivery book says so.  `hook.add`
+writes a wire down, `hook.list` shows the wires with the last post of
+each (the secrets stay in the ledger, never in the answer),
+`hook.remove` forgets a wire, and `hook.test` rings one right away,
+marked as a test, so the operator who wrote it down learns now whether
+the other end is listening.  The ledger is written for the server
+alone beside the state file.
+
+**The wall of the techniques.**  The MITRE ATT&CK catalogue is the
+common tongue of the trade, and `attack.coverage` lies the task kinds
+of the beacon next to the techniques they belong to, then counts the
+finished tasks of the team: which techniques were used, on how many
+hosts, and when last.  A technique with zero tasks is a door the team
+has not tried, and the answer says so.  The kinds of the server
+itself — the tripwires, the baseline, the hunts — are the tools of the
+watch and are not counted, and a finished kind nobody mapped is listed
+under `unmapped` instead of being quietly lost.  Only tasks that came
+back count: a queued intention is not a technique that was used.
+
+**The digging box.**  `search.query` takes one needle and digs through
+the records at once: the tasks (their ids, kinds, words, errors and
+the outputs that look like text), the notes of the team, and the
+credentials that came home.  Every hit says where it is and shows the
+piece of the text around the needle, one line, elided where it was
+cut.  The casing rule is polite: a needle of small letters matches any
+casing, a needle with a capital means what it says.  Bytes that do not
+look like words — the screenshot, the memory read — stay unsearched,
+and the secret of a credential is never part of what is searched or
+shown.  The box reads and never changes, so it is the read of a
+viewer.
 
 **The file of a host.**  `dossier.get` puts everything the server knows
 about one host on one page: the identity, the health with the reasons

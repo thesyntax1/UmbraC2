@@ -206,6 +206,24 @@ that was changed twice does not look like a file that was changed
 once, because the ledger keeps the state, the time of the last look and
 the number of the changes.
 
+`hook` is the ledger of the wires to the outside world: the URLs the
+events of the day are posted to.  The hub hands every event to the
+registry after the consoles and the alert rules (`Hub.SetTap`), and the
+registry posts it down every wire that carries its kind, each post in a
+goroutine of its own, signed with the secret of the wire.  The ledger
+keeps the secrets (`0600`, next to the state file), the answers never
+carry them, and a book of the last deliveries says how each post went
+without asking the outside world anything.
+
+Two packages keep no ledger at all, because they only read: `attack` is
+the wall of the techniques the team uses — a table that lies the task
+kinds next to the ATT&CK techniques they belong to, and the walk that
+counts the finished tasks against it — and `search` is the digging box
+of the records, one needle through the tasks, the notes and the
+credentials, each hit with the piece of the text around it.  What they
+know is computed when it is asked for, so they can never disagree with
+the ledgers they read.
+
 `otp` is the registry of the second factors of the operators.  The
 secret of an operator lives in the phone of the operator and never
 travels: the console sends the six digits of the moment in the metadata

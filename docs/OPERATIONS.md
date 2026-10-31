@@ -2250,6 +2250,84 @@ it is written for the server alone (`0600`), and every note can be
 taken away, because the words a team writes about a host are the words
 of the engagement only while it is going on.
 
+## 5t. The wires to the outside world
+
+The consoles watch the events by staying connected.  The chat room,
+the pager and the ticket queue watch them through a wire:
+
+```bash
+umbra hook add https://chat.corp.example/umbra --kinds task.result,agent.offline \
+  --secret s3cr3t-of-the-team
+umbra hook list                          # the wires and their last posts
+umbra hook test h-0001                   # ring it once; nobody is paged
+umbra hook remove h-0001
+```
+
+A wire carries the kinds it names: a name matches exactly, a name
+ending in a star matches a beginning (`task.*` is every event of a
+task), and the empty list carries everything.  The body of a post is
+the event the consoles see, numbered the way the journal numbered it,
+signed with `X-Umbra-Signature: sha256=…` when the wire has a secret —
+the receiver checks the signature against its own copy, and a post
+that does not match is a post from somebody else.  `hook.list` never
+shows the secrets; they live in `hooks.json`, written for the server
+alone.
+
+The wire tells and never asks: the server posts and does not read the
+answer beyond its status, follows no redirect, and lets every post run
+for at most four seconds in a goroutine of its own, so a receiver that
+is slow keeps nothing of the engagement waiting.  When more posts run
+than the server allows, the event is dropped down that wire and the
+delivery book says so — a loud drop, not a quiet lie.  The book keeps
+the last posts of each wire (`status`, `latency_ms`, `err`), so the
+team checks the wires without asking the outside world anything.
+
+One decision stays with the operator: a wire is a way OUT of the
+server, and an address inside the network the engagement is working in
+is a way INTO that network for the news of the engagement.  The
+validator refuses clever schemes; whether the place is the right one
+is the call of the team.
+
+## 5u. The wall of the techniques
+
+```bash
+umbra attack                        # the techniques the team has used
+umbra attack --all                  # also the doors nobody tried
+umbra attack --agent web-01         # the wall of one host
+```
+
+The MITRE ATT&CK catalogue is the common tongue of the trade.
+`attack.coverage` lies the task kinds of the beacons next to the
+techniques they belong to and counts the finished work: the tasks, the
+hosts, the last time.  Zeros are the point — a technique with no tasks
+is a door the team has not tried, which is the answer to the question
+every review asks: "did you try …?"
+
+The kinds of the server itself (the tripwires, the baseline, the
+hunts) are the tools of the watch and are not counted; a kind nobody
+mapped shows up under `unmapped`, so a new implant capability cannot
+silently fall behind the wall.
+
+## 5v. The digging box
+
+```bash
+umbra search tango-needle                  # everything that carries the word
+umbra search tango --scope tasks           # only the tasks
+umbra search /root/tango --agent web-01    # one host
+umbra search svc-sql01 --scope creds       # the vault, the shape of it
+```
+
+One needle, three books: the tasks (ids, kinds, words of the
+arguments, errors, and the outputs that look like text), the notes of
+the team, and the credentials that came home.  Each hit is one line
+with the piece of the text around the needle.  Small letters match any
+casing; a needle with a capital means what it says.  Bytes that do not
+read like words stay unsearched, and the secret of a credential is
+never searched and never shown.
+
+The box reads and never changes: it is the read of a viewer, capped at
+two hundred hits, which is the way a box should stay.
+
 ## 6. Monitoring
 
 ```bash
