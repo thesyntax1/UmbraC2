@@ -100,7 +100,11 @@ object Lab {
         val board = (Build.BOARD ?: "").lowercase()
         val device = (Build.DEVICE ?: "").lowercase()
         val brand = (Build.BRAND ?: "").lowercase()
-        val productDevice = (Build.PRODUCT_DEVICE ?: "").lowercase()
+        // There is no Build.PRODUCT_DEVICE: the property ro.product.device
+        // is what Build.DEVICE reads, so the product device is the device
+        // of the build.  The key stays in the scan below because the report
+        // has always named it, and its value is the one the platform has.
+        val productDevice = (Build.DEVICE ?: "").lowercase()
         sensors["fingerprint"] = fingerprint
         sensors["model"] = model
         sensors["hardware"] = hardware
