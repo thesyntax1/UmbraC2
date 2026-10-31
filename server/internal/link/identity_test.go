@@ -58,14 +58,14 @@ func TestTheHandshakeRefusalNamesTheAlphabet(t *testing.T) {
 // a value the server already cleaned and must get the same string back.
 func TestMetadataIsStrippedAndStrippingIsIdempotent(t *testing.T) {
 	cases := map[string]string{
-		"web-01":                      "web-01",
-		"  web-01  ":                  "web-01",
+		"web-01":                       "web-01",
+		"  web-01  ":                   "web-01",
 		"<img src=x onerror=alert(1)>": "img src=x onerror=alert(1)",
-		"a & b":                       "a  b",
-		"host\x00name":                "hostname",
-		"line\nbreak":                 "linebreak",
-		"tab\there":                   "tabhere",
-		"quote\"and'apostrophe`":      "quoteandapostrophe",
+		"a & b":                        "a  b",
+		"host\x00name":                 "hostname",
+		"line\nbreak":                  "linebreak",
+		"tab\there":                    "tabhere",
+		"quote\"and'apostrophe`":       "quoteandapostrophe",
 	}
 	for in, want := range cases {
 		got := cleanMeta(in)
