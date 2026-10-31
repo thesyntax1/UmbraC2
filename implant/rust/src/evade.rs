@@ -1183,12 +1183,30 @@ impl Window {
     /// beacon with a signature.
     pub fn schedule(base: u64, jitter_pct: u32) -> Window {
         let window = Window::choose(base, jitter_pct);
+        if window.hi <= window.lo {
+            return window;
+        }
+        // Clustering without leaving the window the operator asked for: the
+        // cycle draws a sub-range *inside* the jitter window, so the gaps
+        // bunch up instead of spreading evenly over it -- and "sleep 100,
+        // jitter 20" still means 80..120.
+        //
+        // Scaling the whole window instead (0.5x to 2x) put check-ins at
+        // twice the configured sleep.  That is not jitter: the server's
+        // silence watch reads a 240 s gap from a host told to speak every
+        // 100 s as a host that stopped talking, and the operator's own
+        // policy is the thing the beacon is supposed to follow.
         let bytes = crate::crypto::random_bytes(2);
-        // Between half and twice the configured interval.
-        let scale = 50 + (bytes[0] as u64 * 150 / 255);
-        let lo = (window.lo * scale / 100).max(1);
-        let hi = (window.hi * scale / 100).max(lo);
-        Window { lo, hi }
+        let span = window.hi - window.lo;
+        let width = span * (bytes[0] as u64) / 255;
+        let slack = span - width;
+        let start = if slack == 0 {
+            0
+        } else {
+            slack * (bytes[1] as u64) / 255
+        };
+        let lo = window.lo + start;
+        Window { lo, hi: lo + width }
     }
 
     /// A value inside the window.

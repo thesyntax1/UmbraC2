@@ -1352,8 +1352,11 @@ mod tests {
 
     #[test]
     fn a_capability_the_module_does_not_have_is_refused() {
-        // The module imports umbra.sha256 and calls it.
-        let mut type_section = vec![2, 0x60, 3, 0x7f, 0x7f, 0x7f, 0, 0x60, 3, 0x7f, 0x7f, 0x7f, 0];
+        // The module imports umbra.sha256 and calls it.  Type 0 is the
+        // import (i32,i32,i32)->(); type 1 is the entry, ()->().  It was a
+        // copy of type 0, so the entry wanted three arguments and the call
+        // failed before the capability check was ever reached.
+        let mut type_section = vec![2, 0x60, 3, 0x7f, 0x7f, 0x7f, 0, 0x60, 0, 0];
         let mut import_section = vec![1];
         import_section.extend(leb(5));
         import_section.extend_from_slice(b"umbra");

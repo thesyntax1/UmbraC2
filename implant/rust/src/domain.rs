@@ -280,7 +280,13 @@ pub fn parse_delegation(text: &str) -> Vec<(String, String)> {
     for line in text.lines() {
         let line = line.trim();
         if let Some(dn) = line.strip_prefix("dn:") {
-            account = dn.split(',').next().unwrap_or("").trim().to_string();
+            // The first RDN of a distinguished name is "CN=alice": the name
+            // of the account is the value, not the key.
+            let first = dn.split(',').next().unwrap_or("").trim();
+            account = match first.split_once('=') {
+                Some((_, value)) => value.trim().to_string(),
+                None => first.to_string(),
+            };
             continue;
         }
         if let Some(value) = line.strip_prefix("msDS-AllowedToDelegateTo:") {
@@ -708,17 +714,17 @@ pub fn parse_group_table(text: &str) -> Vec<(String, String)> {
         if trimmed.starts_with("The command") {
             break;
         }
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.len() < 3 {
+        let columns = columns(trimmed);
+        if columns.len() < 3 {
             continue;
         }
         // The type column is one word ("Alias", "Group") or two ("Well-known
-        // group"), so the SID is the first token that looks like one.
-        let sid = match tokens.iter().find(|token| token.starts_with("S-1-")) {
-            Some(sid) => *sid,
+        // group"), so the SID is the first column that looks like one.
+        let sid = match columns.iter().find(|column| column.starts_with("S-1-")) {
+            Some(sid) => sid.clone(),
             None => continue,
         };
-        out.push((tokens[0].to_string(), sid.to_string()));
+        out.push((columns[0].clone(), sid));
     }
     out
 }
@@ -729,11 +735,18 @@ pub fn parse_group_table(text: &str) -> Vec<(String, String)> {
 /// listing.
 pub fn parse_group_members(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    let mut started = false;
     for line in text.lines() {
         if is_separator(line) {
             // Every separator starts a new block; the last one wins, so the
             // column header that sits between the two separators is dropped.
+            // Nothing before the first separator is a member: that is the
+            // line that names the group.
             out.clear();
+            started = true;
+            continue;
+        }
+        if !started {
             continue;
         }
         let trimmed = line.trim();
@@ -819,6 +832,34 @@ pub fn parse_dc_list(text: &str) -> Vec<String> {
 }
 
 /// Is the line a separator (a row of dashes)?
+/// Split a table row of `whoami` or `net` into its columns.
+///
+/// The columns are separated by runs of two or more spaces, because a single
+/// space is part of a name: "NT AUTHORITY\\SYSTEM" and "CORP\\Domain Admins"
+/// are one column each, and splitting on every space cuts them in half.
+fn columns(line: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut gaps = 0usize;
+    for ch in line.chars() {
+        if ch == ' ' || ch == '\t' {
+            gaps += 1;
+            continue;
+        }
+        if !current.is_empty() && gaps >= 2 {
+            out.push(std::mem::take(&mut current));
+        } else if !current.is_empty() && gaps == 1 {
+            current.push(' ');
+        }
+        gaps = 0;
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 fn is_separator(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.len() < 10 {
