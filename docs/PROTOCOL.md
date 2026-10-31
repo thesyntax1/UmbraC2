@@ -593,6 +593,10 @@ Operator RPC commands, with the minimum role each requires:
 | `alerts.list` | viewer | the alert rules the server watches the event stream with |
 | `task.cancel` | operator | cancel a task (`TASK_CANCEL` if delivered) |
 | `task.retry` | operator | run a finished task again as a new task |
+| `task.ledger-dig` | viewer | the digest of the ledger of who asked: `entries`, `digest`, and the `first`/`last` line numbers, so two consoles can agree the queue they look at is the queue there is |
+| `tag.rule.add` | operator | teach the sorting hat a sentence (`name`, `field`, `contains`/`prefix`, `tag`): every new join that matches is coloured automatically |
+| `tag.rule.list` | viewer | read the sentences of the hat back |
+| `tag.rule.remove` | operator | erase a sentence of the hat |
 | `events.list` | viewer | the recent events of the journal (`after`, `limit`) |
 | `sessions.list` | viewer | the interactive sessions that are open, per agent |
 | `engagement.wipe` | admin | clears the agents, the tasks and the schedules of the server |
@@ -678,6 +682,7 @@ Operator RPC commands, with the minimum role each requires:
 | `pivot.close` | operator | close a pivot |
 | `pivot.claim` | viewer | the claims of the engagement and the pivots they hold |
 | `pivot.release` | operator | release a claim: every pivot of it is torn down |
+| `pivot.extend` | operator | push the closing of a leased pivot (`stream`, `seconds`); `pivot.open` takes `lease` (60..86400 s, zero means it stands until closed) and `via` (the way written by hand, shown on the map) |
 | `vpn.status` | viewer | tunnel state: listener, network, peer count |
 | `vpn.peers` | viewer | tunnel peers and their addresses |
 | `vpn.allocate` | operator | reserve a tunnel address for an agent |
@@ -1470,7 +1475,47 @@ the session keys right after the check-in (§6), and a frame that is sent
 in between is sealed with the old keys — the server cannot read it, and
 the session is over.
 
-### 7.2q The credentials of the server
+#### 7.2y The sorting hat of the fleet, and the ledger of who asked
+
+**Why.** Two automations close the loop of the queue: the sorting hat
+colours new joins before an operator looks at them, and the ledger of
+who asked makes the queue accountable — which console submitted which
+task, through which shelf, is a fact the server keeps, not a guess the
+team makes.
+
+**The sorting hat.** `tag.rule.add` writes one sentence of the hat: a
+`field` it reads of the snapshot (one of `os`, `arch`, `host`, `user`,
+`transport`, `version`), the needle it matches (`contains` anywhere in,
+or `prefix` at the head of, the lowercased fact) and the `tag` the host
+earns. The hat reads the snapshot of every agent the moment it joins —
+on `agent.new` and `agent.online` — and stamps the tags of every
+sentence that matches. A rule fires on a host at most once, so the
+colours an operator paints by hand (`agents.tags set`) are never
+painted over. The rules persist on the disk of the server, and when a
+sentence adds its tag the server emits `agent.tags` with a `rule` key
+naming the sentence.
+
+**The ledger of who asked.** Every queue path stamps its origin in a
+bounded ring of 256 lines: `task.submit` marks the operator (and an
+optional `source` word for the shelf the question came from),
+`task.retry` marks `retry:<old>`, `task.bulk` marks `bulk`, `task.chain`
+marks `chain:<id>`, and the onboarding plays mark `onboard`. Each line
+is hashed over the digest of the line before it; `task.ledger-dig` hands
+out the digest and the first and last line numbers, so two consoles
+compare a digest instead of arguing about history. The ledger is a
+working tool, bounded and in memory: the permanent record is and stays
+the signed audit trail.
+
+**The lease of a pivot.** `pivot.open` accepts `lease`, a number of
+seconds between 60 and 86400 after which the door closes itself — a
+zero means it stands until closed, the way it always did. The reply
+carries the `expires` timestamp back, `pivot.extend` pushes the closing
+(with `stream` and `seconds`), and the sweep of the server fires
+`pivot.expired` when a lease runs out. A `via` argument writes the way
+by hand — operator-named hops like `gateway,dmz-host` — and the map
+shows it.
+
+## 7.2q The credentials of the server
 
 The server holds three kinds of credential: the agent PSK, the operator
 tokens and the TLS key pair.  All three can be replaced while the server
@@ -1579,6 +1624,8 @@ The kinds the server emits:
 | `pivot.closed` | a tunnel was closed | `tunnel` |
 | `pivot.denied` | the proxy refused a target | `tunnel`, `host`, `port` |
 | `pivot.error` | a target of the tunnel could not be reached | `tunnel`, `host`, `port`, `err` |
+| `pivot.extended` | the closing of a leased pivot was pushed | `tunnel`, `expires` |
+| `pivot.expired` | a leased pivot closed itself | `tunnel` |
 | `pivot.session_closed` | a session of a tunnel ended | `session` |
 | `persist.updated` | the persistence of a host was changed | `entries`, `broken`, `methods` |
 | `persist.broken` | an entry of a host is broken | `broken`, `total` |
