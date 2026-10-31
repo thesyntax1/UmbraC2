@@ -2425,6 +2425,61 @@ manifest holds and the digest the bytes give — and the command exits one
 when a blob is broken, so a nightly cron pages the team when the store no
 longer keeps its word.
 
+## 5z4. The hand on a queue
+
+```bash
+umbra queue hold web-01 --seconds 600 --reason "investigating the crash"
+umbra queue holds                        # every paused queue, and its work
+umbra queue release web-01               # the hand lifts; work goes out
+```
+
+A hold is the smallest pause the engagement has: it stops delivery to one
+host and nothing else.  The host keeps checking in, the rest of the fleet
+keeps working, and the tasks queue up behind the hand instead of being
+lost.  The work of a held host is not cancelled, not marked and not
+retried: it simply waits.  A hold with `--seconds` lifts itself, and the
+journal says so with `queue.released` and `expired: true`, so a hold set
+before a long night cannot outlive the person who set it.  The quiet
+window is the bigger hammer and stops the whole fleet; a hold is the
+hand, not the hammer.
+
+## 5z5. The lock of the engagement
+
+```bash
+umbra freeze on --seconds 1800 --note "the customer is on the phone"
+umbra freeze status                      # who holds the lock and what it stopped
+umbra freeze off                         # thaw, now
+```
+
+A freeze ties every hand at once.  The beacons keep checking in and keep
+delivering their results — a freeze is not a quiet window — but every
+command from a console that would change something is refused, with the
+name of the admin who set the lock and the moment it lifts.  Reading is
+never refused: during the first minutes of an incident the engagement has
+to be *looked at* before it is touched.  The refusals are counted and
+`umbra freeze status` reads the count back with the last command that was
+stopped, so an admin can tell a team that waited politely from a team
+that fought the lock.  A freeze with a window thaws itself; a freeze
+without one is lifted by hand, because a lock that outlives its reason is
+worse than the risk it guards.
+
+## 5z6. Two hosts side by side
+
+```bash
+umbra compare web-01 web-02              # what is the same, what differs
+```
+
+`fleet.compare` reads the inventory of two hosts and puts every field
+next to its twin: the operating system, the architecture, the user, the
+transport, the version, the cadence, the capabilities and the labels.
+The rows that match are marked `=`, the ones that differ `!`, and the
+labels are split into the shared ones and the ones only one host wears.
+Nothing is asked of the hosts: the comparison is a reading of what the
+server already knows, which is why it works on a host that has been
+asleep for a week.  The question it answers is the analyst's question of
+a fleet of two hundred — which of these is not like the other — and the
+answer is one command instead of two screens and a memory.
+
 ## 6. Monitoring
 
 ```bash

@@ -653,6 +653,12 @@ Operator RPC commands, with the minimum role each requires:
 | `silence.add` | operator | promise to worry about a quiet host: `agent`, `seconds` (5..604800), optional `cooldown` (default ten times the pause). One watch per host |
 | `silence.list` | viewer | the watches, each with how quiet its host is now and when it last spoke |
 | `silence.remove` | operator | forget a watch: `id` |
+| `queue.hold` | operator | put a hand on the queue of one host: `agent`, optional `seconds` (5..604800, zero means until a hand lifts it) and `reason`. The work of the host keeps queueing up and nothing is delivered until the hand lifts |
+| `queue.release` | operator | lift the hand from a queue: `agent`. A hold never cancels anything, so the queued work goes out on the next check-in |
+| `queue.holds` | viewer | the pauses of the fleet, oldest first, each with the work waiting behind it (`queued`) and the time it has left (`left_sec`) |
+| `engagement.freeze` | admin | tie every hand of the engagement: `on` (default true), optional `seconds` (30..86400, zero means until an admin thaws it) and `note`. Every command that would change anything is refused; the readings and this command are not |
+| `engagement.state` | viewer | the lock in force (who, since, until, why), the hands it stopped (`refused`, `refused_last`) and the queues that are held |
+| `fleet.compare` | viewer | two hosts side by side: `a`, `b`; the fields with what each says (`rows`, `same`, `differ`), and the labels they share (`shared_tags`) or wear alone (`only_a`, `only_b`) |
 | `onboard.add` | operator | write down a welcome pack: `name`, `stages` (each `kind` plus `args`; at most 16), optional `tag` and `prefix` gates, `once` (default true), `cooldown` (seconds, default one hour) |
 | `onboard.list` | viewer | the plays on the shelf: the stages, the gate, and the memory of the fires |
 | `onboard.remove` | operator | take a play out of the shelf: `id` |
@@ -1515,6 +1521,45 @@ carries the `expires` timestamp back, `pivot.extend` pushes the closing
 by hand — operator-named hops like `gateway,dmz-host` — and the map
 shows it.
 
+### 7.2z The hand on the queue, and the lock of the engagement
+
+**Two pauses, two scales.** A fleet needs to be stopped in two different
+ways, and the protocol keeps them apart. The quiet window stops the
+beacons and answers every check-in with nothing: it is maintenance. A
+*hold* stops one queue: the work of the host keeps queueing up, the host
+keeps checking in, and nothing is delivered to it until the hand lifts.
+That is what an operator wants when one host is being investigated and
+the rest of the engagement must keep working. A *freeze* stops the hands
+instead of the beacons: every command that would change anything is
+refused, the readings are not, and the lock itself can always be lifted.
+That is what an admin wants when the engagement is on fire and the first
+job is to stop making it worse.
+
+**The hand.** `queue.hold` names the host, an optional reason and an
+optional lifetime. A hold without a lifetime stands until a hand lifts
+it; a hold with one lets go by itself, and the sweep of the server says
+so on the journal as `queue.released` with `expired` set. A hold never
+cancels work and never marks a task: it gates delivery only, so lifting
+it is enough to send everything that queued behind it. The state of the
+pauses is readable with `queue.holds`, oldest first, each row carrying
+the work waiting behind it and how long the hold has left.
+
+**The lock.** `engagement.freeze {on:true, seconds, note}` ties the
+hands for the given window — or for ever, if no window is given. While
+the freeze stands, a command whose minimum role is above `viewer` is
+refused with the name of the operator who set the lock and the moment
+it lifts. Refusals are counted, and `engagement.state` reads the count
+back with the last command that was stopped: a team that fights a lock
+is a fact the admin should see. `engagement.freeze {on:false}` thaws it
+at once, and a freeze with a window thaws itself on the sweep.
+
+**The comparison.** `fleet.compare` answers the question an analyst
+asks of a fleet of two hundred: which of these two is not like the
+other. It reads the snapshot of both hosts and returns every field side
+by side with whether it matches, then the labels the two share and the
+labels only one of them wears. Nothing is asked of the hosts: the answer
+comes out of the inventory the server already keeps.
+
 ## 7.2q The credentials of the server
 
 The server holds three kinds of credential: the agent PSK, the operator
@@ -1596,6 +1641,10 @@ The kinds the server emits:
 | `agent.online` | a host is back | the inventory of the host |
 | `agent.offline` | a host has been quiet for longer than its grace window | — |
 | `agent.silent` | a silence watch fired: a host has been quiet past the pause an operator promised to worry about | `watch`, `seconds`, `quiet_for`, `promised` |
+| `queue.held` | an operator put a hand on the queue of a host | `agent`, `by`, `queued`, optional `reason`, `until`, `seconds` |
+| `queue.released` | the hand on a queue let go: by hand, or because the hold carried its own end (`expired`) | `by`, `held_by`, `held_sec`, optional `expired` |
+| `engagement.frozen` | the hands of the engagement were tied | `by`, `since`, optional `note`, `until`, `seconds` |
+| `engagement.thawed` | the engagement is open again, by hand or because the freeze ran out (`expired`) | `by`, `held_by`, `held_sec`, `expired` |
 | `onboard.fired` | a welcome pack went to a host: the stages of its greeting are queued | `playbook`, `queued`, `failed` (on manual runs) |
 | `agent.heartbeat` | the host is alive between two check-ins | `version`, `busy`, `abi` |
 | `agent.policy` | the cadence of the host was changed | `sleep`, `jitter` |
