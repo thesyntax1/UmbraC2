@@ -1,7 +1,12 @@
 name: ci-log
 
-# TEMPORARY, and deleted the moment ci.yml is green.
+# TEMPORARY, and deleted when the build-repair programme ends.
 #
+# It was written when ci.yml was red; ci.yml has been green on every commit
+# since 1aac1a9 and this workflow stays only because the phases that follow
+# (cross-platform verification, security hardening) will break builds again,
+# and the job log is still unreachable from the machine that fixes them.
+# Deleting it is one commit and two branches.
 # The job log of a failed GitHub Actions run lives on a blob host that the
 # network this repository is maintained from cannot reach: the API only hands
 # back a redirect to it.  That makes a red job an exit code and a dozen

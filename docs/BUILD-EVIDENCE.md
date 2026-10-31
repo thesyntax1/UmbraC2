@@ -8,7 +8,8 @@
 > The rule: a row is green only if the command in it ran and exited zero on
 > the commit named at the top.  Everything else says what it is.
 
-Commit of record: `93b679c` (CI run 41233256649).
+Commit of record: `1aac1a9` (CI run 41237459010) — the first commit whose
+every CI job is green.
 Reviewed: 2026-10-31.
 
 ## The summary
@@ -19,11 +20,13 @@ Reviewed: 2026-10-31.
 | Go beacon | green on 1.22.10 and 1.27.3 | 5 packages, `-race` clean | **green** (1.22 and stable) | verified on two toolchains |
 | Python console + protocol | n/a | 378 passed in a clean venv from the hashed lock | **green** (3.11 and 3.12) | verified from a lock file |
 | Rust beacon | **green** on all three targets | 125 unit + 8 vector tests, 0 failed | **green** (default, `chacha`, macOS ×2) | compiled, tested and run as a binary |
-| Android implant | **red** | Kotlin compilation error | **red** | not verified |
+| Android implant | **green** (`assembleDebug`, three ABIs, NDK pinned) | 27 compile errors closed; no unit tests exist; 22 lint errors open | **green** (10 of 10 jobs on `1aac1a9`) | compiles and packages; never run on a device |
 | Dashboard | built by `go build` | Go test + jsdom smoke | green (inside `go server`) | verified, not in a browser |
 
 The gate this feeds is in [`RELEASE-PROCESS.md`](RELEASE-PROCESS.md): **the
-release gate is closed**, because a red job is a red job.
+release gate is closed** — not because a job is red any more, but because the
+changelog the gate requires does not exist.  A green matrix is the first
+condition of that gate, not the gate.
 
 ## 1. Go server
 
@@ -155,26 +158,80 @@ Round 5 fixed the Windows twin by reading it.  That is a reading, not a build.
 
 ## 5. Android implant
 
-**Not verified — it does not compile.**  No JDK, no Gradle, no SDK and no
-emulator on the maintaining machine.
+**Green.**  `assembleDebug` builds a debug APK for `arm64-v8a`, `armeabi-v7a`
+and `x86_64`; before this pass the app had never been through a Kotlin
+compiler.
 
-Versions pinned this pass, so the failure is at least reproducible:
+**Where it ran.**  CI only — there is no JDK, Gradle or SDK on the maintaining
+machine, and the SDK cannot be downloaded from it.  Two workflows ran it:
+`ci.yml` (`android implant (compile only)`, `gradle --no-daemon assembleDebug`)
+and the temporary `ci-log.yml`, which additionally ran `testDebugUnitTest` and
+`lintDebug` and published the reports.
 
-| Component | Version | Where |
+| Tool | Version | Where it comes from |
 |---|---|---|
-| JDK | 17 | `.java-version`, `compileOptions`/`jvmTarget` in `app/build.gradle`, `setup-java` in CI |
-| Gradle | 8.7 | `gradle-wrapper.properties`, `gradle-version` in CI |
-| Android Gradle Plugin | 8.5.2 | root `build.gradle` |
-| Kotlin | 1.9.24 | root `build.gradle` |
-| compileSdk / targetSdk | 34 | `app/build.gradle` |
-| minSdk | 33 | `app/build.gradle` (X25519 from the platform provider) |
-| Build tools | 34.0.0 | `app/build.gradle` (pinned this pass) |
-| CMake | 3.22.1 | `app/build.gradle` |
-| NDK | **not pinned** | AGP chooses it; pin on the first successful build and record it here |
+| JDK | Temurin 17 | `actions/setup-java@v5` |
+| Gradle | 8.7 | `gradle/actions/setup-gradle@v4` |
+| Android Gradle Plugin | 8.5.2 | `build.gradle`, pinned |
+| Kotlin | 1.9.24 | `build.gradle`, pinned |
+| compileSdk / targetSdk | 34 / 34 | `app/build.gradle` |
+| minSdk | 33 | `app/build.gradle` — X25519 from the platform XDH provider |
+| build-tools | 34.0.0 | pinned in `app/build.gradle` |
+| NDK | 26.1.10909125 | **pinned after the first green build**, the version that build used |
+| CMake | 3.22.1 | pinned in `app/build.gradle` |
 
-CI job `android` fails in `assembleDebug` with a Kotlin compilation error; the
-compiler's `e: file:line` lines are lifted into annotations by
-`scripts/ci_tail.sh`, which is how the next fix will start.
+**The errors were not what the first report said.**  The GitHub annotation list
+showed twenty; the compiler had emitted **twenty-seven** (the annotation API
+caps the list).  And they were not an API-level mismatch: with `minSdk 33`
+every API the code needed — `UsageStatsManager.getAppStandbyBucket()` (28),
+`NotificationManager.areNotificationsEnabled()` (24),
+`PackageInstaller.uninstall` (21), `DevicePolicyManager.wipeData(int)` (21),
+`ScanResult.level` (1) — has been available for years.  The causes were four,
+and each was verified against the platform reference before it was touched:
+
+| Cause | Errors | Example |
+|---|---|---|
+| a member that does not exist, or a hidden one | 11 | `Build.PRODUCT_DEVICE`, `IPackageInstaller`, `setDeviceOwner`, `GLOBAL_ACTION_VOLUME_*`, `Context.ROLE_MANAGER`, `PowerManager.standbyBucket` |
+| a Kotlin getter read as a property | 3 | `areNotificationsEnabled` instead of `areNotificationsEnabled()`, `isDeviceOwnerApp` without its argument |
+| a missing import | 3 | `Context` in `AppDump.kt` (the fourth error in that file was its cascade) |
+| a wrong argument list, or operator precedence | 4 | `wipeData()` with no flags, `clearDeviceOwnerApp()` with no package, `addPrimaryClipChangedListener` with a handler, `"size" to x ?: ""` |
+
+Nine rounds, one file per round, each followed by a build, so that the delta of
+every fix is visible and no fix can hide another:
+
+| Round | Commit | Errors before → after | What it fixed |
+|---|---|---|---|
+| 1 | `0789c3a` | 27 → 23 | the missing `Context` import and the inference error it caused |
+| 2 | `51bbda3` | 23 → 22 | the Elvis precedence in the dump row |
+| 3 | `2bd7d32` | 22 → 20 | the hidden installer callback; `wipeData(0)` |
+| 4 | `66df80a` | 20 → 19 | `Build.PRODUCT_DEVICE` |
+| 5 | `4f26aff` | 19 → 15 | the device-owner trio: package argument, `isDeviceOwnerApp(pkg)`, and no pretence of setting ownership |
+| 6 | `f67f5f3` | 15 → 14 | `ScanResult.level` |
+| 7 | `169a0e7` | 14 → 11 | the invented `GLOBAL_ACTION_*` constants; volume goes through the audio manager |
+| 8 | `711399a` | 11 → 2 | the standby bucket from `UsageStatsManager`; `areNotificationsEnabled()` |
+| 9 | `6cddc1a` | 2 → **0** | `RoleManager` by class; one-argument clipboard listener |
+
+No `TODO`, no empty return, no `runCatching` added, no permission removed and
+no manifest entry touched.  The one behaviour that changed on purpose is
+`persist.install --method device_owner`: the platform cannot grant ownership to
+an installed app, so the command now succeeds only if the phone already is the
+owner and otherwise fails with that sentence, instead of recording a technique
+that was never installed.
+
+**What came with the green build, and did not go away.**
+
+* **Lint: 22 errors, 30 warnings** (`1aac1a9`, `lintDebug`, report in the
+  temporary `ci/log-android` branch).  Fifteen are `MissingPermission` — calls
+  the platform may refuse with `SecurityException` that lint cannot see guarded
+  (`Sense.kt` ×9, `BluetoothScan.kt` ×2, `Lab.kt` ×2, `Media.kt`,
+  `Forensics.kt`), one is `ScheduleExactAlarm`, four are
+  `PermissionImpliesUnsupportedChromeOsHardware` in the manifest, two are
+  `SuspiciousIndentation`.  The compiler is satisfied; the static analysis is
+  not.  That work is a hardening pass, not a compile fix.
+* **There are no Android unit tests.**  `testDebugUnitTest` runs, finds no test
+  source set and succeeds with nothing — `NO-SOURCE`, not "all tests passed".
+* **Nothing has run on a phone.**  An APK that builds is not an APK that
+  starts, and neither is an APK whose permissions are granted.
 
 ## 6. Dashboard
 
@@ -198,5 +255,9 @@ text.  It is **not** a browser: it does not enforce the CSP.
   run id and the SHA stay).
 * It does not claim the Windows build exists.  No job compiles the
   `cfg(windows)` half of the crate; it is read, not built.
+* It does not claim the Android app works.  The APK is compiled and packaged
+  by CI, its lint report has 22 errors, it has no unit test, and no emulator
+  or phone has ever started it.  "Green" here means `assembleDebug` exited
+  zero.
 * The CI run ids are the proof of the CI column.  A local run and a CI run are
   not the same thing, which is why both are listed.

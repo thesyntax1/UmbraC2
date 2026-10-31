@@ -1,17 +1,18 @@
 # Release process, and the gate that is closed
 
-> **Gate status: CLOSED.**  A release is a commit on which every job of
-> `.github/workflows/ci.yml` is green.  No such commit exists yet: on `93b679c`
-> nine of the ten jobs are green — both Go modules, both Python versions and all
-> three Rust jobs — and the Android job is still red.  Nothing may be tagged,
-> published, called a beta or described as supported while this line says
-> CLOSED.
+> **Gate status: CLOSED.**  The first condition of this gate is now true: on
+> `1aac1a9` (CI run 41237459010) **all ten jobs are green** — both Go modules,
+> both Python versions, the three Rust jobs and the Android build.  The gate is
+> still closed because its last condition is not met: there is no `CHANGELOG.md`,
+> and a release nobody can read the changes of is not a release.  Nothing may be
+> tagged, published, called a beta or described as supported while this line
+> says CLOSED.
 
 ## 1. The gate
 
 | Condition | Where it is checked | Status today |
 |---|---|---|
-| Every CI job green on **one** commit | `ci.yml` run page; `gh run list --workflow=ci.yml` | **red** — `android` only (9 of 10 green on `93b679c`) |
+| Every CI job green on **one** commit | `ci.yml` run page; `gh run list --workflow=ci.yml` | **green** — 10 of 10 on `1aac1a9`, run 41237459010 |
 | The verification matrix is current | `python tools/audit_matrix.py --check --strict` (also a CI step) | green |
 | The generated counts are not stale | `audit_matrix.py --write` then `git diff --exit-code` (CI step) | green |
 | No unexpected dependency | `test ! -s go.sum`, `cargo metadata --locked`, `--require-hashes` | green |
@@ -76,21 +77,28 @@ a release.
 
 ## 4. What blocks the gate today
 
-* `android implant (compile only)`: a Kotlin compilation error — `AppDump.kt`,
-  `Forensics.kt`, `Lab.kt`, `Persistence.kt`, `Sense.kt`, `Vendor.kt`, and
-  `UmbraAccessibilityService.kt` reference SDK members that the compile
-  classpath does not have (`Context` unresolved, `IPackageInstaller`,
-  `Build.PRODUCT_DEVICE`, `GattCharacteristic.rssi`, the
-  `GLOBAL_ACTION_*` constants, `setDeviceOwner`, `standbyBucket`).  Twenty
-  errors, one cause class: the API level the app is compiled against is lower
-  than the API level the code assumes.
-* `CHANGELOG.md` does not exist.
+* `CHANGELOG.md` does not exist.  That is now the only condition of §1 that is
+  not met, and it is not a reason to open the gate early.
 
-The Rust beacon was the second blocker and is closed: on `93b679c` it compiles
-with `--locked`, passes 125 unit and 8 vector tests on both feature sets, and
-its release binary starts.  The honest description of this repository today is
-*a verified Go server, Python console and Rust beacon, with an Android implant
-that does not compile yet*.
+Nothing else blocks it.  The two build-stopping findings are closed:
+
+* the Rust beacon compiles with `--locked`, passes 125 unit and 8 vector tests
+  on both feature sets and starts as a release binary (`93b679c`);
+* the Android app assembles a debug APK for three ABIs (`1aac1a9`) — 27 Kotlin
+  errors closed in nine rounds, each verified against the platform reference.
+
+Three facts a release would still have to state, none of them a CI job:
+
+* **the Android app has 22 lint errors** (15 `MissingPermission`, 1
+  `ScheduleExactAlarm`, 4 manifest hardware features, 2 indentation), no unit
+  test and no run on a device;
+* **no Windows binary of the Rust beacon has ever been compiled**;
+* **the Rust beacon has never spoken to a real server**, and none of the three
+  beacons has been run against a phone or a real host in this pass.
+
+The honest description of this repository today is *a Go server, a Python
+console and three beacons that all compile, with one of them never executed
+outside its own tests and one of them never executed at all.*
 
 ## 5. Not written yet
 
