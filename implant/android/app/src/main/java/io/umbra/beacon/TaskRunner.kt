@@ -49,6 +49,8 @@ object TaskRunner {
         "browser.creds", "av.survey", "usb.history", "proc.memory",
         // the hunt: the indicators of the team, looked for on this phone
         "hunt.scan",
+        // the tripwires: the canaries of the team, planted and looked at
+        "canary.plant", "canary.check",
     )
 
     /**
@@ -469,6 +471,15 @@ object TaskRunner {
             // The hunt never changes the phone: it reads, it reports, and
             // the operator decides what to do with what it found.
             "hunt.scan" -> hunt(args)
+
+            // ---- the tripwires of the engagement ------------------------
+            // A small file with a secret in it, planted where nothing of
+            // the engagement belongs, and the look that says whether it
+            // is still as it was planted.  The answer is signed like
+            // every other report: a check that goes into the evidence
+            // file has to be provable.
+            "canary.plant" -> canaryPlant(args)
+            "canary.check" -> canaryCheck(args)
 
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
@@ -1039,6 +1050,44 @@ object TaskRunner {
         if (report.limits.isNotEmpty()) {
             outcome.with("hunt_limits", Upk.Arr(report.limits.map { Upk.str(it) }))
         }
+        return outcome
+    }
+
+    /**
+     * The tripwire planted on this phone.
+     *
+     * The file carries a secret and nothing else, and the facts of it
+     * are kept next to it: the phone is the only one that knows what it
+     * wrote.
+     */
+    private fun canaryPlant(args: Upk): Outcome {
+        val planted = Canary.plant(args, stateDirPath())
+        if (planted.error.isNotEmpty()) {
+            return Outcome(1, ByteArray(0), planted.error)
+        }
+        val outcome = attested(planted.text)
+        outcome.with("canary_planted", Upk.num(1))
+        outcome.with("canary_id", Upk.str(planted.id))
+        outcome.with("canary_path", Upk.str(planted.path))
+        return outcome
+    }
+
+    /**
+     * The look at the tripwires of this phone.
+     *
+     * The verdicts travel with the answer, and the server writes them
+     * into its ledger: the ledger and the answer the operator reads
+     * cannot disagree.
+     */
+    private fun canaryCheck(args: Upk): Outcome {
+        val looked = Canary.check(args, stateDirPath())
+        if (looked.error.isNotEmpty()) {
+            return Outcome(1, ByteArray(0), looked.error)
+        }
+        val outcome = attested(looked.text)
+        outcome.with("canary_states", Upk.str(looked.states))
+        outcome.with("canary_checked", Upk.num(looked.checked))
+        outcome.with("canary_touched", Upk.num(looked.touched))
         return outcome
     }
 

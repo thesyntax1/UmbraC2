@@ -10,16 +10,20 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
+	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
+	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
 	"github.com/thesyntax1/UmbraC2/server/internal/health"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
@@ -68,6 +72,12 @@ type Server struct {
 	Hunt *hunt.Catalogue
 	// Cases is the registry of the evidence files. Optional.
 	Cases *casefile.Registry
+	// Approvals is the queue of the operations that wait for a second
+	// pair of eyes. Optional.
+	Approvals *approval.Queue
+	// Canaries is the ledger of the tripwires of the engagement.
+	// Optional.
+	Canaries *canary.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -93,7 +103,7 @@ type Server struct {
 
 // New creates a link server.
 func New(cfg *config.Config, h *hub.Hub, log *slog.Logger) *Server {
-	return &Server{
+	s := &Server{
 		Cfg:           cfg,
 		Hub:           h,
 		Log:           log,
@@ -103,6 +113,12 @@ func New(cfg *config.Config, h *hub.Hub, log *slog.Logger) *Server {
 		batchSessions: make(map[string]*batchSession),
 		opRate:        make(map[string]*tokenBucket),
 	}
+	// The subsystems that keep a ledger of their own follow the tasks
+	// that finish.
+	if h != nil {
+		h.OnComplete(s.taskCompleted)
+	}
+	return s
 }
 
 // SetAudit attaches the operator audit log. A nil logger disables auditing.
@@ -134,6 +150,148 @@ func (s *Server) SetHunt(h *hunt.Catalogue) { s.Hunt = h }
 
 // SetCases attaches the registry of the evidence files.
 func (s *Server) SetCases(c *casefile.Registry) { s.Cases = c }
+
+// SetApprovals attaches the queue of the two-person rule.
+//
+// Without a queue the server refuses the approval commands: a server
+// that answers "no queue" and lets the operation through anyway is a
+// server that does not have the rule.
+func (s *Server) SetApprovals(q *approval.Queue) { s.Approvals = q }
+
+// SetCanaries attaches the ledger of the tripwires.
+func (s *Server) SetCanaries(c *canary.Registry) { s.Canaries = c }
+
+// taskCompleted keeps the ledger of the canaries in step with the
+// tasks that checked them.
+//
+// The verdict of a check travels in the metadata of the task, as one
+// short string, so the ledger and the answer the operator read can
+// never disagree.
+func (s *Server) taskCompleted(c hub.Completion) {
+	if s.Canaries == nil || c.Kind != "canary.check" {
+		return
+	}
+	states, _ := c.Meta["canary_states"].(string)
+	if states == "" {
+		return
+	}
+	if n := s.Canaries.RecordCheck(c.AgentID, states); n > 0 {
+		if err := s.Canaries.Save(); err != nil && s.Log != nil {
+			s.Log.Warn("the ledger of the canaries could not be saved", "err", err)
+		}
+	}
+}
+
+// Dossier gathers the file of one host.
+//
+// The record of the host comes from the store, the score from the
+// health package, and the ledgers of the canaries and of the approvals
+// from the subsystems that keep them.
+func (s *Server) Dossier(agentID string) (dossier.Dossier, bool) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return dossier.Dossier{}, false
+	}
+	var agent *store.Agent
+	for _, a := range s.Hub.Store().Agents() {
+		if a.ID == agentID {
+			agent = a
+			break
+		}
+	}
+	if agent == nil {
+		return dossier.Dossier{}, false
+	}
+	now := time.Now().UTC()
+	// The work of the host: the history is read one time and split per
+	// host, so the file of a hundred machines is not a hundred walks
+	// through the queue.
+	work := &hostWork{}
+	records := s.Hub.Store().FilteredTasksFor(agentID, "", "", "", 0)
+	tasks := make([]dossier.Task, 0, len(records))
+	for _, t := range records {
+		switch t.State {
+		case store.TaskDone:
+			work.done++
+		case store.TaskFailed:
+			work.failed++
+		case store.TaskQueued, store.TaskDelivered:
+			work.pending++
+		}
+		tasks = append(tasks, dossier.Task{
+			ID:        t.ID,
+			Kind:      t.Kind,
+			State:     t.State,
+			Created:   t.Created,
+			Completed: t.Completed,
+			Err:       t.Err,
+			Attested:  taskAttested(t.Meta),
+		})
+	}
+	// The persistence of the host.
+	persist := make([]dossier.Persist, 0, len(agent.Persist))
+	for _, p := range agent.Persist {
+		persist = append(persist, dossier.Persist{
+			Technique: p.Technique,
+			Name:      p.Name,
+			Trigger:   p.Trigger,
+			Location:  p.Location,
+			State:     p.State,
+		})
+	}
+	// The posture of the host.
+	posture := ""
+	if agent.Posture != nil {
+		posture = agent.Posture.Label
+	}
+	// The canaries planted on the host.
+	canaries := []canary.Canary{}
+	if s.Canaries != nil {
+		canaries = s.Canaries.ForHost(agentID)
+	}
+	// The requests that are about the host.
+	approvals := []approval.Request{}
+	if s.Approvals != nil {
+		for _, req := range s.Approvals.List("") {
+			if req.AgentID == agentID {
+				approvals = append(approvals, req)
+			}
+		}
+	}
+	return dossier.Build(dossier.Host{
+		ID:            agent.ID,
+		Host:          agent.Host,
+		OS:            agent.OS,
+		Arch:          agent.Arch,
+		User:          agent.User,
+		Version:       agent.Version,
+		Transport:     agent.Transport,
+		Addr:          agent.Addr,
+		Tags:          agent.Tags,
+		State:         agent.State,
+		FirstSeen:     agent.FirstSeen,
+		LastSeen:      agent.LastSeen,
+		Checkins:      agent.Checkins,
+		Uptime:        agent.Uptime,
+		Impersonation: agent.Impersonation,
+		Posture:       posture,
+		Health:        health.Score(s.healthHost(agent, work), now),
+		Tasks:         tasks,
+		Persist:       persist,
+		Canaries:      canaries,
+		Approvals:     approvals,
+	}), true
+}
+
+// taskAttested says whether the answer of a task carried a signature of
+// the agent that the server verified.
+func taskAttested(meta map[string]any) bool {
+	if meta == nil {
+		return false
+	}
+	ok, _ := meta["attested"].(bool)
+	return ok
+}
 
 // HealthFleet scores every host of the inventory.
 //

@@ -103,6 +103,8 @@ AGENT_CAPS = [
         "forensics.report", "forensics.timeline", "decommission", "wipe.deadman",
     # The hunt: the indicators of the team, looked for on the host.
     "hunt.scan",
+    # The tripwires: the canaries of the team, planted and looked at.
+    "canary.plant", "canary.check",
 ]
 
 # The module ABI.
@@ -1094,6 +1096,16 @@ class MockServer:
         # custody of every one of them.
         self.cases: Dict[str, Dict[str, Any]] = {}
         self._case_seq = 0
+        # The two-person rule: the requests of the team that wait for a
+        # second pair of eyes.  The operator who asked for an operation
+        # cannot decide it, and a request that nobody decides goes
+        # stale.
+        self.approvals: Dict[str, Dict[str, Any]] = {}
+        self._approval_seq = 0
+        # The tripwires of the engagement: the canaries the team planted
+        # on the hosts, and the verdict of the last look.
+        self.canaries: Dict[str, Dict[str, Any]] = {}
+        self._canary_seq = 0
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -2635,6 +2647,52 @@ class MockServer:
         if isinstance(switch, dict) and switch.get("armed"):
             self.emit("killswitch.armed", agent_id, task_id=task_id, data={"armed": True})
 
+    def _canary_result(self, task: Dict[str, Any], task_id: str) -> None:
+        """Keep the ledger of the tripwires, from what the host reported.
+
+        The verdicts travel in the metadata of the answer as one short
+        string ("c-0001=intact;c-0002=changed"), so the ledger and the
+        answer the operator reads cannot disagree.
+        """
+        if str(task.get("kind", "")) != "canary.check":
+            return
+        meta = task.get("meta") or {}
+        states = str(meta.get("canary_states", "") or "")
+        if not states:
+            return
+        agent_id = str(task.get("agent_id", ""))
+        changed = 0
+        with self._lock:
+            for part in states.split(";"):
+                part = part.strip()
+                if not part:
+                    continue
+                canary_id, _, rest = part.partition("=")
+                canary_id = canary_id.strip()
+                state, _, text = rest.partition(":")
+                state = state.strip()
+                if canary_id not in self.canaries:
+                    continue
+                entry = self.canaries[canary_id]
+                if entry.get("agent_id") and agent_id and entry["agent_id"] != agent_id:
+                    continue
+                if state not in ("intact", "changed", "missing"):
+                    continue
+                entry["state"] = state
+                entry["verdict"] = text.strip()
+                entry["checked_at"] = _now()
+                if state == "missing":
+                    entry["note"] = "the file of the canary is gone"
+                elif state == "changed":
+                    entry["note"] = "the file of the canary was touched"
+                else:
+                    entry["note"] = ""
+                changed += 1
+        if changed:
+            self.emit("canary.checked", agent_id, task_id=task_id, data={
+                "canaries": changed,
+            })
+
     def _heartbeat(self, agent_id: str, msg: Dict[str, Any]) -> None:
         """Record a heartbeat of a beacon."""
         busy = 0
@@ -3089,6 +3147,9 @@ class MockServer:
         # keeps the last posture, so the operator does not have to run a
         # task to know what a machine is.
         self._posture_result(snapshot, task_id)
+        # A check of the tripwires reports the verdict of every canary of
+        # the host: the server writes them into its ledger.
+        self._canary_result(snapshot, task_id)
         # A credential task hands its material to the vault.
         if creds is not None:
             self._creds_result(snapshot, task_id, creds)
@@ -3257,6 +3318,23 @@ class MockServer:
         "case.create": "operator",
         "case.add": "operator",
         "case.close": "operator",
+        # The two-person rule: reading the queue is harmless, asking for
+        # an operation and deciding it are the work of the team.
+        "approval.list": "viewer",
+        "approval.get": "viewer",
+        "approval.request": "operator",
+        "approval.approve": "operator",
+        "approval.deny": "operator",
+        # The tripwires: reading the ledger is harmless, planting and
+        # looking at the files on the hosts is the work of the team.
+        "canary.list": "viewer",
+        "canary.get": "viewer",
+        "canary.plant": "operator",
+        "canary.check": "operator",
+        "canary.remove": "operator",
+        # The file of a host is a read of everything the server knows.
+        "dossier.get": "viewer",
+        "dossier.list": "viewer",
         # The route of an agent: reading it is harmless, changing it
         # changes how the implant reaches the server.
         "transport.get": "viewer",
@@ -4416,6 +4494,214 @@ class MockServer:
             return ok({"id": case_id, "state": "closed", "closed": case["closed"],
                        "head": head})
 
+        # ---- the two-person rule -------------------------------------------
+        if cmd == "approval.request":
+            # An operation that waits for a second pair of eyes.  The
+            # request is not a task: it is the promise that a task will
+            # be queued once somebody else says yes.
+            kind = str(args.get("kind", "") or "").strip()
+            if not kind:
+                return fail("approval.request: a request needs the kind of the "
+                            "operation")
+            agent_id = str(args.get("agent", "") or "").strip()
+            reason = str(args.get("reason", "") or "").strip()
+            task_args = args.get("args")
+            if not isinstance(task_args, dict):
+                task_args = {}
+            with self._lock:
+                self._approval_seq += 1
+                request_id = f"a-{self._approval_seq:04d}"
+                now = _now()
+                request = {
+                    "id": request_id,
+                    "kind": kind,
+                    "agent_id": agent_id,
+                    "args": dict(task_args),
+                    "reason": reason,
+                    "requested_by": operator,
+                    "requested_at": now,
+                    "state": "pending",
+                    "decided_by": "",
+                    "decided_at": 0,
+                    "note": "",
+                    "expires_at": now + APPROVAL_TTL,
+                }
+                self.approvals[request_id] = request
+                payload = dict(request)
+            return ok(payload)
+
+        if cmd == "approval.list":
+            # The queue of the team: what waits, and what was decided.
+            state = str(args.get("state", "") or "").strip()
+            with self._lock:
+                rows = []
+                for request in self.approvals.values():
+                    _approval_expire(request)
+                    if state and request["state"] != state:
+                        continue
+                    rows.append(dict(request))
+                rows.sort(key=lambda row: (row["requested_at"], row["id"]),
+                          reverse=True)
+            return ok({"requests": rows, "count": len(rows)})
+
+        if cmd == "approval.get":
+            request_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                request = self.approvals.get(request_id)
+                if request is None:
+                    return fail(f"approval.get: no such request {request_id!r}")
+                _approval_expire(request)
+                payload = dict(request)
+            return ok(payload)
+
+        if cmd in ("approval.approve", "approval.deny"):
+            # The decision does the work: the approved operation is
+            # queued on the host right away.  The operator who asked for
+            # it cannot decide it -- that is the whole point of the rule.
+            request_id = str(args.get("id", "") or "").strip()
+            note = str(args.get("note", "") or "").strip()
+            with self._lock:
+                request = self.approvals.get(request_id)
+                if request is None:
+                    return fail(f"{cmd}: no such request {request_id!r}")
+                _approval_expire(request)
+                if request["state"] != "pending":
+                    return fail(f"{cmd}: the request was already decided")
+                if request["requested_by"] == operator:
+                    return fail(f"{cmd}: the operator who asked for it cannot "
+                                "decide it")
+                request["state"] = "approved" if cmd == "approval.approve" else "denied"
+                request["decided_by"] = operator
+                request["decided_at"] = _now()
+                request["note"] = note
+                payload = dict(request)
+            if payload["state"] == "approved" and payload["agent_id"] and payload["kind"]:
+                task = self._queue_task(payload["agent_id"], payload["kind"],
+                                        payload["args"])
+                payload["task_id"] = task["id"]
+            return ok(payload)
+
+        # ---- the tripwires --------------------------------------------------
+        if cmd == "canary.plant":
+            # A tripwire is planted on a host: a small file with a secret
+            # in it, in a place where nothing of the engagement belongs.
+            # The token never travels to the console.
+            agent_id = str(args.get("agent", "") or "").strip()
+            label = str(args.get("label", "") or "").strip()
+            note = str(args.get("note", "") or "").strip()
+            if not agent_id:
+                return fail("canary.plant: a canary needs the host it is "
+                            "planted on")
+            if not label:
+                return fail("canary.plant: a canary needs a label")
+            with self._lock:
+                self._canary_seq += 1
+                canary_id = f"c-{self._canary_seq:04d}"
+                token = secrets.token_hex(32)
+                entry = {
+                    "id": canary_id,
+                    "label": label,
+                    "token": token,
+                    "agent_id": agent_id,
+                    "kind": "file",
+                    "state": "planted",
+                    "planted_at": _now(),
+                    "checked_at": 0,
+                    "note": note,
+                    "verdict": "",
+                }
+                self.canaries[canary_id] = entry
+                planted_at = entry["planted_at"]
+            task = self._queue_task(agent_id, "canary.plant",
+                                    {"id": canary_id, "token": token, "label": label})
+            return ok({"id": canary_id, "label": label, "agent_id": agent_id,
+                       "state": "planted", "task_id": task["id"],
+                       "planted_at": planted_at})
+
+        if cmd == "canary.list":
+            agent_id = str(args.get("agent", "") or "").strip()
+            with self._lock:
+                rows = []
+                for entry in self.canaries.values():
+                    if agent_id and entry["agent_id"] != agent_id:
+                        continue
+                    row = dict(entry)
+                    row.pop("token", None)
+                    rows.append(row)
+                rows.sort(key=lambda row: (row["planted_at"], row["id"]),
+                          reverse=True)
+            return ok({"canaries": rows, "count": len(rows)})
+
+        if cmd == "canary.get":
+            canary_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                entry = self.canaries.get(canary_id)
+                if entry is None:
+                    return fail(f"canary.get: no such canary {canary_id!r}")
+                payload = dict(entry)
+                payload.pop("token", None)
+            return ok(payload)
+
+        if cmd == "canary.check":
+            # The look: every host that has tripwires is asked about them.
+            agent_id = str(args.get("agent", "") or "").strip()
+            with self._lock:
+                if args.get("all"):
+                    targets = [dict(a) for a in self.agents.values()]
+                elif agent_id:
+                    targets = [dict(a) for a in self.agents.values()
+                               if str(a.get("id", "")) == agent_id]
+                else:
+                    targets = _select_agents(self.agents, args)
+                wanted = []
+                for target in targets:
+                    items = [dict(c) for c in self.canaries.values()
+                             if c["agent_id"] == target.get("id")]
+                    if not items:
+                        continue
+                    wanted.append((str(target.get("id", "")), items))
+            # The tasks are queued outside the lock: the queue takes the
+            # lock of its own.
+            rows = []
+            for target_id, items in wanted:
+                task = self._queue_task(
+                    target_id, "canary.check",
+                    {"canaries": [{"id": c["id"]} for c in items]})
+                rows.append({"agent_id": target_id,
+                             "task_id": task["id"],
+                             "state": task["state"],
+                             "canaries": len(items)})
+            if not rows:
+                return fail("canary.check: no agents matched")
+            return ok({"tasks": rows, "count": len(rows), "asked": len(rows)})
+
+        if cmd == "canary.remove":
+            # The operator stops watching the tripwire.  The file on the
+            # host stays where it is.
+            canary_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if canary_id not in self.canaries:
+                    return fail(f"canary.remove: no such canary {canary_id!r}")
+                del self.canaries[canary_id]
+            return ok({"id": canary_id, "removed": True})
+
+        # ---- the file of a host --------------------------------------------
+        if cmd in ("dossier.get", "dossier.list"):
+            with self._lock:
+                agents = [dict(a) for a in self.agents.values()]
+                tasks = [dict(t) for t in self.tasks.values()]
+                canaries = [dict(c) for c in self.canaries.values()]
+                approvals = [dict(r) for r in self.approvals.values()]
+            rows = _dossiers(agents, tasks, canaries, approvals)
+            if cmd == "dossier.list":
+                rows.sort(key=lambda row: (row["score"], row["id"]))
+                return ok({"dossiers": rows, "count": len(rows)})
+            agent_id = str(args.get("agent", "") or args.get("id", "") or "").strip()
+            for row in rows:
+                if row["id"] == agent_id:
+                    return ok(row)
+            return fail(f"dossier.get: no such host {agent_id!r}")
+
         if cmd == "sessions.list":
             with self._lock:
                 rows = [dict(row) for row in self.open_sessions.values()]
@@ -5570,6 +5856,138 @@ def _case_verify(case: Dict[str, Any]) -> Tuple[bool, int, str]:
     return True, 0, ""
 
 
+def _approval_expire(request: Dict[str, Any]) -> None:
+    """Mark a request stale when nobody decided it in time.
+
+    The rule of the queue: a request that nobody decided is not a
+    request any more, and it decides nothing.
+    """
+    if request.get("state") != "pending":
+        return
+    if not request.get("expires_at"):
+        return
+    if _now() <= int(request["expires_at"]):
+        return
+    request["state"] = "expired"
+    request["note"] = "the request went stale before anybody decided it"
+
+
+def _dossiers(agents: List[Dict[str, Any]],
+              tasks: List[Dict[str, Any]],
+              canaries: List[Dict[str, Any]],
+              approvals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The file of every host: what the server knows and what it did.
+
+    The rules mirror the ones of server/internal/dossier: the work is
+    counted, a broken thing is named, and what is missing is said as
+    well.
+    """
+    reports = _score_fleet(agents, tasks)
+    by_agent = {str(r.get("agent_id", "")): r for r in reports}
+    rows: List[Dict[str, Any]] = []
+    for agent in agents:
+        agent_id = str(agent.get("id", ""))
+        report = by_agent.get(agent_id, {})
+        mine = [t for t in tasks if str(t.get("agent_id", "")) == agent_id]
+        done = sum(1 for t in mine if t.get("state") == "done")
+        failed = sum(1 for t in mine if t.get("state") == "failed")
+        pending = len(mine) - done - failed
+        kinds: Dict[str, int] = {}
+        for task in mine:
+            kind = str(task.get("kind", "") or "")
+            if kind:
+                kinds[kind] = kinds.get(kind, 0) + 1
+        persist = [p for p in (agent.get("persist") or []) if isinstance(p, dict)]
+        broken = sum(1 for p in persist if p.get("state") == "broken")
+        posture = agent.get("posture") or {}
+        posture_label = str(posture.get("label", "") or "") if isinstance(posture, dict) else ""
+        mine_canaries = [c for c in canaries if str(c.get("agent_id", "")) == agent_id]
+        mine_approvals = [a for a in approvals if str(a.get("agent_id", "")) == agent_id]
+
+        # The lines the operator reads first.
+        summary: List[str] = []
+        name = str(agent.get("host", "") or agent_id)
+        state = str(agent.get("state", "") or "unknown")
+        summary.append(
+            f"{name} ({agent.get('os', '')}, {agent.get('arch', '')}) is {state}, "
+            f"score {report.get('score', 0)} ({report.get('grade', 'unknown')})")
+        if agent.get("last_seen"):
+            summary.append(
+                f"the host answered {int(agent.get('checkins', 0) or 0)} times, "
+                f"the last one at {int(agent.get('last_seen', 0) or 0)}")
+        if done or failed or pending:
+            summary.append(f"the work: {done} done, {failed} failed, {pending} waiting")
+            summary.append("the kinds of the work: " + _kinds_line(kinds))
+        if broken:
+            summary.append(f"{broken} persistence entries are broken")
+        for canary in mine_canaries:
+            if canary.get("state") == "changed":
+                summary.append(f"the canary {canary.get('label', '')!r} was touched")
+            if canary.get("state") == "missing":
+                summary.append(f"the canary {canary.get('label', '')!r} is gone")
+        for request in mine_approvals:
+            if request.get("state") == "pending":
+                summary.append(
+                    f"the request {request.get('kind', '')!r} waits for a decision")
+
+        # What the server does not know.
+        gaps: List[str] = []
+        if not agent.get("last_seen"):
+            gaps.append("the host has never answered")
+        if not agent.get("version"):
+            gaps.append("the version of the implant is unknown")
+        if not agent.get("user"):
+            gaps.append("the account the implant runs as is unknown")
+        if not mine:
+            gaps.append("the server never ran a task on this host")
+
+        row: Dict[str, Any] = {
+            "id": agent_id,
+            "host": str(agent.get("host", "") or ""),
+            "os": str(agent.get("os", "") or ""),
+            "arch": str(agent.get("arch", "") or ""),
+            "user": str(agent.get("user", "") or ""),
+            "version": str(agent.get("version", "") or ""),
+            "transport": str(agent.get("transport", "") or ""),
+            "addr": str(agent.get("addr", "") or ""),
+            "state": state,
+            "checkins": int(agent.get("checkins", 0) or 0),
+            "score": int(report.get("score", 0) or 0),
+            "grade": str(report.get("grade", "") or ""),
+            "parts": list(report.get("parts", []) or []),
+            "tasks_done": done,
+            "tasks_failed": failed,
+            "tasks_pending": pending,
+            "persist": persist,
+            "persist_broken": broken,
+            "posture": posture_label,
+            "canaries": mine_canaries,
+            "approvals": mine_approvals,
+            "kinds": kinds,
+            "summary": summary,
+            "gaps": gaps,
+        }
+        tags = agent.get("tags") or []
+        if tags:
+            row["tags"] = list(tags)
+        if agent.get("first_seen"):
+            row["first_seen"] = int(agent.get("first_seen"))
+        if agent.get("last_seen"):
+            row["last_seen"] = int(agent.get("last_seen"))
+        if agent.get("impersonation"):
+            row["impersonation"] = str(agent.get("impersonation"))
+        rows.append(row)
+    return rows
+
+
+def _kinds_line(kinds: Dict[str, int]) -> str:
+    """The histogram of the work as one line, the busiest kinds first."""
+    if not kinds:
+        return "none"
+    names = sorted(kinds.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{name} {count}" for name, count in names)
+
+
 def _score_fleet(agents: List[Dict[str, Any]],
                  tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The health of every host, worst first.
@@ -5799,6 +6217,11 @@ CLAIM_LEASE = 120
 BREAKER_THRESHOLD = 5
 MAX_ATTEMPTS = 3
 
+# The life of a request of the two-person rule: a request that nobody
+# decides goes stale, and a stale request decides nothing.  The number is
+# the one of server/internal/approval.
+APPROVAL_TTL = 30 * 60
+
 # The handshake version the fake agent speaks, and the module ABI it
 # claims: the same numbers the Rust beacon and the Go server use.
 HELLO_VERSION = wire.HELLO_VERSION
@@ -5966,6 +6389,13 @@ class FakeAgent(threading.Thread):
         # it become somebody else.  It travels with the check-in, exactly
         # like the real implant does.
         self.impersonation: str = ""
+        # The tripwires of the fake host.  The files are real files, so a
+        # test that wants to see what happens when somebody else was on
+        # the machine touches the file, and the check says so.
+        self.canary_dir = os.path.join(
+            os.environ.get("TMPDIR", "/tmp"), f"umbra-canary-{self.agent_id}")
+        os.makedirs(self.canary_dir, exist_ok=True)
+        self.canaries: Dict[str, Dict[str, Any]] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -7422,6 +7852,8 @@ class FakeAgent(threading.Thread):
             return self._forensics(kind, args)
         if kind == "hunt.scan":
             return self._hunt(kind, args)
+        if kind in ("canary.plant", "canary.check"):
+            return self._canary(kind, args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):
@@ -7603,6 +8035,108 @@ class FakeAgent(threading.Thread):
         # it and the operator can put it into an evidence file.
         meta["attest"] = crypto.attest(self.psk, report).hex()
         return 0, report, "", meta
+
+    def _canary(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The tripwires on the fake host.
+
+        The file of a canary is a real file with a real secret in it,
+        and the facts of it are kept next to it: the fake agent is the
+        only one that knows what it wrote.  A test that wants to see
+        what happens when somebody else was on the machine touches the
+        file, and the check says so.
+        """
+        if kind == "canary.plant":
+            canary_id = str(args.get("id", "") or "")
+            token = str(args.get("token", "") or "")
+            label = str(args.get("label", "") or "")
+            if not canary_id or not token:
+                return 1, b"", "canary.plant: the canary has no id or no token", {}
+            path = os.path.join(self.canary_dir, f"{canary_id}.dat")
+            data = token.encode()
+            try:
+                with open(path, "wb") as handle:
+                    handle.write(data)
+            except OSError as exc:
+                return 1, b"", f"canary.plant: {path}: {exc}", {}
+            self.canaries[canary_id] = {
+                "id": canary_id,
+                "path": path,
+                "size": len(data),
+                "mtime": os.path.getmtime(path),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            facts = self.canaries[canary_id]
+            lines = [f"canary.plant: {canary_id} is planted"]
+            if label:
+                lines.append(f"  the label is {label}")
+            lines.append(f"  the file is {path}")
+            lines.append(f"  {facts['size']} bytes, written at "
+                         f"{int(facts['mtime'])}, digest {facts['sha256']}")
+            report = ("\n".join(lines) + "\n").encode()
+            meta: Dict[str, Any] = {
+                "canary_planted": 1,
+                "canary_id": canary_id,
+                "canary_path": path,
+            }
+            meta["attest"] = crypto.attest(self.psk, report).hex()
+            return 0, report, "", meta
+
+        # The look: the states of the canaries travel in the metadata of
+        # the answer, so the ledger of the server and the answer the
+        # operator reads cannot disagree.
+        items = args.get("canaries") or []
+        if not isinstance(items, list) or not items:
+            return 1, b"", "canary.check: no canary was named", {}
+        wanted: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            canary_id = str(item.get("id", "") or "").strip()
+            if canary_id and canary_id not in wanted:
+                wanted.append(canary_id)
+        verdicts: List[str] = []
+        lines = []
+        touched = 0
+        for canary_id in wanted:
+            state, note = self._canary_state(canary_id)
+            if state in ("changed", "missing"):
+                touched += 1
+            verdicts.append(f"{canary_id}={state}:{note}")
+            lines.append(f"  {canary_id:<10} {state:<8} {note}")
+        report = ("\n".join([
+            f"canary.check: {len(wanted)} canaries looked at, {touched} of them "
+            f"are not as they were",
+        ] + lines) + "\n").encode()
+        meta = {
+            "canary_states": ";".join(verdicts),
+            "canary_checked": len(wanted),
+            "canary_touched": touched,
+        }
+        meta["attest"] = crypto.attest(self.psk, report).hex()
+        return 0, report, "", meta
+
+    def _canary_state(self, canary_id: str) -> Tuple[str, str]:
+        """The state of one canary of the fake host."""
+        facts = self.canaries.get(canary_id)
+        if facts is None:
+            return "missing", "the implant does not know this canary"
+        path = str(facts.get("path", ""))
+        if not os.path.exists(path):
+            return "missing", "the file of the canary is gone"
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            return "missing", "the file of the canary could not be read"
+        if len(data) != int(facts.get("size", 0)):
+            return "changed", f"the file of the canary is {len(data)} bytes now"
+        if hashlib.sha256(data).hexdigest() != str(facts.get("sha256", "")):
+            return "changed", "the file of the canary was touched"
+        mtime = os.path.getmtime(path)
+        if int(mtime) != int(facts.get("mtime", 0)):
+            return "intact", (f"the file is as it was planted but it was "
+                              f"written again at {int(mtime)}")
+        return "intact", "the file is as it was planted"
 
     # -- the layer-3 tunnel (mirrors implant/rust/src/vpn.rs) --------------
     def _vpn(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:

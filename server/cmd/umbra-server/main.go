@@ -32,7 +32,9 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
+	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/dash"
@@ -195,6 +197,27 @@ func run() error {
 		logger.Warn("the case registry could not be read", "err", err)
 	}
 	srv.SetCases(caseRegistry)
+
+	// The two-person rule: the queue of the requests that wait for a
+	// second pair of eyes.  The queue is shared by the team, so it
+	// lives next to the state file: a request one operator wrote has
+	// to be there for the operator who decides it.
+	approvals := approval.New()
+	approvals.SetPath(approvalPath(cfg.Server.DataFile))
+	if err := approvals.Load(); err != nil {
+		logger.Warn("the queue of approvals could not be read", "err", err)
+	}
+	srv.SetApprovals(approvals)
+
+	// The tripwires: the canaries the team planted on the hosts.  The
+	// ledger outlives the engagement, so it lives next to the state
+	// file as well.
+	canaries := canary.New()
+	canaries.SetPath(canaryPath(cfg.Server.DataFile))
+	if err := canaries.Load(); err != nil {
+		logger.Warn("the ledger of the canaries could not be read", "err", err)
+	}
+	srv.SetCanaries(canaries)
 
 	// The layer-3 tunnel between the console and the beacons.
 	if cfg.Server.VPNListen != "" {
@@ -475,6 +498,30 @@ func casePath(dataFile string) string {
 		return filepath.Join("data", "cases.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "cases.json")
+}
+
+// approvalPath is where the queue of the two-person rule is kept.
+//
+// The queue belongs to the team and not to one operator: the request
+// one operator wrote has to be there for the operator who decides it,
+// even after a restart of the server.
+func approvalPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "approval.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "approval.json")
+}
+
+// canaryPath is where the ledger of the tripwires is kept.
+//
+// The ledger outlives the engagement: a canary that was planted last
+// week is still a canary, and the operator who comes back after the
+// weekend has to find it.
+func canaryPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "canary.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "canary.json")
 }
 
 // keepSocksOpen maintains the configured persistent SOCKS5 proxy.

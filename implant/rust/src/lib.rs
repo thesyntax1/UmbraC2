@@ -33,6 +33,8 @@
 //!   senses  the senses of the desktop: the window table, the clipboard,
 //!           the screen in motion, the saved networks, the browsers, the
 //!           security software, the USB keys and the memory of a process
+//!   canary  the tripwires of the engagement: the files that say that
+//!           nobody else was on this host
 //!   persist the persistence manager and its technique catalogue
 //!   install replacing the running implant with a new build
 //!   proc    the process table of the host
@@ -41,6 +43,7 @@
 
 pub mod beacon;
 pub mod bof;
+pub mod canary;
 pub mod config;
 pub mod creds;
 pub mod crypto;

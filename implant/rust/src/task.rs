@@ -47,6 +47,8 @@ pub fn capabilities() -> Vec<&'static str> {
         "wasm", "script", "shellcode", "crypto",
         // The hunt: the indicators of the team, looked for on this host.
         "hunt.scan",
+        // The tripwires: the canaries of the team, planted and looked at.
+        "canary.plant", "canary.check",
     ]
 }
 
@@ -885,6 +887,13 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         // signed like every other report of the engagement: a hunt that
         // goes into the evidence file is a hunt that has to be provable.
         "hunt.scan" => attested_answer(ctx, crate::hunt::scan(args)),
+        // The tripwires of the engagement: a small file with a secret in
+        // it, planted where nothing of the engagement belongs, and the
+        // look that says whether it is still as it was planted.  The
+        // answer is signed like every other report: a check that goes
+        // into the evidence file has to be provable.
+        "canary.plant" => attested_answer(ctx, crate::canary::plant(args)),
+        "canary.check" => attested_answer(ctx, crate::canary::check(args)),
         // The senses of the desktop: the window table, the clipboard, the
         // screen in motion, the wireless networks, the browsers, the
         // security software, the USB keys and the memory of a process.

@@ -171,6 +171,14 @@ type Server struct {
 	// Alerts are rules on the event stream: when a rule matches, the server
 	// logs the event loudly and pushes an "alert" event to the consoles.
 	Alerts []AlertRule `json:"alerts,omitempty"`
+	// ApprovalRequired names the kinds of task that need the approval of a
+	// second operator before they run.
+	//
+	// The list is empty by default: the two-person rule is a policy of the
+	// deployment and not a law of the framework.  A kind that is named here
+	// cannot be queued directly -- the operator asks for it with
+	// approval.request, and an operator who did not ask decides it.
+	ApprovalRequired []string `json:"approval_required,omitempty"`
 	// TaskTimeoutSec is how long a delivered task may stay unanswered
 	// before the server gives up on it (0 = never).
 	TaskTimeoutSec int    `json:"task_timeout_s"`

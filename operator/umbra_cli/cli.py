@@ -854,6 +854,164 @@ def run_case(client: OperatorClient, console: Console, args: Any) -> int:
     return 2
 
 
+def run_approval(client: OperatorClient, console: Console, args: Any) -> int:
+    """The two-person rule: the requests that wait for a second pair of eyes.
+
+    An operator who asks for an operation cannot decide it: the queue
+    refuses that, and the refusal is the point of the rule.  The console
+    says so when the server refuses, because the operator has to know
+    why the operation did not run.
+    """
+    action = getattr(args, "approval_cmd", "") or "list"
+    if action == "list":
+        payload = client.approval_list(state=getattr(args, "state", ""))
+        if args.json:
+            emit(payload)
+        else:
+            print_approvals(payload)
+        return 0
+    if action == "show":
+        payload = client.approval_get(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print_approval(payload)
+        return 0
+    if action == "request":
+        if not args.kind:
+            print("a request needs the kind of the operation", file=sys.stderr)
+            return 2
+        payload = client.approval_request(args.kind, agent_id=args.agent,
+                                          reason=args.reason)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the request {payload.get('id', '?')} waits for a decision: "
+                  f"{payload.get('kind', '?')} on {payload.get('agent_id', '-')}")
+        return 0
+    if action == "approve":
+        payload = client.approval_approve(args.id, note=args.note)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the request {payload.get('id', args.id)} is approved by "
+                  f"{payload.get('decided_by', '?')}")
+            if payload.get("task_id"):
+                print(f"  the operation is queued: {payload.get('task_id')} "
+                      f"on {payload.get('agent_id', '-')}")
+        return 0
+    if action == "deny":
+        payload = client.approval_deny(args.id, note=args.note)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the request {payload.get('id', args.id)} is denied by "
+                  f"{payload.get('decided_by', '?')}")
+        return 0
+    print(f"unknown approval command: {action}", file=sys.stderr)
+    return 2
+
+
+def run_canary(client: OperatorClient, console: Console, args: Any) -> int:
+    """The tripwires of the engagement.
+
+    A tripwire is a small file with a secret in it, planted on a host
+    where nothing of the engagement belongs.  Nobody knows it is there,
+    so nobody touches it -- and the operator learns about it when
+    somebody else was on the machine.
+    """
+    action = getattr(args, "canary_cmd", "") or "list"
+    if action == "list":
+        payload = client.canary_list(agent_id=getattr(args, "agent", ""))
+        if args.json:
+            emit(payload)
+        else:
+            print_canaries(payload)
+        return 0
+    if action == "show":
+        payload = client.canary_get(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print_canary(payload)
+        return 0
+    if action == "plant":
+        if not args.agent:
+            print("a tripwire needs the host it is planted on", file=sys.stderr)
+            return 2
+        if not args.label:
+            print("a tripwire needs a label: what it is for", file=sys.stderr)
+            return 2
+        payload = client.canary_plant(args.agent, args.label, note=args.note)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the tripwire {payload.get('id', '?')} is planted on "
+                  f"{payload.get('agent_id', args.agent)}: {args.label}")
+            if payload.get("task_id"):
+                print(f"  the planting is queued: {payload.get('task_id')}")
+        return 0
+    if action == "check":
+        filters = parse_filter(args.filter)
+        payload = client.canary_check(agent_id=args.agent, all_hosts=args.all,
+                                       **filters)
+        rows = payload.get("tasks") or []
+        if args.json:
+            emit(payload)
+            return 0
+        print(f"the look was queued on {payload.get('count', 0)} hosts")
+        if not args.wait:
+            for row in rows:
+                print(f"  {row.get('agent_id', '?')}  {row.get('task_id', '?')}"
+                      + (f"  {row.get('error')}" if row.get("error") else ""))
+            return 0
+        results = run_bulk(client, console, "canary.check", {}, rows,
+                           cap=4, timeout=180.0, wait=True)
+        for row in results:
+            answer = str(row.get("out", "") or row.get("err", "") or "")
+            print(f"  {row.get('agent_id', '?')}  {row.get('state', '?')}")
+            for line in answer.splitlines():
+                print(f"    {line}")
+        return 0
+    if action == "remove":
+        payload = client.canary_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the tripwire {payload.get('id', args.id)} is not watched any "
+                  f"more; the file on the host stays where it is")
+        return 0
+    print(f"unknown canary command: {action}", file=sys.stderr)
+    return 2
+
+
+def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
+    """The file of a host: what the server knows and what it did.
+
+    The dossier is one page: the identity, the health, the work, the
+    persistence, the tripwires and the requests.  What is not known is
+    said as well, because an operator who does not know that is a
+    difference cannot act on it.
+    """
+    action = getattr(args, "dossier_cmd", "") or "list"
+    if action == "list":
+        payload = client.dossier_list()
+        if args.json:
+            emit(payload)
+        else:
+            print_dossiers(payload)
+        return 0
+    if action == "show":
+        payload = client.dossier_get(args.agent)
+        if args.json:
+            emit(payload)
+        else:
+            print_dossier(payload)
+        return 0
+    print(f"unknown dossier command: {action}", file=sys.stderr)
+    return 2
+
+
 def cleanup_step(client: OperatorClient, console: Console, agent_id: str,
                  command: str, task_args: Dict[str, Any]) -> Dict[str, Any]:
     """Run one step of the cleanup and read its counters.
@@ -1268,6 +1426,162 @@ def print_case(payload: Dict[str, Any], stream: Any = None) -> None:
     else:
         print(f"  THE CHAIN IS BROKEN at event {payload.get('broken_at', '?')}: "
               f"{payload.get('reason', '')}", file=out)
+
+
+def print_approvals(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the queue of the two-person rule.
+
+    The queue shows both hands: who asked and who decided.  A request
+    without a second hand is a request that is still waiting.
+    """
+    out = stream or sys.stdout
+    rows = payload.get("requests") or []
+    if not rows:
+        print("no request waits for a decision", file=out)
+        return
+    rendered = [
+        [
+            r.get("id", "?"),
+            r.get("kind", "?"),
+            r.get("agent_id", "") or "-",
+            r.get("state", "?"),
+            r.get("requested_by", "?"),
+            r.get("decided_by", "") or "-",
+            (r.get("reason", "") or "-")[:40],
+        ]
+        for r in rows
+    ]
+    print(table(["ID", "KIND", "HOST", "STATE", "ASKED BY", "DECIDED BY", "REASON"],
+                rendered), file=out)
+
+
+def print_approval(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render one request of the queue."""
+    out = stream or sys.stdout
+    print(f"request {payload.get('id', '?')}: {payload.get('kind', '?')}", file=out)
+    print(f"  state:      {payload.get('state', '?')}", file=out)
+    print(f"  host:       {payload.get('agent_id', '') or '-'}", file=out)
+    print(f"  asked by:   {payload.get('requested_by', '?')} "
+          f"at {payload.get('requested_at', '?')}", file=out)
+    if payload.get("decided_by"):
+        print(f"  decided by: {payload.get('decided_by')} "
+              f"at {payload.get('decided_at', '?')}", file=out)
+    if payload.get("expires_at"):
+        print(f"  expires:    {payload.get('expires_at')}", file=out)
+    if payload.get("reason"):
+        print(f"  reason:     {payload.get('reason')}", file=out)
+    if payload.get("note"):
+        print(f"  note:       {payload.get('note')}", file=out)
+
+
+def print_canaries(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the tripwires of the engagement."""
+    out = stream or sys.stdout
+    rows = payload.get("canaries") or []
+    if not rows:
+        print("no tripwire has been planted yet", file=out)
+        return
+    rendered = [
+        [
+            r.get("id", "?"),
+            r.get("label", "?"),
+            r.get("agent_id", "") or "-",
+            r.get("state", "?"),
+            r.get("checked_at", "") or "-",
+            (r.get("note", "") or "-")[:40],
+        ]
+        for r in rows
+    ]
+    print(table(["ID", "LABEL", "HOST", "STATE", "LOOKED AT", "NOTE"], rendered),
+          file=out)
+
+
+def print_canary(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render one tripwire, with the verdict of the last look."""
+    out = stream or sys.stdout
+    print(f"canary {payload.get('id', '?')}: {payload.get('label', '')}", file=out)
+    print(f"  state:    {payload.get('state', '?')}", file=out)
+    print(f"  host:     {payload.get('agent_id', '') or '-'}", file=out)
+    print(f"  planted:  {payload.get('planted_at', '?')}", file=out)
+    if payload.get("checked_at"):
+        print(f"  looked:   {payload.get('checked_at')}", file=out)
+    if payload.get("verdict"):
+        print(f"  verdict:  {payload.get('verdict')}", file=out)
+    if payload.get("note"):
+        print(f"  note:     {payload.get('note')}", file=out)
+
+
+def print_dossier(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the file of one host.
+
+    The dossier is one page, and the page says what is not known as
+    well: an operator who does not know that something is missing cannot
+    go and look for it.
+    """
+    out = stream or sys.stdout
+    name = payload.get("host") or payload.get("id") or "?"
+    print(f"{name}  {payload.get('os', '?')}/{payload.get('arch', '?')}  "
+          f"{payload.get('state', '?')}  score {payload.get('score', '?')} "
+          f"({payload.get('grade', '?')})", file=out)
+    tags = payload.get("tags") or []
+    if tags:
+        print(f"  tags: {', '.join(str(t) for t in tags)}", file=out)
+    for line in payload.get("summary") or []:
+        print(f"  {line}", file=out)
+    parts = payload.get("parts") or []
+    if parts:
+        print("  the score:", file=out)
+        for p in parts:
+            print(f"    {str(p.get('name', '?')):<14} "
+                  f"{str(p.get('value', '?')):>3} of {str(p.get('weight', '?'))}  "
+                  f"{p.get('note', '')}", file=out)
+    persist = payload.get("persist") or []
+    if persist:
+        print("  the persistence:", file=out)
+        for p in persist:
+            print(f"    {str(p.get('technique', '?')):<18} "
+                  f"{str(p.get('state', '?')):<10} {p.get('location', '')}", file=out)
+    canaries = payload.get("canaries") or []
+    if canaries:
+        print("  the tripwires:", file=out)
+        for c in canaries:
+            print(f"    {str(c.get('id', '?')):<10} {str(c.get('state', '?')):<10} "
+                  f"{c.get('label', '')}", file=out)
+    approvals = payload.get("approvals") or []
+    if approvals:
+        print("  the requests:", file=out)
+        for a in approvals:
+            print(f"    {str(a.get('id', '?')):<10} {str(a.get('state', '?')):<10} "
+                  f"{a.get('kind', '')}", file=out)
+    gaps = payload.get("gaps") or []
+    if gaps:
+        print("  what is not known:", file=out)
+        for gap in gaps:
+            print(f"    {gap}", file=out)
+
+
+def print_dossiers(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the files of every host, the weakest first."""
+    out = stream or sys.stdout
+    rows = payload.get("dossiers") or []
+    if not rows:
+        print("no host has checked in yet", file=out)
+        return
+    rendered = [
+        [
+            r.get("id", "?"),
+            r.get("host", "") or "-",
+            r.get("state", "?"),
+            r.get("score", "?"),
+            r.get("grade", "?"),
+            r.get("tasks_done", 0),
+            r.get("tasks_failed", 0),
+            r.get("persist_broken", 0),
+        ]
+        for r in rows
+    ]
+    print(table(["AGENT", "HOST", "STATE", "SCORE", "GRADE", "DONE", "FAILED",
+                 "BROKEN"], rendered), file=out)
 
 
 def print_audit(payload: Dict[str, Any], stream: Any = None) -> None:
@@ -2341,6 +2655,12 @@ def print_help() -> None:
   stager [options]          render a stager script
   db [action] [value]       the local notebook (stats|tasks|results|notes|search|note)
   raw <cmd> [json]          send a raw RPC
+  hunt [list|add|remove|sweep]  the indicators of the team, and the hunt
+  health                        the score of the hosts of the engagement
+  case [list|show|create|add|close]  the evidence files of the engagement
+  approval [list|show|request|approve|deny]  the two-person rule
+  canary [list|show|plant|check|remove]  the tripwires of the engagement
+  dossier [list|show]         the file of a host: what the server knows
   quit                      disconnect and exit"""
     )
 
@@ -2936,6 +3256,88 @@ def build_parser() -> argparse.ArgumentParser:
     case_close = case_sub.add_parser("close", help="close a case")
     case_close.add_argument("id")
     case_close.add_argument("--note", default="")
+
+    # ---- the two-person rule -------------------------------------------
+    approval_cmd = sub.add_parser("approval",
+                                   help="the requests that wait for a "
+                                        "second pair of eyes")
+    approval_sub = approval_cmd.add_subparsers(dest="approval_cmd")
+
+    approval_list = approval_sub.add_parser("list", help="the queue of the team")
+    approval_list.add_argument("--state", default="",
+                               help="only this state: pending, approved, "
+                                    "denied or expired")
+    approval_list.add_argument("--json", action="store_true")
+
+    approval_show = approval_sub.add_parser("show", help="one request")
+    approval_show.add_argument("id")
+    approval_show.add_argument("--json", action="store_true")
+
+    approval_request = approval_sub.add_parser(
+        "request", help="ask for an operation that needs a second pair of eyes")
+    approval_request.add_argument("kind", help="the kind of the operation")
+    approval_request.add_argument("--agent", default="", help="the host")
+    approval_request.add_argument("--reason", default="",
+                                  help="why the operation is wanted")
+    approval_request.add_argument("--json", action="store_true")
+
+    approval_approve = approval_sub.add_parser("approve", help="say yes")
+    approval_approve.add_argument("id")
+    approval_approve.add_argument("--note", default="")
+    approval_approve.add_argument("--json", action="store_true")
+
+    approval_deny = approval_sub.add_parser("deny", help="say no")
+    approval_deny.add_argument("id")
+    approval_deny.add_argument("--note", default="")
+    approval_deny.add_argument("--json", action="store_true")
+
+    # ---- the tripwires --------------------------------------------------
+    canary_cmd = sub.add_parser("canary", help="the tripwires of the engagement")
+    canary_sub = canary_cmd.add_subparsers(dest="canary_cmd")
+
+    canary_list = canary_sub.add_parser("list", help="the tripwires")
+    canary_list.add_argument("--agent", default="", help="one host")
+    canary_list.add_argument("--json", action="store_true")
+
+    canary_show = canary_sub.add_parser("show", help="one tripwire")
+    canary_show.add_argument("id")
+    canary_show.add_argument("--json", action="store_true")
+
+    canary_plant = canary_sub.add_parser("plant", help="plant a tripwire")
+    canary_plant.add_argument("--agent", required=True, help="the host")
+    canary_plant.add_argument("--label", required=True,
+                               help="what the tripwire is for")
+    canary_plant.add_argument("--note", default="")
+    canary_plant.add_argument("--json", action="store_true")
+
+    canary_check = canary_sub.add_parser("check",
+                                          help="ask the hosts about their tripwires")
+    canary_check.add_argument("--agent", default="", help="one host")
+    canary_check.add_argument("--all", action="store_true", help="every host")
+    canary_check.add_argument("--filter", default="",
+                              help="the hosts to ask: state=online, tag=dc, ...")
+    canary_check.add_argument("--wait", action="store_true",
+                              help="wait for and print the answer")
+    canary_check.add_argument("--json", action="store_true")
+
+    canary_remove = canary_sub.add_parser("remove",
+                                           help="stop watching a tripwire")
+    canary_remove.add_argument("id")
+    canary_remove.add_argument("--json", action="store_true")
+
+    # ---- the file of a host ---------------------------------------------
+    dossier_cmd = sub.add_parser("dossier",
+                                  help="the file of a host: what the server "
+                                       "knows and what it did")
+    dossier_sub = dossier_cmd.add_subparsers(dest="dossier_cmd")
+
+    dossier_list = dossier_sub.add_parser("list",
+                                           help="every host, the weakest first")
+    dossier_list.add_argument("--json", action="store_true")
+
+    dossier_show = dossier_sub.add_parser("show", help="the file of one host")
+    dossier_show.add_argument("agent")
+    dossier_show.add_argument("--json", action="store_true")
 
     info = sub.add_parser("info", help="show one agent")
     info.add_argument("agent")
@@ -3990,6 +4392,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print_health_fleet(payload)
         elif args.cmd == "case":
             return run_case(client, console, args)
+        elif args.cmd == "approval":
+            return run_approval(client, console, args)
+        elif args.cmd == "canary":
+            return run_canary(client, console, args)
+        elif args.cmd == "dossier":
+            return run_dossier(client, console, args)
         elif args.cmd == "info":
             emit(client.agent_info(args.agent))
         elif args.cmd == "run":

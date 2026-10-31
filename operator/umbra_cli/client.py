@@ -776,6 +776,139 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the two-person rule ----------------------------------------------
+    def approval_request(self, kind: str, agent_id: str = "", reason: str = "",
+                         args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Ask for an operation that waits for a second pair of eyes.
+
+        The request is not a task: it is the promise that a task will be
+        queued once somebody else says yes.  The operator who asked for
+        it cannot decide it -- the server refuses that.
+        """
+        payload: Dict[str, Any] = {"kind": kind}
+        if agent_id:
+            payload["agent"] = agent_id
+        if reason:
+            payload["reason"] = reason
+        if args:
+            payload["args"] = dict(args)
+        res = self.rpc("approval.request", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def approval_list(self, state: str = "") -> Dict[str, Any]:
+        """The queue of the team: what waits, and what was decided."""
+        payload: Dict[str, Any] = {}
+        if state:
+            payload["state"] = state
+        res = self.rpc("approval.list", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def approval_get(self, request_id: str) -> Dict[str, Any]:
+        """One request of the queue, with the hand that decided it."""
+        res = self.rpc("approval.get", {"id": request_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def approval_approve(self, request_id: str, note: str = "") -> Dict[str, Any]:
+        """Say yes: the approved operation is queued on the host.
+
+        The operator who asked for the operation cannot say yes to it:
+        the server refuses the decision of the requester.
+        """
+        payload: Dict[str, Any] = {"id": request_id}
+        if note:
+            payload["note"] = note
+        res = self.rpc("approval.approve", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def approval_deny(self, request_id: str, note: str = "") -> Dict[str, Any]:
+        """Say no: the operation is not queued and the note says why."""
+        payload: Dict[str, Any] = {"id": request_id}
+        if note:
+            payload["note"] = note
+        res = self.rpc("approval.deny", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the tripwires ----------------------------------------------------
+    def canary_plant(self, agent_id: str, label: str,
+                     note: str = "") -> Dict[str, Any]:
+        """Plant a tripwire on a host.
+
+        The file carries a secret that only the implant and the ledger
+        of the server know.  Nobody else does, so nobody touches it.
+        """
+        payload: Dict[str, Any] = {"agent": agent_id, "label": label}
+        if note:
+            payload["note"] = note
+        res = self.rpc("canary.plant", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def canary_list(self, agent_id: str = "") -> Dict[str, Any]:
+        """The tripwires of the engagement, newest first."""
+        payload: Dict[str, Any] = {}
+        if agent_id:
+            payload["agent"] = agent_id
+        res = self.rpc("canary.list", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def canary_get(self, canary_id: str) -> Dict[str, Any]:
+        """One tripwire, with the verdict of the last look."""
+        res = self.rpc("canary.get", {"id": canary_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def canary_check(self, agent_id: str = "", all_hosts: bool = False,
+                     **filters: Any) -> Dict[str, Any]:
+        """Ask the hosts whether their tripwires are as they were planted."""
+        payload: Dict[str, Any] = {}
+        if agent_id:
+            payload["agent"] = agent_id
+        if all_hosts:
+            payload["all"] = True
+        for key, value in filters.items():
+            if value:
+                payload[key] = value
+        res = self.rpc("canary.check", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def canary_remove(self, canary_id: str) -> Dict[str, Any]:
+        """Stop watching a tripwire.  The file on the host stays there."""
+        res = self.rpc("canary.remove", {"id": canary_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the file of a host ------------------------------------------------
+    def dossier_get(self, agent_id: str) -> Dict[str, Any]:
+        """The file of one host: what the server knows and what it did."""
+        res = self.rpc("dossier.get", {"agent": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def dossier_list(self) -> Dict[str, Any]:
+        """The files of every host, the weakest first."""
+        res = self.rpc("dossier.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def sessions(self) -> List[Dict[str, Any]]:
         """The interactive sessions that are open, per agent.
 

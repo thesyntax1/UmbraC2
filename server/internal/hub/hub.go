@@ -212,6 +212,53 @@ type Hub struct {
 	// The beacon reports the id of a session with every chunk it streams,
 	// so the server always knows which sessions exist.
 	sessions map[string]map[string]*Session
+
+	// onComplete holds the callbacks that follow the tasks that finish.
+	// A subsystem that keeps a ledger of its own (the canaries) reads
+	// the metadata of the task from here.
+	onComplete []func(Completion)
+}
+
+// Completion is what the callbacks of the finished tasks receive.
+//
+// The callback sees the metadata of the task, which is where the
+// implants put the numbers of their reports.
+type Completion struct {
+	// AgentID is the host that answered.
+	AgentID string
+	// TaskID is the task that finished.
+	TaskID string
+	// Kind is what the task was.
+	Kind string
+	// Code is the exit code of the answer.
+	Code int64
+	// Meta is the metadata of the answer.
+	Meta map[string]any
+}
+
+// OnComplete registers a callback for the tasks that finish.
+//
+// The callbacks run outside the lock of the hub, so they may read the
+// store and may queue work of their own.  A callback that blocks slows
+// the check-in that finished the task, so a callback does its work and
+// returns.
+func (h *Hub) OnComplete(fn func(Completion)) {
+	if fn == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onComplete = append(h.onComplete, fn)
+}
+
+// notifyComplete tells the callbacks that a task finished.
+func (h *Hub) notifyComplete(c Completion) {
+	h.mu.Lock()
+	hooks := append([]func(Completion)(nil), h.onComplete...)
+	h.mu.Unlock()
+	for _, fn := range hooks {
+		fn(c)
+	}
 }
 
 // ChainStage is one step of a multi-stage task.
@@ -885,6 +932,10 @@ func (h *Hub) CompleteTask(agentID, taskID string, code int64, output []byte, er
 	if hasCreds {
 		h.storeCredentials(agentID, entries)
 	}
+	// The subsystems that keep a ledger of their own (the canaries) read
+	// the metadata of the task that finished.
+	h.notifyComplete(Completion{AgentID: agentID, TaskID: taskID, Kind: t.Kind,
+		Code: t.Code, Meta: meta})
 	// A host that answers is a host that works: the failures of its
 	// breaker are cleared.  A host that fails is counted, and a task that
 	// keeps failing ends up in the dead letter queue.

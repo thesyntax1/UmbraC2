@@ -161,6 +161,34 @@ var requirements = map[string]string{
 	"case.add":    Operator,
 	"case.close":  Operator,
 
+	// ---- the two-person rule ---------------------------------------------
+	// Reading the queue of the approvals and one request of it is a read:
+	// a viewer sees what the team is waiting for.
+	"approval.list": Viewer,
+	"approval.get":  Viewer,
+	// Asking for an operation is an operator action.
+	"approval.request": Operator,
+	// Deciding is the work of the rule: an operator decides the requests
+	// of the others.  The queue refuses the operator who asked, and the
+	// role table is what keeps the rest of the team honest.
+	"approval.approve": Operator,
+	"approval.deny":    Operator,
+
+	// ---- the tripwires ---------------------------------------------------
+	// Reading the ledger of the canaries is harmless.
+	"canary.list": Viewer,
+	"canary.get":  Viewer,
+	// Planting a file on a host, looking at it and stopping the watch are
+	// the work of the engagement: they are operator actions.
+	"canary.plant":  Operator,
+	"canary.check":  Operator,
+	"canary.remove": Operator,
+
+	// ---- the file of a host ----------------------------------------------
+	// The dossier is a read of everything the server knows about a host.
+	"dossier.get":  Viewer,
+	"dossier.list": Viewer,
+
 	// ---- burning an engagement ------------------------------------------
 	// A panic tells every selected beacon to exit and stops the server
 	// from feeding it any more work.  It is the end of an engagement, so

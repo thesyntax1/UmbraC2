@@ -2,6 +2,7 @@ package link
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,9 +16,12 @@ import (
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
+	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
+	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
@@ -815,6 +819,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if err := forensicGuard(role, kind); err != nil {
 			return fail("task.submit: %v", err)
 		}
+		if err := s.approvalGuard(kind); err != nil {
+			return fail("task.submit: %v", err)
+		}
 		taskArgs, _ := args["args"].(map[string]any)
 		deadline, err := parseDeadline(args["deadline"])
 		if err != nil {
@@ -836,6 +843,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if err == nil {
 			for _, stage := range stages {
 				if err = forensicGuard(role, stage.Kind); err != nil {
+					break
+				}
+				if err = s.approvalGuard(stage.Kind); err != nil {
 					break
 				}
 			}
@@ -891,6 +901,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			// A delivered task may still be running on the agent: running
 			// it a second time would do it twice.
 			return fail("task %q has not finished yet", taskID)
+		}
+		if err := s.approvalGuard(old.Kind); err != nil {
+			return fail("task.retry: %v", err)
 		}
 		nt, err := s.Hub.SubmitTask(old.AgentID, old.Kind, old.Args)
 		if err != nil {
@@ -948,6 +961,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			return fail("task.bulk needs a task kind")
 		}
 		if err := forensicGuard(role, kind); err != nil {
+			return fail("task.bulk: %v", err)
+		}
+		if err := s.approvalGuard(kind); err != nil {
 			return fail("task.bulk: %v", err)
 		}
 		taskArgs, _ := args["args"].(map[string]any)
@@ -1602,6 +1618,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if err := forensicGuard(role, kind); err != nil {
 			return fail("alias.run: %v", err)
 		}
+		if err := s.approvalGuard(kind); err != nil {
+			return fail("alias.run: %v", err)
+		}
 		t, err := s.Hub.SubmitTask(agentID, kind, merged)
 		if err != nil {
 			return fail("alias.run: %v", err)
@@ -1775,6 +1794,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		// named with `agents` or with a filter (`state`, `os`, `tag`,
 		// ...); a command with neither is refused rather than guessed.
 		kind := forensicTaskKind(cmd)
+		if err := s.approvalGuard(kind); err != nil {
+			return fail("%s: %v", cmd, err)
+		}
 		taskArgs := map[string]any{}
 		if what, ok := args["what"]; ok {
 			taskArgs["what"] = what
@@ -2159,6 +2181,278 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"id": id, "state": casefile.StateClosed,
 			"closed": c.Closed.Format(time.RFC3339), "head": c.Head,
 		})
+
+	// ---- the two-person rule -------------------------------------------
+	case "approval.request":
+		// An operation that waits for a second pair of eyes.
+		//
+		// The request is not a task: it is the promise that a task will
+		// be queued once somebody else says yes.  It carries the kind of
+		// the operation and its arguments, so the decision does the
+		// thing the requester meant.
+		if s.Approvals == nil {
+			return fail("approval.request: this server has no queue of approvals")
+		}
+		kind, _ := args["kind"].(string)
+		agentID, _ := args["agent"].(string)
+		reason, _ := args["reason"].(string)
+		taskArgs := map[string]any{}
+		if raw, ok := args["args"].(map[string]any); ok {
+			for k, v := range raw {
+				taskArgs[k] = v
+			}
+		}
+		req, err := s.Approvals.Request(approval.Request{
+			Kind:        kind,
+			AgentID:     agentID,
+			Args:        taskArgs,
+			Reason:      reason,
+			RequestedBy: op.Name,
+		})
+		if err != nil {
+			return fail("approval.request: %v", err)
+		}
+		if err := s.Approvals.Save(); err != nil {
+			s.Log.Warn("the queue of approvals could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": req.ID, "kind": req.Kind, "agent_id": req.AgentID,
+			"state": req.State, "requested_by": req.RequestedBy,
+			"requested_at": req.RequestedAt.Format(time.RFC3339),
+			"expires_at":   req.ExpiresAt.Format(time.RFC3339),
+			"reason":       req.Reason,
+		})
+
+	case "approval.list":
+		// The queue of the team: what waits, and what was decided.
+		if s.Approvals == nil {
+			return fail("approval.list: this server has no queue of approvals")
+		}
+		state, _ := args["state"].(string)
+		items := s.Approvals.List(state)
+		rows := make([]any, 0, len(items))
+		for _, req := range items {
+			rows = append(rows, approvalMap(req))
+		}
+		return reply(upk.Map{"requests": rows, "count": int64(len(rows))})
+
+	case "approval.get":
+		if s.Approvals == nil {
+			return fail("approval.get: this server has no queue of approvals")
+		}
+		id, _ := args["id"].(string)
+		req, found := s.Approvals.Get(id)
+		if !found {
+			return fail("approval.get: no such request %q", id)
+		}
+		return reply(approvalMap(req))
+
+	case "approval.approve", "approval.deny":
+		// The decision does the work.
+		//
+		// The operator who asked for the operation cannot decide it:
+		// the queue refuses that, and the refusal is the whole point
+		// of the rule.  When the decision is "yes", the operation is
+		// queued on the host right away.
+		if s.Approvals == nil {
+			return fail("%s: this server has no queue of approvals", cmd)
+		}
+		id, _ := args["id"].(string)
+		note, _ := args["note"].(string)
+		approve := cmd == "approval.approve"
+		req, err := s.Approvals.Decide(id, op.Name, approve, note)
+		if err != nil {
+			return fail("%s: %v", cmd, err)
+		}
+		if err := s.Approvals.Save(); err != nil {
+			s.Log.Warn("the queue of approvals could not be saved", "err", err)
+		}
+		out := approvalMap(req)
+		if approve && req.AgentID != "" && req.Kind != "" {
+			t, err := s.Hub.SubmitTask(req.AgentID, req.Kind, req.Args)
+			if err != nil {
+				return fail("%s: the request was approved but the task could not be queued: %v", cmd, err)
+			}
+			out["task_id"] = t.ID
+			out["agent_id"] = t.AgentID
+		}
+		return reply(out)
+
+	// ---- the tripwires --------------------------------------------------
+	case "canary.plant":
+		// A tripwire is planted on a host: a small file with a secret
+		// in it, in a place where nothing of the engagement belongs.
+		//
+		// The token is written by the implant and kept by nobody but
+		// the ledger: the operator does not need it, and it does not
+		// travel on the wire.
+		if s.Canaries == nil {
+			return fail("canary.plant: this server has no ledger of canaries")
+		}
+		agentID, _ := args["agent"].(string)
+		label, _ := args["label"].(string)
+		note, _ := args["note"].(string)
+		if agentID == "" {
+			return fail("canary.plant: a canary needs the host it is planted on")
+		}
+		secret, err := crypt.RandomBytes(32)
+		if err != nil {
+			return fail("canary.plant: %v", err)
+		}
+		c, err := s.Canaries.Plant(canary.Canary{
+			Label:   label,
+			Token:   hex.EncodeToString(secret),
+			AgentID: agentID,
+			Kind:    "file",
+			Note:    note,
+		})
+		if err != nil {
+			return fail("canary.plant: %v", err)
+		}
+		taskArgs := map[string]any{
+			"id":    c.ID,
+			"token": c.Token,
+			"label": c.Label,
+		}
+		t, err := s.Hub.SubmitTask(agentID, "canary.plant", taskArgs)
+		if err != nil {
+			// The canary was never planted: it does not go into the
+			// ledger, because a ledger that says "planted" for a file
+			// that does not exist is a lie.
+			_ = s.Canaries.Remove(c.ID)
+			return fail("canary.plant: %v", err)
+		}
+		if err := s.Canaries.Save(); err != nil {
+			s.Log.Warn("the ledger of the canaries could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": c.ID, "label": c.Label, "agent_id": c.AgentID,
+			"state": c.State, "task_id": t.ID,
+			"planted_at": c.PlantedAt.Format(time.RFC3339),
+		})
+
+	case "canary.list":
+		if s.Canaries == nil {
+			return fail("canary.list: this server has no ledger of canaries")
+		}
+		agentID, _ := args["agent"].(string)
+		items := s.Canaries.ForHost(agentID)
+		rows := make([]any, 0, len(items))
+		for _, c := range items {
+			rows = append(rows, canaryMap(c))
+		}
+		return reply(upk.Map{"canaries": rows, "count": int64(len(rows))})
+
+	case "canary.get":
+		if s.Canaries == nil {
+			return fail("canary.get: this server has no ledger of canaries")
+		}
+		id, _ := args["id"].(string)
+		c, found := s.Canaries.Get(id)
+		if !found {
+			return fail("canary.get: no such canary %q", id)
+		}
+		return reply(canaryMap(c))
+
+	case "canary.check":
+		// The look: every host that has tripwires is asked about them,
+		// and the answer of the implant says whether the files are as
+		// they were planted.
+		if s.Canaries == nil {
+			return fail("canary.check: this server has no ledger of canaries")
+		}
+		var targets []*store.Agent
+		agentID, _ := args["agent"].(string)
+		if all, _ := args["all"].(bool); all {
+			targets = s.Hub.SelectAgents(hub.AgentFilter{})
+		} else if agentID != "" {
+			targets = s.Hub.SelectAgents(hub.AgentFilter{IDs: []string{agentID}})
+		} else {
+			selected, err := s.selectTargets(args)
+			if err != nil {
+				return fail("canary.check: %v", err)
+			}
+			targets = selected
+		}
+		if len(targets) == 0 {
+			return fail("canary.check: no agents matched")
+		}
+		rows := make([]any, 0, len(targets))
+		asked := 0
+		for _, a := range targets {
+			items := s.Canaries.ForHost(a.ID)
+			if len(items) == 0 {
+				continue
+			}
+			asked++
+			list := make([]any, 0, len(items))
+			for _, c := range items {
+				list = append(list, upk.Map{"id": c.ID})
+			}
+			t, err := s.Hub.SubmitTask(a.ID, "canary.check", map[string]any{"canaries": list})
+			if err != nil {
+				rows = append(rows, upk.Map{"agent_id": a.ID, "error": err.Error()})
+				continue
+			}
+			rows = append(rows, upk.Map{
+				"agent_id": a.ID, "task_id": t.ID, "state": t.State,
+				"canaries": int64(len(items)),
+			})
+		}
+		return reply(upk.Map{"tasks": rows, "count": int64(len(rows)), "asked": int64(asked)})
+
+	case "canary.remove":
+		// The operator stops watching the tripwire.  The file on the
+		// host stays where it is: this removes the watch, not the file.
+		if s.Canaries == nil {
+			return fail("canary.remove: this server has no ledger of canaries")
+		}
+		id, _ := args["id"].(string)
+		if err := s.Canaries.Remove(id); err != nil {
+			return fail("canary.remove: %v", err)
+		}
+		if err := s.Canaries.Save(); err != nil {
+			s.Log.Warn("the ledger of the canaries could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": id, "removed": true})
+
+	// ---- the file of a host ---------------------------------------------
+	case "dossier.get":
+		// The file of one host: what the server knows about it and what
+		// it did to it, on one page.
+		agentID, _ := args["agent"].(string)
+		if agentID == "" {
+			agentID, _ = args["id"].(string)
+		}
+		d, found := s.Dossier(agentID)
+		if !found {
+			return fail("dossier.get: no such host %q", agentID)
+		}
+		return reply(dossierMap(d))
+
+	case "dossier.list":
+		// The files of every host, the weakest first: the host that
+		// needs attention comes before the host that does not.
+		agents := s.Hub.SelectAgents(hub.AgentFilter{})
+		dossiers := make([]dossier.Dossier, 0, len(agents))
+		for _, a := range agents {
+			d, found := s.Dossier(a.ID)
+			if !found {
+				continue
+			}
+			dossiers = append(dossiers, d)
+		}
+		sort.SliceStable(dossiers, func(i, j int) bool {
+			if dossiers[i].Score == dossiers[j].Score {
+				return dossiers[i].ID < dossiers[j].ID
+			}
+			return dossiers[i].Score < dossiers[j].Score
+		})
+		rows := make([]any, 0, len(dossiers))
+		for _, d := range dossiers {
+			rows = append(rows, dossierMap(d))
+		}
+		return reply(upk.Map{"dossiers": rows, "count": int64(len(rows))})
 
 	// ---- the server-side file store ------------------------------------
 	case "artifact.list":
@@ -3564,4 +3858,188 @@ func huntIndicatorPayload(payload hunt.Indicators) []any {
 		})
 	}
 	return out
+}
+
+// approvalMap renders a request of the queue for the wire.
+//
+// The times that are not there are not sent: a request that was never
+// decided has no decided_at, and a key with an empty value is a lie
+// the console would have to know about.
+func approvalMap(req approval.Request) upk.Map {
+	out := upk.Map{
+		"id":           req.ID,
+		"kind":         req.Kind,
+		"agent_id":     req.AgentID,
+		"state":        req.State,
+		"requested_by": req.RequestedBy,
+		"requested_at": req.RequestedAt.Format(time.RFC3339),
+		"reason":       req.Reason,
+		"note":         req.Note,
+	}
+	if !req.DecidedAt.IsZero() {
+		out["decided_by"] = req.DecidedBy
+		out["decided_at"] = req.DecidedAt.Format(time.RFC3339)
+	}
+	if !req.ExpiresAt.IsZero() {
+		out["expires_at"] = req.ExpiresAt.Format(time.RFC3339)
+	}
+	return out
+}
+
+// canaryMap renders a tripwire for the wire.
+//
+// The token of the canary is not in it: the secret of the file never
+// travels to the console, and the operator has no use for it.
+func canaryMap(c canary.Canary) upk.Map {
+	out := upk.Map{
+		"id":         c.ID,
+		"label":      c.Label,
+		"agent_id":   c.AgentID,
+		"kind":       c.Kind,
+		"state":      c.State,
+		"note":       c.Note,
+		"planted_at": c.PlantedAt.Format(time.RFC3339),
+	}
+	if !c.CheckedAt.IsZero() {
+		out["checked_at"] = c.CheckedAt.Format(time.RFC3339)
+	}
+	if c.Verdict != "" {
+		out["verdict"] = c.Verdict
+	}
+	return out
+}
+
+// dossierMap renders the file of a host for the wire.
+//
+// The file is one page: the identity, the health, the work, the
+// persistence, the tripwires and the requests.  The console prints it
+// as it is, so the console does not have to know the rules of the
+// dossier.
+func dossierMap(d dossier.Dossier) upk.Map {
+	tasks := make([]any, 0, len(d.Tasks))
+	for _, t := range d.Tasks {
+		row := upk.Map{
+			"id":    t.ID,
+			"kind":  t.Kind,
+			"state": t.State,
+			"err":   t.Err,
+		}
+		if !t.Created.IsZero() {
+			row["created"] = t.Created.Format(time.RFC3339)
+		}
+		if !t.Completed.IsZero() {
+			row["completed"] = t.Completed.Format(time.RFC3339)
+		}
+		if t.Attested {
+			row["attested"] = true
+		}
+		tasks = append(tasks, row)
+	}
+	parts := make([]any, 0, len(d.Parts))
+	for _, p := range d.Parts {
+		parts = append(parts, upk.Map{
+			"name": p.Name, "weight": int64(p.Weight),
+			"value": int64(p.Value), "note": p.Note,
+		})
+	}
+	persist := make([]any, 0, len(d.Persist))
+	for _, p := range d.Persist {
+		persist = append(persist, upk.Map{
+			"technique": p.Technique,
+			"name":      p.Name,
+			"trigger":   p.Trigger,
+			"location":  p.Location,
+			"state":     p.State,
+		})
+	}
+	canaries := make([]any, 0, len(d.Canaries))
+	for _, c := range d.Canaries {
+		canaries = append(canaries, canaryMap(c))
+	}
+	approvals := make([]any, 0, len(d.Approvals))
+	for _, a := range d.Approvals {
+		approvals = append(approvals, approvalMap(a))
+	}
+	kinds := upk.Map{}
+	for name, n := range d.Kinds {
+		kinds[name] = int64(n)
+	}
+	summary := make([]any, 0, len(d.Summary))
+	for _, line := range d.Summary {
+		summary = append(summary, line)
+	}
+	gaps := make([]any, 0, len(d.Gaps))
+	for _, line := range d.Gaps {
+		gaps = append(gaps, line)
+	}
+	out := upk.Map{
+		"id":             d.ID,
+		"host":           d.Host,
+		"os":             d.OS,
+		"arch":           d.Arch,
+		"user":           d.User,
+		"version":        d.Version,
+		"transport":      d.Transport,
+		"addr":           d.Addr,
+		"state":          d.State,
+		"checkins":       int64(d.Checkins),
+		"score":          int64(d.Score),
+		"grade":          d.Grade,
+		"tasks":          tasks,
+		"parts":          parts,
+		"tasks_done":     int64(d.Done),
+		"tasks_failed":   int64(d.Failed),
+		"tasks_pending":  int64(d.Pending),
+		"persist":        persist,
+		"persist_broken": int64(d.PersistBroken),
+		"posture":        d.Posture,
+		"canaries":       canaries,
+		"approvals":      approvals,
+		"kinds":          kinds,
+		"summary":        summary,
+		"gaps":           gaps,
+	}
+	if len(d.Tags) > 0 {
+		out["tags"] = anyList(d.Tags)
+	}
+	if !d.FirstSeen.IsZero() {
+		out["first_seen"] = d.FirstSeen.Format(time.RFC3339)
+	}
+	if !d.LastSeen.IsZero() {
+		out["last_seen"] = d.LastSeen.Format(time.RFC3339)
+	}
+	if d.Impersonation != "" {
+		out["impersonation"] = d.Impersonation
+	}
+	return out
+}
+
+// gated says whether a kind of task is behind the two-person rule.
+//
+// The rule is a policy of the deployment and not a law of the
+// framework: the configuration names the kinds that need it, and a
+// deployment that names none has the rule off.
+func (s *Server) gated(kind string) bool {
+	if s.Cfg == nil || kind == "" {
+		return false
+	}
+	for _, k := range s.Cfg.Server.ApprovalRequired {
+		if strings.TrimSpace(k) == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// approvalGuard refuses a kind of task that the deployment has put
+// behind the two-person rule.
+//
+// The rule is not a role: it is a second pair of eyes.  The operation
+// does not run until another operator, who is not the one who asked
+// for it, says yes.
+func (s *Server) approvalGuard(kind string) error {
+	if !s.gated(kind) {
+		return nil
+	}
+	return fmt.Errorf("%s is behind the two-person rule: ask for it with approval.request and let a second operator approve it", kind)
 }
