@@ -48,6 +48,7 @@ pub mod dns;
 pub mod domain;
 pub mod evade;
 pub mod hygiene;
+pub mod hunt;
 pub mod install;
 pub mod link;
 pub mod manifest;

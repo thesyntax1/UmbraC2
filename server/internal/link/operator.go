@@ -16,8 +16,10 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
@@ -1826,6 +1828,338 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"tasks": rows, "count": int64(len(rows)), "kind": kind,
 		})
 
+	// ---- the hunt: the indicators of the team --------------------------
+	case "hunt.add":
+		// An indicator goes into the catalogue of the team.  The
+		// catalogue is shared, so the value is checked against the
+		// ones that are already there: the same loader added twice
+		// would make the hunt report it twice.
+		if s.Hunt == nil {
+			return fail("hunt.add: this server has no indicator catalogue")
+		}
+		value, _ := args["value"].(string)
+		kind, _ := args["kind"].(string)
+		label, _ := args["label"].(string)
+		note, _ := args["note"].(string)
+		source, _ := args["source"].(string)
+		ind, err := s.Hunt.Add(hunt.Indicator{
+			Kind:   kind,
+			Value:  value,
+			Label:  label,
+			Note:   note,
+			Source: source,
+		})
+		if err != nil {
+			return fail("hunt.add: %v", err)
+		}
+		if err := s.Hunt.Save(); err != nil {
+			s.Log.Warn("the indicator catalogue could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": ind.ID, "kind": ind.Kind, "value": ind.Value,
+			"label": ind.Label, "note": ind.Note, "source": ind.Source,
+			"added": ind.Added.Format(time.RFC3339),
+		})
+
+	case "hunt.list":
+		// The catalogue of the team, or the part of it the operator
+		// is looking for.  The search is over the value, the label,
+		// the note and the source: the operator remembers the ticket
+		// and not the hash.
+		if s.Hunt == nil {
+			return fail("hunt.list: this server has no indicator catalogue")
+		}
+		query, _ := args["query"].(string)
+		kind, _ := args["kind"].(string)
+		items := s.Hunt.Search(query, kind)
+		rows := make([]any, 0, len(items))
+		for _, ind := range items {
+			rows = append(rows, upk.Map{
+				"id": ind.ID, "kind": ind.Kind, "value": ind.Value,
+				"label": ind.Label, "note": ind.Note, "source": ind.Source,
+				"hits": int64(ind.Hits),
+				"added": ind.Added.Format(time.RFC3339),
+			})
+		}
+		return reply(upk.Map{
+			"indicators": rows, "count": int64(len(rows)),
+			"total": int64(len(s.Hunt.List())),
+		})
+
+	case "hunt.remove":
+		// An indicator leaves the catalogue.  The hunts that are
+		// already running carry their own copy, so nothing that is in
+		// flight changes.
+		if s.Hunt == nil {
+			return fail("hunt.remove: this server has no indicator catalogue")
+		}
+		id, _ := args["id"].(string)
+		if err := s.Hunt.Remove(id); err != nil {
+			return fail("hunt.remove: %v", err)
+		}
+		if err := s.Hunt.Save(); err != nil {
+			s.Log.Warn("the indicator catalogue could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": id, "removed": true})
+
+	case "hunt.sweep":
+		// The hunt itself: the catalogue goes to one host, or to
+		// every host a filter selects.  The implant is told what to
+		// look for and not what else the team knows.
+		if s.Hunt == nil {
+			return fail("hunt.sweep: this server has no indicator catalogue")
+		}
+		items := s.Hunt.List()
+		// The operator may narrow the catalogue for one sweep, or hunt
+		// for something that is not in it yet.  The indicators of the
+		// moment are not written into the catalogue: the catalogue is
+		// what the team shares, and a one-off sweep is not a decision
+		// of the team.
+		if raw, ok := args["indicators"].([]any); ok && len(raw) > 0 {
+			items = nil
+			for _, entry := range raw {
+				m, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				kind, _ := m["kind"].(string)
+				value, _ := m["value"].(string)
+				label, _ := m["label"].(string)
+				id, _ := m["id"].(string)
+				if strings.TrimSpace(value) == "" {
+					continue
+				}
+				items = append(items, hunt.Indicator{
+					ID: id, Kind: kind, Value: value, Label: label,
+				})
+			}
+		}
+		if len(items) == 0 {
+			return fail("hunt.sweep: the catalogue is empty")
+		}
+		payload := hunt.Indicators{Items: items}
+		if roots := stringList(args["roots"]); len(roots) > 0 {
+			payload.Roots = roots
+		}
+		taskArgs := map[string]any{
+			"indicators": huntIndicatorPayload(payload),
+		}
+		if len(payload.Roots) > 0 {
+			taskArgs["roots"] = anyList(payload.Roots)
+		}
+		id, _ := args["id"].(string)
+		if id != "" {
+			t, err := s.Hub.SubmitTask(id, "hunt.scan", taskArgs)
+			if err != nil {
+				return fail("hunt.sweep: %v", err)
+			}
+			return reply(upk.Map{
+				"task_id": t.ID, "agent_id": t.AgentID,
+				"kind": "hunt.scan", "indicators": int64(len(items)),
+			})
+		}
+		var targets []*store.Agent
+		if all, _ := args["all"].(bool); all {
+			targets = s.Hub.SelectAgents(hub.AgentFilter{})
+		} else {
+			selected, err := s.selectTargets(args)
+			if err != nil {
+				return fail("hunt.sweep: %v", err)
+			}
+			targets = selected
+		}
+		if len(targets) == 0 {
+			return fail("hunt.sweep: no agents matched")
+		}
+		rows := make([]any, 0, len(targets))
+		for _, a := range targets {
+			t, err := s.Hub.SubmitTask(a.ID, "hunt.scan", taskArgs)
+			if err != nil {
+				rows = append(rows, upk.Map{"agent_id": a.ID, "error": err.Error()})
+				continue
+			}
+			rows = append(rows, upk.Map{
+				"agent_id": a.ID, "task_id": t.ID, "state": t.State,
+			})
+		}
+		return reply(upk.Map{
+			"tasks": rows, "count": int64(len(rows)), "kind": "hunt.scan",
+			"indicators": int64(len(items)),
+		})
+
+	// ---- the health of the fleet ---------------------------------------
+	case "health.fleet":
+		// The score of every host, worst first.  The parts of the
+		// score travel with it: a number an operator cannot explain is
+		// a number nobody acts on.
+		fleet := s.HealthFleet()
+		reports := make([]any, 0, len(fleet.Reports))
+		for _, r := range fleet.Reports {
+			parts := make([]any, 0, len(r.Parts))
+			for _, p := range r.Parts {
+				parts = append(parts, upk.Map{
+					"name": p.Name, "weight": int64(p.Weight),
+					"value": int64(p.Value), "note": p.Note,
+				})
+			}
+			notes := make([]any, 0, len(r.Notes))
+			for _, n := range r.Notes {
+				notes = append(notes, n)
+			}
+			reports = append(reports, upk.Map{
+				"agent_id": r.AgentID,
+				"score":    int64(r.Score),
+				"grade":    r.Grade,
+				"parts":    parts,
+				"notes":    notes,
+				"interval": int64(r.Interval),
+				"last_seen": r.LastSeen.Format(time.RFC3339),
+			})
+		}
+		counts := upk.Map{}
+		for grade, n := range fleet.Counts {
+			counts[grade] = int64(n)
+		}
+		return reply(upk.Map{
+			"reports": reports, "count": int64(len(reports)),
+			"average": int64(fleet.Average), "counts": counts,
+			"at": fleet.At.Format(time.RFC3339),
+		})
+
+	// ---- the evidence files --------------------------------------------
+	case "case.create":
+		// A case is opened by somebody, at a time: the chain of
+		// custody starts with that and cannot be written afterwards.
+		if s.Cases == nil {
+			return fail("case.create: this server has no case registry")
+		}
+		title, _ := args["title"].(string)
+		notes, _ := args["notes"].(string)
+		c, err := s.Cases.Open(title, notes, op.Name)
+		if err != nil {
+			return fail("case.create: %v", err)
+		}
+		if err := s.Cases.Save(); err != nil {
+			s.Log.Warn("the case registry could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": c.ID, "title": c.Title, "state": c.State,
+			"operator": c.Operator,
+			"opened":   c.Opened.Format(time.RFC3339),
+			"head":     c.Head,
+		})
+
+	case "case.list":
+		if s.Cases == nil {
+			return fail("case.list: this server has no case registry")
+		}
+		cases := s.Cases.List()
+		rows := make([]any, 0, len(cases))
+		for _, c := range cases {
+			ok, _, _ := casefile.Verify(c)
+			rows = append(rows, upk.Map{
+				"id": c.ID, "title": c.Title, "state": c.State,
+				"operator": c.Operator,
+				"opened":   c.Opened.Format(time.RFC3339),
+				"closed":   c.Closed.Format(time.RFC3339),
+				"artefacts": int64(len(c.Artefacts)),
+				"events":    int64(len(c.Events)),
+				"head":      c.Head,
+				"intact":    ok,
+			})
+		}
+		return reply(upk.Map{"cases": rows, "count": int64(len(rows))})
+
+	case "case.get":
+		// One case with its chain of custody.  The verification is part
+		// of the answer: a chain that does not fit is shown as broken,
+		// and the event where it breaks is named.
+		if s.Cases == nil {
+			return fail("case.get: this server has no case registry")
+		}
+		id, _ := args["id"].(string)
+		c, found := s.Cases.Get(id)
+		if !found {
+			return fail("case.get: no such case %q", id)
+		}
+		artefacts := make([]any, 0, len(c.Artefacts))
+		for _, a := range c.Artefacts {
+			artefacts = append(artefacts, upk.Map{
+				"id": a.ID, "kind": a.Kind, "ref": a.Ref, "sha256": a.Hash,
+				"size": a.Size, "agent_id": a.AgentID, "task_id": a.TaskID,
+				"taken": a.Taken.Format(time.RFC3339), "taken_by": a.TakenBy,
+				"note": a.Note,
+			})
+		}
+		events := make([]any, 0, len(c.Events))
+		for _, e := range c.Events {
+			events = append(events, upk.Map{
+				"seq": int64(e.Seq), "at": e.At.Format(time.RFC3339),
+				"actor": e.Actor, "action": e.Action, "artefact": e.Artefact,
+				"note": e.Note, "prev": e.Prev, "hash": e.Hash,
+			})
+		}
+		intact, brokenAt, reason := casefile.Verify(c)
+		return reply(upk.Map{
+			"id": c.ID, "title": c.Title, "notes": c.Notes,
+			"state": c.State, "operator": c.Operator,
+			"opened": c.Opened.Format(time.RFC3339),
+			"closed": c.Closed.Format(time.RFC3339),
+			"artefacts": artefacts, "events": events, "head": c.Head,
+			"intact": intact, "broken_at": int64(brokenAt), "reason": reason,
+		})
+
+	case "case.add":
+		// A piece of evidence enters the case.  The hash travels with
+		// it: it is what proves that the bytes did not change since
+		// they were taken.
+		if s.Cases == nil {
+			return fail("case.add: this server has no case registry")
+		}
+		id, _ := args["id"].(string)
+		kind, _ := args["kind"].(string)
+		ref, _ := args["ref"].(string)
+		hash, _ := args["sha256"].(string)
+		agentID, _ := args["agent_id"].(string)
+		taskID, _ := args["task_id"].(string)
+		note, _ := args["note"].(string)
+		size, _ := asInt64(args["size"])
+		art, err := s.Cases.Add(id, kind, ref, hash, agentID, taskID, op.Name, note, size)
+		if err != nil {
+			return fail("case.add: %v", err)
+		}
+		if err := s.Cases.Save(); err != nil {
+			s.Log.Warn("the case registry could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": art.ID, "kind": art.Kind, "ref": art.Ref, "sha256": art.Hash,
+			"size": art.Size, "agent_id": art.AgentID, "task_id": art.TaskID,
+			"taken": art.Taken.Format(time.RFC3339), "taken_by": art.TakenBy,
+		})
+
+	case "case.close":
+		// The case is closed.  The last event of the chain says who
+		// closed it and when, and the chain cannot be reopened.
+		if s.Cases == nil {
+			return fail("case.close: this server has no case registry")
+		}
+		id, _ := args["id"].(string)
+		note, _ := args["note"].(string)
+		if err := s.Cases.Close(id, op.Name, note); err != nil {
+			return fail("case.close: %v", err)
+		}
+		if err := s.Cases.Save(); err != nil {
+			s.Log.Warn("the case registry could not be saved", "err", err)
+		}
+		c, found := s.Cases.Get(id)
+		if !found {
+			return fail("case.close: no such case %q", id)
+		}
+		return reply(upk.Map{
+			"id": id, "state": casefile.StateClosed,
+			"closed": c.Closed.Format(time.RFC3339), "head": c.Head,
+		})
+
 	// ---- the server-side file store ------------------------------------
 	case "artifact.list":
 		if s.Artifacts == nil {
@@ -3197,4 +3531,37 @@ func forensicTaskKind(cmd string) string {
 		return "wipe.deadman"
 	}
 	return "wipe.survey"
+}
+
+// anyList turns a list of strings into the list the encoder writes.
+//
+// The encoder of the protocol knows the arrays of values and not the
+// arrays of strings, so a list that travels has to be converted before
+// it is put into the arguments of a task.
+func anyList(items []string) []any {
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+// huntIndicatorPayload turns the indicators of a sweep into the payload
+// the implant receives.
+//
+// The implant is told the kind, the value and the label of every
+// indicator, and nothing else: the note and the source stay on the
+// server, because they are the words of the team and the host has no
+// business reading them.
+func huntIndicatorPayload(payload hunt.Indicators) []any {
+	out := make([]any, 0, len(payload.Items))
+	for _, ind := range payload.Items {
+		out = append(out, upk.Map{
+			"id":    ind.ID,
+			"kind":  ind.Kind,
+			"value": ind.Value,
+			"label": ind.Label,
+		})
+	}
+	return out
 }

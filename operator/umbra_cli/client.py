@@ -640,6 +640,142 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the hunt: the indicators of the team ----------------------------
+    def hunt_add(self, kind: str, value: str, label: str = "",
+                 note: str = "", source: str = "") -> Dict[str, Any]:
+        """Put an indicator into the catalogue of the team.
+
+        The catalogue is shared: an indicator that was found once is
+        worth checking everywhere, so it outlives the engagement.
+        """
+        payload: Dict[str, Any] = {"kind": kind, "value": value}
+        if label:
+            payload["label"] = label
+        if note:
+            payload["note"] = note
+        if source:
+            payload["source"] = source
+        res = self.rpc("hunt.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def hunt_list(self, query: str = "", kind: str = "") -> Dict[str, Any]:
+        """The catalogue of the indicators, or the part of it that matches."""
+        payload: Dict[str, Any] = {}
+        if query:
+            payload["query"] = query
+        if kind:
+            payload["kind"] = kind
+        res = self.rpc("hunt.list", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def hunt_remove(self, indicator_id: str) -> Dict[str, Any]:
+        """Take an indicator out of the catalogue."""
+        res = self.rpc("hunt.remove", {"id": indicator_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def hunt_sweep(self, agent_id: str = "",
+                   roots: Optional[List[str]] = None,
+                   indicators: Optional[List[Dict[str, str]]] = None,
+                   agents: Optional[List[str]] = None,
+                   all_agents: bool = False,
+                   **filters: Any) -> Dict[str, Any]:
+        """Send the catalogue to the hosts and ask what they carry.
+
+        The hunt never changes a host: it reads, it reports, and the
+        operator decides what to do with what it found.
+        """
+        payload: Dict[str, Any] = {}
+        if agent_id:
+            payload["id"] = agent_id
+        if roots:
+            payload["roots"] = list(roots)
+        if indicators:
+            payload["indicators"] = list(indicators)
+        if agents:
+            payload["agents"] = list(agents)
+        if all_agents:
+            payload["all"] = True
+        for key, value in filters.items():
+            if value:
+                payload[key] = value
+        res = self.rpc("hunt.sweep", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the health of the fleet ------------------------------------------
+    def health_fleet(self) -> Dict[str, Any]:
+        """The score of every host of the engagement, worst first."""
+        res = self.rpc("health.fleet")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the evidence files ------------------------------------------------
+    def case_create(self, title: str, notes: str = "") -> Dict[str, Any]:
+        """Open a case: the chain of custody starts with it."""
+        payload: Dict[str, Any] = {"title": title}
+        if notes:
+            payload["notes"] = notes
+        res = self.rpc("case.create", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def case_list(self) -> Dict[str, Any]:
+        """The cases of the engagement, newest first."""
+        res = self.rpc("case.list")
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def case_get(self, case_id: str) -> Dict[str, Any]:
+        """One case with its chain of custody."""
+        res = self.rpc("case.get", {"id": case_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def case_add(self, case_id: str, kind: str, ref: str,
+                 sha256: str = "", agent_id: str = "", task_id: str = "",
+                 note: str = "", size: int = 0) -> Dict[str, Any]:
+        """Put a piece of evidence into a case.
+
+        The hash travels with it: it is what proves that the bytes did
+        not change since they were taken.
+        """
+        payload: Dict[str, Any] = {"id": case_id, "kind": kind, "ref": ref}
+        if sha256:
+            payload["sha256"] = sha256
+        if agent_id:
+            payload["agent_id"] = agent_id
+        if task_id:
+            payload["task_id"] = task_id
+        if note:
+            payload["note"] = note
+        if size:
+            payload["size"] = int(size)
+        res = self.rpc("case.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def case_close(self, case_id: str, note: str = "") -> Dict[str, Any]:
+        """Close a case.  The chain keeps the hand that closed it."""
+        payload: Dict[str, Any] = {"id": case_id}
+        if note:
+            payload["note"] = note
+        res = self.rpc("case.close", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     def sessions(self) -> List[Dict[str, Any]]:
         """The interactive sessions that are open, per agent.
 

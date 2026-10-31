@@ -737,6 +737,123 @@ def run_cleanup(client: OperatorClient, console: Console, args: Any) -> int:
     return 0
 
 
+def run_hunt(client: OperatorClient, console: Console, args: Any) -> int:
+    """The hunt: the catalogue of the indicators, and the sweep.
+
+    The catalogue is shared by the team, so the console lists it and
+    searches it; the sweep sends it to the hosts and prints what each
+    of them answered.  The hunt never changes a host.
+    """
+    action = getattr(args, "hunt_cmd", "") or "list"
+    if action == "list":
+        payload = client.hunt_list(query=args.query, kind=args.kind)
+        if args.json:
+            emit(payload)
+        else:
+            print_hunt_indicators(payload)
+        return 0
+    if action == "add":
+        if not args.value:
+            print("an indicator needs a value", file=sys.stderr)
+            return 2
+        payload = client.hunt_add(args.kind, args.value, label=args.label,
+                                  note=args.note, source=args.source)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the indicator {payload.get('id', '?')} is in the catalogue: "
+                  f"{payload.get('kind', '?')} {payload.get('value', '?')}")
+        return 0
+    if action == "remove":
+        payload = client.hunt_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the indicator {payload.get('id', args.id)} left the catalogue")
+        return 0
+    if action == "sweep":
+        filters = parse_filter(args.filter)
+        roots = [r.strip() for r in args.roots.split(",") if r.strip()]
+        payload = client.hunt_sweep(agent_id=args.agent, roots=roots or None,
+                                    all_agents=args.all, **filters)
+        rows = payload.get("tasks") or []
+        if args.json:
+            emit(payload)
+            return 0
+        print(f"the hunt of {payload.get('indicators', 0)} indicators was "
+              f"queued on {payload.get('count', 0)} hosts")
+        if not args.wait:
+            for row in rows:
+                print(f"  {row.get('agent_id', '?')}  {row.get('task_id', '?')}"
+                      + (f"  {row.get('error')}" if row.get("error") else ""))
+            return 0
+        results = run_bulk(client, console, "hunt.scan", {}, rows,
+                           cap=4, timeout=180.0, wait=True)
+        for row in results:
+            answer = str(row.get("out", "") or row.get("err", "") or "")
+            print(f"  {row.get('agent_id', '?')}  {row.get('state', '?')}")
+            for line in answer.splitlines():
+                print(f"    {line}")
+        return 0
+    print(f"unknown hunt command: {action}", file=sys.stderr)
+    return 2
+
+
+def run_case(client: OperatorClient, console: Console, args: Any) -> int:
+    """The evidence files of the engagement.
+
+    A case holds the evidence and the chain of custody: the hash of
+    every piece of evidence and the hand that took it.  The chain is
+    append-only, and the console says so when it does not fit.
+    """
+    action = getattr(args, "case_cmd", "") or "list"
+    if action == "list":
+        payload = client.case_list()
+        if args.json:
+            emit(payload)
+        else:
+            print_cases(payload)
+        return 0
+    if action == "show":
+        payload = client.case_get(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print_case(payload)
+        return 0
+    if action == "create":
+        payload = client.case_create(args.title, notes=args.notes)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the case {payload.get('id', '?')} is open: {args.title}")
+        return 0
+    if action == "add":
+        if not args.ref:
+            print("a piece of evidence needs a reference: where the bytes are",
+                  file=sys.stderr)
+            return 2
+        payload = client.case_add(args.id, args.kind, args.ref,
+                                  sha256=args.sha256, agent_id=args.agent,
+                                  task_id=args.task, note=args.note)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the evidence {payload.get('id', '?')} is in the case "
+                  f"{args.id}: {payload.get('kind', '?')} {payload.get('ref', '?')}")
+        return 0
+    if action == "close":
+        payload = client.case_close(args.id, note=args.note)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the case {payload.get('id', args.id)} is closed; the chain "
+                  f"ends at {str(payload.get('head', ''))[:16]}")
+        return 0
+    print(f"unknown case command: {action}", file=sys.stderr)
+    return 2
+
+
 def cleanup_step(client: OperatorClient, console: Console, agent_id: str,
                  command: str, task_args: Dict[str, Any]) -> Dict[str, Any]:
     """Run one step of the cleanup and read its counters.
@@ -1034,6 +1151,123 @@ def print_audit_verification(payload: Dict[str, Any], stream: Any = None) -> Non
     print(f"the ledger is broken at line {broken}: {reason}", file=out)
     print("the entries before that line are the ones that can still be "
           "trusted", file=out)
+
+
+def print_hunt_indicators(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the catalogue of the indicators of the team.
+
+    The catalogue is shared, so the console shows where every indicator
+    came from: an indicator without a source is a rumour.
+    """
+    out = stream or sys.stdout
+    rows = payload.get("indicators") or []
+    if not rows:
+        print("the catalogue of the indicators is empty", file=out)
+        return
+    rendered = [
+        [
+            r.get("id", "?"),
+            r.get("kind", "?"),
+            r.get("value", "?"),
+            r.get("label", "") or "-",
+            r.get("hits", 0),
+            r.get("source", "") or "-",
+        ]
+        for r in rows
+    ]
+    print(table(["ID", "KIND", "VALUE", "LABEL", "HITS", "SOURCE"], rendered),
+          file=out)
+    total = int(payload.get("total", len(rows)) or 0)
+    if total > len(rows):
+        print(f"{len(rows)} of {total} indicators", file=out)
+
+
+def print_health_fleet(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the score of the fleet.
+
+    The score is only useful with its reasons, so the parts travel with
+    it: the operator reads the sentence under the number, not the number
+    alone.
+    """
+    out = stream or sys.stdout
+    reports = payload.get("reports") or []
+    if not reports:
+        print("no host has checked in yet", file=out)
+        return
+    rendered = []
+    for r in reports:
+        notes = "; ".join(str(n) for n in (r.get("notes") or []))
+        rendered.append([
+            r.get("agent_id", "?"),
+            r.get("score", "?"),
+            r.get("grade", "?"),
+            notes or "-",
+        ])
+    print(table(["AGENT", "SCORE", "GRADE", "WHY"], rendered), file=out)
+    counts = payload.get("counts") or {}
+    if counts:
+        summary = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+        print(f"the fleet averages {payload.get('average', 0)} ({summary})", file=out)
+
+
+def print_cases(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render the cases of the engagement."""
+    out = stream or sys.stdout
+    rows = payload.get("cases") or []
+    if not rows:
+        print("no case has been opened yet", file=out)
+        return
+    rendered = [
+        [
+            r.get("id", "?"),
+            r.get("title", "?"),
+            r.get("state", "?"),
+            r.get("artefacts", 0),
+            r.get("events", 0),
+            "intact" if r.get("intact") else "BROKEN",
+        ]
+        for r in rows
+    ]
+    print(table(["ID", "TITLE", "STATE", "EVIDENCE", "HANDS", "CHAIN"], rendered),
+          file=out)
+
+
+def print_case(payload: Dict[str, Any], stream: Any = None) -> None:
+    """Render one case: its evidence and the chain of custody."""
+    out = stream or sys.stdout
+    print(f"case {payload.get('id', '?')}: {payload.get('title', '')}", file=out)
+    print(f"  state:   {payload.get('state', '?')}", file=out)
+    print(f"  opened:  {payload.get('opened', '?')}", file=out)
+    if payload.get("closed"):
+        print(f"  closed:  {payload.get('closed', '?')}", file=out)
+    if payload.get("notes"):
+        print(f"  notes:   {payload.get('notes', '')}", file=out)
+    artefacts = payload.get("artefacts") or []
+    print(f"  the evidence ({len(artefacts)}):", file=out)
+    if artefacts:
+        rendered = [
+            [
+                a.get("id", "?"),
+                a.get("kind", "?"),
+                a.get("ref", "?"),
+                (a.get("sha256", "") or "-")[:16],
+                a.get("agent_id", "") or "-",
+            ]
+            for a in artefacts
+        ]
+        print(table(["ID", "KIND", "REF", "SHA256", "HOST"], rendered), file=out)
+    events = payload.get("events") or []
+    print(f"  the chain of custody ({len(events)} hands):", file=out)
+    for e in events:
+        print(f"    {e.get('seq', '?'):>3}  {e.get('at', '?')}  "
+              f"{e.get('actor', '?')}  {e.get('action', '?')}  "
+              f"{e.get('note', '')}", file=out)
+    if payload.get("intact"):
+        print(f"  the chain is intact, it ends at "
+              f"{str(payload.get('head', ''))[:16]}", file=out)
+    else:
+        print(f"  THE CHAIN IS BROKEN at event {payload.get('broken_at', '?')}: "
+              f"{payload.get('reason', '')}", file=out)
 
 
 def print_audit(payload: Dict[str, Any], stream: Any = None) -> None:
@@ -2634,6 +2868,75 @@ def build_parser() -> argparse.ArgumentParser:
                            help="check the chain of the ledger: a line that "
                                 "was edited after the fact breaks it")
 
+    # ---- the hunt: the indicators of the team -------------------------
+    hunt_cmd = sub.add_parser("hunt",
+                              help="the indicators of the team, and the hunt "
+                                   "that looks for them")
+    hunt_sub = hunt_cmd.add_subparsers(dest="hunt_cmd")
+
+    hunt_list = hunt_sub.add_parser("list", help="the catalogue of the indicators")
+    hunt_list.add_argument("--query", default="",
+                            help="search the value, the label, the note and "
+                                 "the source")
+    hunt_list.add_argument("--kind", default="",
+                            help="only this kind of indicator")
+
+    hunt_add = hunt_sub.add_parser("add", help="put an indicator into the catalogue")
+    hunt_add.add_argument("--kind", default="",
+                          help="hash, path, mutex, registry, certificate, "
+                               "process or service")
+    hunt_add.add_argument("--value", default="", help="the indicator itself")
+    hunt_add.add_argument("--label", default="", help="what the team calls it")
+    hunt_add.add_argument("--note", default="", help="where it came from")
+    hunt_add.add_argument("--source", default="", help="the ticket or the report")
+
+    hunt_remove = hunt_sub.add_parser("remove", help="take an indicator out")
+    hunt_remove.add_argument("id", help="the id of the indicator")
+
+    hunt_sweep = hunt_sub.add_parser("sweep", help="ask the hosts what they carry")
+    hunt_sweep.add_argument("--agent", default="", help="one host")
+    hunt_sweep.add_argument("--all", action="store_true", help="every host")
+    hunt_sweep.add_argument("--filter", default="",
+                            help="the hosts to hunt: state=online, tag=dc, ...")
+    hunt_sweep.add_argument("--roots", default="",
+                            help="the directories the hunt may walk")
+    hunt_sweep.add_argument("--wait", action="store_true",
+                            help="wait for and print the answer of the hunt")
+
+    # ---- the health of the fleet ---------------------------------------
+    health_cmd = sub.add_parser("health",
+                                help="the score of the hosts of the engagement")
+    health_cmd.add_argument("--json", action="store_true",
+                             help="machine-readable output")
+
+    # ---- the evidence files ---------------------------------------------
+    case_cmd = sub.add_parser("case", help="the evidence files of the engagement")
+    case_sub = case_cmd.add_subparsers(dest="case_cmd")
+
+    case_list = case_sub.add_parser("list", help="the cases, newest first")
+    case_list.add_argument("--json", action="store_true")
+
+    case_show = case_sub.add_parser("show", help="one case and its chain of custody")
+    case_show.add_argument("id")
+    case_show.add_argument("--json", action="store_true")
+
+    case_create = case_sub.add_parser("create", help="open a case")
+    case_create.add_argument("title")
+    case_create.add_argument("--notes", default="")
+
+    case_add = case_sub.add_parser("add", help="put a piece of evidence into a case")
+    case_add.add_argument("id", help="the case")
+    case_add.add_argument("--kind", default="evidence", help="what it is")
+    case_add.add_argument("--ref", default="", help="where the bytes are")
+    case_add.add_argument("--sha256", default="", help="the hash of the bytes")
+    case_add.add_argument("--agent", default="", help="the host it was taken from")
+    case_add.add_argument("--task", default="", help="the task that took it")
+    case_add.add_argument("--note", default="")
+
+    case_close = case_sub.add_parser("close", help="close a case")
+    case_close.add_argument("id")
+    case_close.add_argument("--note", default="")
+
     info = sub.add_parser("info", help="show one agent")
     info.add_argument("agent")
 
@@ -3677,6 +3980,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit(payload)
                 else:
                     print_audit(payload)
+        elif args.cmd == "hunt":
+            return run_hunt(client, console, args)
+        elif args.cmd == "health":
+            payload = client.health_fleet()
+            if args.json:
+                emit(payload)
+            else:
+                print_health_fleet(payload)
+        elif args.cmd == "case":
+            return run_case(client, console, args)
         elif args.cmd == "info":
             emit(client.agent_info(args.agent))
         elif args.cmd == "run":

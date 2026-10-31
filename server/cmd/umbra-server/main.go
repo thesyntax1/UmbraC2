@@ -33,10 +33,12 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/dash"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
 	"github.com/thesyntax1/UmbraC2/server/internal/mtls"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
@@ -173,6 +175,26 @@ func run() error {
 		logger.Warn("the command namespace could not be read", "err", err)
 	}
 	srv.SetAliases(aliases)
+
+	// The catalogue of the indicators the team hunts with.  It is
+	// shared by the team and it outlives the engagement: an indicator
+	// that was found once is worth checking everywhere, so the
+	// catalogue lives next to the state file.
+	huntCatalogue := hunt.New()
+	huntCatalogue.SetPath(huntPath(cfg.Server.DataFile))
+	if err := huntCatalogue.Load(); err != nil {
+		logger.Warn("the indicator catalogue could not be read", "err", err)
+	}
+	srv.SetHunt(huntCatalogue)
+
+	// The evidence files: the cases the operator hands over when the
+	// engagement ends.  The chain of custody of every case lives here.
+	caseRegistry := casefile.New()
+	caseRegistry.SetPath(casePath(cfg.Server.DataFile))
+	if err := caseRegistry.Load(); err != nil {
+		logger.Warn("the case registry could not be read", "err", err)
+	}
+	srv.SetCases(caseRegistry)
 
 	// The layer-3 tunnel between the console and the beacons.
 	if cfg.Server.VPNListen != "" {
@@ -430,6 +452,29 @@ func artifactDir(dataFile string) string {
 		return filepath.Join("data", "artifacts")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "artifacts")
+}
+
+// huntPath is where the catalogue of the indicators is kept.
+//
+// The catalogue is shared by the team and it outlives the engagement,
+// so it sits next to the state file and not inside it: wiping the
+// engagement must not throw away the indicators of last week.
+func huntPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "hunt.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "hunt.json")
+}
+
+// casePath is where the evidence files are kept.
+//
+// The cases are the record of the engagement: they have to survive the
+// wipe of the engagement and the restart of the server.
+func casePath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "cases.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "cases.json")
 }
 
 // keepSocksOpen maintains the configured persistent SOCKS5 proxy.

@@ -100,7 +100,9 @@ AGENT_CAPS = [
     # The zero-footprint wipe: the surface of the implant, the removal of
     # the traces and the end of the engagement.
     "wipe.survey", "wipe.run", "wipe.verify", "wipe.self",
-    "forensics.report", "forensics.timeline", "decommission", "wipe.deadman",
+        "forensics.report", "forensics.timeline", "decommission", "wipe.deadman",
+    # The hunt: the indicators of the team, looked for on the host.
+    "hunt.scan",
 ]
 
 # The module ABI.
@@ -1083,6 +1085,15 @@ class MockServer:
         self.artifact_uploads: Dict[str, bytearray] = {}
         # The command namespace: saved commands the team shares.
         self.aliases: Dict[str, Dict[str, Any]] = {}
+        # The catalogue of the indicators the team hunts with.  The Go
+        # server keeps it on the disk next to the state file; the test
+        # double keeps it in memory, because the tests need to see it.
+        self.hunt_indicators: Dict[str, Dict[str, Any]] = {}
+        self._hunt_seq = 0
+        # The evidence files of the engagement: the cases and the chain of
+        # custody of every one of them.
+        self.cases: Dict[str, Dict[str, Any]] = {}
+        self._case_seq = 0
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -3231,6 +3242,21 @@ class MockServer:
         "forensics.self": "admin",
         "forensics.decommission": "admin",
         "forensics.deadman": "admin",
+        # The hunt: the catalogue of the indicators is a read, and the
+        # sweep that sends it to the hosts is the work of the hunt.
+        "hunt.list": "viewer",
+        "hunt.add": "operator",
+        "hunt.remove": "operator",
+        "hunt.sweep": "operator",
+        # The health of the fleet is a read of the inventory.
+        "health.fleet": "viewer",
+        # The evidence files: reading a case is harmless, writing into
+        # one is the work of the engagement.
+        "case.list": "viewer",
+        "case.get": "viewer",
+        "case.create": "operator",
+        "case.add": "operator",
+        "case.close": "operator",
         # The route of an agent: reading it is harmless, changing it
         # changes how the implant reaches the server.
         "transport.get": "viewer",
@@ -4137,6 +4163,258 @@ class MockServer:
                 rows.append({"agent_id": target_id, "task_id": task["id"],
                              "state": task["state"]})
             return ok({"tasks": rows, "count": len(rows), "kind": kind})
+
+        # ---- the hunt: the indicators of the team ------------------------
+        if cmd == "hunt.add":
+            # An indicator goes into the catalogue of the team.  The
+            # catalogue is shared, so the value is checked against the
+            # ones that are already there.
+            with self._lock:
+                kind = str(args.get("kind", "") or "").strip().lower()
+                value = str(args.get("value", "") or "").strip()
+                if not value:
+                    return fail("hunt.add: an indicator needs a value")
+                if not kind:
+                    kind = "hash" if _looks_like_hash(value) else ""
+                if kind not in HUNT_KINDS:
+                    return fail(f"hunt.add: unknown kind of indicator {kind!r}")
+                for existing in self.hunt_indicators.values():
+                    if existing["kind"] == kind and existing["value"] == value:
+                        return fail("hunt.add: the indicator is already in the catalogue")
+                self._hunt_seq += 1
+                entry = {
+                    "id": f"i-{self._hunt_seq:04x}",
+                    "kind": kind,
+                    "value": value,
+                    "label": str(args.get("label", "") or "").strip(),
+                    "note": str(args.get("note", "") or "").strip(),
+                    "source": str(args.get("source", "") or "").strip(),
+                    "added": _now(),
+                    "hits": 0,
+                }
+                self.hunt_indicators[entry["id"]] = entry
+            return ok(dict(entry))
+
+        if cmd == "hunt.list":
+            # The catalogue, or the part of it the operator is looking
+            # for.  The search is over the value, the label, the note and
+            # the source: the operator remembers the ticket and not the
+            # hash.
+            query = str(args.get("query", "") or "").strip().lower()
+            kind = str(args.get("kind", "") or "").strip().lower()
+            with self._lock:
+                rows = []
+                for entry in self.hunt_indicators.values():
+                    if kind and entry["kind"] != kind:
+                        continue
+                    if query:
+                        hay = " ".join([
+                            entry["value"], entry["label"], entry["note"],
+                            entry["source"],
+                        ]).lower()
+                        if query not in hay:
+                            continue
+                    rows.append(dict(entry))
+                rows.sort(key=lambda row: row["id"])
+                total = len(self.hunt_indicators)
+            return ok({"indicators": rows, "count": len(rows), "total": total})
+
+        if cmd == "hunt.remove":
+            indicator_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if indicator_id not in self.hunt_indicators:
+                    return fail(f"hunt.remove: no such indicator {indicator_id!r}")
+                del self.hunt_indicators[indicator_id]
+            return ok({"id": indicator_id, "removed": True})
+
+        if cmd == "hunt.sweep":
+            # The hunt itself: the catalogue goes to one host, or to
+            # every host a filter selects.  The implant is told what to
+            # look for and not what else the team knows.
+            with self._lock:
+                items = [dict(entry) for entry in self.hunt_indicators.values()]
+            given = args.get("indicators") or []
+            if isinstance(given, list) and given:
+                # The indicators of the moment are not written into the
+                # catalogue: the catalogue is what the team shares.
+                items = []
+                for entry in given:
+                    if not isinstance(entry, dict):
+                        continue
+                    value = str(entry.get("value", "") or "").strip()
+                    if not value:
+                        continue
+                    items.append({
+                        "id": str(entry.get("id", "") or ""),
+                        "kind": str(entry.get("kind", "") or "").strip().lower(),
+                        "value": value,
+                        "label": str(entry.get("label", "") or ""),
+                    })
+            if not items:
+                return fail("hunt.sweep: the catalogue is empty")
+            task_args: Dict[str, Any] = {"indicators": items}
+            roots = args.get("roots") or []
+            if isinstance(roots, list) and roots:
+                task_args["roots"] = [str(r) for r in roots if str(r).strip()]
+            agent_id = str(args.get("id", "") or "").strip()
+            if agent_id:
+                task = self._queue_task(agent_id, "hunt.scan", task_args)
+                return ok({"task_id": task["id"], "agent_id": agent_id,
+                           "kind": "hunt.scan", "indicators": len(items)})
+            targets = _select_agents(self.agents, args)
+            if not targets:
+                return fail("hunt.sweep: no agents matched")
+            rows = []
+            for target in targets:
+                target_id = str(target.get("id", ""))
+                task = self._queue_task(target_id, "hunt.scan", task_args)
+                rows.append({"agent_id": target_id, "task_id": task["id"],
+                             "state": task["state"]})
+            return ok({"tasks": rows, "count": len(rows), "kind": "hunt.scan",
+                       "indicators": len(items)})
+
+        # ---- the health of the fleet -------------------------------------
+        if cmd == "health.fleet":
+            # The score of every host, worst first.  The parts of the
+            # score travel with it: a number an operator cannot explain
+            # is a number nobody acts on.
+            with self._lock:
+                agents = [dict(a) for a in self.agents.values()]
+                tasks = [dict(t) for t in self.tasks.values()]
+            reports = _score_fleet(agents, tasks)
+            counts: Dict[str, int] = {}
+            for report in reports:
+                counts[report["grade"]] = counts.get(report["grade"], 0) + 1
+            average = 0
+            if reports:
+                average = sum(int(r["score"]) for r in reports) // len(reports)
+            return ok({"reports": reports, "count": len(reports),
+                       "average": average, "counts": counts, "at": _now()})
+
+        # ---- the evidence files -------------------------------------------
+        if cmd == "case.create":
+            # A case is opened by somebody, at a time: the chain of
+            # custody starts with that and cannot be written afterwards.
+            title = str(args.get("title", "") or "").strip()
+            if not title:
+                return fail("case.create: a case needs a title")
+            with self._lock:
+                self._case_seq += 1
+                case_id = f"c-{self._case_seq:04d}"
+                case = {
+                    "id": case_id,
+                    "title": title,
+                    "notes": str(args.get("notes", "") or "").strip(),
+                    "operator": operator,
+                    "state": "open",
+                    "opened": _now(),
+                    "closed": 0,
+                    "artefacts": [],
+                    "events": [],
+                    "head": "",
+                }
+                _case_append_event(case, operator, "opened", "",
+                                   "the case was opened")
+                self.cases[case_id] = case
+            return ok({"id": case_id, "title": title, "state": "open",
+                       "operator": operator, "opened": case["opened"],
+                       "head": case["head"]})
+
+        if cmd == "case.list":
+            with self._lock:
+                rows = []
+                for case in self.cases.values():
+                    row = {
+                        "id": case["id"],
+                        "title": case["title"],
+                        "state": case["state"],
+                        "operator": case["operator"],
+                        "opened": case["opened"],
+                        "closed": case["closed"],
+                        "artefacts": len(case["artefacts"]),
+                        "events": len(case["events"]),
+                        "head": case["head"],
+                        "intact": _case_verify(case)[0],
+                    }
+                    rows.append(row)
+                rows.sort(key=lambda row: row["id"], reverse=True)
+            return ok({"cases": rows, "count": len(rows)})
+
+        if cmd == "case.get":
+            # One case with its chain of custody.  The verification is
+            # part of the answer: a chain that does not fit is shown as
+            # broken, and the event where it breaks is named.
+            case_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                case = self.cases.get(case_id)
+                if case is None:
+                    return fail(f"case.get: no such case {case_id!r}")
+                payload = {
+                    "id": case["id"],
+                    "title": case["title"],
+                    "notes": case["notes"],
+                    "state": case["state"],
+                    "operator": case["operator"],
+                    "opened": case["opened"],
+                    "closed": case["closed"],
+                    "artefacts": [dict(a) for a in case["artefacts"]],
+                    "events": [dict(e) for e in case["events"]],
+                    "head": case["head"],
+                }
+            intact, broken_at, reason = _case_verify(payload)
+            payload["intact"] = intact
+            payload["broken_at"] = broken_at
+            payload["reason"] = reason
+            return ok(payload)
+
+        if cmd == "case.add":
+            # A piece of evidence enters the case.  The hash travels
+            # with it: it is what proves that the bytes did not change
+            # since they were taken.
+            case_id = str(args.get("id", "") or "").strip()
+            ref = str(args.get("ref", "") or "").strip()
+            if not ref:
+                return fail("case.add: an artefact needs a reference")
+            with self._lock:
+                case = self.cases.get(case_id)
+                if case is None:
+                    return fail(f"case.add: no such case {case_id!r}")
+                if case["state"] != "open":
+                    return fail("case.add: the case is closed")
+                artefact = {
+                    "id": f"{case_id}-a{len(case['artefacts']) + 1:03d}",
+                    "kind": str(args.get("kind", "") or "evidence").strip(),
+                    "ref": ref,
+                    "sha256": str(args.get("sha256", "") or "").strip().lower(),
+                    "size": int(args.get("size", 0) or 0),
+                    "agent_id": str(args.get("agent_id", "") or "").strip(),
+                    "task_id": str(args.get("task_id", "") or "").strip(),
+                    "taken": _now(),
+                    "taken_by": operator,
+                    "note": str(args.get("note", "") or "").strip(),
+                }
+                case["artefacts"].append(artefact)
+                _case_append_event(case, operator, "added", artefact["id"],
+                                   f"{artefact['kind']} {artefact['ref']}")
+            return ok(dict(artefact))
+
+        if cmd == "case.close":
+            # The case is closed.  The last event of the chain says who
+            # closed it and when, and the chain cannot be reopened.
+            case_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                case = self.cases.get(case_id)
+                if case is None:
+                    return fail(f"case.close: no such case {case_id!r}")
+                if case["state"] != "open":
+                    return fail("case.close: the case is closed")
+                case["state"] = "closed"
+                case["closed"] = _now()
+                _case_append_event(case, operator, "closed", "",
+                                   str(args.get("note", "") or "").strip())
+                head = case["head"]
+            return ok({"id": case_id, "state": "closed", "closed": case["closed"],
+                       "head": head})
 
         if cmd == "sessions.list":
             with self._lock:
@@ -5214,6 +5492,261 @@ def _audit_chain_hash(head: str, entry: Dict[str, Any]) -> str:
     body = {key: value for key, value in entry.items() if key != "hash"}
     raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(head.encode() + b"|" + raw).hexdigest()
+
+
+# The kinds of indicator the hunt understands.  The Go server keeps the
+# same list in server/internal/hunt, and the implants know how to look
+# for each of them on their own platform.
+HUNT_KINDS = ("hash", "path", "mutex", "registry", "certificate",
+              "process", "service")
+
+
+def _looks_like_hash(value: str) -> bool:
+    """Whether a value has the shape of a SHA-256 in hex."""
+    if len(value) != 64:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in value)
+
+
+def _case_event_canonical(event: Dict[str, Any]) -> str:
+    """The bytes of an event that the hash of the chain covers."""
+    return "|".join([
+        str(event.get("seq", 0)),
+        str(event.get("at", "")),
+        str(event.get("actor", "")),
+        str(event.get("action", "")),
+        str(event.get("artefact", "")),
+        str(event.get("note", "")),
+        str(event.get("prev", "")),
+    ])
+
+
+def _case_chain_hash(prev: str, event: Dict[str, Any]) -> str:
+    """The hash of one event of the chain of custody."""
+    raw = str(prev) + "|" + _case_event_canonical(event)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _case_append_event(case: Dict[str, Any], actor: str, action: str,
+                       artefact: str, note: str) -> None:
+    """Write one hand into the chain of custody of a case.
+
+    The chain is append-only: the event is written once and read
+    forever, and the previous hash of every event is the hash of the one
+    before it.
+    """
+    prev = case.get("head", "")
+    event = {
+        "seq": len(case["events"]) + 1,
+        "at": _now(),
+        "actor": actor,
+        "action": action,
+        "artefact": artefact,
+        "note": note,
+        "prev": prev,
+    }
+    event["hash"] = _case_chain_hash(prev, event)
+    case["events"].append(event)
+    case["head"] = event["hash"]
+
+
+def _case_verify(case: Dict[str, Any]) -> Tuple[bool, int, str]:
+    """Check the chain of custody of a case.
+
+    It returns whether the chain holds, the number of the first event
+    that does not fit and the reason.  A case with a broken chain is
+    still shown: hiding it would be the one thing worse than showing it.
+    """
+    prev = ""
+    for event in case.get("events", []):
+        if str(event.get("prev", "")) != prev:
+            return False, int(event.get("seq", 0)), "the previous hash does not fit"
+        want = _case_chain_hash(prev, event)
+        if str(event.get("hash", "")) != want:
+            return False, int(event.get("seq", 0)), "the hash of the event does not fit"
+        prev = want
+    if case.get("head") and case["head"] != prev:
+        return False, len(case.get("events", [])), "the head of the chain does not fit"
+    return True, 0, ""
+
+
+def _score_fleet(agents: List[Dict[str, Any]],
+                 tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The health of every host, worst first.
+
+    The rules mirror the ones of server/internal/health: reachability,
+    cadence, capacity, persistence and posture.  Every part of the score
+    carries the sentence that explains it, because a score an operator
+    cannot explain is a score nobody acts on.
+    """
+    now = time.time()
+    by_agent: Dict[str, Dict[str, int]] = {}
+    for task in tasks:
+        agent_id = str(task.get("agent_id", ""))
+        state = str(task.get("state", ""))
+        counters = by_agent.setdefault(agent_id, {"done": 0, "failed": 0,
+                                                  "pending": 0})
+        if state == "done":
+            counters["done"] += 1
+        elif state == "failed":
+            counters["failed"] += 1
+        elif state in ("queued", "delivered"):
+            counters["pending"] += 1
+
+    reports: List[Dict[str, Any]] = []
+    for agent in agents:
+        parts: List[Dict[str, Any]] = []
+        notes: List[str] = []
+        interval = int(agent.get("sleep", 0) or 0)
+        jitter = int(agent.get("jitter", 0) or 0)
+        last_seen = float(agent.get("last_seen", 0) or 0)
+        silence = now - last_seen if last_seen else 0
+
+        # ---- reachability
+        never_seen = not last_seen
+        gone = False
+        if never_seen:
+            parts.append({"name": "reachability", "weight": 30, "value": 0,
+                          "note": "the host has never answered"})
+            notes.append("the host has never checked in")
+        elif agent.get("state") == "online" and silence < max(interval, 1) * 3:
+            parts.append({"name": "reachability", "weight": 30, "value": 30,
+                          "note": f"the host answered {int(silence)}s ago"})
+        elif silence < max(interval, 1) * 10:
+            parts.append({"name": "reachability", "weight": 30, "value": 12,
+                          "note": f"the host has been quiet for {int(silence)}s"})
+            notes.append(f"the host has been quiet for {int(silence)}s")
+        else:
+            gone = True
+            parts.append({"name": "reachability", "weight": 30, "value": 0,
+                          "note": f"the host has been quiet for {int(silence)}s"})
+            notes.append(f"the host has been quiet for {int(silence)}s "
+                         "and is probably lost")
+
+        # ---- cadence
+        if never_seen:
+            parts.append({"name": "cadence", "weight": 15, "value": 0,
+                          "note": "the host has never answered, so its cadence "
+                                  "is unknown"})
+        elif interval <= 0:
+            parts.append({"name": "cadence", "weight": 15, "value": 10,
+                          "note": "the interval of the host is unknown"})
+        elif jitter > interval:
+            parts.append({"name": "cadence", "weight": 15, "value": 5,
+                          "note": f"the jitter ({jitter}s) is larger than the "
+                                  f"interval ({interval}s)"})
+            notes.append("the jitter of the host is larger than its interval")
+        else:
+            parts.append({"name": "cadence", "weight": 15, "value": 15,
+                          "note": f"the host checks in every {interval}s "
+                                  f"(+/- {jitter}s)"})
+
+        # ---- capacity
+        counters = by_agent.get(str(agent.get("id", "")), {"done": 0, "failed": 0,
+                                                            "pending": 0})
+        total = counters["done"] + counters["failed"]
+        if never_seen:
+            parts.append({"name": "capacity", "weight": 20, "value": 0,
+                          "note": "the host has never answered, so its work "
+                                  "is unknown"})
+        elif total == 0:
+            parts.append({"name": "capacity", "weight": 20, "value": 15,
+                          "note": "the host has not run a task yet"})
+        elif counters["failed"] > counters["done"]:
+            parts.append({"name": "capacity", "weight": 20, "value": 2,
+                          "note": f"{counters['failed']} of {total} tasks failed"})
+            notes.append(f"{counters['failed']} of {total} tasks failed")
+        elif counters["failed"] > 0:
+            parts.append({"name": "capacity", "weight": 20, "value": 12,
+                          "note": f"{counters['failed']} of {total} tasks failed"})
+        else:
+            parts.append({"name": "capacity", "weight": 20, "value": 20,
+                          "note": f"{total} tasks, none failed"})
+        if counters["pending"] > 20:
+            notes.append(f"{counters['pending']} tasks are still queued on the host")
+
+        # ---- persistence
+        persist = agent.get("persist") or []
+        broken = sum(1 for entry in persist
+                     if isinstance(entry, dict) and entry.get("state") == "broken")
+        if never_seen:
+            parts.append({"name": "persistence", "weight": 20, "value": 0,
+                          "note": "the host has never answered, so its "
+                                  "persistence is unknown"})
+        elif not persist:
+            parts.append({"name": "persistence", "weight": 20, "value": 20,
+                          "note": "nothing was installed on the host"})
+        elif broken == 0:
+            parts.append({"name": "persistence", "weight": 20, "value": 20,
+                          "note": f"{len(persist)} entries, none broken"})
+        elif broken >= len(persist):
+            parts.append({"name": "persistence", "weight": 20, "value": 0,
+                          "note": f"all {len(persist)} entries are broken"})
+            notes.append("every persistence entry of the host is broken")
+        else:
+            value = 20 - (broken * 20) // len(persist)
+            parts.append({"name": "persistence", "weight": 20, "value": value,
+                          "note": f"{broken} of {len(persist)} entries are broken"})
+            notes.append(f"{broken} of {len(persist)} persistence entries are broken")
+
+        # ---- posture
+        posture = agent.get("posture") or {}
+        label = ""
+        if isinstance(posture, dict):
+            label = str(posture.get("label", "") or "")
+        suspect = False
+        if never_seen:
+            parts.append({"name": "posture", "weight": 15, "value": 0,
+                          "note": "the host has never answered, so its posture "
+                                  "is unknown"})
+        elif not label:
+            parts.append({"name": "posture", "weight": 15, "value": 10,
+                          "note": "the host did not report its posture"})
+        elif any(word in label.lower() for word in ("virtual", "lab", "sandbox")):
+            suspect = True
+            parts.append({"name": "posture", "weight": 15, "value": 2,
+                          "note": f"the host reports itself as {label!r}, so it "
+                                  f"is not a host of the engagement"})
+            notes.append(f"the host reports itself as {label!r}, so it is not "
+                         "a host of the engagement")
+        else:
+            parts.append({"name": "posture", "weight": 15, "value": 15,
+                          "note": f"the host reports itself as {label!r}"})
+
+        score = sum(int(p["value"]) for p in parts)
+        score = max(0, min(100, score))
+        # A host that is not there cannot be a healthy host, whatever
+        # its history says.
+        if never_seen or gone:
+            score = min(score, 24)
+        # A host that reports itself as a laboratory machine is not a
+        # host of the engagement at all, however well it works.
+        if suspect:
+            score = min(score, 24)
+        if score >= 90:
+            grade = "healthy"
+        elif score >= 70:
+            grade = "fair"
+        elif score >= 40:
+            grade = "poor"
+        else:
+            grade = "lost"
+        if suspect:
+            # The grade of a host that works perfectly and is not what
+            # it claims to be is a grade of its own.
+            grade = "suspect"
+        reports.append({
+            "agent_id": str(agent.get("id", "")),
+            "score": score,
+            "grade": grade,
+            "parts": parts,
+            "notes": notes,
+            "interval": interval,
+            "last_seen": int(last_seen),
+        })
+
+    reports.sort(key=lambda row: (row["score"], row["agent_id"]))
+    return reports
 
 
 def _forensic_task_kind(cmd: str) -> str:
@@ -6887,6 +7420,8 @@ class FakeAgent(threading.Thread):
                     "forensics.report", "forensics.timeline", "decommission",
                     "wipe.deadman"):
             return self._forensics(kind, args)
+        if kind == "hunt.scan":
+            return self._hunt(kind, args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):
@@ -7001,6 +7536,71 @@ class FakeAgent(threading.Thread):
         report = ("\n".join(lines) + "\n").encode()
         # The attestation: the report is signed with the key of the agent,
         # the way the implants sign it, so the server can check it.
+        meta["attest"] = crypto.attest(self.psk, report).hex()
+        return 0, report, "", meta
+
+    def _hunt(self, kind: str, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The hunt on the fake host.
+
+        The mock is not a host, so it answers with the shape of the
+        answer: the same lines the implants send, so the console and the
+        tests see one shape everywhere.  A kind that does not apply to a
+        platform says so here too, because a test that reads the mock
+        has to know what a real host would answer.
+        """
+        items = args.get("indicators") or []
+        if not isinstance(items, list) or not items:
+            return 1, b"", "hunt.scan: the hunt has no indicators", {}
+        lines: List[str] = []
+        found = 0
+        skipped: List[Dict[str, str]] = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            indicator_id = str(entry.get("id", "") or "")
+            indicator_kind = str(entry.get("kind", "") or "").lower()
+            value = str(entry.get("value", "") or "")
+            label = str(entry.get("label", "") or "")
+            suffix = f" ({label})" if label else ""
+            if indicator_kind == "path":
+                if value.endswith(".onion") or value.startswith("/opt/loader"):
+                    found += 1
+                    lines.append(f"  {indicator_kind:<10} {value:<40} /home/operator/.cache/loader.bin{suffix}")
+                    lines.append("             the path is a file of this host, 40960 bytes")
+                else:
+                    lines.append(f"  {indicator_kind:<10} {value:<40} not found")
+            elif indicator_kind == "process":
+                if value in ("svchost", "cron"):
+                    found += 1
+                    lines.append(f"  {indicator_kind:<10} {value:<40} pid 812 ({value}){suffix}")
+                    lines.append(f"             the process {value} is running on this host")
+                else:
+                    lines.append(f"  {indicator_kind:<10} {value:<40} not found")
+            elif indicator_kind == "hash":
+                found += 1
+                lines.append(f"  {indicator_kind:<10} {value:<40} /tmp/.cache/payload.bin{suffix}")
+                lines.append("             the file carries the hash, 20480 bytes")
+            else:
+                skipped.append({
+                    "id": indicator_id,
+                    "why": f"the kind {indicator_kind!r} is not one this implant knows",
+                })
+                lines.append(f"  skipped    {indicator_id:<10} the kind "
+                             f"{indicator_kind!r} is not one this implant knows")
+        lines.insert(0, f"hunt.scan: {len(items)} indicators, {found} found on this host")
+        lines.append("hunt.scan: 128 files visited, 12 hashed, 20480 bytes read")
+        report = ("\n".join(lines) + "\n").encode()
+        meta: Dict[str, Any] = {
+            "hunt_found": found,
+            "hunt_visited": 128,
+            "hunt_hashed": 12,
+            "hunt_bytes": 20480,
+        }
+        if skipped:
+            meta["hunt_skipped"] = skipped
+        # The attestation: the report of the hunt is signed with the key of
+        # the agent, the way the implants sign it, so the server can check
+        # it and the operator can put it into an evidence file.
         meta["attest"] = crypto.attest(self.psk, report).hex()
         return 0, report, "", meta
 

@@ -95,6 +95,8 @@ func Capabilities() []any {
 		"wipe.self",
 		"wipe.survey",
 		"wipe.verify",
+		// The hunt: the indicators of the team, looked for on this host.
+		"hunt.scan",
 	}
 	out := make([]any, 0, len(kinds))
 	for _, kind := range kinds {
@@ -173,6 +175,8 @@ func (b *Beacon) runTask(kind string, args map[string]any) Outcome {
 		return b.attested(b.taskDecommission(args))
 	case "wipe.deadman":
 		return b.taskWipeDeadman(args)
+	case "hunt.scan":
+		return b.attested(b.taskHuntScan(args))
 	default:
 		return Outcome{Code: 127, Err: fmt.Sprintf("%s %q", errUnknownKind.Error(), kind)}
 	}

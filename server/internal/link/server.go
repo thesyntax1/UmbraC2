@@ -17,11 +17,15 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
+	"github.com/thesyntax1/UmbraC2/server/internal/health"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
+	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
+	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
 )
@@ -58,6 +62,12 @@ type Server struct {
 	// DNS is the DNS tunnel endpoint. Optional: without it the server does
 	// not answer any name.
 	DNS *dnstun.Server
+	// Hunt is the catalogue of the indicators the team hunts with.
+	// Optional: without it the server refuses the hunt commands instead
+	// of pretending to have a catalogue.
+	Hunt *hunt.Catalogue
+	// Cases is the registry of the evidence files. Optional.
+	Cases *casefile.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -114,6 +124,86 @@ func (s *Server) SetArtifact(a *artifact.Store) { s.Artifacts = a }
 
 // SetAliases attaches the runtime command namespace.
 func (s *Server) SetAliases(a *alias.Registry) { s.Aliases = a }
+
+// SetHunt attaches the catalogue of the indicators.
+//
+// Without a catalogue the server refuses the hunt commands: an empty
+// catalogue that answers "no indicators" is a lie, because the team
+// believes it has indicators and does not.
+func (s *Server) SetHunt(h *hunt.Catalogue) { s.Hunt = h }
+
+// SetCases attaches the registry of the evidence files.
+func (s *Server) SetCases(c *casefile.Registry) { s.Cases = c }
+
+// HealthFleet scores every host of the inventory.
+//
+// The scorer is a function of the store, not a subsystem: the rules of
+// the score live in the health package and the server only feeds them
+// the records of the hosts.
+func (s *Server) HealthFleet() health.Fleet {
+	agents := s.Hub.Store().Agents()
+	// The work of every host, counted once: the history of the tasks
+	// is read one time and split per host, so the score of a fleet of
+	// a hundred machines does not walk the queue a hundred times.
+	work := make(map[string]*hostWork, len(agents))
+	for _, t := range s.Hub.Store().FilteredTasks("", "", "", 0) {
+		c, ok := work[t.AgentID]
+		if !ok {
+			c = &hostWork{}
+			work[t.AgentID] = c
+		}
+		switch t.State {
+		case store.TaskDone:
+			c.done++
+		case store.TaskFailed:
+			c.failed++
+		case store.TaskQueued, store.TaskDelivered:
+			c.pending++
+		}
+	}
+	hosts := make([]health.Host, 0, len(agents))
+	for _, a := range agents {
+		hosts = append(hosts, s.healthHost(a, work[a.ID]))
+	}
+	return health.ScoreFleet(hosts, time.Now().UTC())
+}
+
+// hostWork counts the work of one host: what it did, what it failed
+// and what is still waiting for it.
+type hostWork struct {
+	done    int
+	failed  int
+	pending int
+}
+
+// healthHost maps the record of an agent onto what the scorer needs.
+func (s *Server) healthHost(a *store.Agent, work *hostWork) health.Host {
+	h := health.Host{
+		ID:       a.ID,
+		Online:   a.State == store.StateOnline,
+		LastSeen: a.LastSeen,
+		Interval: a.Sleep,
+		Jitter:   a.Jitter,
+	}
+	if work != nil {
+		h.TasksDone = work.done
+		h.TasksFailed = work.failed
+		h.TasksPending = work.pending
+	}
+	// The persistence: what the operator installed and what is broken.
+	for _, p := range a.Persist {
+		h.PersistExpected++
+		if p.State == "broken" {
+			h.PersistBroken++
+		}
+	}
+	// The posture: what the implant thinks of the machine.
+	if a.Posture != nil && a.Posture.Label != "" {
+		h.Posture = a.Posture.Label
+	}
+	h.Version = a.Version
+	return h
+}
 
 // SetDNS attaches the DNS tunnel endpoint.
 //

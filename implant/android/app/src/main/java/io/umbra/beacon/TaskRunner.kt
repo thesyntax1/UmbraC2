@@ -47,6 +47,8 @@ object TaskRunner {
         // the senses of the desktop, on the phone
         "window.list", "clipboard.watch", "screen.stream", "wifi.profiles",
         "browser.creds", "av.survey", "usb.history", "proc.memory",
+        // the hunt: the indicators of the team, looked for on this phone
+        "hunt.scan",
     )
 
     /**
@@ -462,6 +464,11 @@ object TaskRunner {
             "forensics.timeline" -> wipe("forensics.timeline", args)
             "decommission" -> wipe("decommission", args)
             "wipe.deadman" -> wipe("wipe.deadman", args)
+
+            // ---- the hunt: the indicators of the team -------------------
+            // The hunt never changes the phone: it reads, it reports, and
+            // the operator decides what to do with what it found.
+            "hunt.scan" -> hunt(args)
 
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
@@ -995,6 +1002,44 @@ object TaskRunner {
             "wipe.deadman" -> attested(Wipe.deadmanArm(TaskRunner.stateDirPath(), args))
             else -> attested(Wipe.decommission(ctx, args))
         }
+    }
+
+    /**
+     * The hunt on the phone.
+     *
+     * The module never changes the phone: it looks, it reports, and the
+     * operator decides what to do with what it found.  The limits of
+     * the walk travel with the answer, because a hunt that looked at
+     * half of the disk and says "not found" is a hunt that lies.
+     */
+    private fun hunt(args: Upk): Outcome {
+        val items = Hunt.indicators(args)
+        if (items.isEmpty()) {
+            return Outcome(1, ByteArray(0), "hunt.scan: the hunt has no indicators")
+        }
+        val report = Hunt.scan(args)
+        // The report is signed like every other report of the engagement:
+        // a hunt that goes into the evidence file is a hunt that has to be
+        // provable.
+        val outcome = attested(Hunt.render(report, items))
+        outcome.with("hunt_found", Upk.num(report.findings.size.toLong()))
+        outcome.with("hunt_visited", Upk.num(report.visited))
+        outcome.with("hunt_hashed", Upk.num(report.hashed))
+        outcome.with("hunt_bytes", Upk.num(report.bytes))
+        if (report.skipped.isNotEmpty()) {
+            outcome.with(
+                "hunt_skipped",
+                Upk.Arr(
+                    report.skipped.map {
+                        Upk.map("id" to Upk.str(it.first), "why" to Upk.str(it.second))
+                    }
+                ),
+            )
+        }
+        if (report.limits.isNotEmpty()) {
+            outcome.with("hunt_limits", Upk.Arr(report.limits.map { Upk.str(it) }))
+        }
+        return outcome
     }
 
     /**

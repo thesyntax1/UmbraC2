@@ -136,6 +136,31 @@ var requirements = map[string]string{
 	// happen, so it belongs to the person who owns it.
 	"forensics.deadman": Admin,
 
+	// ---- the hunt: the indicators of the team ---------------------------
+	// Reading the catalogue of the indicators is harmless: it is a list
+	// of hashes and paths, and knowing them changes nothing on a host.
+	"hunt.list": Viewer,
+	// Filling the catalogue and sending it to a host is the work of the
+	// hunt, so it is an operator action.
+	"hunt.add":   Operator,
+	"hunt.remove": Operator,
+	"hunt.sweep": Operator,
+
+	// ---- the health of the fleet ----------------------------------------
+	// The score of the hosts is a read of the inventory: it says how
+	// the engagement is going and it touches nothing.
+	"health.fleet": Viewer,
+
+	// ---- the evidence files ----------------------------------------------
+	// Reading a case and its chain of custody is harmless.
+	"case.list": Viewer,
+	"case.get":  Viewer,
+	// Opening a case, putting evidence into it and closing it are the
+	// work of the engagement: they are operator actions.
+	"case.create": Operator,
+	"case.add":    Operator,
+	"case.close":  Operator,
+
 	// ---- burning an engagement ------------------------------------------
 	// A panic tells every selected beacon to exit and stops the server
 	// from feeding it any more work.  It is the end of an engagement, so

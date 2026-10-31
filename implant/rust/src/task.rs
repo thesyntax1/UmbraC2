@@ -45,6 +45,8 @@ pub fn capabilities() -> Vec<&'static str> {
         // and the webassembly modules use.  A module that declares one of
         // them is only pushed to a host that has it.
         "wasm", "script", "shellcode", "crypto",
+        // The hunt: the indicators of the team, looked for on this host.
+        "hunt.scan",
     ]
 }
 
@@ -96,7 +98,7 @@ impl Outcome {
 /// The module returns the text of the report and the fields the server
 /// keeps: the counters of the wipe, the number of the artefacts, the
 /// entries of the persistence.
-fn forensics_answer(
+fn attested_answer(
     ctx: &Context,
     result: Result<(String, Vec<(&'static str, Value)>), String>,
 ) -> Outcome {
@@ -862,7 +864,7 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
             let bytes: u64 = findings.iter().map(|f| f.size).sum();
             // Every report of the wipe is signed: the survey is a report
             // too, and the operator keeps the proof of what was there.
-            forensics_answer(ctx, Ok((
+            attested_answer(ctx, Ok((
                 crate::forensics::survey_report(&findings),
                 vec![
                     ("wipe_artifacts", upk::u(present)),
@@ -870,13 +872,19 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
                 ],
             )))
         }
-        "wipe.run" => forensics_answer(ctx, crate::forensics::wipe(ctx, args)),
-        "wipe.verify" => forensics_answer(ctx, crate::forensics::verify(ctx, args)),
-        "wipe.self" => forensics_answer(ctx, crate::forensics::self_destruct(ctx, args)),
-        "forensics.report" => forensics_answer(ctx, crate::forensics::surface(ctx, args)),
-        "forensics.timeline" => forensics_answer(ctx, crate::forensics::timeline(ctx, args)),
-        "decommission" => forensics_answer(ctx, crate::forensics::decommission(ctx, args)),
-        "wipe.deadman" => forensics_answer(ctx, crate::forensics::deadman_arm(ctx, args)),
+        "wipe.run" => attested_answer(ctx, crate::forensics::wipe(ctx, args)),
+        "wipe.verify" => attested_answer(ctx, crate::forensics::verify(ctx, args)),
+        "wipe.self" => attested_answer(ctx, crate::forensics::self_destruct(ctx, args)),
+        "forensics.report" => attested_answer(ctx, crate::forensics::surface(ctx, args)),
+        "forensics.timeline" => attested_answer(ctx, crate::forensics::timeline(ctx, args)),
+        "decommission" => attested_answer(ctx, crate::forensics::decommission(ctx, args)),
+        "wipe.deadman" => attested_answer(ctx, crate::forensics::deadman_arm(ctx, args)),
+        // The hunt: the indicators of the team, looked for on this host.
+        // The hunt never changes the host: it reads, it reports, and the
+        // operator decides what to do with what it found.  The report is
+        // signed like every other report of the engagement: a hunt that
+        // goes into the evidence file is a hunt that has to be provable.
+        "hunt.scan" => attested_answer(ctx, crate::hunt::scan(args)),
         // The senses of the desktop: the window table, the clipboard, the
         // screen in motion, the wireless networks, the browsers, the
         // security software, the USB keys and the memory of a process.
