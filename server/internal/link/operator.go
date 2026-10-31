@@ -25,6 +25,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
+	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
@@ -88,10 +89,18 @@ type operatorSubscription struct {
 	op        *hub.Operator
 }
 
-// pre is the handshake hook: it subscribes the console.
+// pre is the handshake hook: it asks for the second factor and it
+// subscribes the console.
+//
+// The order matters: the console is asked for the code before it is
+// put on the list of the subscribers, so a console that cannot prove
+// its second factor never sees an event.
 func (o *operatorSubscription) pre(info *HelloInfo) (func(), error) {
 	if info.Role != crypt.RoleOperator {
 		return nil, nil
+	}
+	if err := o.server.checkSecondFactor(info); err != nil {
+		return nil, err
 	}
 	role, scopes := o.server.operatorAccess(info.ID)
 	o.op = o.server.Hub.Subscribe(info.ID, role, o.addr, o.transport, scopes...)
@@ -2453,6 +2462,88 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			rows = append(rows, dossierMap(d))
 		}
 		return reply(upk.Map{"dossiers": rows, "count": int64(len(rows))})
+
+	// ---- the second factor of the operator -------------------------------
+	case "operator.otp.rotate":
+		// A new secret for an operator.
+		//
+		// The secret is handed out once, here, and never again: the
+		// server keeps it and the phone of the operator has it.  An
+		// operator may rotate its own secret; turning the second
+		// factor of somebody else on is the work of an admin.
+		if s.OTP == nil {
+			return fail("operator.otp.rotate: this server has no registry of second factors")
+		}
+		target, _ := args["operator"].(string)
+		target = strings.TrimSpace(target)
+		if target == "" {
+			target = op.Name
+		}
+		if target != op.Name && !rbac.AtLeast(role, rbac.Admin) {
+			return fail("operator.otp.rotate: only an admin may rotate the second factor of somebody else")
+		}
+		issuer, _ := args["issuer"].(string)
+		sec, err := s.OTP.Rotate(target, issuer)
+		if err != nil {
+			return fail("operator.otp.rotate: %v", err)
+		}
+		if err := s.OTP.Save(); err != nil {
+			s.Log.Warn("the registry of the second factors could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"operator": sec.Operator,
+			"secret":   sec.Secret,
+			"uri":      otp.URI(sec.Issuer, sec.Operator, sec.Secret),
+			"enabled":  sec.Enabled,
+			"rotated":  sec.Rotated.Format(time.RFC3339),
+			"issuer":   sec.Issuer,
+		})
+
+	case "operator.otp.status":
+		// Who has a second factor, and how old it is.
+		//
+		// The secrets are not in the answer: a list of second factors
+		// that carries the secrets is a list that leaks them.
+		if s.OTP == nil {
+			return fail("operator.otp.status: this server has no registry of second factors")
+		}
+		items := s.OTP.Status()
+		rows := make([]any, 0, len(items))
+		for _, st := range items {
+			rows = append(rows, upk.Map{
+				"operator": st.Operator,
+				"issuer":   st.Issuer,
+				"enabled":  st.Enabled,
+				"created":  st.Created.Format(time.RFC3339),
+				"rotated":  st.Rotated.Format(time.RFC3339),
+				"age":      st.Age,
+			})
+		}
+		return reply(upk.Map{"operators": rows, "count": int64(len(rows))})
+
+	case "operator.otp.remove":
+		// The second factor of an operator is taken away.
+		//
+		// The console of that operator works with the token alone from
+		// then on, which is what a team wants when a phone is lost.
+		if s.OTP == nil {
+			return fail("operator.otp.remove: this server has no registry of second factors")
+		}
+		target, _ := args["operator"].(string)
+		target = strings.TrimSpace(target)
+		if target == "" {
+			target = op.Name
+		}
+		if target != op.Name && !rbac.AtLeast(role, rbac.Admin) {
+			return fail("operator.otp.remove: only an admin may take away the second factor of somebody else")
+		}
+		if err := s.OTP.Remove(target); err != nil {
+			return fail("operator.otp.remove: %v", err)
+		}
+		if err := s.OTP.Save(); err != nil {
+			s.Log.Warn("the registry of the second factors could not be saved", "err", err)
+		}
+		return reply(upk.Map{"operator": target, "removed": true})
 
 	// ---- the server-side file store ------------------------------------
 	case "artifact.list":

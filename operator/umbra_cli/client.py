@@ -64,6 +64,7 @@ class OperatorClient:
         tls_cert: str = "",
         tls_key: str = "",
         tls_pin: str = "",
+        otp: str = "",
     ) -> None:
         self.server = server
         self.operator = operator
@@ -80,6 +81,11 @@ class OperatorClient:
         # SubjectPublicKeyInfo.  A console that pins a key trusts that
         # key and not the authority that wrote the certificate.
         self.tls_pin = tls_pin
+        # The code of the second factor, when the operator has one.  It
+        # is sent once, in the metadata of the handshake, and the server
+        # checks it before it answers: a console without the right code
+        # never gets a session.
+        self.otp = otp.strip()
 
         self._stream: Optional[netio.Stream] = None
         self._session: Optional[session.Session] = None
@@ -108,13 +114,16 @@ class OperatorClient:
             sock = self._wrap_tls(sock, host)
         self._stream = netio.Stream(sock, timeout=self.timeout)
 
+        meta = {"client": "umbra-cli", "ver": "0.1.0"}
+        if self.otp:
+            meta["otp"] = self.otp
         result = handshake.client_handshake(
             self._stream,
             psk=self._token,
             role=crypto.ROLE_OPERATOR,
             ident=self.operator,
             suite=wire.SUITE_AES256_GCM,
-            meta={"client": "umbra-cli", "ver": "0.1.0"},
+            meta=meta,
         )
         self._session = result.session
         self.session_id = result.session_id
@@ -890,6 +899,50 @@ class OperatorClient:
     def canary_remove(self, canary_id: str) -> Dict[str, Any]:
         """Stop watching a tripwire.  The file on the host stays there."""
         res = self.rpc("canary.remove", {"id": canary_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the second factor -------------------------------------------------
+    def operator_otp_status(self) -> Dict[str, Any]:
+        """Who has a second factor, and how old it is.
+
+        The secrets are not in the answer: the server hands them out
+        once, when they are rotated, and never again.
+        """
+        res = self.rpc("operator.otp.status", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def operator_otp_rotate(self, operator: str = "",
+                            issuer: str = "") -> Dict[str, Any]:
+        """Make a new secret for an operator.
+
+        The secret is in the answer and nowhere else: the operator
+        puts it in the phone of the authenticator and the server keeps
+        its own copy.
+        """
+        payload: Dict[str, Any] = {}
+        if operator:
+            payload["operator"] = operator
+        if issuer:
+            payload["issuer"] = issuer
+        res = self.rpc("operator.otp.rotate", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def operator_otp_remove(self, operator: str = "") -> Dict[str, Any]:
+        """Take the second factor of an operator away.
+
+        The console of that operator works with the token alone from
+        then on, which is what a team wants when a phone is lost.
+        """
+        payload: Dict[str, Any] = {}
+        if operator:
+            payload["operator"] = operator
+        res = self.rpc("operator.otp.remove", payload)
         if not res.ok:
             raise OperatorError(res.error)
         return res.data or {}

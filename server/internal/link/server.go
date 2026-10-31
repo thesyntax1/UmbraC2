@@ -28,6 +28,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
+	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
@@ -78,6 +79,10 @@ type Server struct {
 	// Canaries is the ledger of the tripwires of the engagement.
 	// Optional.
 	Canaries *canary.Registry
+	// OTP is the registry of the second factors of the operators.
+	// Optional: without it the console is asked for nothing more than
+	// its token.
+	OTP *otp.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -160,6 +165,37 @@ func (s *Server) SetApprovals(q *approval.Queue) { s.Approvals = q }
 
 // SetCanaries attaches the ledger of the tripwires.
 func (s *Server) SetCanaries(c *canary.Registry) { s.Canaries = c }
+
+// SetOTP attaches the registry of the second factors.
+//
+// Without a registry every console is asked for its token alone, which
+// is the way a lab runs.  With one, an operator that has a secret has
+// to prove it with the code of the moment before the handshake is
+// answered.
+func (s *Server) SetOTP(o *otp.Registry) { s.OTP = o }
+
+// checkSecondFactor asks the console that is connecting for the code
+// of the moment, when its operator has a second factor.
+//
+// The check happens before the answer of the handshake is written, so
+// a console without the right code never gets a session: the token
+// alone is not enough, and the code alone is not enough either.
+func (s *Server) checkSecondFactor(info *HelloInfo) error {
+	if s.OTP == nil || info == nil {
+		return nil
+	}
+	if !s.OTP.Enabled(info.ID) {
+		return nil
+	}
+	code := ""
+	if v, ok := info.Meta["otp"].(string); ok {
+		code = v
+	}
+	if !s.OTP.Verify(info.ID, code, time.Now()) {
+		return fmt.Errorf("the second factor of %q is missing or wrong", info.ID)
+	}
+	return nil
+}
 
 // taskCompleted keeps the ledger of the canaries in step with the
 // tasks that checked them.

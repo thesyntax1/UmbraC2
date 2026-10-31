@@ -13,10 +13,15 @@ different PSK, so a compromised operator console cannot enrol new implants.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import getpass
+import hashlib
+import hmac
 import json
 import os
 import shlex
+import struct
 import sys
 import threading
 import time
@@ -983,6 +988,95 @@ def run_canary(client: OperatorClient, console: Console, args: Any) -> int:
         return 0
     print(f"unknown canary command: {action}", file=sys.stderr)
     return 2
+
+
+def run_otp(client: OperatorClient, console: Console, args: Any) -> int:
+    """The second factor of the operator.
+
+    The token of an operator is a secret that lives in the
+    configuration of the server and in the memory of the console.  The
+    second factor is a secret that lives in the phone of the operator
+    and never travels: the console sends the six digits of the moment
+    and the server checks them before it answers the handshake.
+    """
+    action = getattr(args, "otp_cmd", "") or "status"
+    if action == "status":
+        payload = client.operator_otp_status()
+        if args.json:
+            emit(payload)
+        else:
+            rows = payload.get("operators") or []
+            if not rows:
+                print("no operator has a second factor")
+                return 0
+            print(f"{len(rows)} operators have a second factor")
+            for row in rows:
+                state = "on" if row.get("enabled") else "off"
+                print(f"  {row.get('operator', '?'):<16} {state:<4}"
+                      + (f" {row.get('age', '')}" if row.get("age") else "")
+                      + (f"  ({row.get('issuer')})" if row.get("issuer") else ""))
+        return 0
+    if action == "rotate":
+        payload = client.operator_otp_rotate(operator=args.operator,
+                                             issuer=args.issuer)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"a new secret for {payload.get('operator', '?')}; it is "
+                  f"shown once and never again")
+            print(f"  the secret: {payload.get('secret', '')}")
+            print(f"  the address of the phone: {payload.get('uri', '')}")
+        return 0
+    if action == "remove":
+        payload = client.operator_otp_remove(operator=args.operator)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the second factor of {payload.get('operator', '?')} is "
+                  f"taken away; the console works with the token alone")
+        return 0
+    if action == "code":
+        # The code of the moment, computed from the secret.  An operator
+        # with the secret does not need this: the phone of the
+        # authenticator has the code.  A lab does.
+        try:
+            code = totp_code(args.secret)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            emit({"code": code})
+        else:
+            print(code)
+        return 0
+    print(f"unknown otp command: {action}", file=sys.stderr)
+    return 2
+
+
+def totp_code(secret: str, when: Optional[float] = None) -> str:
+    """The code of the moment, as RFC 6238 says it is.
+
+    The console computes the code only for the lab: the phone of the
+    operator computes it for the real thing.  The arithmetic is the
+    standard one -- HMAC-SHA1 over the counter of the step, the byte
+    that says where the number starts, the number itself -- so the code
+    here is the code of the phone.
+    """
+    cleaned = secret.strip().upper().replace(" ", "").replace("-", "")
+    if not cleaned:
+        raise ValueError("the secret is empty")
+    padding = "=" * ((8 - len(cleaned) % 8) % 8)
+    try:
+        key = base64.b32decode(cleaned + padding, casefold=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError(f"the secret is not base32: {exc}") from exc
+    if len(key) < 10:
+        raise ValueError("the secret is too short")
+    counter = int((when if when is not None else time.time()) // 30)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % 1000000:06d}"
 
 
 def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
@@ -2661,6 +2755,7 @@ def print_help() -> None:
   approval [list|show|request|approve|deny]  the two-person rule
   canary [list|show|plant|check|remove]  the tripwires of the engagement
   dossier [list|show]         the file of a host: what the server knows
+  otp [status|rotate|remove|code]  the second factor of the operator
   quit                      disconnect and exit"""
     )
 
@@ -3077,6 +3172,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="pinned public key of the server (hex SHA-256 of its "
                         "SubjectPublicKeyInfo); the server is trusted only "
                         "when it holds that key")
+    p.add_argument("--otp", default=os.environ.get("UMBRA_OTP", ""),
+                   help="the code of the second factor, when the operator "
+                        "has one (the server refuses the console without it)")
     p.add_argument("--watch", action="store_true", help="print events as they arrive")
     p.add_argument("--quiet", action="store_true", help="do not print the event banner")
     p.add_argument("--db", default=os.environ.get(
@@ -3338,6 +3436,32 @@ def build_parser() -> argparse.ArgumentParser:
     dossier_show = dossier_sub.add_parser("show", help="the file of one host")
     dossier_show.add_argument("agent")
     dossier_show.add_argument("--json", action="store_true")
+
+    # ---- the second factor of the operator ------------------------------
+    otp_cmd = sub.add_parser("otp", help="the second factor of the operator")
+    otp_sub = otp_cmd.add_subparsers(dest="otp_cmd")
+
+    otp_status = otp_sub.add_parser("status", help="who has a second factor")
+    otp_status.add_argument("--json", action="store_true")
+
+    otp_rotate = otp_sub.add_parser("rotate", help="make a new secret")
+    otp_rotate.add_argument("--operator", default="",
+                            help="the operator (default: yourself)")
+    otp_rotate.add_argument("--issuer", default="",
+                            help="the name of the team the phone shows")
+    otp_rotate.add_argument("--json", action="store_true")
+
+    otp_remove = otp_sub.add_parser("remove",
+                                    help="take the second factor away")
+    otp_remove.add_argument("--operator", default="",
+                            help="the operator (default: yourself)")
+    otp_remove.add_argument("--json", action="store_true")
+
+    otp_code = otp_sub.add_parser("code",
+                                  help="the code of the moment for a secret "
+                                       "(for a lab, not for the phone)")
+    otp_code.add_argument("--secret", required=True, help="the base32 secret")
+    otp_code.add_argument("--json", action="store_true")
 
     info = sub.add_parser("info", help="show one agent")
     info.add_argument("agent")
@@ -4131,6 +4255,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
         tls_pin=args.tls_pin,
+        otp=args.otp,
     )
     try:
         client.connect()
@@ -4398,6 +4523,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_canary(client, console, args)
         elif args.cmd == "dossier":
             return run_dossier(client, console, args)
+        elif args.cmd == "otp":
+            return run_otp(client, console, args)
         elif args.cmd == "info":
             emit(client.agent_info(args.agent))
         elif args.cmd == "run":

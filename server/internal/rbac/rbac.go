@@ -162,6 +162,13 @@ var requirements = map[string]string{
 	"case.close":  Operator,
 
 	// ---- the two-person rule ---------------------------------------------
+	// The second factor of the operator.  Reading who has one is a
+	// read; making one and taking it away changes the way the team
+	// logs in, so it is the work of an admin.
+	"operator.otp.status":  Viewer,
+	"operator.otp.rotate":  Operator,
+	"operator.otp.remove":  Operator,
+
 	// Reading the queue of the approvals and one request of it is a read:
 	// a viewer sees what the team is waiting for.
 	"approval.list": Viewer,

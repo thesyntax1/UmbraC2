@@ -198,14 +198,20 @@ TASK_KIND_SPECS = {
 # slice of strings.
 GO_IMPLANT_TASKS = "implant/go/internal/beacon/tasks.go"
 
+# A command of the framework is a dotted name.  It has two parts
+# ("agents.list") or three ("operator.otp.status"): the patterns below
+# accept any number of parts, so a new family of commands is not
+# invisible to the checker.
+CMD = r"[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+"
+
 RPC_SPECS = {
     # A Go case may list aliases on one line (`case "agents.kill", "agents.exit":`),
     # so collect every quoted command in the case label, not just the first.
-    "go": r'(?:case|,) "([a-z]+\.[a-z]+)"',
+    "go": rf'(?:case|,) "({CMD})"',
     # The call may be written on one line or split over several, so the
     # pattern tolerates the line break between the parenthesis and the name.
-    "python": r'self\.rpc\(\s*"([a-z]+\.[a-z]+)"',
-    "cli": r'rpc\(\s*"([a-z]+\.[a-z]+)"',
+    "python": rf'self\.rpc\(\s*"({CMD})"',
+    "cli": rf'rpc\(\s*"({CMD})"',
 }
 
 
@@ -289,8 +295,8 @@ def doc_rpc_commands() -> set[str]:
     section = text.split("Operator RPC commands", 1)[-1]
     # Stop at the next top-level section so we do not pick up unrelated text.
     section = section.split("\n## ", 1)[0]
-    table = set(re.findall(r"^\| `([a-z]+\.[a-z]+)` \|", section, re.M))
-    prose = set(re.findall(r"`([a-z]+\.[a-z]+)`", section))
+    table = set(re.findall(rf"^\| `({CMD})` \|", section, re.M))
+    prose = set(re.findall(rf"`({CMD})`", section))
     # The prose also names the event kinds, the task kinds and the
     # persistence techniques, and those are not RPC commands: an event the
     # server emits, a task a beacon runs, and an entry the persistence
@@ -305,6 +311,11 @@ def doc_rpc_commands() -> set[str]:
     table -= events
     table -= tasks
     table -= techniques
+    # The keys of the metadata are written "meta.<key>" ("meta.p2p" is
+    # where a beacon that serves a peer link says where it waits).  They
+    # are fields of a frame, not commands of the protocol.
+    prose -= {name for name in prose if name.startswith("meta.")}
+    table -= {name for name in table if name.startswith("meta.")}
     return table | prose
 
 
@@ -329,7 +340,7 @@ def doc_rpc_roles() -> dict[str, str]:
     section = text.split("Operator RPC commands", 1)[-1].split("\n## ", 1)[0]
     roles: dict[str, str] = {}
     for line in section.splitlines():
-        match = re.match(r"^\| `([a-z]+\.[a-z]+)` \| (viewer|operator|admin) \|", line)
+        match = re.match(rf"^\| `({CMD})` \| (viewer|operator|admin) \|", line)
         if match:
             roles[match.group(1)] = match.group(2)
     return roles
@@ -340,7 +351,7 @@ def go_rpc_roles() -> dict[str, str]:
     text = read("server/internal/rbac/rbac.go")
     body = text.split("var requirements = map[string]string{", 1)[-1].split("\n}", 1)[0]
     out: dict[str, str] = {}
-    for match in re.finditer(r'"([a-z]+\.[a-z]+)":\s*(Viewer|Operator|Admin)', body):
+    for match in re.finditer(rf'"({CMD})":\s*(Viewer|Operator|Admin)', body):
         out[match.group(1)] = match.group(2).lower()
     return out
 

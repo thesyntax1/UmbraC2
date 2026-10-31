@@ -43,6 +43,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
 	"github.com/thesyntax1/UmbraC2/server/internal/mtls"
+	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
@@ -218,6 +219,17 @@ func run() error {
 		logger.Warn("the ledger of the canaries could not be read", "err", err)
 	}
 	srv.SetCanaries(canaries)
+
+	// The second factor of the operator: the secrets of the codes that
+	// are asked for when a console connects.  The file belongs to the
+	// server alone, so it lives next to the state file with the same
+	// care.
+	otpRegistry := otp.New()
+	otpRegistry.SetPath(otpPath(cfg.Server.DataFile))
+	if err := otpRegistry.Load(); err != nil {
+		logger.Warn("the registry of the second factors could not be read", "err", err)
+	}
+	srv.SetOTP(otpRegistry)
 
 	// The layer-3 tunnel between the console and the beacons.
 	if cfg.Server.VPNListen != "" {
@@ -530,6 +542,17 @@ func approvalPath(dataFile string) string {
 		return filepath.Join("data", "approval.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "approval.json")
+}
+
+// otpPath is where the secrets of the second factors are kept.
+//
+// The file holds the keys of the console, so it is written for the
+// server alone and it lives beside the state file.
+func otpPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "otp.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "otp.json")
 }
 
 // canaryPath is where the ledger of the tripwires is kept.

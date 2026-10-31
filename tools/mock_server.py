@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlencode
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "operator"))
@@ -136,6 +137,48 @@ def _substitute_output(args: Dict[str, Any], output: bytes) -> Dict[str, Any]:
 
 def _now() -> int:
     return int(time.time())
+
+
+def _otp_code(secret: str, when: Optional[float] = None) -> str:
+    """The code of the moment, as RFC 6238 says it is.
+
+    The arithmetic is the standard one -- HMAC-SHA1 over the counter of
+    the step, the byte that says where the number starts, the number
+    itself -- so the code of the test double is the code of the phone
+    of the operator and the code of the Go server.
+    """
+    cleaned = secret.strip().upper().replace(" ", "").replace("-", "")
+    if not cleaned:
+        raise ValueError("the secret is empty")
+    padding = "=" * ((8 - len(cleaned) % 8) % 8)
+    key = base64.b32decode(cleaned + padding, casefold=True)
+    if len(key) < 10:
+        raise ValueError("the secret is too short")
+    counter = int((when if when is not None else time.time()) // 30)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % 1000000:06d}"
+
+
+def _otp_verify(secret: str, code: str, when: Optional[float] = None) -> bool:
+    """Say whether the code is the code of the moment.
+
+    The window is one step on each side: a phone whose clock is a
+    little off still works, and a code from an hour ago does not.
+    """
+    code = str(code or "").strip()
+    if len(code) != 6 or not code.isdigit():
+        return False
+    moment = time.time() if when is None else when
+    for delta in (-1, 0, 1):
+        try:
+            want = _otp_code(secret, moment + delta * 30)
+        except ValueError:
+            return False
+        if hmac.compare_digest(want, code):
+            return True
+    return False
 
 
 def _parse_deadline(value: Any) -> int:
@@ -1106,6 +1149,10 @@ class MockServer:
         # on the hosts, and the verdict of the last look.
         self.canaries: Dict[str, Dict[str, Any]] = {}
         self._canary_seq = 0
+        # The second factor of the operator: the secrets of the codes
+        # that are asked for when a console connects.  The test double
+        # keeps them in the clear, because the tests need to see them.
+        self.otp_secrets: Dict[str, Dict[str, Any]] = {}
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -1932,6 +1979,17 @@ class MockServer:
         def on_peer(peer_id: str, role: int, meta: dict) -> None:
             if peer_id not in self.operators:
                 return
+            # The second factor: an operator that has one has to prove
+            # it with the code of the moment.  The check happens before
+            # the handshake is answered, so a console without the right
+            # code never gets a session.
+            with self._lock:
+                entry = self.otp_secrets.get(peer_id)
+            if entry and entry.get("enabled"):
+                code = str(meta.get("otp", "") or "")
+                if not _otp_verify(str(entry.get("secret", "")), code):
+                    raise handshake.HandshakeError(
+                        f"the second factor of {peer_id!r} is missing or wrong")
             # The last use of a token is the last time it authenticated.
             self.token_last_used[peer_id] = time.time()
             inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=512)
@@ -3335,6 +3393,11 @@ class MockServer:
         # The file of a host is a read of everything the server knows.
         "dossier.get": "viewer",
         "dossier.list": "viewer",
+        # The second factor: reading who has one is a read; making one
+        # and taking it away is the work of an admin.
+        "operator.otp.status": "viewer",
+        "operator.otp.rotate": "operator",
+        "operator.otp.remove": "operator",
         # The route of an agent: reading it is harmless, changing it
         # changes how the implant reaches the server.
         "transport.get": "viewer",
@@ -4701,6 +4764,66 @@ class MockServer:
                 if row["id"] == agent_id:
                     return ok(row)
             return fail(f"dossier.get: no such host {agent_id!r}")
+
+        # ---- the second factor of the operator ---------------------------
+        if cmd == "operator.otp.status":
+            with self._lock:
+                rows = [dict(v) for v in self.otp_secrets.values()]
+            rows.sort(key=lambda row: str(row.get("operator", "")))
+            for row in rows:
+                row.pop("secret", None)
+            return ok({"operators": rows, "count": len(rows)})
+
+        if cmd == "operator.otp.rotate":
+            # The secret is handed out once, here, and never again.
+            target = str(args.get("operator", "") or "").strip() or operator
+            if target != operator and self.roles.get(operator, "operator") != "admin":
+                return fail("operator.otp.rotate: only an admin may rotate "
+                            "the second factor of somebody else")
+            issuer = str(args.get("issuer", "") or "").strip()
+            secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+            now = _now()
+            with self._lock:
+                entry = dict(self.otp_secrets.get(target, {}))
+                entry.update({
+                    "operator": target,
+                    "secret": secret,
+                    "issuer": issuer,
+                    "enabled": True,
+                    "rotated": now,
+                })
+                entry.setdefault("created", now)
+                self.otp_secrets[target] = entry
+            uri = ("otpauth://totp/"
+                   + quote(f"{issuer}:{target}", safe="")
+                   + "?" + urlencode({
+                       "secret": secret,
+                       "issuer": issuer,
+                       "algorithm": "SHA1",
+                       "digits": "6",
+                       "period": "30",
+                   }))
+            return ok({
+                "operator": target,
+                "secret": secret,
+                "uri": uri,
+                "enabled": True,
+                "issuer": issuer,
+                "rotated": now,
+                "created": entry["created"],
+            })
+
+        if cmd == "operator.otp.remove":
+            target = str(args.get("operator", "") or "").strip() or operator
+            if target != operator and self.roles.get(operator, "operator") != "admin":
+                return fail("operator.otp.remove: only an admin may take away "
+                            "the second factor of somebody else")
+            with self._lock:
+                if target not in self.otp_secrets:
+                    return fail(f"operator.otp.remove: the operator {target!r} "
+                                f"has no second factor")
+                del self.otp_secrets[target]
+            return ok({"operator": target, "removed": True})
 
         if cmd == "sessions.list":
             with self._lock:
