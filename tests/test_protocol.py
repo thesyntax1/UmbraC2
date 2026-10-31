@@ -11978,3 +11978,307 @@ def test_the_console_reaches_the_welcome_the_map_and_the_verify() -> None:
     # The stage arguments parse like the tasks they queue.
     assert cli.parse_kv("path=/etc/passwd,recursive=true,depth=2") == {
         "path": "/etc/passwd", "recursive": True, "depth": 2}
+
+
+def test_the_sorting_hat_colours_the_new_joins() -> None:
+    """The sorting hat: tags that arrive before the operator looks.
+
+    A fleet grows faster than a team can paint it, so the hat reads the
+    snapshot of every host the moment it joins and colours the ones it
+    knows: sentences over the facts of the join, each firing at most once
+    per host, and never painting over the colours an operator painted by
+    hand.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    tagrule_go = read_text("server/internal/tagrule/tagrule.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The hat is a package of its own: a shelf that persists, a once-door
+    # per host and sentence, and operator colours that outlast it.
+    assert "package tagrule" in tagrule_go, "there is no sorting hat"
+    assert "func (r *Registry) Add(" in tagrule_go
+    assert "func (r *Registry) Remove(" in tagrule_go
+    assert "func (r *Registry) Save(" in tagrule_go
+    assert "0o600" in tagrule_go or "0600" in tagrule_go, (
+        "the shelf of the rules is not written for the owner only")
+
+    # The hat listens to the door: the new join and the return of one.
+    assert '"agent.new"' in tagrule_go and '"agent.online"' in tagrule_go, (
+        "the hat never hears the door")
+
+    # The server answers the three commands of the hat, the console
+    # reaches them, and the roles are what the team promised.
+    for command in ("tag.rule.add", "tag.rule.list", "tag.rule.remove"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+    assert re.search(r'"tag\.rule\.add":\s+Operator,', rbac)
+    assert re.search(r'"tag\.rule\.list":\s+Viewer,', rbac)
+    assert re.search(r'"tag\.rule\.remove":\s+Operator,', rbac)
+    assert 'add_parser("tag-rule"' in cli_src
+
+    token = b"tagrule-token-0123456789sha"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+
+    def tags_of(agent_id: str) -> List[str]:
+        for row in client.agents():
+            if row.get("id") == agent_id:
+                return [str(t) for t in (row.get("tags") or [])]
+        return []
+
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        # The sentence: every linux host wears the colour linux.
+        rule = client.tag_rule_add("linux joiners", field="os",
+                                   contains="linux", tag="linux")
+        assert rule["id"].startswith("r-"), rule
+        assert rule["name"] == "linux joiners", rule
+        assert rule["tag"] == "linux", rule
+
+        # A colour the operator paints by hand outlasts the hat.
+        agent = FakeAgent(server.address, AGENT_PSK, "agent-hat",
+                          interval=0.2)
+        agent.start()
+        try:
+            assert wait_until(lambda: bool(tags_of("agent-hat")),
+                              timeout=10), "the host never joined"
+            assert wait_until(
+                lambda: "linux" in [t.lower() for t in tags_of("agent-hat")],
+                timeout=10), "the hat never coloured the host"
+
+            # The door spoke of the colour, and it named the sentence.
+            deadline = time.time() + 10
+            coloured = None
+            while time.time() < deadline and coloured is None:
+                evs = client.events(after=0).get("events", [])
+                for ev in evs:
+                    if (ev.get("kind") == "agent.tags"
+                            and ev.get("agent_id") == "agent-hat"):
+                        coloured = ev
+                        break
+                time.sleep(0.1)
+            assert coloured is not None, "the door never spoke of the colour"
+            assert coloured.get("data", {}).get("rule"), (
+                "the colour did not name its sentence")
+
+            # The sentence fired once and can be read back.
+            rules = client.tag_rule_list().get("rules") or []
+            hat = [r for r in rules if r.get("id") == rule["id"]]
+            assert hat and hat[0].get("fires", 0) >= 1, rules
+
+            # And erasing the sentence erases it for good.
+            removed = client.tag_rule_remove(rule["id"])
+            assert removed.get("removed") is True
+            assert all(r.get("id") != rule["id"]
+                       for r in (client.tag_rule_list().get("rules") or []))
+        finally:
+            agent.stop()
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_lean_ledger_of_who_asked_and_its_digest() -> None:
+    """The ledger of who asked: a queue two consoles can agree about.
+
+    The audit trail is the record of the team; the ledger is the working
+    answer to 'whose work is this?' — bounded, hashed line over line, so
+    a console that carries the digest home holds the queue itself.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    operator = read_text("server/internal/link/operator.go")
+    server_go = read_text("server/internal/link/server.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+
+    # The ledger lives next to the server: a bounded ring, hashed line
+    # over line, stamped by every path the queue grows on.
+    assert "taskLedger" in server_go and "ledgerDigest" in server_go, (
+        "the server keeps no ledger")
+    assert "s.ledgerAdd(" in operator
+    assert 'case "task.ledger-dig"' in operator
+    assert re.search(r'"task\.ledger-dig":\s+Viewer,', rbac)
+    assert 'self.rpc("task.ledger-dig"' in client_src
+
+    token = b"ledger-token-0123456789sharp"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-ledger",
+                      interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the host never joined")
+
+        # A question with a shelf-name: the ledger writes down where the
+        # work came from, the way a crate writes its home.
+        task_id = client.submit("agent-ledger", "shell", {"cmd": "id"},
+                                source="ticket-77")
+        assert wait_until(
+            lambda: client.task(task_id).get("state") == "done",
+            timeout=10), "the question was never answered"
+        dig = client.task_ledger_dig()
+        assert dig.get("entries", 0) >= 1, dig
+        assert len(str(dig.get("digest", ""))) == 64, dig
+        first_digest = dig["digest"]
+
+        # The retry of the failed or finished question is a new line, and
+        # the line knows which question it grew from.
+        replay = client.retry(task_id)
+        assert replay.get("retried") == task_id, replay
+        assert replay.get("by") == "alice", replay
+        assert "retry:" in str(replay.get("source", "")), replay
+        dig = client.task_ledger_dig()
+        assert dig["entries"] >= 2, dig
+        assert dig["digest"] != first_digest, (
+            "the digest did not move with the ledger")
+        assert dig["first"] >= 1 and dig["last"] >= dig["first"], dig
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_lease_of_a_door_closes_itself_and_extends() -> None:
+    """The lease of a pivot: rented, tied to time, extendable.
+
+    A door opened for ten minutes of work must not be found open three
+    weeks later, so a pivot can rent itself: the server sweeps the doors
+    whose leases ran out, and the operator can push the closing further
+    out while the work lasts.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    pivot_go = read_text("server/internal/pivot/pivot.go")
+    operator = read_text("server/internal/link/operator.go")
+    main_go = read_text("server/cmd/umbra-server/main.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The manager keeps the lease: the option, the expiry on the record,
+    # the extend of it and the sweep that closes the doors whose time is
+    # out, and the server's clock runs the sweep.
+    assert "TTL int" in pivot_go or "TTL  int" in pivot_go or "TTL" in pivot_go
+    assert "func (m *Manager) Extend(" in pivot_go, "the lease cannot extend"
+    assert "func (m *Manager) SweepLeases(" in pivot_go, (
+        "nobody sweeps the doors")
+    assert '"pivot.expired"' in pivot_go
+    assert "SweepLeases(" in main_go, "the clock never sweeps"
+    assert 'case "pivot.extend"' in operator
+    assert re.search(r'"pivot\.extend":\s+Operator,', rbac)
+    assert 'self.rpc("pivot.extend"' in client_src
+    assert '--lease' in cli_src and '--via' in cli_src
+
+    token = b"lease-token-0123456789sharpc"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-lease",
+                      interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the host never joined")
+
+        # A rented door with a way written by hand: the reply carries
+        # both the names and the closing hour home.
+        tun = client.pivot_open("agent-lease", mode="socks",
+                                via="gateway,dmz", lease=8)
+        assert tun.get("lease") == 8, tun
+        assert tun.get("via") == "gateway,dmz", tun
+        assert tun.get("expires", 0) > 0, tun
+
+        # While the work lasts the closing is pushed out; the team hears
+        # of it.
+        pushed = client.pivot_extend(tun["stream"], 3600)
+        assert float(pushed.get("expires", 0)) > time.time() + 1800, pushed
+        assert wait_until(
+            lambda: any(e.get("kind") == "pivot.extended"
+                        for e in client.events(after=0).get("events", [])),
+            timeout=8), "the team never heard of the extension"
+
+        # The way the door was named is visible on the map of the doors.
+        rows = client.pivot_list()
+        door = [t for t in rows if t.get("stream") == tun["stream"]]
+        assert door and door[0].get("via") == "gateway,dmz", rows
+        client.pivot_close(tun["stream"])
+
+        # A door that is not extended closes itself the moment the lease
+        # runs out, and the team hears the sweep speak.
+        short = client.pivot_open("agent-lease", mode="socks", lease=6)
+        got_expired = wait_until(
+            lambda: any(
+                e.get("kind") == "pivot.expired"
+                and e.get("data", {}).get("tunnel") == short["stream"]
+                for e in client.events(after=0).get("events", [])),
+            timeout=12, poll=0.2)
+        assert got_expired, "the sweep never closed the leased door"
+        rows = client.pivot_list()
+        assert all(t.get("stream") != short["stream"] for t in rows), (
+            "a door whose lease ran out is still on the map")
+
+        # A door without a lease has nothing to push.
+        plain = client.pivot_open("agent-lease", mode="socks")
+        try:
+            with pytest.raises(OperatorError):
+                client.pivot_extend(plain["stream"], 60)
+        finally:
+            client.pivot_close(plain["stream"])
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_reaches_the_hat_the_ledger_and_the_lease() -> None:
+    """The console knows the hat, the ledger and the lease.
+
+    A feature no console can speak is a rumour, so the parser knows the
+    sentences of the hat, the rental of a door, the extension of its
+    lease and the name of the shelf a question came from.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["tag-rule", "add", "linux joiners",
+                              "--field", "os", "--contains", "linux",
+                              "--tag", "linux"])
+    assert args.cmd == "tag-rule" and args.action == "add"
+    assert args.target == "linux joiners" and args.field == "os"
+    assert args.contains == "linux" and args.tag == "linux"
+    args = parser.parse_args(["tag-rule", "list"])
+    assert args.action == "list"
+    args = parser.parse_args(["tag-rule", "remove", "r-0001"])
+    assert args.action == "remove" and args.target == "r-0001"
+
+    args = parser.parse_args(["pivot", "open", "web-01", "--mode", "socks",
+                              "--via", "gateway,dmz", "--lease", "300"])
+    assert args.cmd == "pivot" and args.action == "open"
+    assert args.via == "gateway,dmz" and args.lease == 300
+    args = parser.parse_args(["pivot", "extend", "tun-1", "--seconds", "600"])
+    assert args.action == "extend" and args.target == "tun-1"
+    assert args.seconds == 600
+
+    # REMAINDER swallows everything after the agent, so the options of
+    # a run come before the words of the host.
+    args = parser.parse_args(["run", "--source", "ticket-77",
+                              "web-01", "echo", "hi"])
+    assert args.cmd == "run" and args.source == "ticket-77"
