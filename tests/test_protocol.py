@@ -12575,3 +12575,172 @@ def test_the_console_reaches_the_hand_the_lock_and_the_comparison() -> None:
 
     args = parser.parse_args(["compare", "web-01", "web-02"])
     assert args.cmd == "compare" and args.a == "web-01" and args.b == "web-02"
+
+
+def test_a_retried_submit_is_the_same_question() -> None:
+    """The key of a submission: a retried click is one task, not two.
+
+    A console that lost the answer to a submit cannot know whether the
+    task exists.  The key makes the question idempotent: the same key
+    inside the window answers with the task the first submit made, and a
+    different key asks a different question.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    idem_go = read_text("server/internal/link/idem.go")
+    operator = read_text("server/internal/link/operator.go")
+    mock_src = read_text("tools/mock_server.py")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    assert "func (s *Server) idemLookup(" in idem_go
+    assert "func (s *Server) idemRemember(" in idem_go
+    assert "idemWindow" in idem_go and "idemMax" in idem_go
+    assert "s.idemLookup(" in operator and "s.idemRemember(" in operator
+    assert "idem_keys" in mock_src
+    assert "idem" in client_src and '"--idem"' in cli_src
+    assert "`idem`" in protocol
+
+    token = b"idem-token-0123456789sharp"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-idem", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the host never joined")
+        before = len(client.tasks())
+
+        first = client.rpc("task.submit", {"id": "agent-idem", "kind": "shell",
+                                          "args": {"cmd": "id"},
+                                          "idem": "click-1"}).data
+        assert first.get("duplicate") is False, first
+        second = client.rpc("task.submit", {"id": "agent-idem", "kind": "shell",
+                                           "args": {"cmd": "id"},
+                                           "idem": "click-1"}).data
+        assert second.get("duplicate") is True, second
+        assert second.get("task_id") == first.get("task_id"), (first, second)
+
+        # The retried click did not queue a second task.
+        deadline = time.time() + 5
+        while time.time() < deadline and len(client.tasks()) < before + 1:
+            time.sleep(0.05)
+        assert len(client.tasks()) == before + 1, "the retry made a second task"
+
+        # A different key asks a different question.
+        other = client.rpc("task.submit", {"id": "agent-idem", "kind": "shell",
+                                          "args": {"cmd": "whoami"},
+                                          "idem": "click-2"}).data
+        assert other.get("task_id") != first.get("task_id"), other
+        assert other.get("duplicate") is False, other
+
+        # A submission without a key is never a duplicate.
+        plain_a = client.rpc("task.submit", {"id": "agent-idem", "kind": "shell",
+                                            "args": {"cmd": "id"}}).data
+        plain_b = client.rpc("task.submit", {"id": "agent-idem", "kind": "shell",
+                                            "args": {"cmd": "id"}}).data
+        assert plain_a["task_id"] != plain_b["task_id"]
+
+        # A key longer than the server's memory of it is refused.
+        long_key = "k" * 200
+        with pytest.raises(OperatorError):
+            client.submit("agent-idem", "shell", {"cmd": "id"}, idem=long_key)
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_a_second_factor_is_spent_by_use() -> None:
+    """The code of the moment opens one session, not a window of them.
+
+    A second factor that can be replayed inside its thirty-second window
+    is a password that changes on a clock.  The server remembers the step
+    it accepted, so the same code cannot open a second console, and a
+    rotated secret starts the memory again.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli import cli as cli_mod  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    otp_go = read_text("server/internal/otp/otp.go")
+    server_go = read_text("server/internal/link/server.go")
+    mock_src = read_text("tools/mock_server.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    assert "func (r *Registry) VerifyOnce(" in otp_go
+    assert "func matchStep(" in otp_go
+    assert "r.used[sec.Operator]" in otp_go
+    assert "VerifyOnce(" in server_go, "the handshake does not spend the code"
+    assert "otp_used" in mock_src
+    assert "spent by use" in protocol
+
+    token = b"otp-spent-token-0123456789"
+    token_b = b"otp-spent-second-012345678"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": token_b})
+    server.start()
+    alice = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        alice.connect()
+        rotated = alice.operator_otp_rotate(operator="bob", issuer="the team")
+        secret = rotated["secret"]
+        code = cli_mod.totp_code(secret)
+
+        # The first console opens with the code of the moment.
+        bob = OperatorClient(server.address, token_b.decode(), "bob", otp=code)
+        bob.connect()
+        bob.close()
+
+        # The same code cannot open a second one inside its window.
+        replay = OperatorClient(server.address, token_b.decode(), "bob", otp=code)
+        with pytest.raises(Exception):
+            replay.connect()
+        replay.close()
+
+        # A new secret has new steps: the memory is not a lock-out.
+        fresh = alice.operator_otp_rotate(operator="bob", issuer="the team")
+        next_code = cli_mod.totp_code(fresh["secret"])
+        bob = OperatorClient(server.address, token_b.decode(), "bob",
+                             otp=next_code)
+        bob.connect()
+        bob.close()
+    finally:
+        alice.close()
+        server.stop()
+
+
+def test_the_ledger_keeps_a_bound() -> None:
+    """The audit ledger is a chain with a retention policy, not a leak.
+
+    A ledger that grows for ever is a ledger somebody deletes by hand at
+    the worst moment.  The policy is a number, the number is in the
+    configuration, and a rotation removes what the policy no longer
+    keeps.
+    """
+    audit_go = read_text("server/internal/audit/audit.go")
+    config_go = read_text("server/internal/config/config.go")
+    main_go = read_text("server/cmd/umbra-server/main.go")
+    operations = read_text("docs/OPERATIONS.md")
+    import json
+
+    assert "Keep int" in audit_go, "the ledger has no retention policy"
+    assert "DefaultKeep" in audit_go and "MaxKeep" in audit_go
+    assert "func (l *Logger) Keep() int" in audit_go
+    assert "os.Remove(fmt.Sprintf(\"%s.%d\", l.path, i))" in audit_go, (
+        "a rotation never removes what the policy does not keep")
+    assert "AuditKeepFiles" in config_go
+    assert '"audit_keep_files"' in config_go
+    assert "Keep:     cfg.Server.AuditKeepFiles," in main_go
+    assert "audit_keep_files" in operations
+
+    # The shipped configurations carry the policy and stay inside it.
+    for name in ("deploy/server.dev.json", "deploy/server.prod.json"):
+        doc = json.loads(read_text(name))
+        keep = doc.get("audit_keep_files")
+        assert isinstance(keep, int) and 0 <= keep <= 100, (name, keep)
