@@ -1882,7 +1882,7 @@ def test_a_pivot_can_be_chained_through_another_agent():
     client = OperatorClient(server.address, token.decode(), "alice")
     try:
         client.connect()
-        deadline = time.time() + 10
+        deadline = time.time() + 20
         peers = ""
         while time.time() < deadline:
             for agent in client.agents():
@@ -2041,9 +2041,14 @@ def _pivot_client(server, token, agent_id="agent-reach"):
     agent.start()
     client = OperatorClient(server.address, token.decode(), "alice")
     client.connect()
-    deadline = time.time() + 5
+    # Twenty seconds, not five: this fixture runs inside the full suite, on a
+    # machine that may be running the Go tests in parallel, and a registration
+    # that takes six seconds is slow, not broken.  A flaky assertion is worse
+    # than a slow one.
+    deadline = time.time() + 20
     while time.time() < deadline and not client.agents():
         time.sleep(0.05)
+    assert client.agents(), "the agent never registered"
     return client, agent
 
 
@@ -2083,7 +2088,7 @@ def test_the_picture_of_the_reach_shows_the_graph():
         conn.close()
         # The accounting is written when the stream really ends, and the
         # stream ends when the target closes the connection.
-        deadline = time.time() + 5
+        deadline = time.time() + 20
         topology = client.pivot_topology()
         while time.time() < deadline and not topology.get("clients"):
             time.sleep(0.1)

@@ -36,6 +36,11 @@ plugins {
 android {
     namespace 'io.umbra.beacon'
     compileSdk 34
+    // Pinned rather than inherited: AGP's default build-tools moves with the
+    // plugin, and a build that changes its compiler without a commit is not
+    // reproducible.  NDK is left to AGP on purpose -- see
+    // docs/BUILD-EVIDENCE.md, "Android", for why it is not pinned yet.
+    buildToolsVersion '34.0.0'
 
     defaultConfig {
         applicationId "io.umbra.beacon"

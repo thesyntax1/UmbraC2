@@ -375,6 +375,10 @@ pub fn collect() -> Domain {
     let mut domain = Domain {
         name: domain_name(),
         controller: String::new(),
+        // Filled by the platform collector below: the identity the implant
+        // runs as is the start of every path, and the collector is the only
+        // thing that knows it.
+        me: String::new(),
         edges: Vec::new(),
     };
 

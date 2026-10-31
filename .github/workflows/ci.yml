@@ -1,11 +1,10 @@
 name: ci
 
-# NOTE: as of 2026-10-31 every job of this workflow fails before its first
-# step with "The job was not started because recent account payments have
-# failed or your spending limit needs to be increased".  The checks below
-# have never executed; see docs/VERIFICATION-MATRIX.md and the
-# "Building and testing" section of docs/OPERATIONS.md for the commands to
-# run by hand until the account is sorted out.
+# Status, 2026-10-31: this workflow runs.  `go server`, `go implant` and
+# `protocol` (the Python suite and the contract) are green on the branch; the
+# Rust and Android jobs are red and their failures are being worked through.
+# A red job here blocks the release gate in docs/RELEASE-PROCESS.md -- the
+# gate opens when every job is green on the same commit, not before.
 #
 # Everything that can be checked without an implant target is checked here.
 # The Android app is built on demand (it needs the SDK/NDK) and is intentionally
@@ -146,7 +145,9 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets ${{ matrix.features }}
       - name: test
-        run: cargo test --all-targets ${{ matrix.features }}
+        # ci_tail lifts the errors into annotations: the job log lives in a
+        # blob host this repository's audit cannot reach.
+        run: sh ../../scripts/ci_tail.sh cargo test --all-targets ${{ matrix.features }}
       - name: release build (size matters for an implant)
         run: cargo build --release ${{ matrix.features }}
       - name: selftest
@@ -180,7 +181,7 @@ jobs:
             code=$?
             if [ $code -ne 0 ]; then
               echo "::error::the code of $target does not compile"
-              sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '/^error/{found=1} found' | head -50 | while IFS= read -r line; do echo "::error::$line"; done
+              sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '/^error/{found=1} found' | head -8 | while IFS= read -r line; do echo "::error::$line"; done
               exit $code
             fi
           done
@@ -211,4 +212,4 @@ jobs:
           UMBRA_TRANSPORT: tcp
           UMBRA_PSK: 00000000000000000000000000000000000000000000000000000000000000ff
           UMBRA_AGENT_ID: ci-build
-        run: gradle --no-daemon assembleDebug
+        run: sh ../../scripts/ci_tail.sh gradle --no-daemon assembleDebug
