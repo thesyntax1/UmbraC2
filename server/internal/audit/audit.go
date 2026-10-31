@@ -221,6 +221,7 @@ type Logger struct {
 	size   int64
 	maxLen int64
 	lines  uint64
+	keep   int
 
 	// keep a bounded in-memory ring so audit.tail does not have to re-read the
 	// file for the common "show me the last N" case.
@@ -239,10 +240,24 @@ type Options struct {
 	// RingSize is how many recent entries stay in memory for Tail. Zero means
 	// 256.
 	RingSize int
+	// Keep is how many rotated files are kept next to the live one
+	// (the .1, .2, ...).  Zero means DefaultKeep; a value above MaxKeep
+	// is clamped.  A retention policy is a promise: the oldest file is
+	// removed when a rotation makes a new one, so the ledger occupies a
+	// bounded part of the disk for ever.
+	Keep int
 }
 
 // DefaultMaxBytes is the rotation threshold when Options.MaxBytes is zero.
 const DefaultMaxBytes = 8 << 20
+
+// DefaultKeep is how many rotated files are kept when Options.Keep is zero:
+// the bounded ledger of a lab, about 48 MiB at the default rotation size.
+const DefaultKeep = 5
+
+// MaxKeep is the most rotated files an operator may ask for.  A ledger
+// nobody can afford to keep is a ledger that gets deleted by hand.
+const MaxKeep = 100
 
 // DefaultRingSize is the in-memory tail when Options.RingSize is zero.
 const DefaultRingSize = 256
@@ -259,10 +274,17 @@ func Open(opts Options) (*Logger, error) {
 	if opts.RingSize <= 0 {
 		opts.RingSize = DefaultRingSize
 	}
+	if opts.Keep <= 0 {
+		opts.Keep = DefaultKeep
+	}
+	if opts.Keep > MaxKeep {
+		opts.Keep = MaxKeep
+	}
 	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o700); err != nil {
 		return nil, fmt.Errorf("audit: create directory: %w", err)
 	}
-	l := &Logger{path: opts.Path, maxLen: opts.MaxBytes, ring: make([]Entry, 0, opts.RingSize)}
+	l := &Logger{path: opts.Path, maxLen: opts.MaxBytes, keep: opts.Keep,
+		ring: make([]Entry, 0, opts.RingSize)}
 	if err := l.open(); err != nil {
 		return nil, err
 	}
@@ -498,7 +520,11 @@ func (l *Logger) rotateLocked() error {
 		_ = l.f.Close()
 		l.f = nil
 	}
-	for i := 4; i >= 1; i-- {
+	keep := l.keep
+	if keep <= 0 {
+		keep = DefaultKeep
+	}
+	for i := keep - 1; i >= 1; i-- {
 		from := fmt.Sprintf("%s.%d", l.path, i)
 		to := fmt.Sprintf("%s.%d", l.path, i+1)
 		if _, err := os.Stat(from); err == nil {
@@ -506,11 +532,31 @@ func (l *Logger) rotateLocked() error {
 		}
 	}
 	_ = os.Rename(l.path, l.path+".1")
+	// The policy is a bound: a file past the keep is from a day with a
+	// longer policy, and the ledger does not keep what it promised not
+	// to keep.
+	for i := keep + 1; i <= MaxKeep+1; i++ {
+		_ = os.Remove(fmt.Sprintf("%s.%d", l.path, i))
+	}
 	if err := l.open(); err != nil {
 		// Reopen failed: keep the in-memory record but report it.
 		return err
 	}
 	return nil
+}
+
+// Keep is how many rotated files the ledger keeps, for the reading of the
+// policy: the operator should be able to ask what the server promises.
+func (l *Logger) Keep() int {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.keep <= 0 {
+		return DefaultKeep
+	}
+	return l.keep
 }
 
 // Lines returns how many entries this process has written.

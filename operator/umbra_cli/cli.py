@@ -4252,6 +4252,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--source", default="",
                      help="the shelf the question came from, written in the "
                           "ledger (a branch name, a ticket number, a play)")
+    run.add_argument("--idem", default="",
+                     help="the key of a retried run: a second submit with "
+                          "the same key answers with the task the first made")
     run.add_argument("--cap", type=int, default=4,
                      help="how many answers are waited for at the same time (bulk run)")
 
@@ -5554,7 +5557,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print("no command given", file=sys.stderr)
                 return 2
             task_id = client.submit(args.agent, "shell", {"cmd": command},
-                                    source=args.source)
+                                    source=args.source, idem=args.idem)
             console.note_task(task_id, args.agent, "shell", {"cmd": command})
             if args.json and not args.wait:
                 emit({"task_id": task_id, "agent": args.agent, "kind": "shell"})

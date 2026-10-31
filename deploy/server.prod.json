@@ -89,5 +89,6 @@
     "max_attempts": 3,
     "breaker_threshold": 5,
     "breaker_cooldown_s": 60
-  }
+  },
+  "audit_keep_files": 30
 }

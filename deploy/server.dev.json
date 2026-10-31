@@ -76,5 +76,6 @@
   "max_queued_tasks": 256,
   "max_clock_skew_s": 300,
   "session_timeout_s": 300,
-  "task_timeout_s": 300
+  "task_timeout_s": 300,
+  "audit_keep_files": 5
 }

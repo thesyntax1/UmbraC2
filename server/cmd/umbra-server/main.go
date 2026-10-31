@@ -365,6 +365,7 @@ func run() error {
 	auditLog, err := audit.Open(audit.Options{
 		Path:     cfg.Server.AuditFile,
 		MaxBytes: int64(cfg.Server.AuditMaxSizeMB) << 20,
+		Keep:     cfg.Server.AuditKeepFiles,
 	})
 	if err != nil {
 		return err
@@ -376,7 +377,8 @@ func run() error {
 	}()
 	srv.SetAudit(auditLog)
 	if auditLog.Enabled() {
-		logger.Info("operator audit log enabled", "file", auditLog.Path())
+		logger.Info("operator audit log enabled", "file", auditLog.Path(),
+			"keep_files", auditLog.Keep())
 	} else {
 		logger.Warn("operator audit log disabled (audit_file is empty)")
 	}

@@ -161,6 +161,11 @@ type Server struct {
 	// auditing; keep it enabled anywhere a human can type.
 	AuditFile      string `json:"audit_file"`
 	AuditMaxSizeMB int    `json:"audit_max_mb"`
+	// AuditKeepFiles is how many rotated audit files are kept next to
+	// the live one.  Zero means the default of the audit package; the
+	// policy is a bound on the disk, so an engagement that runs for a
+	// year does not fill one.
+	AuditKeepFiles int `json:"audit_keep_files"`
 	LogLevel       string `json:"log_level"`
 
 	// ArmoryDir caches the signed extensions, ArmoryKey is the PEM file
@@ -307,6 +312,7 @@ func Default() *Config {
 		ArtifactKeyEnv:  "UMBRA_ARTIFACT_KEY",
 		DataFile:        "data/state.json",
 		AuditFile:       "data/audit.jsonl",
+		AuditKeepFiles:  5,
 		AuditMaxSizeMB:  8,
 		LogLevel:        "info",
 		VPNNetwork:      "10.77.0.0/24",
@@ -551,6 +557,9 @@ func (c *Config) Validate() error {
 	}
 	if s.HTTPListen != "" && s.HTTPPath == "" {
 		return errors.New("config: http_path must be set when http_listen is used")
+	}
+	if s.AuditKeepFiles < 0 || s.AuditKeepFiles > 100 {
+		return errors.New("config: audit_keep_files must be between 0 and 100")
 	}
 	if s.AuditFile != "" && s.AuditMaxSizeMB <= 0 {
 		return errors.New("config: audit_max_mb must be positive when audit_file is set")

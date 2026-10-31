@@ -58,6 +58,12 @@ type Server struct {
 	taskLedgerSeq int
 	taskLedgerMu  sync.Mutex
 
+	// idem is the memory of the keys the consoles submit with: a
+	// repeated request inside the window answers with the task it
+	// already produced instead of a second task.
+	idemMu sync.Mutex
+	idem   map[string]idemEntry
+
 	// freezeState is the engagement while the hands are tied: a freeze
 	// stops every command that would change anything and leaves the
 	// readings alone, so an incident can be understood before it is
@@ -455,7 +461,10 @@ func (s *Server) checkSecondFactor(info *HelloInfo) error {
 	if v, ok := info.Meta["otp"].(string); ok {
 		code = v
 	}
-	if !s.OTP.Verify(info.ID, code, time.Now()) {
+	// The code is spent by use: the same code cannot open a second
+	// session inside its window, which is what makes the second factor
+	// a proof instead of a password that changes every thirty seconds.
+	if !s.OTP.VerifyOnce(info.ID, code, time.Now()) {
 		return fmt.Errorf("the second factor of %q is missing or wrong", info.ID)
 	}
 	return nil

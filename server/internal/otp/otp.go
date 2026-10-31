@@ -121,6 +121,9 @@ type Registry struct {
 	path    string
 	loaded  bool
 	nowFunc func() time.Time
+	// used is the last step a code was spent on, per operator: the
+	// second factor proves itself once, not once per window.
+	used map[string]int64
 }
 
 // New creates an empty registry.
@@ -269,6 +272,9 @@ func (r *Registry) Rotate(operator, issuer string) (Secret, error) {
 		entry.Created = old.Created
 	}
 	r.byOp[operator] = entry
+	// A new secret has new steps: the memory of the old ones would
+	// refuse the first code of the new phone.
+	delete(r.used, operator)
 	r.mu.Unlock()
 	return entry, nil
 }
@@ -288,6 +294,7 @@ func (r *Registry) Remove(operator string) error {
 		return ErrNoSuchOperator
 	}
 	delete(r.byOp, operator)
+	delete(r.used, operator)
 	return nil
 }
 
@@ -338,6 +345,37 @@ func (r *Registry) Verify(operator, code string, now time.Time) bool {
 		return true
 	}
 	return Verify(sec.Secret, code, now)
+}
+
+// VerifyOnce is Verify with the memory of the step it accepted.
+//
+// A code of the moment is a one-time code: without this memory the code a
+// console used to open one session would open another for the rest of the
+// window, which makes the second factor a password that changes every
+// thirty seconds instead of a proof that is spent by use.  The step, not
+// the code, is remembered, because two codes of the same step differ only
+// by the arithmetic that produced them.
+func (r *Registry) VerifyOnce(operator, code string, now time.Time) bool {
+	sec, ok := r.SecretFor(operator)
+	if !ok || !sec.Enabled {
+		return true
+	}
+	step, matched := matchStep(sec.Secret, code, now)
+	if !matched {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.used == nil {
+		r.used = make(map[string]int64, 8)
+	}
+	if step <= r.used[sec.Operator] {
+		// The code is right and already spent: a console that lost
+		// its session asks again with the next code, not this one.
+		return false
+	}
+	r.used[sec.Operator] = step
+	return true
 }
 
 // Status returns what the operator is told about the second factors.
@@ -425,17 +463,26 @@ func Code(secret string, now time.Time) (string, error) {
 
 // Verify says whether the code is the code of the moment.
 func Verify(secret, code string, now time.Time) bool {
+	_, ok := matchStep(secret, code, now)
+	return ok
+}
+
+// matchStep is the step a code answers to, or false when it answers to none.
+//
+// The comparison is constant time on every step of the window, so the time
+// the check takes says nothing about how close a wrong code was.
+func matchStep(secret, code string, now time.Time) (int64, bool) {
 	key, err := DecodeSecret(secret)
 	if err != nil {
-		return false
+		return 0, false
 	}
 	code = strings.TrimSpace(code)
 	if len(code) != Digits {
-		return false
+		return 0, false
 	}
 	for _, r := range code {
 		if r < '0' || r > '9' {
-			return false
+			return 0, false
 		}
 	}
 	counter := int64(now.UTC().Unix()) / Period
@@ -446,13 +493,13 @@ func Verify(secret, code string, now time.Time) bool {
 		}
 		want, err := codeAt(key, uint64(step))
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 {
-			return true
+			return step, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // codeAt is the code of one step.

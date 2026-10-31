@@ -1119,6 +1119,22 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 	case "task.submit":
 		id, _ := args["id"].(string)
 		kind, _ := args["kind"].(string)
+		// The key of the submission: a console that lost the answer may
+		// ask again, and the answer is the task it already made.  The
+		// key is read before anything is queued, so a retried click
+		// cannot leave two tasks behind.
+		idem := strings.TrimSpace(stringArg(args, "idem"))
+		if len(idem) > idemKeyMax {
+			return fail("task.submit: the idem key is longer than %d characters", idemKeyMax)
+		}
+		if taskID, seen := s.idemLookup(idem); seen {
+			return reply(upk.Map{
+				"task_id":   taskID,
+				"duplicate": true,
+				"by":        op.Name,
+				"idem":      idem,
+			})
+		}
 		if err := forensicGuard(role, kind); err != nil {
 			return fail("task.submit: %v", err)
 		}
@@ -1142,10 +1158,14 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		// the shelf the task came from if there is one.
 		source, _ := args["source"].(string)
 		s.ledgerAdd(t.ID, t.AgentID, t.Kind, op.Name, source)
+		s.idemRemember(idem, t.ID)
 		out := upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "state": t.State,
-			"by": op.Name}
+			"by": op.Name, "duplicate": false}
 		if source != "" {
 			out["source"] = cut(source, 64)
+		}
+		if idem != "" {
+			out["idem"] = idem
 		}
 		return reply(out)
 

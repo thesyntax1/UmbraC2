@@ -170,24 +170,30 @@ def _otp_code(secret: str, when: Optional[float] = None) -> str:
     return f"{value % 1000000:06d}"
 
 
-def _otp_verify(secret: str, code: str, when: Optional[float] = None) -> bool:
-    """Say whether the code is the code of the moment.
+def _otp_match_step(secret: str, code: str,
+                    when: Optional[float] = None) -> Optional[int]:
+    """The step a code answers to, or None when it answers to none.
 
     The window is one step on each side: a phone whose clock is a
     little off still works, and a code from an hour ago does not.
     """
     code = str(code or "").strip()
     if len(code) != 6 or not code.isdigit():
-        return False
+        return None
     moment = time.time() if when is None else when
     for delta in (-1, 0, 1):
         try:
             want = _otp_code(secret, moment + delta * 30)
         except ValueError:
-            return False
+            return None
         if hmac.compare_digest(want, code):
-            return True
-    return False
+            return int((moment + delta * 30) // 30)
+    return None
+
+
+def _otp_verify(secret: str, code: str, when: Optional[float] = None) -> bool:
+    """Say whether the code is the code of the moment."""
+    return _otp_match_step(secret, code, when) is not None
 
 
 def _parse_deadline(value: Any) -> int:
@@ -1082,6 +1088,10 @@ class MockServer:
         # The holds: an operator's hand on one queue, and the freeze: the
         # lock of the whole engagement while an incident is understood.
         self.holds: Dict[str, Dict[str, Any]] = {}
+        # The keys a console submits with, and the task each produced.
+        self.idem_keys: Dict[str, Tuple[str, float]] = {}
+        # The last step a second factor was spent on, per operator.
+        self.otp_used: Dict[str, int] = {}
         self.frozen: Optional[Dict[str, Any]] = None
         self.freeze_refused = 0
         self.freeze_last = ""
@@ -2042,12 +2052,22 @@ class MockServer:
             # the handshake is answered, so a console without the right
             # code never gets a session.
             with self._lock:
-                entry = self.otp_secrets.get(peer_id)
+                entry = dict(self.otp_secrets.get(peer_id) or {})
             if entry and entry.get("enabled"):
                 code = str(meta.get("otp", "") or "")
-                if not _otp_verify(str(entry.get("secret", "")), code):
+                step = _otp_match_step(str(entry.get("secret", "")), code)
+                # A code of the moment is spent by use: the same code
+                # cannot open a second session inside its window.
+                with self._lock:
+                    spent = int(self.otp_used.get(peer_id, 0))
+                    if step is not None and step > spent:
+                        self.otp_used[peer_id] = step
+                        accepted = True
+                    else:
+                        accepted = False
+                if not accepted:
                     raise handshake.HandshakeError(
-                        f"the second factor of {peer_id!r} is missing or wrong")
+                        f"the second factor of {peer_id!r} is missing, wrong or spent")
             # The last use of a token is the last time it authenticated.
             self.token_last_used[peer_id] = time.time()
             inbox: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=512)
@@ -4423,6 +4443,19 @@ class MockServer:
         if cmd == "task.submit":
             agent_id = str(args.get("id", ""))
             kind = str(args.get("kind", ""))
+            # The key of the submission: a retried click answers with the
+            # task it already made, inside the window of five minutes.
+            idem = str(args.get("idem", "") or "").strip()
+            if len(idem) > 120:
+                return fail("task.submit: the idem key is longer than 120 characters")
+            if idem:
+                with self._lock:
+                    seen = self.idem_keys.get(idem)
+                    if seen and _now() - seen[1] <= 300:
+                        return ok({"task_id": seen[0], "duplicate": True,
+                                   "by": operator, "idem": idem})
+                    if seen:
+                        self.idem_keys.pop(idem, None)
             if self.quiet:
                 return fail("the server is in its quiet window")
             problem = self._refusal(agent_id, kind)
@@ -4442,9 +4475,19 @@ class MockServer:
             task = self._queue_task(agent_id, kind, args.get("args") or {},
                                     deadline=deadline, timeout=timeout,
                                     by=operator, source=source)
-            return ok({"task_id": task["id"], "agent_id": agent_id,
-                       "state": task["state"], "by": operator,
-                       "source": source})
+            if idem:
+                with self._lock:
+                    self.idem_keys[idem] = (task["id"], _now())
+                    if len(self.idem_keys) > 4096:
+                        oldest = min(self.idem_keys,
+                                     key=lambda k: self.idem_keys[k][1])
+                        self.idem_keys.pop(oldest, None)
+            reply = {"task_id": task["id"], "agent_id": agent_id,
+                     "state": task["state"], "by": operator,
+                     "source": source, "duplicate": False}
+            if idem:
+                reply["idem"] = idem
+            return ok(reply)
 
         if cmd == "task.get":
             with self._lock:
@@ -6155,6 +6198,9 @@ class MockServer:
                 })
                 entry.setdefault("created", now)
                 self.otp_secrets[target] = entry
+                # A new secret has new steps: the memory of the old ones
+                # would refuse the first code of the new phone.
+                self.otp_used.pop(target, None)
             uri = ("otpauth://totp/"
                    + quote(f"{issuer}:{target}", safe="")
                    + "?" + urlencode({
@@ -6184,6 +6230,7 @@ class MockServer:
                     return fail(f"operator.otp.remove: the operator {target!r} "
                                 f"has no second factor")
                 del self.otp_secrets[target]
+                self.otp_used.pop(target, None)
             return ok({"operator": target, "removed": True})
 
         if cmd == "sessions.list":

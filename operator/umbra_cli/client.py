@@ -465,7 +465,8 @@ class OperatorClient:
         return res.data
 
     def submit(self, agent_id: str, kind: str, args: Optional[Dict[str, Any]] = None,
-               deadline: str = "", timeout: int = 0, source: str = "") -> str:
+               deadline: str = "", timeout: int = 0, source: str = "",
+               idem: str = "") -> str:
         """Queue a task on an agent.
 
         The deadline is the moment after which the task is not worth
@@ -483,6 +484,8 @@ class OperatorClient:
             payload["timeout"] = int(timeout)
         if source:
             payload["source"] = source
+        if idem:
+            payload["idem"] = idem
         res = self.rpc("task.submit", payload)
         if not res.ok:
             raise OperatorError(res.error)
