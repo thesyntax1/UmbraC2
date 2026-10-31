@@ -476,11 +476,23 @@ object Persistence {
             val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
                 ?: return "the device policy manager is not there"
             if (!on) {
-                manager.clearDeviceOwnerApp()
+                manager.clearDeviceOwnerApp(context.packageName)
                 return null
             }
-            manager.setDeviceOwner(ComponentName(context, UmbraAdminReceiver::class.java), "umbra")
-            null
+            // There is no public API that makes an installed application the
+            // device owner of the phone: the platform grants that during
+            // provisioning only (adb shell dpm set-device-owner, or a
+            // managed-provisioning flow) and setDeviceOwner is hidden.  If
+            // the operator enrolled the phone that way, the check below is
+            // the truth and there is nothing left to do; if not, the command
+            // fails and says why instead of recording a technique that is
+            // not installed.
+            if (manager.isDeviceOwnerApp(context.packageName)) {
+                return null
+            }
+            "the device owner is granted at provisioning only (adb shell dpm set-device-owner " +
+                "or managed provisioning); an installed application cannot make itself the owner, " +
+                "so nothing was changed"
         } catch (t: Throwable) {
             "the phone refused the device owner: ${t.message ?: "the application has to be pushed as the owner first"}"
         }
@@ -491,7 +503,7 @@ object Persistence {
         if (context == null) return false
         return try {
             val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
-                manager != null && manager.isDeviceOwnerApp
+                manager != null && manager.isDeviceOwnerApp(context.packageName)
         } catch (t: Throwable) {
             false
         }
