@@ -1171,6 +1171,13 @@ class MockServer:
         self.hooks: Dict[str, Dict[str, Any]] = {}
         self._hook_seq = 0
         self.hook_deliveries: List[Dict[str, Any]] = []
+        # The rhythm of the beacons: the moments the check-ins arrived,
+        # kept as moments and not as bytes.
+        self.rhythms: Dict[str, List[float]] = {}
+        # The watches of the silences: the promises to say the word
+        # when a host has been quiet for too long.
+        self.silences: Dict[str, Dict[str, Any]] = {}
+        self._silence_seq = 0
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -2417,9 +2424,41 @@ class MockServer:
         while not self._stop.is_set():
             try:
                 self._due_schedules()
+                self._sweep_silences()
             except Exception:  # pragma: no cover - dev helper
                 pass
             self._stop.wait(0.1)
+
+    def _sweep_silences(self) -> None:
+        """Say the word for every watch whose host went quiet.
+
+        The sweep reads the moment of the last check-in and writes
+        nothing to the host: a watch for silence that knocked on the
+        door would wake what it watches.  A fired watch holds its peace
+        for its cooldown.
+        """
+        now = _now()
+        due = []
+        with self._lock:
+            for watch_id, watch in self.silences.items():
+                record = self.agents.get(watch["agent_id"])
+                last = float(record["last_seen"]) if record else watch["created"]
+                if now - last < watch["seconds"]:
+                    continue
+                fired = float(watch.get("fired") or 0)
+                if fired and now - fired < watch["cooldown"]:
+                    continue
+                watch["fired"] = now
+                due.append(dict(watch))
+        for watch in due:
+            record = self.agents.get(watch["agent_id"])
+            last = float(record["last_seen"]) if record else float(watch["created"])
+            self.emit("agent.silent", watch["agent_id"], data={
+                "watch": watch["id"],
+                "seconds": watch["seconds"],
+                "quiet_for": int(now - last),
+                "promised": watch.get("creator", ""),
+            })
 
     def _register_agent(self, agent_id: str, meta: Dict[str, Any], addr: str,
                         caps: Optional[List[str]] = None, version: int = 1,
@@ -2467,6 +2506,13 @@ class MockServer:
                 }
             )
         self.emit("agent.new" if is_new else "agent.online", agent_id, data={"host": record["host"], "os": record["os"]})
+        # The registry of the rhythm keeps moments, not bytes, and it
+        # is bound: the shape of a host is the shape of today.
+        with self._lock:
+            beats = self.rhythms.setdefault(agent_id, [])
+            beats.append(_now())
+            if len(beats) > 256:
+                del beats[:len(beats) - 256]
 
     def _agent_loop(self, stream: netio.Stream, result: handshake.HandshakeResult, addr: str) -> None:
         sess = result.session
@@ -3518,6 +3564,14 @@ class MockServer:
         # The wall of the techniques and the digging box are reads.
         "attack.coverage": "viewer",
         "search.query": "viewer",
+        # The rhythm and the reuse are reads; the silences are
+        # promises, and a promise is written by the operator.
+        "rhythm.get": "viewer",
+        "rhythm.fleet": "viewer",
+        "creds.reuse": "viewer",
+        "silence.add": "operator",
+        "silence.list": "viewer",
+        "silence.remove": "operator",
         # The second factor: reading who has one is a read; making one
         # and taking it away is the work of an admin.
         "operator.otp.status": "viewer",
@@ -5219,6 +5273,132 @@ class MockServer:
             answer["count"] = count
             return ok(answer)
 
+        # ---- the rhythm of the beacons -----------------------------------
+        if cmd == "rhythm.get":
+            agent_id = str(args.get("agent", "") or "").strip()
+            with self._lock:
+                beats = list(self.rhythms.get(agent_id) or [])
+                record = dict(self.agents.get(agent_id) or {})
+            stats = _rhythm_stats(agent_id, beats)
+            if stats is None:
+                return fail(f"rhythm.get: the host has not called home yet: {agent_id!r}")
+            if record:
+                stats["sleep"] = int(record.get("sleep", 0) or 0)
+                stats["jitter"] = int(record.get("jitter", 0) or 0)
+            return ok(stats)
+
+        if cmd == "rhythm.fleet":
+            # Clocks first: the host a watcher can set a watch by comes
+            # before the host that wanders, because the first kind is
+            # the one to fix.
+            with self._lock:
+                snapshot = {agent: list(beats)
+                            for agent, beats in self.rhythms.items()}
+            rows = [stats for agent, beats in snapshot.items()
+                    if (stats := _rhythm_stats(agent, beats)) is not None]
+            order = {"a metronome": 0, "steady": 1, "breathing": 2,
+                     "wandering": 3, "young": 4}
+            rows.sort(key=lambda row: (order.get(row["shape"], 5),
+                                       row.get("cv", 0.0), row["agent_id"]))
+            return ok({"fleet": rows, "count": len(rows)})
+
+        # ---- the keys that open more than one door -----------------------
+        if cmd == "creds.reuse":
+            # The reuse of a password is provable by its digest, without
+            # the password ever leaving its vault.
+            with self._lock:
+                creds = [dict(c) for c in self.credentials]
+            groups: Dict[str, Dict[str, Any]] = {}
+            for row in creds:
+                digest = str(row.get("digest", "") or "")
+                if not digest:
+                    continue
+                group = groups.setdefault(digest, {
+                    "digest": digest[:12],
+                    "count": 0, "kind": str(row.get("kind", "")),
+                    "hosts": set(), "accounts": set(), "targets": set(),
+                    "first": 0.0, "last": 0.0,
+                })
+                group["count"] += 1
+                if row.get("agent_id"):
+                    group["hosts"].add(str(row["agent_id"]))
+                if row.get("account"):
+                    group["accounts"].add(str(row["account"]))
+                if row.get("target"):
+                    group["targets"].add(str(row["target"]))
+                if not group["kind"]:
+                    group["kind"] = str(row.get("kind", ""))
+                when = float(row.get("collected") or 0)
+                if when:
+                    group["first"] = when if not group["first"] else min(group["first"], when)
+                    group["last"] = max(group["last"], when)
+            rows = []
+            for group in groups.values():
+                # One record, or several on one host, is bookkeeping;
+                # two hosts is somebody reusing a key.
+                if group["count"] < 2 or len(group["hosts"]) < 2:
+                    continue
+                rows.append({
+                    "digest": group["digest"], "count": group["count"],
+                    "kind": group["kind"],
+                    "hosts": sorted(group["hosts"]),
+                    "accounts": sorted(group["accounts"]),
+                    "targets": sorted(group["targets"]),
+                    "first": group["first"], "last": group["last"],
+                })
+            rows.sort(key=lambda group: (-group["count"], group["digest"]))
+            return ok({"groups": rows, "count": len(rows)})
+
+        # ---- the watches of the silences ---------------------------------
+        if cmd == "silence.add":
+            agent_id = str(args.get("agent", "") or "").strip()
+            if not agent_id:
+                return fail("silence.add: the host was not named")
+            seconds = int(args.get("seconds") or 0)
+            if seconds < 5 or seconds > 7 * 24 * 3600:
+                return fail("silence.add: the pause is out of the bounds")
+            cooldown = int(args.get("cooldown") or 0) or seconds * 10
+            with self._lock:
+                for existing in self.silences.values():
+                    if existing["agent_id"] == agent_id:
+                        return fail("silence.add: the silence of this host "
+                                    "is watched already")
+                if len(self.silences) >= 512:
+                    return fail("silence.add: the team watches too many silences")
+                self._silence_seq += 1
+                watch_id = f"s-{self._silence_seq:04d}"
+                self.silences[watch_id] = {
+                    "id": watch_id, "agent_id": agent_id,
+                    "seconds": seconds, "cooldown": cooldown,
+                    "creator": operator, "created": _now(), "fired": 0.0,
+                }
+            return ok({"id": watch_id, "agent_id": agent_id,
+                       "seconds": seconds, "cooldown": cooldown,
+                       "creator": operator, "created": _now()})
+
+        if cmd == "silence.list":
+            with self._lock:
+                rows = [dict(w) for w in self.silences.values()]
+                agents = {aid: dict(a) for aid, a in self.agents.items()}
+            rows.sort(key=lambda watch: watch["id"])
+            for row in rows:
+                record = agents.get(row["agent_id"])
+                if record:
+                    row["last_seen"] = record.get("last_seen")
+                    row["quiet_for"] = int(_now() - float(record.get("last_seen", 0)))
+                if row.get("fired"):
+                    row["last_fired"] = row["fired"]
+                row.pop("fired", None)
+            return ok({"watches": rows, "count": len(rows)})
+
+        if cmd == "silence.remove":
+            watch_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if watch_id not in self.silences:
+                    return fail(f"silence.remove: no such watch {watch_id!r}")
+                del self.silences[watch_id]
+            return ok({"id": watch_id, "removed": True})
+
         # ---- the file of a host --------------------------------------------
         if cmd in ("dossier.get", "dossier.list"):
             with self._lock:
@@ -6599,6 +6779,45 @@ def _snippet(text: str, needle: str, fold: bool,
     head = "…" if start > 0 else ""
     tail = "…" if end < len(text) else ""
     return head + piece + tail
+
+
+def _rhythm_stats(agent_id: str, beats: List[float]) -> Optional[Dict[str, Any]]:
+    """The shape of one host: the pauses between its check-ins, their
+    spread, and a name for the shape — "young" when there is not
+    enough of a window to say anything.
+
+    Mirrors server/internal/rhythm/rhythm.go, so the shape the mock
+    shows is the shape the real server counts.
+    """
+    if not beats:
+        return None
+    stats: Dict[str, Any] = {
+        "agent_id": agent_id, "beats": len(beats), "shape": "young",
+        "first": beats[0], "last": beats[-1], "interval_ms": 0,
+    }
+    if len(beats) < 4:
+        return stats
+    pauses = [max(0.0, beats[i] - beats[i - 1]) * 1000
+              for i in range(1, len(beats))]
+    mean = sum(pauses) / len(pauses)
+    spread = (sum((gap - mean) ** 2 for gap in pauses) / len(pauses)) ** 0.5
+    cv = spread / mean if mean > 0 else 0.0
+    if cv < 0.05:
+        shape = "a metronome"
+    elif cv < 0.20:
+        shape = "steady"
+    elif cv < 0.50:
+        shape = "breathing"
+    else:
+        shape = "wandering"
+    stats.update({
+        "interval_ms": int(mean), "spread_ms": int(spread),
+        "shortest_ms": int(min(pauses)), "longest_ms": int(max(pauses)),
+        "cv": int(cv * 1000),  # per-mille keeps the console honest
+        "shape": shape,
+        "eta": beats[-1] + mean / 1000,
+    })
+    return stats
 
 
 def _looks_like_hash(value: str) -> bool:

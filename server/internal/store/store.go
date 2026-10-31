@@ -1364,6 +1364,118 @@ func (s *Store) Credentials(agentID, kind, query string, limit int) []Credential
 	return out
 }
 
+// ReuseGroup is one secret that opens more than one door.
+//
+// The vault keeps the digest of every material, and two records with
+// the same digest are the same secret.  A group is named by the first
+// hexits of the digest — enough to point at it on the console, never
+// enough to be the secret — and it says which hosts it came from,
+// because the same password on one host twice is a coincidence of
+// bookkeeping, but the same password on two hosts is a key somebody
+// reused.
+type ReuseGroup struct {
+	// Digest is the first twelve hexits of the SHA-256 of the material.
+	Digest string `json:"digest"`
+	// Count is how many records carry the material.
+	Count int `json:"count"`
+	// Hosts are the agents the material was found on, sorted.
+	Hosts []string `json:"hosts"`
+	// Accounts are the accounts the material belongs to, sorted.
+	Accounts []string `json:"accounts"`
+	// Targets are the targets the material serves, sorted.
+	Targets []string `json:"targets"`
+	// Kind is the kind of the material ("password", "hash", ...).
+	Kind string `json:"kind"`
+	// First and Last bound when the material came home.
+	First time.Time `json:"first,omitempty"`
+	Last  time.Time `json:"last,omitempty"`
+}
+
+// CredentialReuse groups the vault by the digest of the material and
+// keeps the groups that open more than one host.
+//
+// The comparison is of digests, not of values: the reuse of a password
+// is provable without the password ever leaving its vault.
+func (s *Store) CredentialReuse() []ReuseGroup {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	type acc struct {
+		count    int
+		kind     string
+		hosts    map[string]bool
+		accounts map[string]bool
+		targets  map[string]bool
+		first    time.Time
+		last     time.Time
+	}
+	groups := make(map[string]*acc)
+	for _, c := range s.credentials {
+		if c.Digest == "" {
+			continue
+		}
+		g, ok := groups[c.Digest]
+		if !ok {
+			g = &acc{kind: c.Kind, hosts: map[string]bool{},
+				accounts: map[string]bool{}, targets: map[string]bool{}}
+			groups[c.Digest] = g
+		}
+		g.count++
+		if c.AgentID != "" {
+			g.hosts[c.AgentID] = true
+		}
+		if c.Account != "" {
+			g.accounts[c.Account] = true
+		}
+		if c.Target != "" {
+			g.targets[c.Target] = true
+		}
+		if g.kind == "" {
+			g.kind = c.Kind
+		}
+		if g.first.IsZero() || c.Collected.Before(g.first) {
+			g.first = c.Collected
+		}
+		if c.Collected.After(g.last) {
+			g.last = c.Collected
+		}
+	}
+	out := make([]ReuseGroup, 0, len(groups))
+	for digest, g := range groups {
+		// One record, or several on one host, is bookkeeping; two
+		// hosts is somebody reusing a key.
+		if g.count < 2 || len(g.hosts) < 2 {
+			continue
+		}
+		group := ReuseGroup{
+			Digest: digest, Count: g.count, Kind: g.kind,
+			First: g.first, Last: g.last,
+		}
+		if len(group.Digest) > 12 {
+			group.Digest = group.Digest[:12]
+		}
+		for id := range g.hosts {
+			group.Hosts = append(group.Hosts, id)
+		}
+		for account := range g.accounts {
+			group.Accounts = append(group.Accounts, account)
+		}
+		for target := range g.targets {
+			group.Targets = append(group.Targets, target)
+		}
+		sort.Strings(group.Hosts)
+		sort.Strings(group.Accounts)
+		sort.Strings(group.Targets)
+		out = append(out, group)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Digest < out[j].Digest
+	})
+	return out
+}
+
 // CredentialCount returns how many records the vault holds.
 func (s *Store) CredentialCount() int {
 	s.mu.RLock()

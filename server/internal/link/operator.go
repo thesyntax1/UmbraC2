@@ -32,8 +32,10 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
+	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
 	"github.com/thesyntax1/UmbraC2/server/internal/search"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
+	"github.com/thesyntax1/UmbraC2/server/internal/silence"
 	"github.com/thesyntax1/UmbraC2/server/internal/stager"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
@@ -2701,6 +2703,109 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		out["count"] = int64(count)
 		return reply(out)
 
+	// ---- the rhythm of the beacons ---------------------------------------
+	case "rhythm.get":
+		// The shape of one host: the pauses between its check-ins, their
+		// spread, and a name for the shape, next to the cadence the
+		// operator asked for, because the plan and the world disagree
+		// often enough to be worth printing side by side.
+		if s.Rhythm == nil {
+			return fail("rhythm.get: this server does not watch the breathing")
+		}
+		agentID, _ := args["agent"].(string)
+		stats, found := s.Rhythm.Stats(agentID)
+		if !found {
+			return fail("rhythm.get: the host has not called home yet: %q", agentID)
+		}
+		out := rhythmMap(stats)
+		if agent, ok := s.Hub.Store().Agent(agentID); ok {
+			out["sleep"] = int64(agent.Sleep)
+			out["jitter"] = int64(agent.Jitter)
+		}
+		return reply(out)
+
+	case "rhythm.fleet":
+		// The fleet, clocks first: the host a watcher can set a watch
+		// by comes before the host that wanders, because the first
+		// kind is the one to fix.
+		if s.Rhythm == nil {
+			return fail("rhythm.fleet: this server does not watch the breathing")
+		}
+		rows := make([]any, 0)
+		for _, stats := range s.Rhythm.Fleet() {
+			rows = append(rows, rhythmMap(stats))
+		}
+		return reply(upk.Map{"fleet": rows, "count": int64(len(rows))})
+
+	// ---- the keys that open more than one door ---------------------------
+	case "creds.reuse":
+		// The same secret on two hosts is somebody reusing a key.  The
+		// comparison is of digests, never of values: the reuse is
+		// provable without the material leaving its vault.
+		groups := s.Hub.Store().CredentialReuse()
+		rows := make([]any, 0, len(groups))
+		for _, group := range groups {
+			rows = append(rows, reuseMap(group))
+		}
+		return reply(upk.Map{"groups": rows, "count": int64(len(rows))})
+
+	// ---- the watches of the silences -------------------------------------
+	case "silence.add":
+		// A promise to worry: name the host and the pause that is news.
+		// The watch reads the last moment of the check-ins and writes
+		// nothing to the host; a watch for silence that knocked on the
+		// door would wake what it watches.
+		if s.Silences == nil {
+			return fail("silence.add: this server watches no silences")
+		}
+		agentID, _ := args["agent"].(string)
+		seconds, _ := asInt64(args["seconds"])
+		cooldown, _ := asInt64(args["cooldown"])
+		watch, err := s.Silences.Add(silence.Watch{
+			AgentID:  agentID,
+			Seconds:  seconds,
+			Cooldown: cooldown,
+			Creator:  op.Name,
+		})
+		if err != nil {
+			return fail("silence.add: %v", err)
+		}
+		if err := s.Silences.Save(); err != nil {
+			s.Log.Warn("the ledger of the silences could not be saved", "err", err)
+		}
+		return reply(watchMap(watch))
+
+	case "silence.list":
+		if s.Silences == nil {
+			return fail("silence.list: this server watches no silences")
+		}
+		watches := s.Silences.List()
+		rows := make([]any, 0, len(watches))
+		out := upk.Map{"watches": rows, "count": int64(len(watches))}
+		for _, w := range watches {
+			row := watchMap(w)
+			if agent, ok := s.Hub.Store().Agent(w.AgentID); ok {
+				row["last_seen"] = agent.LastSeen.Format(time.RFC3339)
+				row["quiet_for"] = int64(time.Since(agent.LastSeen).Seconds())
+			}
+			rows = append(rows, row)
+		}
+		out["watches"] = rows
+		return reply(out)
+
+	case "silence.remove":
+		if s.Silences == nil {
+			return fail("silence.remove: this server watches no silences")
+		}
+		entryID, _ := args["id"].(string)
+		if err := s.Silences.Remove(entryID); err != nil {
+			return fail("silence.remove: %v", err)
+		}
+		if err := s.Silences.Save(); err != nil {
+			s.Log.Warn("the ledger of the silences could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": entryID, "removed": true})
+
 	// ---- the baseline of the paths the team watches ----------------------
 	case "baseline.add":
 		// The path of the baseline is named and the host is named: the
@@ -4384,6 +4489,69 @@ func hitMap(hit search.Hit) upk.Map {
 	}
 	if !hit.At.IsZero() {
 		out["at"] = hit.At.Format(time.RFC3339)
+	}
+	return out
+}
+
+// rhythmMap renders the shape of one host: the window it was measured
+// in, the pauses between its beats, and the name of the shape.
+func rhythmMap(stats rhythm.Stats) upk.Map {
+	out := upk.Map{
+		"agent_id":    stats.AgentID,
+		"beats":       int64(stats.Beats),
+		"shape":       stats.Shape,
+		"interval_ms": stats.Interval,
+	}
+	if !stats.First.IsZero() {
+		out["first"] = stats.First.Format(time.RFC3339)
+	}
+	if !stats.Last.IsZero() {
+		out["last"] = stats.Last.Format(time.RFC3339)
+	}
+	if stats.Beats >= 4 {
+		out["spread_ms"] = stats.Spread
+		out["shortest_ms"] = stats.Shortest
+		out["longest_ms"] = stats.Longest
+		out["cv"] = int64(stats.CV * 1000) // per-mille keeps the wire honest
+		if !stats.ETA.IsZero() {
+			out["eta"] = stats.ETA.Format(time.RFC3339)
+		}
+	}
+	return out
+}
+
+// reuseMap renders one secret that opens more than one door: the
+// digest's first hexits, never the secret itself.
+func reuseMap(group store.ReuseGroup) upk.Map {
+	out := upk.Map{
+		"digest":   group.Digest,
+		"count":    int64(group.Count),
+		"kind":     group.Kind,
+		"hosts":    pathAny(group.Hosts),
+		"accounts": pathAny(group.Accounts),
+		"targets":  pathAny(group.Targets),
+	}
+	if !group.First.IsZero() {
+		out["first"] = group.First.Format(time.RFC3339)
+	}
+	if !group.Last.IsZero() {
+		out["last"] = group.Last.Format(time.RFC3339)
+	}
+	return out
+}
+
+// watchMap renders one promise to worry about a silence.
+func watchMap(w silence.Watch) upk.Map {
+	out := upk.Map{
+		"id":       w.ID,
+		"agent_id": w.AgentID,
+		"seconds":  w.Seconds,
+		"cooldown": w.Cooldown,
+		"creator":  w.Creator,
+		"created":  w.Created.Format(time.RFC3339),
+	}
+	if !w.LastFired.IsZero() {
+		out["last_fired"] = w.LastFired.Format(time.RFC3339)
 	}
 	return out
 }

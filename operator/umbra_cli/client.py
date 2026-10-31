@@ -1117,6 +1117,59 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the rhythm of the beacons -------------------------------------------
+    def rhythm_get(self, agent_id: str) -> Dict[str, Any]:
+        """The shape of one host: how it breathes, next to the cadence
+        the operator asked for."""
+        res = self.rpc("rhythm.get", {"agent": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def rhythm_fleet(self) -> Dict[str, Any]:
+        """The shapes of the fleet, clocks first: the beacon a watcher
+        can set a watch by is the one to fix."""
+        res = self.rpc("rhythm.fleet", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the keys that open more than one door -------------------------------
+    def creds_reuse(self) -> Dict[str, Any]:
+        """The secrets that serve on more than one host, grouped by
+        digest — the reuse is provable without a value leaving the
+        vault."""
+        res = self.rpc("creds.reuse", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the watches of the silences ------------------------------------------
+    def silence_add(self, agent_id: str, seconds: int,
+                    cooldown: int = 0) -> Dict[str, Any]:
+        """Promise to worry: the host and the pause that is news."""
+        payload: Dict[str, Any] = {"agent": agent_id, "seconds": seconds}
+        if cooldown:
+            payload["cooldown"] = cooldown
+        res = self.rpc("silence.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def silence_list(self) -> Dict[str, Any]:
+        """The watches of the silences, and how quiet each host is now."""
+        res = self.rpc("silence.list", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def silence_remove(self, watch_id: str) -> Dict[str, Any]:
+        """Take a promise to worry out of the ledger."""
+        res = self.rpc("silence.remove", {"id": watch_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     # -- the file of a host ------------------------------------------------
     def dossier_get(self, agent_id: str) -> Dict[str, Any]:
         """The file of one host: what the server knows and what it did."""

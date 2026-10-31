@@ -200,6 +200,17 @@ var requirements = map[string]string{
 	"attack.coverage": Viewer,
 	"search.query":    Viewer,
 
+	// The rhythm of the beacons and the keys that open more than one
+	// door are reads; the watches of the silences are promises to
+	// worry, and a promise is written and taken away by the operator
+	// who made it.
+	"rhythm.get":     Viewer,
+	"rhythm.fleet":   Viewer,
+	"creds.reuse":    Viewer,
+	"silence.add":    Operator,
+	"silence.list":   Viewer,
+	"silence.remove": Operator,
+
 	// Reading the queue of the approvals and one request of it is a read:
 	// a viewer sees what the team is waiting for.
 	"approval.list": Viewer,

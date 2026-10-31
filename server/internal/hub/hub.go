@@ -176,12 +176,13 @@ type Hub struct {
 	nextSub int64
 	started time.Time
 
-	// tap is the wire of the outside world: when it is set, every event
-	// is handed to it after the consoles and the alert rules, still
-	// numbered the way the journal numbered it.  It is set once, before
-	// the server starts, and it must never block: the hub does not wait
-	// for the outside world, and neither does the tap.
-	tap func(Event)
+	// taps are the receivers of the raw stream — the wires of the
+	// outside world, the rhythm of the beacons: every event is handed
+	// to each of them after the consoles and the alert rules, still
+	// numbered the way the journal numbered it.  They are registered
+	// once, before the server starts, and they must never block: the
+	// hub does not wait for its watchers.
+	taps []func(Event)
 
 	// qmu guards the counters of the queue: the limits, the breakers and
 	// the quiet window.  It is its own lock, because the queue is read on
@@ -1478,19 +1479,18 @@ func (h *Hub) Emit(ev Event) {
 	// The alert rules run outside the lock: they read the store and may emit
 	// an event of their own.
 	h.checkAlerts(ev)
-	// The wire to the outside world runs last, after the consoles and the
-	// alerts, so what is posted is exactly what the journal kept.
-	if h.tap != nil {
-		h.tap(ev)
+	// The watchers of the raw stream run last, after the consoles and
+	// the alerts, so what they see is exactly what the journal kept.
+	for _, tap := range h.taps {
+		tap(ev)
 	}
 }
 
-// SetTap hands every event to one more receiver, after the consoles and
-// the alert rules.  It is meant to be set once, before the server starts:
-// the wires of the team are wired when the server is wired, not while the
-// engagement is running.
-func (h *Hub) SetTap(fn func(Event)) {
-	h.tap = fn
+// AddTap registers one more receiver of every event, after the consoles
+// and the alert rules.  The watchers are registered when the server is
+// wired, not while the engagement is running.
+func (h *Hub) AddTap(fn func(Event)) {
+	h.taps = append(h.taps, fn)
 }
 
 // Session is one interactive session of an agent.

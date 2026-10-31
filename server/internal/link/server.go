@@ -33,6 +33,8 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/note"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
+	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
+	"github.com/thesyntax1/UmbraC2/server/internal/silence"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
@@ -99,6 +101,15 @@ type Server struct {
 	// server keeps the news inside, and says so when it is asked for
 	// a wire.
 	Hooks *hook.Registry
+	// Rhythm is the registry of the moments the beacons called home —
+	// the shape of every check-in.  Optional: without it the rhythm
+	// commands say that the breathing of the fleet is not watched.
+	Rhythm *rhythm.Registry
+	// Silences is the ledger of the watches of the silences: the
+	// promises to say the word when a host has been quiet for too
+	// long.  Optional: without it the silence commands refuse instead
+	// of pretending to worry.
+	Silences *silence.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -194,7 +205,70 @@ func (s *Server) SetNotes(n *note.Registry) { s.Notes = n }
 func (s *Server) SetHooks(h *hook.Registry) {
 	s.Hooks = h
 	if h != nil && s.Hub != nil {
-		s.Hub.SetTap(h.Dispatch)
+		s.Hub.AddTap(h.Dispatch)
+	}
+}
+
+// SetRhythm attaches the registry of the beats — the moments the
+// beacons called home — and taps the hub with it, so every heartbeat
+// lands in the rhythm next to the ones before it.
+func (s *Server) SetRhythm(r *rhythm.Registry) {
+	s.Rhythm = r
+	if r != nil && s.Hub != nil {
+		s.Hub.AddTap(r.Dispatch)
+	}
+}
+
+// SetSilences attaches the registry of the watches of the silences.
+func (s *Server) SetSilences(v *silence.Registry) { s.Silences = v }
+
+// SweepSilences says the word for every watch whose host has been quiet
+// past its pause: one event per watch, named `agent.silent`, so the
+// consoles and the wires learn of the nothing the same way they learn
+// of everything.
+//
+// The sweep reads the memory of the day and writes down that the watch
+// fired; it never talks to the host, because a watch for silence that
+// knocked on the door would wake what it watches.
+func (s *Server) SweepSilences(now time.Time) {
+	if s.Silences == nil || s.Hub == nil {
+		return
+	}
+	due := s.Silences.Due(now, func(agentID string) (time.Time, bool) {
+		agent, ok := s.Hub.Store().Agent(agentID)
+		if !ok {
+			return time.Time{}, false
+		}
+		return agent.LastSeen, true
+	})
+	if len(due) == 0 {
+		return
+	}
+	for _, w := range due {
+		last, known := func() (time.Time, bool) {
+			agent, ok := s.Hub.Store().Agent(w.AgentID)
+			if !ok {
+				return time.Time{}, false
+			}
+			return agent.LastSeen, true
+		}()
+		var quietFor int64
+		switch {
+		case known && !last.IsZero():
+			quietFor = int64(now.Sub(last).Seconds())
+		default:
+			quietFor = int64(now.Sub(w.Created).Seconds())
+		}
+		s.Hub.Emit(hub.Event{Kind: "agent.silent", AgentID: w.AgentID,
+			Data: map[string]any{
+				"watch":     w.ID,
+				"seconds":   w.Seconds,
+				"quiet_for": quietFor,
+				"promised":  w.Creator,
+			}})
+	}
+	if err := s.Silences.Save(); err != nil && s.Log != nil {
+		s.Log.Warn("the ledger of the silences could not be saved", "err", err)
 	}
 }
 
