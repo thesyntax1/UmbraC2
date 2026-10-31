@@ -38,9 +38,13 @@ android {
     compileSdk 34
     // Pinned rather than inherited: AGP's default build-tools moves with the
     // plugin, and a build that changes its compiler without a commit is not
-    // reproducible.  NDK is left to AGP on purpose -- see
-    // docs/BUILD-EVIDENCE.md, "Android", for why it is not pinned yet.
+    // reproducible.
     buildToolsVersion '34.0.0'
+    // Pinned after the first successful assembleDebug: 6cddc1a built the three
+    // ABIs with NDK 26.1.10909125 (the version AGP 8.5.2 installed on the
+    // runner) and CMake 3.22.1.  A version named here is a version that was
+    // used, not a guess.
+    ndkVersion '26.1.10909125'
 
     defaultConfig {
         applicationId "io.umbra.beacon"
