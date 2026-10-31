@@ -139,9 +139,10 @@ pub fn clean_environment() -> Vec<String> {
     let names: Vec<String> = std::env::vars().map(|(name, _)| name).collect();
     for name in names {
         if name.to_uppercase().contains("UMBRA") {
-            if std::env::remove_var(&name).is_ok() {
-                removed.push(name);
-            }
+            // remove_var returns (), not a Result: there is no failure to
+            // report, and the name is gone either way.
+            std::env::remove_var(&name);
+            removed.push(name);
         }
     }
     removed

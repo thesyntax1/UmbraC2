@@ -144,12 +144,24 @@ jobs:
       - name: clippy (advisory)
         continue-on-error: true
         run: cargo clippy --all-targets ${{ matrix.features }}
+      # A lock file is the difference between "the tests passed" and "the same
+      # crates passed"; it is committed, and it is checked here rather than
+      # regenerated.
+      - name: the lock file is committed and current
+        run: |
+          test -s Cargo.lock || { echo "::error::Cargo.lock is missing: run cargo generate-lockfile and commit it"; exit 1; }
+          cargo metadata --locked --format-version 1 > /dev/null
+      # The crate has never compiled, so the first thing to see is the
+      # compiler: `--message-format=short` puts one error per line, and
+      # ci_tail lifts forty of them into ten annotations.
+      - name: compile (all targets, short errors)
+        run: sh ../../scripts/ci_tail.sh cargo check --locked --all-targets ${{ matrix.features }} --message-format=short
       - name: test
         # ci_tail lifts the errors into annotations: the job log lives in a
         # blob host this repository's audit cannot reach.
-        run: sh ../../scripts/ci_tail.sh cargo test --all-targets ${{ matrix.features }}
+        run: sh ../../scripts/ci_tail.sh cargo test --locked --all-targets ${{ matrix.features }}
       - name: release build (size matters for an implant)
-        run: cargo build --release ${{ matrix.features }}
+        run: cargo build --locked --release ${{ matrix.features }}
       - name: selftest
         run: ./target/release/umbra-beacon --selftest
       - name: beacon starts and exits cleanly against an unreachable server
@@ -174,18 +186,10 @@ jobs:
       # for both of the macs, so it is checked here.
       - name: check
         run: |
-          set +e
           for target in x86_64-apple-darwin aarch64-apple-darwin; do
-            log="/tmp/$target.log"
-            cargo check --all-targets --target "$target" > "$log" 2>&1
-            code=$?
-            if [ $code -ne 0 ]; then
-              echo "::error::the code of $target does not compile"
-              sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '/^error/{found=1} found' | head -8 | while IFS= read -r line; do echo "::error::$line"; done
-              exit $code
-            fi
+            echo "checking $target"
+            sh ../../scripts/ci_tail.sh cargo check --locked --all-targets --target "$target" --message-format=short || exit $?
           done
-          exit 0
 
   android:
     name: android implant (compile only)

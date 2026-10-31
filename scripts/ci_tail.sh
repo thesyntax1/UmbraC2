@@ -1,16 +1,23 @@
 #!/bin/sh
 # Run a command in CI and, if it fails, say *why* somewhere we can read.
 #
-# GitHub keeps the job log in blob storage, and the API will only hand back a
+# GitHub keeps the job log in blob storage and the API only hands back a
 # redirect to it: from a network that cannot reach that host, a failed job is
-# an exit code and nothing else.  Annotations come through the API as text, so
-# this helper lifts the interesting lines of the log into them.
+# an exit code and nothing else.  Annotations come back through the API as
+# text, so this helper lifts the interesting lines of the log into them.
 #
 # Usage:  sh scripts/ci_tail.sh cargo test --all-targets
 #
-# It prints the whole log as usual (the human reading the web UI still wants
-# it), then, on failure, emits at most ten `::error::` lines: the first few
-# compiler errors if the log has any, otherwise the tail of the output.
+# It prints the whole log as usual (a human reading the web UI still wants
+# it), then, on failure, emits at most ten annotations, four log lines each:
+#
+#   * the Kotlin compiler's `e: file:line:col ...` lines, when there are any;
+#   * otherwise the lines that start with `error`;
+#   * otherwise the last ten lines of the output.
+#
+# A batch of four per annotation is deliberate: a Rust crate that has never
+# compiled fails with dozens of errors, and eight annotations of one line
+# would take five CI runs to see them all.
 set -u
 
 log=$(mktemp)
@@ -21,19 +28,26 @@ rc=$?
 cat "$log"
 
 if [ "$rc" -ne 0 ]; then
-    emitted=0
-    if grep -q '^error' "$log"; then
-        # Compiler output: the first error of each kind is the one that
-        # explains the rest.
-        grep -n '^error' "$log" | head -n 8 | while IFS= read -r line; do
+    strip() {
+        sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r'
+    }
+    picked=""
+    if strip <"$log" | grep -q '^e: '; then
+        picked=$(strip <"$log" | grep '^e: ' | head -40)
+    elif strip <"$log" | grep -qE '^error|: error'; then
+        picked=$(strip <"$log" | grep -E '^error|: error' | head -40)
+    else
+        picked=$(strip <"$log" | tail -20)
+    fi
+
+    printf '%s\n' "$picked" |
+        awk 'NR % 4 == 1 { if (buf != "") print buf; buf = $0; next }
+                      { buf = buf " | " $0 }
+             END      { if (buf != "") print buf }' |
+        head -10 |
+        while IFS= read -r line; do
             echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g; s/::/#/g')"
         done
-        emitted=8
-    fi
-    tail -n 10 "$log" | while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g; s/::/#/g')"
-    done
     echo "::error::ci_tail: '$*' exited $rc"
 fi
 
