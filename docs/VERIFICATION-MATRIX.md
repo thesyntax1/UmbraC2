@@ -108,8 +108,9 @@ the row-per-behaviour table of P0.3 in the maturation plan.
 ### 2. Does one module crashing affect the others?
 
 **Partly, by design, and not by test.**  The server is one process: a panic in
-`hub` takes the operator API with it, and `recover` is used at the frame
-boundary (`link`) rather than around every package.  What is isolated is the
+any handler takes every listener with it, because the tree contains exactly
+one `recover()` — the hook runner's — and no per-connection panic guard at the
+frame boundary.  What is isolated is the
 *beacon*: a beacon that dies is a host that goes offline, and the queue holds
 its tasks; a beacon that sends garbage is a connection dropped, not a server
 down.
@@ -247,7 +248,7 @@ code that exists and has never been executed here.
 | Tag rules | **Not Verified** | `server/internal/tagrule` | 1 file, 0 tests |
 | Alias expansion | **Not Verified** | `server/internal/alias` | 1 file, 0 tests |
 | Notes | **Not Verified** | `server/internal/note` | 1 file, 0 tests |
-| Rust beacon (133 functions) | Not Verified here | `implant/rust` | no `cargo` on this machine; CI blocked |
+| Rust beacon (44 files, 28.7k lines) | Not Verified here | `implant/rust` | no `cargo` on this machine; CI blocked |
 | Android beacon | Not Verified here | `implant/android` | no test source set; no JDK on this machine |
 | Python console + mock | Implemented | `operator/umbra_cli`, `tools/mock_server.py` | 378 cases pass |
 | Go beacon | Implemented (thin) | `implant/go` | 41 functions; builds and passes |
