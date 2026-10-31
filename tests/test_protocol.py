@@ -10659,3 +10659,125 @@ def test_the_console_reaches_the_approvals_the_tripwires_and_the_dossiers():
     assert args.cmd == "dossier" and args.dossier_cmd == "list"
     args = parser.parse_args(["dossier", "show", "web-01"])
     assert args.dossier_cmd == "show" and args.agent == "web-01"
+
+
+def test_the_console_needs_the_code_of_the_moment():
+    """The second factor: the token alone is not enough any more.
+
+    The token of an operator is a secret that lives in the configuration
+    of the server and in the memory of the console.  The second factor
+    is a secret that lives in the phone of the operator and never
+    travels: the console sends the six digits of the moment and the
+    server checks them before it answers the handshake.
+
+    The test asks for the refusal, because a refusal is the only thing
+    that proves the check happens: a console without the code has to be
+    turned away at the door, and a console with the code has to get in.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+    from umbra_cli import cli as cli_mod  # noqa: WPS433
+
+    otp_go = read_text("server/internal/otp/otp.go")
+    operator = read_text("server/internal/link/operator.go")
+    server_src = read_text("server/internal/link/server.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The second factor is a package of its own, and the file of the
+    # secrets belongs to the server alone.
+    assert "package otp" in otp_go, "there is no registry of second factors"
+    assert "func (r *Registry) Rotate(" in otp_go
+    assert "func (r *Registry) Verify(" in otp_go
+    assert "func (r *Registry) Save(" in otp_go
+    assert "0o600" in otp_go, "the secrets are not written for the owner only"
+    assert "ConstantTimeCompare" in otp_go, "the code is not compared in constant time"
+
+    # The server asks for the code before it answers the handshake, so a
+    # console without it never gets a session.
+    assert "checkSecondFactor" in server_src, "the server never asks for the code"
+    assert "checkSecondFactor" in operator, "the handshake does not ask for the code"
+
+    # The three commands of the second factor.
+    for command in ("operator.otp.status", "operator.otp.rotate",
+                    "operator.otp.remove"):
+        assert re.search(rf'case [^:\n]*"{command}"', operator), (
+            f"the server has no {command}")
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # Reading who has one is a read; making one is the work of the team.
+    assert re.search(r'"operator.otp.status":\s+Viewer,', rbac)
+    assert re.search(r'"operator.otp.rotate":\s+Operator,', rbac)
+    assert re.search(r'"operator.otp.remove":\s+Operator,', rbac)
+
+    # And the console has a command for it.
+    assert "run_otp" in cli_src
+    assert 'sub.add_parser("otp"' in cli_src
+
+    # The code of the console is the code of the phone: the vectors of
+    # RFC 6238 are the same on both sides.
+    secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    assert cli_mod.totp_code(secret, when=59) == "287082"
+    assert cli_mod.totp_code(secret, when=1111111109) == "081804"
+    assert cli_mod.totp_code(secret, when=1234567890) == "005924"
+
+    token = b"otp-token-0123456789ab"
+    token_b = b"otp-second-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token, "bob": token_b})
+    server.start()
+    alice = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        alice.connect()
+
+        # Nobody has a second factor yet.
+        status = alice.operator_otp_status()
+        assert status["count"] == 0, status
+
+        # The team makes one for bob.  The secret is shown once.
+        rotated = alice.operator_otp_rotate(operator="bob", issuer="the team")
+        assert rotated.get("secret"), rotated
+        assert rotated.get("uri", "").startswith("otpauth://totp/"), rotated
+        the_secret = rotated["secret"]
+
+        # The list of the second factors never carries the secret.
+        status = alice.operator_otp_status()
+        assert status["count"] == 1, status
+        assert the_secret not in repr(status), status
+        assert status["operators"][0]["operator"] == "bob", status
+        assert status["operators"][0]["enabled"] is True, status
+
+        # Bob's console without the code is turned away at the door:
+        # the token alone is not enough any more.
+        bob = OperatorClient(server.address, token_b.decode(), "bob")
+        with pytest.raises(Exception):
+            bob.connect()
+        bob.close()
+
+        # A wrong code is refused as well.
+        code = cli_mod.totp_code(the_secret)
+        wrong = code[:-1] + ("0" if code[-1] != "0" else "1")
+        bob = OperatorClient(server.address, token_b.decode(), "bob", otp=wrong)
+        with pytest.raises(Exception):
+            bob.connect()
+        bob.close()
+
+        # The code of the moment opens the console.
+        bob = OperatorClient(server.address, token_b.decode(), "bob", otp=code)
+        bob.connect()
+        try:
+            assert bob.rpc("whoami").ok, "the console with the code was refused"
+        finally:
+            bob.close()
+
+        # The second factor can be taken away: the console works again
+        # with the token alone.
+        alice.operator_otp_remove(operator="bob")
+        bob = OperatorClient(server.address, token_b.decode(), "bob")
+        bob.connect()
+        bob.close()
+    finally:
+        alice.close()
+        server.stop()
