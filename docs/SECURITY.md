@@ -335,6 +335,51 @@ operator: a console that queues a thousand tasks occupies the queue, and
 the operator's own rate limit (`rate limited` in a response) is what
 stops a single console from looping.
 
+## 3.12a The two-person rule and the tripwires
+
+The two-person rule (`internal/approval`) and the tripwires
+(`internal/canary`) are small, and both of them exist because of what
+they refuse to do.
+
+**The rule refuses the requester.** The operator who asked for an
+operation cannot decide it, and the refusal is an error, not a warning.
+A warning can be ignored; an error cannot.  The decision itself is
+written down — who asked, who decided, when — and the queue lives next
+to the state file, so the record of the decision survives a restart of
+the server.
+
+**The rule is a policy, and the policy is on the server.** The
+configuration names the kinds of task that need a second pair of eyes,
+and the handlers refuse those kinds directly, with the name of the
+command that does the job instead.  A rule that lives in the console
+would be a rule an operator can turn off; this one is on the side of
+the server that queues the work.
+
+**The tripwires keep their secret.** The token of a canary is written by
+the implant and is kept by the implant and by the ledger of the server.
+It is not in the answer of `canary.list`, not in the answer of
+`canary.get`, and not in any event the server pushes: the console has
+no use for it, so it does not travel.  The ledger is written `0600`, and
+so is the queue of the approvals.
+
+**The tripwires only read.** A check of the canaries never repairs a
+canary and never rewrites a fact: a check that repaired the canary
+would hide the very thing it is looking for.  The verdict of the
+implant is kept as it came, and the server does not turn an `intact`
+into something better.
+
+**The verdict is the ledger.** The verdicts travel in the metadata of
+the task that checked them, so the ledger of the server and the answer
+the operator reads cannot disagree.  A canary that was touched twice
+does not look like one that was touched once, because the ledger keeps
+the state and the time of the last look.
+
+**What the tripwires do not do.** They do not prove that nobody was on
+the host: they prove that *this file* was not touched since it was
+planted.  An intruder who never looks at a file the implant wrote
+changes nothing, and the canary stays `intact`.  The tripwire is a
+cheap signal, not a proof.
+
 ## 3.13 The versions of the protocol
 
 The handshake version is not a security boundary, and it is worth saying

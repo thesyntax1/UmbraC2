@@ -2020,6 +2020,138 @@ The cases live next to the state file (`cases.json`), they survive the
 restart of the server and they survive `engagement.wipe`, because the
 record of the engagement outlives the engagement.
 
+## 5n. The two-person rule
+
+Some operations should not hang on the word of one operator: the wipe of
+a host, the end of an engagement, the removal of the persistence.  The
+framework carries the rule, and the deployment says which operations
+need it.
+
+```bash
+# the operator who wants the operation writes a request
+umbra approval request forensics.wipe --agent web-01 \
+  --reason "the engagement is over"
+
+# a second operator decides
+umbra approval list                       # what the team is waiting for
+umbra approval show a-0001                # who asked, who decided, when
+umbra approval approve a-0001 --note "the customer agreed"
+umbra approval deny a-0001 --note "the host is still in use"
+```
+
+**The requester cannot decide.**  When the operator who asked tries to
+decide, the server refuses: *the operator who asked for it cannot
+decide it*.  That refusal is the whole point of the rule, so it is not
+a warning that the operator may ignore — the operation does not run.
+
+**The decision does the work.**  An approved request queues the
+operation on the host right away: the task id comes back with the
+decision, so the operator does not have to queue it a second time.
+
+**A request that nobody decides goes stale** after thirty minutes.  A
+stale request decides nothing, and the queue says so: *the request went
+stale before anybody decided it*.
+
+The queue belongs to the team, so it lives next to the state file
+(`approval.json`) and not inside it: the request one operator wrote has
+to be there for the operator who decides it, even after a restart of
+the server.
+
+The rule is a policy of the deployment, not a law of the framework.  In
+the configuration of the server:
+
+```json
+{
+  "server": {
+    "approval_required": ["wipe.run", "wipe.self", "decommission"]
+  }
+}
+```
+
+A kind that is named here cannot be queued directly: `umbra run`,
+`umbra task`, the bulk runs and the aliases all refuse it and say what
+to do instead — *ask for it with approval.request and let a second
+operator approve it*.  A deployment that names no kind has the rule
+off, and the queue is still there, waiting.
+
+## 5o. The tripwires
+
+A tripwire is a small file with a secret in it, planted on a host in a
+place where nothing of the engagement belongs.  Nobody knows it is
+there, so nobody touches it.  When the file changes or disappears,
+somebody else was on the machine — and the operator learns about it
+while the engagement is still running.
+
+```bash
+# a tripwire on a host
+umbra canary plant --agent web-01 --label "the web server"
+
+# the ledger of the tripwires
+umbra canary list
+umbra canary show c-0001
+
+# the look: are they as they were planted?
+umbra canary check --agent web-01 --wait
+umbra canary check --all --wait
+
+# stop watching one
+umbra canary remove c-0001
+```
+
+**The implant remembers what it planted.**  The size, the time of the
+last change and the digest of the file are written next to the canary,
+because the implant is the only side that knows what it wrote.  The
+check compares the file with those facts and says one of three things:
+
+| state | what it means |
+|---|---|
+| `intact` | the file is as it was planted |
+| `changed` | somebody wrote on it |
+| `missing` | the file is gone |
+
+**The check never changes the host.**  A check that repaired the canary
+would hide the very thing it is looking for, so the look is a read and
+nothing else.
+
+**The secret never leaves the host.**  The token of the canary is
+written by the implant and kept by the implant and by the ledger of the
+server; it is not in the answer of `canary.list`, not in the answer of
+`canary.get` and not in any answer of the server.  The console has no
+use for it.
+
+**The verdict is the ledger.**  The verdicts travel in the metadata of
+the answer as one short string (`c-0001=intact;c-0002=changed`), and
+the server writes them into the ledger as the task finishes.  The
+ledger and the answer the operator reads cannot disagree.
+
+The ledger lives next to the state file (`canary.json`): a canary that
+was planted last week is still a canary, and the operator who comes back
+after the weekend has to find it.
+
+## 5p. The file of a host
+
+The dossier is the page an operator writes at the end of an engagement:
+what do we know about this machine, and what did we do to it?
+
+```bash
+umbra dossier list          # every host, the weakest first
+umbra dossier show web-01   # one host, on one page
+```
+
+The page carries the identity of the host, the health with the reasons
+of its score, the work that was run (how many tasks finished, how many
+failed, how many are still waiting, and a histogram of the kinds), the
+persistence with the entries that are broken, the tripwires, the
+requests, and the things the server does not know.
+
+**What is missing is said as well.**  A host that never checked in has
+no posture and no persistence, and the page says *the host has never
+answered* instead of showing empty tables.  A gap is not a failure: it
+is the place where the operator has to go and look.
+
+**The files are sorted weakest first**, so the host that needs
+attention comes before the host that does not.
+
 ## 6. Monitoring
 
 ```bash

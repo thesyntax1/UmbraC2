@@ -65,6 +65,9 @@ main: load config → build keyring → open store → start listeners
 | `hunt` | the catalogue of the indicators | the catalogue the team shares: a hash, a path, a mutex, a registry key, a certificate, a process or a service; it lives next to the state file and survives the wipe of the engagement |
 | `health` | the score of the fleet | five parts (reachability, cadence, capacity, persistence, posture), every part with its reason; the score of a host that is gone is capped, and a laboratory machine is `suspect` |
 | `casefile` | the evidence files | the cases of the engagement, the artefacts with their hashes and the chain of custody: append-only, every event carries the hash of the one before it |
+| `approval` | the two-person rule | the queue of the operations that wait for a second pair of eyes: the requester cannot decide, a request nobody decides goes stale, and the decision queues the work |
+| `canary` | the tripwires | the ledger of the canaries the team planted: the secret of the file stays with the implant, the verdict comes back in the metadata of the task and the ledger keeps the history |
+| `dossier` | the file of a host | the read model that puts one host on one page: the identity, the health, the work that was run, the persistence, the tripwires, the requests and what is not known |
 
 ### Connection handling
 
@@ -162,6 +165,37 @@ operator gets a `task.timeout` event instead of a task that never ends.
 The sweep never re-queues anything.  A task that may have run must not run
 twice: the same rule that re-queues on a *restart* (where the beacon is
 known to be gone) does not apply to a timeout (where it is not).
+
+### The ledgers of the engagement
+
+Three packages of the team server keep a ledger of their own, and all three
+follow the same three rules: a mutex of their own, a file next to the state
+file (temporary name, then rename, `0600`), and a limit on how much they
+hold.
+
+`approval` is the queue of the two-person rule.  A request names the kind
+of the operation, the host, the reason and the arguments; the operator who
+asked cannot decide it; a request nobody decides goes stale; and the
+decision is what queues the work.  The rule itself is a policy of the
+deployment: the configuration names the kinds of task that need it, and the
+operator handlers refuse those kinds directly with the name of the command
+that does the job instead.
+
+`canary` is the ledger of the tripwires.  The implant keeps the facts of
+what it planted (the size, the time of the last change, the digest) next
+to the canary, because the implant is the only side that knows what it
+wrote; the server keeps the ledger of the verdicts.  The verdicts travel
+in the metadata of the task that checked them, as one short string, and
+the hub calls the ledger when a task finishes (`Hub.OnComplete`), so the
+ledger and the answer the operator reads cannot disagree.
+
+`dossier` is not a ledger: it is a read model.  It takes the records the
+server has (the agent, the tasks, the persistence, the posture) and the
+reports the other packages produce (the health of the host, the tripwires
+of the host, the requests about the host), and it puts them on one page.
+The rules of the page are the rules of the package: the work is counted
+and not described, a broken thing is named, and what is missing is said
+as well.
 
 ### The queue layer
 

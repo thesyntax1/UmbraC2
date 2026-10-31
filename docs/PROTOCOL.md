@@ -514,6 +514,8 @@ Task kinds understood by the reference implants:
 | `decommission` | optional `keep_state` | the end of the engagement on the host: the watchers stop, the persistence goes, the traces are wiped, the binary goes and the verification follows |
 | `wipe.deadman` | optional `minutes` (zero disarms the switch) | arms the dead man's switch: the implant ends itself when the operator has not checked in for that many minutes |
 | `hunt.scan` | `indicators` (list of `id`, `kind`, `value`, `label`), optional `roots` (list of directories) | the indicators of the team that are on this host: one line per finding, plus the kinds that do not apply to the platform and the limits of the walk (it changes nothing; the report is attested) |
+| `canary.plant` | `id`, `token`, optional `label` and `path` | plants a tripwire: a file with the token of the canary in it, in a place where nothing of the engagement belongs; the implant keeps the facts of it (the size, the time, the digest) next to the canary |
+| `canary.check` | `canaries` (list of `id`) | looks at the tripwires of the host and says whether they are as they were planted: `intact`, `changed` or `missing` (the verdicts travel in the metadata of the answer; the report is attested) |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -611,6 +613,18 @@ Operator RPC commands, with the minimum role each requires:
 | `case.create` | operator | open a case: `title`, optional `notes`; the chain of custody starts with it |
 | `case.add` | operator | put a piece of evidence into a case: `id`, `kind`, `ref`, optional `sha256`, `agent_id`, `task_id`, `size` and `note` |
 | `case.close` | operator | close a case: `id`, optional `note`; the last hand of the chain says who closed it |
+| `approval.list` | viewer | the queue of the team: the requests that wait for a decision and the ones that were decided; optional `state` (`pending`, `approved`, `denied` or `expired`) |
+| `approval.get` | viewer | one request of the queue: who asked, who decided, when, and why |
+| `approval.request` | operator | ask for an operation that waits for a second pair of eyes: `kind`, optional `agent` (the host), `reason` and `args` (the arguments of the operation) |
+| `approval.approve` | operator | say yes: the operation is queued on the host right away; `id` and optional `note`. The operator who asked for the request cannot decide it |
+| `approval.deny` | operator | say no: the operation is not queued; `id` and optional `note` |
+| `canary.list` | viewer | the tripwires of the engagement: the label, the host, the state and the verdict of the last look; optional `agent` (one host) |
+| `canary.get` | viewer | one tripwire, with the verdict of the last look. The token of the canary never travels to the console |
+| `canary.plant` | operator | plant a tripwire on a host: `agent`, `label`, optional `note`; the secret of the file is written by the implant and stays there |
+| `canary.check` | operator | ask the hosts whether their tripwires are as they were planted: `agent` for one host, or `agents`/`filter`/`all` for a group |
+| `canary.remove` | operator | stop watching a tripwire: `id`; the file on the host stays where it is |
+| `dossier.get` | viewer | the file of one host: the identity, the health with its reasons, the work that was run, the persistence, the tripwires, the requests and what is not known |
+| `dossier.list` | viewer | the files of every host, the weakest first |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -2191,8 +2205,54 @@ breaks the chain, and the answer names the event where it breaks.  The
 cases live next to the state file and they survive both the restart of
 the server and the wipe of the engagement.
 
-**The console.**  `umbra hunt list|add|remove|sweep`, `umbra health` and
-`umbra case list|show|create|add|close`.
+**The console.**  `umbra hunt list|add|remove|sweep`, `umbra health`,
+`umbra case list|show|create|add|close`,
+`umbra approval list|show|request|approve|deny`,
+`umbra canary list|show|plant|check|remove` and
+`umbra dossier list|show`.
+
+**The two-person rule.**  `approval.request` puts an operation into the
+queue of the team: the kind of the operation, the host it is about,
+the reason and the arguments of the work.  The request is not a task;
+it is the promise that a task will be queued once somebody else says
+yes.  `approval.list` and `approval.get` show the queue and one
+request of it, `approval.deny` says no, and `approval.approve` says
+yes -- and a "yes" queues the operation on the host right away.
+
+Three rules hold.  The operator who asked for the operation cannot
+decide it: the queue refuses that, and the refusal is the point of the
+rule.  A request that nobody decided goes stale after thirty minutes,
+and a stale request decides nothing.  The decision is written down:
+who asked, who decided, when, and what was asked for.
+
+The rule is a policy of the deployment and not a law of the framework.
+The configuration names the kinds of task that need it
+(`approval_required`); a deployment that names none has the rule off,
+and the queue is still there, waiting.
+
+**The tripwires.**  `canary.plant` plants a small file with a secret in
+it on a host, in a place where nothing of the engagement belongs.  The
+implant keeps the facts of what it wrote -- the size, the time of the
+last change and the digest -- next to the canary, because the implant
+is the only side that knows what it wrote.  `canary.check` asks the
+hosts about their tripwires, and the answer says whether each file is
+as it was planted: `intact`, `changed` or `missing`.
+
+The verdicts travel in the metadata of the answer as one short string
+(`c-0001=intact;c-0002=changed`), so the ledger of the server and the
+answer the operator reads cannot disagree.  The check never changes the
+host: a check that repaired the canary would hide the very thing it is
+looking for.  The secret of the file never travels to the console --
+`canary.list` and `canary.get` leave it out, and so does every answer
+of the server.
+
+**The file of a host.**  `dossier.get` puts everything the server knows
+about one host on one page: the identity, the health with the reasons
+of its score, the work that was run (counted, and as a histogram of the
+kinds), the persistence with the entries that are broken, the tripwires,
+the requests, and the things the server does not know.  `dossier.list`
+does the same for every host and sorts them weakest first: the host
+that needs attention comes before the host that does not.
 
 ## 8. Transports
 
