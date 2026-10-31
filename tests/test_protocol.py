@@ -8654,7 +8654,12 @@ def test_the_guide_of_the_host_says_what_the_manufacturer_does():
     assert "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" in manifest
     # The state of the phone is read from the system, not guessed.
     assert "isIgnoringBatteryOptimizations" in kotlin
-    assert "standbyBucket" in kotlin
+    # The bucket of the application is the usage stats manager's:
+    # PowerManager has no standby bucket, so the assertion names the API
+    # that actually answers -- the calling app's bucket, no permission.
+    assert "appStandbyBucket" in kotlin
+    assert "UsageStatsManager.STANDBY_BUCKET_RARE" in kotlin
+    assert "USAGE_STATS_SERVICE" in kotlin
     assert "areNotificationsEnabled" in kotlin
     # A phone whose screen is off is quieter.
     assert "screenFactor" in beacon
