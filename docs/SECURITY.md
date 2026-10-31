@@ -1021,8 +1021,9 @@ exactly the kind of thing the log exists to show.
 
 28. **The verification is younger than the code.**  Until this audit the
     repository had never been compiled: no toolchain was on the machine
-    that wrote it, and the CI workflow has never started a job (*the
-    account's billing block fails every job before its first step*).  The
+    that wrote it, and the CI workflow was believed to have never started a
+    job.  It does run; what it says is that the Go server, the Go beacon and
+    the Python suite pass and the Rust and Android builds do not.  The
     Go modules now build, `go vet` is clean, 25 packages pass, and the
     acceptance test builds them when a toolchain is present — but
     twenty-five modules shipped without that, so the *history* of every

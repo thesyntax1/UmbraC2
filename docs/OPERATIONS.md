@@ -2574,11 +2574,14 @@ node tools/dash_smoke.mjs /path/to/node_modules   # the dashboard in jsdom, opti
 with a message when there is none: a build that was not attempted is not a
 build that passed.
 
-**This repository's workflow has never run.**  Every job of
-`.github/workflows/ci.yml` fails before its first step with *"The job was not
-started because recent account payments have failed or your spending limit
-needs to be increased"*.  Until that is resolved on the account, the checks
-above are the only ones that exist, and a green badge means nothing.
+**The workflow runs, and three of its jobs are green.**  On `9455226`
+(`ci.yml`, run 41223934045) `go server`, `go implant` and `protocol` passed and
+the two Rust jobs, the macOS check and the Android compile failed.  The old
+paragraph in this file said the opposite — that every job died on a billing
+block before its first step — and it was wrong; the correction, the run ids and
+the per-module results are in [`BUILD-EVIDENCE.md`](BUILD-EVIDENCE.md).  A red
+job is not a missing one: the Rust beacon does not compile (36 errors) and the
+Android app does not compile, and both are now findings rather than silence.
 
 ## 7. Hardening checklist
 

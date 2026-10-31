@@ -42,8 +42,11 @@ Everything found, and what was done about it:
 | 7 | `check_consistency.py` subtracted the task kinds from the command set, so `canary.plant`, `canary.check`, `forensics.report` and `forensics.timeline` — which are both — were exempt from the "server handles it / console reaches it" checks; it verified 148 of 152 and said "all" | medium (tooling) | fixed; the checker now verifies all 152 |
 | 8 | The acceptance test called "the build is green" never built anything; it asserted that a YAML file names jobs | medium (tooling) | fixed: it runs `go build`, `go vet` and `go test` when a toolchain exists, and skips loudly when it does not |
 | 9 | 15 Go packages have no test at all, including `approval` (the two-person rule) | honesty gap | the rule now has seven tests; the rest is listed below as it is |
-| 10 | GitHub Actions has never run: every job fails in two seconds with *"The job was not started because recent account payments have failed or your spending limit needs to be increased"* | operational | not fixable from the repository; recorded here and in `OPERATIONS.md` |
+| 10 | This page said GitHub Actions had never run, and named a billing block as the reason. **That was wrong.** The workflow has been running: on `9455226` the `go server`, `go implant` and `protocol` jobs were green and Rust and Android were red | operational (and a false statement in this document) | corrected in the table below; the red jobs are findings #12 and #13 |
 | 11 | **Nothing in the repository started the server.** Every Python test ran against `tools/mock_server.py`, and the Go tests exercised packages, not the binary, so the product had been compiled and never run | verification gap | fixed: `tests/test_real_server.py` builds `cmd/umbra-server`, starts it on ephemeral ports and drives it over the wire — 13 tests, green |
+| 12 | The **Rust beacon has never compiled**: `cargo` was never on a machine that had the code, and CI says 36 errors (`E0061`, `E0277`, `E0308` ×15, `E0382` ×4, `E0502`, `E0507`, `E0599`, …) across `wasm.rs`, `vpn.rs`, `transport.rs`, `profile.rs`, `script.rs`, `task.rs` and others | build-stopping | `Cargo.lock` generated and committed (55 packages); the errors are now visible as CI annotations; first fixes landed (`domain.me`, `remove_var`), the rest is open |
+| 13 | The **Android app does not compile** (Kotlin error, `assembleDebug` fails) and the JDK/Gradle/SDK versions were implicit | build-stopping | versions pinned (`buildToolsVersion 34.0.0`, `.java-version` 17, AGP 8.5.2, Kotlin 1.9.24, Gradle 8.7); the compiler error is surfaced by `scripts/ci_tail.sh`; the fix is open |
+
 
 ## The product, executed
 
@@ -275,7 +278,11 @@ code that exists and has never been executed here.
 | `python3 tools/check_consistency.py` | 152/152 RBAC, Go, Python, console | this audit |
 | `python3 tools/check_symbols.py`, `check_go_symbols.py` | ok | this audit |
 | `node tools/dash_smoke.mjs` | the dashboard renders; the hostile name stays text | this audit |
-| GitHub Actions | **never ran** — billing block; every run of this branch failed in ~2 s with 0 steps, 0 jobs started (checked 2026-10-31) | this audit |
+| GitHub Actions, `ci.yml` on `9455226` (run 41223934045) | **green**: `go server`, `go implant`, `protocol`; **red**: `rust beacon` ×2, `rust beacon macOS`, `android` | CI |
+| GitHub Actions, `ci.yml` on `e458440` (run 41226570798) and `411ecd1` (run 41227067330) | same split; Rust reports **36 compile errors**, Android a Kotlin compilation failure | CI |
+| GitHub Actions, `diagnostics.yml` on `9455226` | **green** (6 jobs) | CI |
+| `go test ./...` under go1.22.10 and go1.27.3, build + vet + test + `-race` | 25 packages ok both versions, `gofmt` empty, beacon 5 packages ok | this pass |
+| `pip install --require-hashes -r requirements-dev.lock` in a fresh venv, then `pytest tests/ -q` | **378 passed** (the first clean-env run surfaced two timing-sensitive tests, which were fixed) | this pass |
 
 ## The limits of this page
 
@@ -290,6 +297,7 @@ code that exists and has never been executed here.
 * Every "Implemented" row means *a test executed this code and would fail if
   the behaviour changed*.  It does not mean the behaviour is complete; a
   command with one happy-path test is implemented and thin.
-* The Rust and Android beacons are **not** verified: they cannot be built on
-  this machine, and CI cannot build them anywhere until the billing block is
-  lifted.
+* The Rust and Android beacons are **not** verified: they do not compile, and
+  the CI jobs that would have said so are red rather than absent.  That is the
+  difference this correction makes: a red job is evidence, a job that never ran
+  is silence.

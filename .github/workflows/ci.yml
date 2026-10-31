@@ -23,17 +23,23 @@ concurrency:
 
 jobs:
   protocol:
-    name: protocol (python reference + contract)
+    name: protocol (python ${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4       # zizmor: ignore[unpinned-uses]
       - uses: actions/setup-python@v5   # zizmor: ignore[unpinned-uses]
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
-      - name: install test dependencies
-        run: python -m pip install --upgrade pip -r requirements-dev.txt
+      # The hashed lock is the reproducibility claim: the same wheels, or a
+      # failure.  requirements-dev.txt stays the human-readable input.
+      - name: install test dependencies (hashed lock)
+        run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: cross-language constant check
         run: python tools/check_consistency.py
       - name: static symbol check (go + rust, no toolchain needed)
@@ -51,17 +57,24 @@ jobs:
           git diff --exit-code -- contracts/vectors.json
 
   go:
-    name: go server
+    name: go server (${{ matrix.go }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
         working-directory: server
+    strategy:
+      fail-fast: false
+      matrix:
+        # The manifest says go 1.22; "stable" is whatever the newest release
+        # is.  Both have to pass: the oldest is the promise, the newest is the
+        # toolchain a fresh clone will have.
+        go: ["1.22", "stable"]
     steps:
       - uses: actions/checkout@v4     # zizmor: ignore[unpinned-uses]
       - uses: actions/setup-go@v5     # zizmor: ignore[unpinned-uses]
         with:
-          go-version: "1.22"
+          go-version: ${{ matrix.go }}
       # Hard gate since the tree was formatted with a real toolchain: a
       # diff that nobody can read is a diff that hides a change.
       - name: gofmt
@@ -85,17 +98,21 @@ jobs:
           go mod verify
 
   go-implant:
-    name: go implant
+    name: go implant (${{ matrix.go }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
         working-directory: implant/go
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.22", "stable"]
     steps:
       - uses: actions/checkout@v4     # zizmor: ignore[unpinned-uses]
       - uses: actions/setup-go@v5     # zizmor: ignore[unpinned-uses]
         with:
-          go-version: "1.22"
+          go-version: ${{ matrix.go }}
       # Hard gate, for the same reason as the server job above.
       - name: gofmt
         run: |

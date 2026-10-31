@@ -96,7 +96,7 @@ gives today:
 
 | Thing | Why it is not verified | What would verify it |
 |---|---|---|
-| Rust beacon (44 files, 28.7k lines) | no `cargo` on the machine that wrote it; CI has never run | `cargo test` + `cargo build --release --target x86_64-pc-windows-gnu` in a job that is allowed to run |
+| Rust beacon (44 files, 28.7k lines) | **does not compile**: CI reports 36 errors; `Cargo.lock` now exists (55 packages) and the first two fixes have landed | the CI job turning green, then a release build for every target |
 | Android implant (40 Kotlin files) | no JDK, no Gradle, no emulator; no test source set | `./gradlew test assembleDebug` on a runner, and one instrumented test |
 | Armory signature path | package has 0 test functions; the check is off without `armory_key` | a signed and an unsigned module in a test, with the check on |
 | Load, concurrency, soak | nothing above 200 sequential calls has been run | a concurrent client, thousands of sessions, a multi-hour soak |
@@ -104,7 +104,7 @@ gives today:
 | Restore from off-machine storage | only a `SIGKILL` and a restart over the same directory was drilled | the drill in `BACKUP-RECOVERY.md` §5, executed and dated |
 | External anchor of the audit head | `audit.jsonl.head` sits on the same disk as the ledger | shipping the head to a second system and comparing it |
 | Per-test scope records | no harness writes them | an engagement log that records the authorisation per test |
-| CI as evidence | every run of this branch has failed with zero steps (account billing block) | a green run whose log can be quoted |
+| CI as evidence | the workflow runs; `go server`, `go implant` and `protocol` are green, the Rust and Android jobs are red | all jobs green on one commit — the release gate |
 
 ## 4. The audit trail: two questions an auditor will ask
 
