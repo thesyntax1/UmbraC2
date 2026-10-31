@@ -52,6 +52,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
 	"github.com/thesyntax1/UmbraC2/server/internal/silence"
+	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 )
@@ -286,6 +287,17 @@ func run() error {
 	}
 	srv.SetOnboards(onboards)
 
+	// The sorting hat: the rules that fit a tag on the head of a host
+	// that calls home.  The ledger lives beside the state file, and
+	// the tags go out through the same path as agents.tag, so every
+	// colouring has its event and its audit line.
+	tagRules := tagrule.New()
+	tagRules.SetPath(tagrulePath(cfg.Server.DataFile))
+	if err := tagRules.Load(); err != nil {
+		logger.Warn("the shelf of the rules could not be read", "err", err)
+	}
+	srv.SetTagRules(tagRules)
+
 	// The baseline of the watched paths: the size, the digest and the
 	// drift of each, on the hosts the team watches.  The file belongs
 	// to the team, so it lives beside the state file.
@@ -490,6 +502,11 @@ func run() error {
 			select {
 			case <-ticker.C:
 				srv.SweepSilences(time.Now().UTC())
+				if srv.Pivot != nil {
+					// The landlady of the doors sweeps on the same
+					// round: a door with a lease closes itself.
+					srv.Pivot.SweepLeases(time.Now().UTC())
+				}
 			case <-persist:
 				return
 			}
@@ -668,6 +685,18 @@ func silencePath(dataFile string) string {
 		return filepath.Join("data", "silences.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "silences.json")
+}
+
+// tagrulePath is where the ledger of the sorting hat is kept.
+//
+// The rules of the hat tell a reader what the fleet is named after —
+// which is an intelligence summary of its own — so the file is written
+// for the server alone.
+func tagrulePath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "tagrules.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "tagrules.json")
 }
 
 // otpPath is where the secrets of the second factors are kept.

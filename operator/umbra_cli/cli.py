@@ -4222,6 +4222,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="comma separated agent ids of a bulk run")
     run.add_argument("--filter", default="",
                      help="the filter of a bulk run: state=online,os=windows")
+    run.add_argument("--source", default="",
+                     help="the shelf the question came from, written in the "
+                          "ledger (a branch name, a ticket number, a play)")
     run.add_argument("--cap", type=int, default=4,
                      help="how many answers are waited for at the same time (bulk run)")
 
@@ -4301,6 +4304,25 @@ def build_parser() -> argparse.ArgumentParser:
     retry = sub.add_parser("retry", help="run a finished task again")
     retry.add_argument("task_id")
     cancel.add_argument("task_id")
+
+    # -- the sorting hat of the fleet ------------------------------------
+    tagrule = sub.add_parser("tag-rule", help="the sorting hat of the fleet: "
+                                              "rules that colour new joins")
+    tagrule.add_argument("action", choices=["add", "list", "remove"],
+                         help="write a sentence of the hat, read them back, "
+                              "or erase one")
+    tagrule.add_argument("target", nargs="?", default="",
+                         help="rule id (remove)")
+    tagrule.add_argument("--name", default="", help="the sentence's name")
+    tagrule.add_argument("--field", default="os",
+                         help="the fact the sentence reads: os, arch, host, "
+                              "user, transport or version")
+    tagrule.add_argument("--contains", default="",
+                         help="the needle anywhere in the fact")
+    tagrule.add_argument("--prefix", default="",
+                         help="the needle at the head of the fact")
+    tagrule.add_argument("--tag", default="",
+                         help="the tag the host earns when the needle matches")
 
     watch = sub.add_parser("watch", help="stream events until interrupted")
     wipe = sub.add_parser("wipe", help="clear the record of the engagement")
@@ -4403,9 +4425,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- pivoting -------------------------------------------------------
     pivot = sub.add_parser("pivot", help="pivot through an agent (socks5 / port forward)")
-    pivot.add_argument("action", choices=["list", "open", "close", "claims", "release"],
+    pivot.add_argument("action", choices=["list", "open", "close", "claims",
+                                          "release", "extend"],
                        help="list the pivots, open one, close one, list the "
-                            "claims or release one")
+                            "claims, release one or push the closing of a leased one")
     pivot.add_argument("target", nargs="?", default="",
                        help="agent id (open), tunnel id (close) or claim (release)")
     pivot.add_argument("--mode", choices=["socks", "forward"], default="socks",
@@ -4423,6 +4446,14 @@ def build_parser() -> argparse.ArgumentParser:
     pivot.add_argument("--through", action="append", default=[],
                        help="the agent this pivot is chained through; repeat it "
                             "to chain the pivot through several agents")
+    pivot.add_argument("--via", default="",
+                       help="the way written by hand: 'gateway,dmz-host' — "
+                            "labels of the hops the operator named")
+    pivot.add_argument("--lease", type=int, default=0,
+                       help="seconds until the door closes itself "
+                            "(60..86400); zero means it stands until closed")
+    pivot.add_argument("--seconds", type=int, default=0,
+                       help="new lease in seconds (extend)")
     pivot.add_argument("--user", default="",
                        help="the user the socks5 proxy asks for")
     pivot.add_argument("--pipe", action="store_true",
@@ -5408,7 +5439,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not command:
                 print("no command given", file=sys.stderr)
                 return 2
-            task_id = client.submit(args.agent, "shell", {"cmd": command})
+            task_id = client.submit(args.agent, "shell", {"cmd": command},
+                                    source=args.source)
             console.note_task(task_id, args.agent, "shell", {"cmd": command})
             if args.json and not args.wait:
                 emit({"task_id": task_id, "agent": args.agent, "kind": "shell"})
@@ -5522,6 +5554,41 @@ def main(argv: Optional[List[str]] = None) -> int:
                 # on the exit status instead of parsing output.
                 return 0 if task.get("state") == "done" and not task.get("code") else 1
             print_task_result(task)
+        elif args.cmd == "tag-rule":
+            if args.action == "add":
+                name = args.name or args.target
+                rule = client.tag_rule_add(name, field=args.field,
+                                           contains=args.contains,
+                                           prefix=args.prefix, tag=args.tag)
+                if args.json:
+                    emit(rule)
+                else:
+                    needle = rule.get("contains") or f"{rule.get('prefix')}*"
+                    print(f"the rule {rule.get('id')} ({rule.get('name')}) "
+                          f"colours every host whose {rule.get('field')} "
+                          f"reads {needle} as {rule.get('tag')}")
+            elif args.action == "list":
+                resp = client.tag_rule_list()
+                rules = resp.get("rules") or []
+                if args.json:
+                    emit(resp)
+                elif not rules:
+                    print("the hat knows no sentence yet")
+                else:
+                    for rule in rules:
+                        needle = rule.get("contains") or f"{rule.get('prefix')}*"
+                        print(f"{rule.get('id')} {rule.get('name')}: "
+                              f"{rule.get('field')} ~ {needle} -> {rule.get('tag')} "
+                              f"(fired {rule.get('fires', 0)} times)")
+            else:
+                if not args.target:
+                    print("usage: umbra tag-rule remove <rule-id>", file=sys.stderr)
+                    return 2
+                resp = client.tag_rule_remove(args.target)
+                if args.json:
+                    emit(resp)
+                else:
+                    print(f"the rule {args.target} is erased")
         elif args.cmd == "retry":
             res = client.retry(args.task_id)
             if args.json:
@@ -5778,6 +5845,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     path=list(args.through),
                     pipe=args.pipe,
                     pipe_name=args.pipe_name,
+                    via=args.via,
+                    lease=args.lease,
                 )
                 if args.json:
                     emit(data)
@@ -5786,6 +5855,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                           f"via {data.get('agent_id')} ({data.get('mode')})")
                     if data.get("claim"):
                         print(f"  claim {data.get('claim')}")
+                    if data.get("expires"):
+                        print(f"  leased until {data.get('expires')}")
             elif args.action == "claims":
                 claims = client.pivot_claims()
                 if args.json:
@@ -5805,6 +5876,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     emit({"claim": args.target, "closed": closed})
                 else:
                     print(f"released {args.target}: {len(closed)} pivots torn down")
+            elif args.action == "extend":
+                if not args.target or args.seconds < 1:
+                    print("usage: umbra pivot extend <tunnel-id> --seconds N",
+                          file=sys.stderr)
+                    return 2
+                data = client.pivot_extend(args.target, args.seconds)
+                if args.json:
+                    emit(data)
+                else:
+                    print(f"pivot {data.get('stream')} leased until {data.get('expires')}")
             else:
                 if not args.target:
                     print("usage: umbra pivot close <tunnel-id>", file=sys.stderr)

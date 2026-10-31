@@ -1178,6 +1178,13 @@ class MockServer:
         # when a host has been quiet for too long.
         self.silences: Dict[str, Dict[str, Any]] = {}
         self._silence_seq = 0
+        # The ledger of who asked: every task queued remembers the
+        # console that submitted it and the shelf it came from, so the
+        # operator who asks "whose work is this?" reads the answer.
+        # Bounded to the last 256 lines — the ledger of the queue is
+        # not the audit trail, which has its own home.
+        self.task_ledger: List[Dict[str, Any]] = []
+        self._ledger_seq = 0
         # The shelf of the welcome packs: the first five minutes of a
         # new host, written down once, and fired the moment the host
         # first calls home.
@@ -1186,6 +1193,12 @@ class MockServer:
         # which packs fired on which host, and when: the "once" and the
         # cooldown live in the memory, like the Go registry's fired map.
         self.onboard_fired: Dict[str, Dict[str, float]] = {}
+        # The sorting hat: the rules that fit a tag on the head of a
+        # host the moment it first calls home, and the memory of who
+        # was coloured.
+        self.tagrules: Dict[str, Dict[str, Any]] = {}
+        self._tagrule_seq = 0
+        self.tagrule_fired: Dict[str, set] = {}
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -2494,9 +2507,38 @@ class MockServer:
             try:
                 self._due_schedules()
                 self._sweep_silences()
+                self._sweep_leases()
             except Exception:  # pragma: no cover - dev helper
                 pass
             self._stop.wait(0.1)
+
+    def _sweep_leases(self) -> None:
+        """Close every door whose lease ran out.
+
+        The landlady of the doors: a pivot with a lease closes itself, so
+        the pivot opened for ten minutes of work is not found still open
+        three weeks later.  The close speaks to the team as
+        `pivot.expired`, the way a hand-closed door speaks as
+        `pivot.closed`.
+        """
+        now = _now()
+        due: List[Tuple[str, Dict[str, Any]]] = []
+        with self._lock:
+            for tunnel_id, info in list(self.pivots.items()):
+                if info.get("expires") and float(info["expires"]) <= now:
+                    due.append((tunnel_id, dict(info)))
+                    self.pivots.pop(tunnel_id, None)
+        for tunnel_id, info in due:
+            claim = str(info.get("claim", "") or "")
+            with self._lock:
+                if claim and tunnel_id in self.pivot_claims.get(claim, []):
+                    self.pivot_claims[claim] = [
+                        t for t in self.pivot_claims[claim] if t != tunnel_id
+                    ]
+                    if not self.pivot_claims[claim]:
+                        self.pivot_claims.pop(claim, None)
+            self.emit("pivot.expired", str(info.get("agent_id", "")),
+                      data={"tunnel": tunnel_id})
 
     def _sweep_silences(self) -> None:
         """Say the word for every watch whose host went quiet.
@@ -2585,6 +2627,69 @@ class MockServer:
         # The welcome packs land the moment the host first calls home,
         # and the returning hosts are greeted too, when a pack asks.
         self._fire_onboards(agent_id, is_new)
+        # The sorting hat reads the arrival facts and fits the tags.
+        self._fire_tagrules(agent_id)
+
+    def _fire_tagrules(self, agent_id: str) -> None:
+        """Fit the rules on the head of the host.
+
+        The same rules as the Go registry: each rule answers once per
+        host, the tag of an operator is never taken away, and the host
+        that already wears the label is not told again.
+        """
+        with self._lock:
+            rules = [dict(r) for r in self.tagrules.values()]
+            record = dict(self.agents.get(agent_id, {}))
+        if not record:
+            return
+        facts = {
+            "os": str(record.get("os", "")),
+            "arch": str(record.get("arch", "")),
+            "host": str(record.get("host", "")),
+            "user": str(record.get("user", "")),
+            "transport": str(record.get("transport", "")),
+            "version": str(record.get("version", "")),
+        }
+        worn = {str(t).lower() for t in record.get("tags", [])}
+        jobs: List[Tuple[str, str]] = []
+        for rule in rules:
+            if agent_id in self.tagrule_fired.get(rule["id"], set()):
+                continue
+            tag = str(rule.get("tag", ""))
+            if not tag:
+                continue
+            if tag.lower() in worn:
+                continue
+            value = facts.get(rule.get("field", ""), "").lower()
+            ok = False
+            if rule.get("contains") and str(rule["contains"]).lower() in value:
+                ok = True
+            if rule.get("prefix") and value.startswith(str(rule["prefix"]).lower()):
+                ok = True
+            if not ok:
+                continue
+            jobs.append((rule["id"], tag))
+            worn.add(tag.lower())
+        for rule_id, tag in jobs:
+            now = _now()
+            with self._lock:
+                record = self.agents.get(agent_id)
+                if record is None:
+                    continue
+                tags = [str(t) for t in record.get("tags", [])]
+                if tag.lower() in {t.lower() for t in tags}:
+                    continue
+                tags.append(tag)
+                record["tags"] = sorted(tags)
+                rule = self.tagrules.get(rule_id)
+                if rule is not None:
+                    rule["fires"] += 1
+                    rule["last_fire"] = now
+                    rule["last_agent"] = agent_id
+                self.tagrule_fired.setdefault(rule_id, set()).add(agent_id)
+            self.emit("agent.tags", agent_id, data={"tags": [tag],
+                                                    "mode": "add",
+                                                    "rule": rule_id})
 
     def _fire_onboards(self, agent_id: str, is_new: bool) -> None:
         """Queue the welcome packs that match the arrival of a host.
@@ -2620,7 +2725,8 @@ class MockServer:
             for stage in stages:
                 try:
                     self._queue_task(agent_id, str(stage["kind"]),
-                                     dict(stage.get("args") or {}))
+                                     dict(stage.get("args") or {}),
+                                     source=f"onboard:{pack_id}")
                     queued += 1
                 except Exception:
                     pass
@@ -3166,13 +3272,15 @@ class MockServer:
 
     def _queue_task(self, agent_id: str, kind: str,
                     task_args: Dict[str, Any],
-                    deadline: int = 0, timeout: int = 0) -> Dict[str, Any]:
+                    deadline: int = 0, timeout: int = 0,
+                    by: str = "", source: str = "") -> Dict[str, Any]:
         """Queue a task and announce it.
 
         The trace id follows the task from this call to the result, so the
         operator can grep for it.  The deadline is the moment after which
         the task is not worth running, and the timeout is how long it may
         run: the beacon is told the bound so it can stop the work itself.
+        The ledger keeps who asked and which shelf the task came from.
         """
         task_args = dict(task_args or {})
         if timeout and "timeout" not in task_args:
@@ -3193,10 +3301,38 @@ class MockServer:
             "deadline": int(deadline or 0),
             "timeout": int(timeout or 0),
         }
+        if by:
+            task["by"] = str(by)[:64]
+        if source:
+            task["source"] = str(source)[:64]
         with self._lock:
             self.tasks[task["id"]] = task
+            self._ledger_seq += 1
+            self.task_ledger.append({
+                "seq": self._ledger_seq,
+                "task_id": task["id"],
+                "agent_id": agent_id,
+                "kind": kind,
+                "by": str(by)[:64],
+                "source": str(source)[:64],
+                "at": _now(),
+            })
+            if len(self.task_ledger) > 256:
+                del self.task_ledger[:len(self.task_ledger) - 256]
         self.emit("task.queued", agent_id, task_id=task["id"], data={"kind": kind})
         return task
+
+    @staticmethod
+    def _ledger_digest(entries: List[Dict[str, Any]]) -> str:
+        """The canonical digest of the ledger: every line is hashed over
+        the hash of the line before it, so a changed line changes
+        everything after it."""
+        prev = "0" * 64
+        for entry in entries:
+            line = json.dumps(entry, sort_keys=True,
+                              separators=(",", ":")).encode()
+            prev = hashlib.sha256(prev.encode() + line).hexdigest()
+        return prev
 
     def _wait_task(self, task_id: str, timeout: float = 30.0) -> Dict[str, Any]:
         """Wait for a task to finish, the way the console does."""
@@ -3696,6 +3832,11 @@ class MockServer:
         "onboard.run": "operator",
         "pivot.map": "viewer",
         "artifact.verify": "viewer",
+        "task.ledger-dig": "viewer",
+        "pivot.extend": "operator",
+        "tag.rule.add": "operator",
+        "tag.rule.list": "viewer",
+        "tag.rule.remove": "operator",
         "silence.list": "viewer",
         "silence.remove": "operator",
         # The second factor: reading who has one is a read; making one
@@ -4217,10 +4358,15 @@ class MockServer:
                 timeout = _parse_timeout(args.get("timeout"))
             except ValueError as exc:
                 return fail("task.submit: %s" % exc)
+            # The ledger: the console that asked, and the shelf that
+            # sent it down when there is one.
+            source = str(args.get("source", "") or "").strip()[:64]
             task = self._queue_task(agent_id, kind, args.get("args") or {},
-                                    deadline=deadline, timeout=timeout)
+                                    deadline=deadline, timeout=timeout,
+                                    by=operator, source=source)
             return ok({"task_id": task["id"], "agent_id": agent_id,
-                       "state": task["state"]})
+                       "state": task["state"], "by": operator,
+                       "source": source})
 
         if cmd == "task.get":
             with self._lock:
@@ -5597,7 +5743,9 @@ class MockServer:
             for stage in stages:
                 try:
                     self._queue_task(agent_id, str(stage["kind"]),
-                                     dict(stage.get("args") or {}))
+                                     dict(stage.get("args") or {}),
+                                     by=operator,
+                                     source=f"manual:onboard:{pack_id}")
                     queued += 1
                 except Exception:
                     failed_count += 1
@@ -5647,6 +5795,57 @@ class MockServer:
                 return fail(f"artifact.verify: no such artifact {name!r}")
             return ok({"artifacts": rows, "checked": checked,
                        "broken": broken, "sealed": False})
+
+        # ---- the sorting hat --------------------------------------------------
+        if cmd == "tag.rule.add":
+            # One sentence of the hat: when the field of the host
+            # contains the needle, the host earns the tag.
+            name = str(args.get("name", "") or "").strip()
+            field = str(args.get("field", "") or "").strip().lower()
+            contains = str(args.get("contains", "") or "").strip()
+            prefix = str(args.get("prefix", "") or "").strip()
+            tag = str(args.get("tag", "") or "").strip()
+            if not name:
+                return fail("tag.rule.add: the rule was not named")
+            if field not in ("os", "arch", "host", "user", "transport",
+                             "version"):
+                return fail("tag.rule.add: the field is not one the host "
+                            "tells on arrival")
+            if not contains and not prefix:
+                return fail("tag.rule.add: a rule that looks for nothing "
+                            "fires on everything")
+            if not tag:
+                return fail("tag.rule.add: a rule without a tag colours nobody")
+            with self._lock:
+                if len(self.tagrules) >= 256:
+                    return fail("tag.rule.add: the shelf of the rules is full")
+                for rule in self.tagrules.values():
+                    if str(rule["name"]).lower() == name.lower():
+                        return fail("tag.rule.add: a rule has this name already")
+                self._tagrule_seq += 1
+                rule_id = f"r-{self._tagrule_seq:04d}"
+                rule = {"id": rule_id, "name": name, "field": field,
+                        "contains": contains, "prefix": prefix, "tag": tag,
+                        "creator": operator, "created": _now(),
+                        "fires": 0, "last_fire": 0.0, "last_agent": ""}
+                self.tagrules[rule_id] = rule
+                out = dict(rule)
+            return ok(out)
+
+        if cmd == "tag.rule.list":
+            with self._lock:
+                rows = [dict(r) for r in self.tagrules.values()]
+            rows.sort(key=lambda r: r["id"])
+            return ok({"rules": rows, "count": len(rows)})
+
+        if cmd == "tag.rule.remove":
+            rule_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if rule_id not in self.tagrules:
+                    return fail(f"tag.rule.remove: no such rule {rule_id!r}")
+                del self.tagrules[rule_id]
+                self.tagrule_fired.pop(rule_id, None)
+            return ok({"id": rule_id, "removed": True})
 
         # ---- the file of a host --------------------------------------------
         if cmd in ("dossier.get", "dossier.list"):
@@ -5752,9 +5951,12 @@ class MockServer:
                 agent_id = task["agent_id"]
                 kind = task["kind"]
                 task_args = dict(task.get("args") or {})
-            new_task = self._queue_task(agent_id, kind, task_args)
+            new_task = self._queue_task(agent_id, kind, task_args,
+                                        by=operator,
+                                        source=f"retry:{task_id}")
             return ok({"task_id": new_task["id"], "agent_id": agent_id,
-                       "kind": kind, "retried": task_id})
+                       "kind": kind, "retried": task_id, "by": operator,
+                       "source": new_task.get("source", "")})
 
         if cmd == "audit.verify":
             # The verification of the ledger: the chain is walked and the
@@ -6065,6 +6267,16 @@ class MockServer:
                 out.append(item)
             return ok({"routes": out})
 
+        # ---- the ledger of who asked --------------------------------------
+        if cmd == "task.ledger-dig":
+            with self._lock:
+                entries = self.task_ledger
+            digest = self._ledger_digest(entries)
+            return ok({"entries": len(entries),
+                       "first": entries[0]["seq"] if entries else 0,
+                       "last": entries[-1]["seq"] if entries else 0,
+                       "digest": digest})
+
         if cmd == "pivot.open":
             agent_id = str(args.get("id", ""))
             mode = str(args.get("mode", "socks")) or "socks"
@@ -6073,12 +6285,22 @@ class MockServer:
             listen = str(args.get("listen", "")) or "127.0.0.1:0"
             dns = str(args.get("dns", "remote")) or "remote"
             claim = str(args.get("claim", "") or "")
+            via = str(args.get("via", "") or "").strip()
+            # The mock keeps the floor of a lease low (five seconds) so a
+            # test can watch a door expire; the Go server keeps the real
+            # floor of a minute.
+            lease = int(args.get("lease", 0) or 0)
+            if lease and (lease < 5 or lease > 86400):
+                return fail("pivot.open: a lease is between five seconds and a day")
             through = str(args.get("through", "") or "")
             # The path of a chained pivot: the hops after the first agent.
             # The operator names the far end; the server walks the path.
             path = [str(x) for x in (args.get("path") or []) if str(x)]
             if path:
                 through = path[0]
+                # A chain names its way: the labels the operator wrote,
+                # the agent ids when none were given.
+                via = "-".join([agent_id] + path) if not via else via
             user = str(args.get("user", "") or "")
             password = str(args.get("password", "") or "")
             loopback = bool(args.get("loopback", False))
@@ -6150,8 +6372,11 @@ class MockServer:
                     "claim": claim,
                     "through": through,
                     "path": list(path),
+                    "via": via,
                     "dns": dns,
                     "pipe": pipe,
+                    "lease": lease,
+                    "expires": (_now() + lease) if lease else 0.0,
                 }
                 if claim:
                     self.pivot_claims.setdefault(claim, []).append(tunnel_id)
@@ -6162,10 +6387,16 @@ class MockServer:
                 daemon=True,
             )
             t.start()
-            self.emit("pivot.opened", agent_id, data={"tunnel": tunnel_id,
-                                                       "listen": address,
-                                                       "claim": claim})
-            return ok({
+            open_data: Dict[str, Any] = {"tunnel": tunnel_id,
+                                         "listen": address,
+                                         "claim": claim}
+            if via:
+                open_data["via"] = via
+            if lease:
+                open_data["lease"] = lease
+                open_data["expires"] = _now() + lease
+            self.emit("pivot.opened", agent_id, data=open_data)
+            out: Dict[str, Any] = {
                 "stream": tunnel_id,
                 "agent_id": agent_id,
                 "mode": mode,
@@ -6177,7 +6408,13 @@ class MockServer:
                 "path": list(path),
                 "dns": dns,
                 "pipe": pipe,
-            })
+            }
+            if via:
+                out["via"] = via
+            if lease:
+                out["lease"] = lease
+                out["expires"] = _now() + lease
+            return ok(out)
 
         if cmd == "pivot.close":
             tunnel_id = str(args.get("stream", ""))
@@ -6196,6 +6433,27 @@ class MockServer:
             info["state"] = "closed"
             self.emit("pivot.closed", str(info.get("agent_id", "")), data={"tunnel": tunnel_id})
             return ok({"stream": tunnel_id, "closed": True})
+
+        if cmd == "pivot.extend":
+            # Push the closing of a leased door further out.  A door
+            # without a lease has nothing to push.
+            tunnel_id = str(args.get("stream", "") or "").strip()
+            seconds = int(args.get("seconds", 0) or 0)
+            if seconds < 5 or seconds > 86400:
+                return fail("pivot.extend: a lease is between five seconds and a day")
+            with self._lock:
+                info = self.pivots.get(tunnel_id)
+                if info is None:
+                    return fail(f"unknown tunnel {tunnel_id!r}")
+                if not info.get("expires"):
+                    return fail("pivot.extend: the tunnel has no lease to extend")
+                info["expires"] = _now() + seconds
+                info["lease"] = seconds
+                expires = info["expires"]
+            self.emit("pivot.extended", str(info.get("agent_id", "")),
+                      data={"tunnel": tunnel_id, "expires": int(expires)})
+            return ok({"stream": tunnel_id, "lease": seconds,
+                       "expires": expires})
 
         if cmd == "pivot.claim":
             with self._lock:

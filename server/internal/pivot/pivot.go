@@ -107,6 +107,10 @@ type TunnelInfo struct {
 	// Through is the agent this pivot is chained through.  It is empty
 	// for the first hop and names the previous agent for the others.
 	Through string `json:"through,omitempty"`
+	// Via is the way the operator wrote: the labels of the hops as one
+	// string.  The resolved agent ids are Path; Via stays the words of
+	// the operator, so the map can show what was meant next to what is.
+	Via string `json:"via,omitempty"`
 	// Path is the chain of hops after the first agent: the server walks
 	// it, so the operator only names the far end.
 	Path []string `json:"path,omitempty"`
@@ -116,6 +120,8 @@ type TunnelInfo struct {
 	// Pipe is true when the pivot listens on a named pipe instead of a
 	// TCP socket.
 	Pipe bool `json:"pipe,omitempty"`
+	// Expires is when the door closes itself, zero when it has no lease.
+	Expires time.Time `json:"expires,omitempty"`
 	// LastActivity is when the pivot moved bytes the last time.
 	LastActivity time.Time `json:"last_activity"`
 }
@@ -158,6 +164,20 @@ type Options struct {
 	// PipeName is the name of the pipe.  The default is a name that
 	// carries the id of the tunnel.
 	PipeName string
+	// TTL is the lease of the tunnel in seconds.  Zero means the door
+	// stands until somebody closes it; anything else means it closes
+	// itself when the time is up.  A lease is the answer to the oldest
+	// sin of the trade: the pivot opened for ten minutes of work and
+	// forgotten for three weeks.  The floor is one minute and the
+	// ceiling is a day: shorter is nobody's schedule, longer is the sin
+	// the lease exists against.
+	TTL int
+	// Via is the way the operator says a chain walks: comma- or
+	// hyphen-separated labels of the hops, e.g. "gateway,dmz-host".  The
+	// manager resolves it into Path before it opens anything, so the
+	// wire always carries agent ids and the answer always says where
+	// the way actually went.
+	Via string
 }
 
 // relayStream is the byte stream of a pivot.
@@ -309,6 +329,11 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 	if listen == "" {
 		listen = "127.0.0.1:0"
 	}
+	// The bounds of a lease: under a minute is nobody's schedule, over a
+	// day is the sin the lease exists against.
+	if opt.TTL != 0 && (opt.TTL < 60 || opt.TTL > 86400) {
+		return nil, errors.New("pivot: a lease is between a minute and a day")
+	}
 	if opt.Loopback {
 		listen = forceLoopback(listen)
 	}
@@ -335,6 +360,12 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 		ln = tcpListener
 	}
 	now := time.Now().UTC()
+	// The lease of the door: a door without one lies the way every
+	// forgotten pivot lies — a door with one answers for itself.
+	expires := time.Time{}
+	if opt.TTL > 0 {
+		expires = now.Add(time.Duration(opt.TTL) * time.Second)
+	}
 	tun := &tunnel{
 		id:         tunnelID,
 		agentID:    agentID,
@@ -348,9 +379,11 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 		claim:      opt.Claim,
 		through:    opt.Through,
 		path:       path,
+		via:        opt.Via,
 		user:       opt.User,
 		password:   opt.Password,
 		pipe:       opt.Pipe,
+		expires:    expires,
 	}
 	tun.listener = ln
 	tun.listen = ln.Addr().String()
@@ -374,6 +407,7 @@ func (m *Manager) Open(agentID string, opt Options) (*TunnelInfo, error) {
 		"tunnel": tun.id, "mode": mode, "listen": tun.listen,
 		"host": opt.Host, "port": int64(opt.Port), "claim": tun.claim,
 		"through": tun.through, "dns": dns, "path": tun.path, "pipe": tun.pipe,
+		"via": opt.Via, "lease": int64(opt.TTL),
 	}})
 	info := m.info(tun)
 	return &info, nil
@@ -517,6 +551,66 @@ func (m *Manager) Close(id string) error {
 		"tunnel": tun.id,
 	}})
 	return nil
+}
+
+// Extend pushes the closing of a leased door further out.  A door
+// without a lease has nothing to push, and a closed door has no clock
+// to reset.
+func (m *Manager) Extend(id string, seconds int) (time.Time, error) {
+	if seconds < 60 || seconds > 86400 {
+		return time.Time{}, errors.New("pivot: a lease is between a minute and a day")
+	}
+	m.mu.Lock()
+	tun, ok := m.tunnels[id]
+	m.mu.Unlock()
+	if !ok {
+		return time.Time{}, errors.New("pivot: unknown tunnel")
+	}
+	tun.mu.Lock()
+	if tun.expires.IsZero() {
+		tun.mu.Unlock()
+		return time.Time{}, errors.New("pivot: the tunnel has no lease to extend")
+	}
+	tun.expires = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+	expires := tun.expires
+	tun.mu.Unlock()
+	m.log.Info("pivot tunnel extended", "tunnel", id, "expires", expires)
+	m.hub.Emit(hub.Event{Kind: "pivot.extended", AgentID: tun.agentID,
+		Data: map[string]any{"tunnel": id, "expires": expires.Unix()}})
+	return expires, nil
+}
+
+// SweepLeases closes every door whose lease ran out.  The caller is the
+// clock of the server (the same sweep that serves the silences); the
+// sweep itself holds no lock while it closes, because a close is work
+// and work under a lock is how sweeps become stalls.
+func (m *Manager) SweepLeases(now time.Time) {
+	m.mu.Lock()
+	due := make([]*tunnel, 0)
+	for _, tun := range m.tunnels {
+		tun.mu.Lock()
+		expired := !tun.expires.IsZero() && !tun.expires.After(now)
+		tun.mu.Unlock()
+		if expired {
+			due = append(due, tun)
+		}
+	}
+	m.mu.Unlock()
+	for _, tun := range due {
+		m.mu.Lock()
+		if _, ok := m.tunnels[tun.id]; ok {
+			delete(m.tunnels, tun.id)
+			m.dropClaimLocked(tun)
+		}
+		m.mu.Unlock()
+		if tun.listener != nil {
+			_ = tun.listener.Close()
+		}
+		tun.setState("expired")
+		m.log.Info("pivot tunnel expired", "tunnel", tun.id, "agent", tun.agentID)
+		m.hub.Emit(hub.Event{Kind: "pivot.expired", AgentID: tun.agentID,
+			Data: map[string]any{"tunnel": tun.id}})
+	}
 }
 
 // List returns every open tunnel.
@@ -817,8 +911,10 @@ func (m *Manager) info(tun *tunnel) TunnelInfo {
 		Claim:        tun.claim,
 		Through:      tun.through,
 		Path:         append([]string(nil), tun.path...),
+		Via:          tun.via,
 		DNS:          tun.dns,
 		Pipe:         tun.pipe,
+		Expires:      tun.expires,
 		LastActivity: tun.lastActive,
 	}
 }
@@ -842,8 +938,12 @@ type tunnel struct {
 	path []string
 	// dns is "remote" or "local".
 	dns string
+	// via is the way the operator wrote, kept verbatim for the answer.
+	via string
 	// pipe is true when the listener is a named pipe.
 	pipe bool
+	// expires is when the door closes itself; zero when it has no lease.
+	expires time.Time
 	// user and password are the credentials of the SOCKS5 proxy.
 	user     string
 	password string

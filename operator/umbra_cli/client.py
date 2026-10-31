@@ -465,20 +465,24 @@ class OperatorClient:
         return res.data
 
     def submit(self, agent_id: str, kind: str, args: Optional[Dict[str, Any]] = None,
-               deadline: str = "", timeout: int = 0) -> str:
+               deadline: str = "", timeout: int = 0, source: str = "") -> str:
         """Queue a task on an agent.
 
         The deadline is the moment after which the task is not worth
         running ("2026-01-01T00:00:00Z" or a unix timestamp), and the
         timeout is how long the task may run, in seconds.  The server keeps
         both promises: it cancels a task that passed its deadline and
-        fails one that ran out of time.
+        fails one that ran out of time.  The ledger records the console
+        that asked and, when given, the shelf the task came from
+        (``source``).
         """
         payload: Dict[str, Any] = {"id": agent_id, "kind": kind, "args": args or {}}
         if deadline:
             payload["deadline"] = deadline
         if timeout:
             payload["timeout"] = int(timeout)
+        if source:
+            payload["source"] = source
         res = self.rpc("task.submit", payload)
         if not res.ok:
             raise OperatorError(res.error)
@@ -1442,6 +1446,8 @@ class OperatorClient:
         path: Optional[List[str]] = None,
         pipe: bool = False,
         pipe_name: str = "",
+        via: str = "",
+        lease: int = 0,
     ) -> Dict[str, Any]:
         """Open a pivot through an agent.
 
@@ -1479,6 +1485,8 @@ class OperatorClient:
                 "path": list(path or []),
                 "pipe": bool(pipe),
                 "pipe_name": pipe_name,
+                "via": via,
+                "lease": int(lease),
             },
         )
         if not res.ok:
@@ -1489,6 +1497,47 @@ class OperatorClient:
         res = self.rpc("pivot.close", {"stream": tunnel_id})
         if not res.ok:
             raise OperatorError(res.error)
+
+    def pivot_extend(self, tunnel_id: str, seconds: int) -> Dict[str, Any]:
+        """Push the closing of a leased door further out."""
+        res = self.rpc("pivot.extend", {"stream": tunnel_id,
+                                        "seconds": int(seconds)})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def task_ledger_dig(self) -> Dict[str, Any]:
+        """The canonical digest of the ledger of who asked: every line
+        hashed over the hash of the line before it."""
+        res = self.rpc("task.ledger-dig", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def tag_rule_add(self, name: str, field: str = "os",
+                     contains: str = "", prefix: str = "",
+                     tag: str = "") -> Dict[str, Any]:
+        """Write down one sentence of the sorting hat."""
+        res = self.rpc("tag.rule.add", {
+            "name": name, "field": field, "contains": contains,
+            "prefix": prefix, "tag": tag})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def tag_rule_list(self) -> Dict[str, Any]:
+        """The shelf of the rules of the hat."""
+        res = self.rpc("tag.rule.list", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def tag_rule_remove(self, rule_id: str) -> Dict[str, Any]:
+        """Take a sentence of the hat away; the tags it hung stay."""
+        res = self.rpc("tag.rule.remove", {"id": rule_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
 
     # -- the route of an agent -------------------------------------------
     def transport_set(

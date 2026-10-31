@@ -86,6 +86,14 @@ var requirements = map[string]string{
 	"sessions.list":   Viewer,
 	"task.cancel":     Operator,
 	"task.retry":      Operator,
+	// The digest of the ledger of who asked is a reading, not a change,
+	// so a viewer may carry it home.
+	"task.ledger-dig": Viewer,
+	// The sorting hat colours new joins: writing and erasing its
+	// sentences changes the fleet, reading them does not.
+	"tag.rule.add":    Operator,
+	"tag.rule.list":   Viewer,
+	"tag.rule.remove": Operator,
 	// A bulk task reaches every agent the filter selects, so it is an
 	// operator action like a single task: the difference is the reach, not
 	// the privilege.
@@ -276,6 +284,9 @@ var requirements = map[string]string{
 	"pivot.close":   Operator,
 	"pivot.claim":   Viewer,
 	"pivot.release": Operator,
+	// A leased pivot is rented, tied to time; extending the lease
+	// re-opens the same door and is operator work, like closing is.
+	"pivot.extend": Operator,
 
 	// ---- layer-3 tunnel ------------------------------------------------
 	"vpn.status":   Viewer,

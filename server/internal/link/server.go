@@ -4,7 +4,10 @@ package link
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,6 +36,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/note"
 	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
+	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
 	"github.com/thesyntax1/UmbraC2/server/internal/silence"
@@ -46,6 +50,13 @@ type Server struct {
 	Cfg *config.Config
 	Hub *hub.Hub
 	Log *slog.Logger
+
+	// taskLedger is the ledger of who asked: a bounded ring of the
+	// questions the fleet carried, hashed line over line, so two
+	// consoles can agree the queue they look at is the queue there is.
+	taskLedger   []ledgerAsk
+	taskLedgerSeq int
+	taskLedgerMu  sync.Mutex
 
 	// Keys is the runtime keyring: the credentials the server accepts and
 	// the ones it accepts while a rotation is settling.  It is built out
@@ -116,6 +127,11 @@ type Server struct {
 	// the host first calls home.  Optional: without it the onboard
 	// commands refuse instead of pretending to welcome.
 	Onboards *onboard.Registry
+	// TagRules is the sorting hat of the fleet: the rules that fit a
+	// tag on the head of a host the moment it first calls home.
+	// Optional: without it the tag.rule commands refuse instead of
+	// pretending to colour.
+	TagRules *tagrule.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -228,6 +244,79 @@ func (s *Server) SetRhythm(r *rhythm.Registry) {
 // SetSilences attaches the registry of the watches of the silences.
 func (s *Server) SetSilences(v *silence.Registry) { s.Silences = v }
 
+// ledgerAsk is one line of the ledger of who asked: the question and
+// the one it came from.
+//
+// The ledger of the queue is not the audit trail — the audit trail is
+// signed, appended to a file and kept forever; the ledger is a working
+// answer to the working question "whose work is this?", bounded to the
+// last 256 lines and hashed line over line so no two shelves can
+// disagree about the queue without the digest disagreeing first.
+type ledgerAsk struct {
+	Seq     int    `json:"seq"`
+	TaskID  string `json:"task_id"`
+	AgentID string `json:"agent_id"`
+	Kind    string `json:"kind"`
+	By      string `json:"by"`
+	Source  string `json:"source"`
+	At      int64  `json:"at"`
+}
+
+// ledgerMax is how long the ledger runs before it forgets: long enough
+// to answer for the day, short enough not to become the audit trail.
+const ledgerMax = 256
+
+// ledgerAdd writes one line into the ledger of who asked.
+func (s *Server) ledgerAdd(taskID, agentID, kind, by, source string) {
+	s.taskLedgerMu.Lock()
+	defer s.taskLedgerMu.Unlock()
+	s.taskLedgerSeq++
+	s.taskLedger = append(s.taskLedger, ledgerAsk{
+		Seq: s.taskLedgerSeq, TaskID: taskID, AgentID: agentID,
+		Kind: kind, By: cut(by, 64), Source: cut(source, 64),
+		At: time.Now().UTC().Unix(),
+	})
+	if len(s.taskLedger) > ledgerMax {
+		s.taskLedger = append([]ledgerAsk(nil), s.taskLedger[len(s.taskLedger)-ledgerMax:]...)
+	}
+}
+
+// cut bounds a word of the ledger: a line that grows without a bound is
+// a line that is not a line.
+func cut(s string, max int) string {
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
+}
+
+// ledgerDigest walks the chain of the ledger and tells its digest,
+// length, and the first and last line numbers.
+//
+// The digest of every line is the hash of the digest of the line before
+// it and the words of the line, so a tampered middle is visible from
+// the end.
+func (s *Server) ledgerDigest() (digest string, entries, first, last int) {
+	s.taskLedgerMu.Lock()
+	defer s.taskLedgerMu.Unlock()
+	prev := strings.Repeat("0", 64)
+	for _, e := range s.taskLedger {
+		raw, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(append([]byte(prev), raw...))
+		prev = hex.EncodeToString(sum[:])
+	}
+	digest = prev
+	entries = len(s.taskLedger)
+	if entries > 0 {
+		first = s.taskLedger[0].Seq
+		last = s.taskLedger[entries-1].Seq
+	}
+	return digest, entries, first, last
+}
+
 // SetOnboards attaches the shelf of the welcome packs, taps the hub
 // with it, and wires its queue and its tag lookup to the store and the
 // queue every other task lives and dies by — so a task a playbook
@@ -244,6 +333,9 @@ func (s *Server) SetOnboards(o *onboard.Registry) {
 		if err != nil {
 			return "", err
 		}
+		// The play wrote the question, and the ledger says so: the
+		// rounds that nobody typed are still the work of the team.
+		s.ledgerAdd(task.ID, agentID, kind, "", "onboard")
 		return task.ID, nil
 	})
 	o.SetLookup(func(agentID string) ([]string, bool) {
@@ -252,6 +344,33 @@ func (s *Server) SetOnboards(o *onboard.Registry) {
 			return nil, false
 		}
 		return append([]string(nil), agent.Tags...), true
+	})
+}
+
+// SetTagRules attaches the shelf of the sorting rules and wires its two
+// helpers: the hat reads what the hello of the host told and hangs the
+// tags through the same path the agents.tag command uses, with its own
+// event and its own audit line.
+func (s *Server) SetTagRules(r *tagrule.Registry) {
+	s.TagRules = r
+	if r == nil || s.Hub == nil {
+		return
+	}
+	s.Hub.AddTap(func(ev hub.Event) { r.Event(ev.Kind, ev.AgentID) })
+	r.SetLookup(func(agentID string) (map[string]string, []string, bool) {
+		agent, ok := s.Hub.Store().Agent(agentID)
+		if !ok {
+			return nil, nil, false
+		}
+		facts := map[string]string{
+			"os": agent.OS, "arch": agent.Arch, "host": agent.Host,
+			"user": agent.User, "transport": agent.Transport,
+			"version": agent.Version,
+		}
+		return facts, append([]string(nil), agent.Tags...), true
+	})
+	r.SetTag(func(agentID string, tags []string, mode string) error {
+		return s.Hub.SetTags(agentID, tags, mode)
 	})
 }
 
