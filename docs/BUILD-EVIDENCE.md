@@ -191,9 +191,9 @@ and each was verified against the platform reference before it was touched:
 
 | Cause | Errors | Example |
 |---|---|---|
-| a member that does not exist, or a hidden one | 11 | `Build.PRODUCT_DEVICE`, `IPackageInstaller`, `setDeviceOwner`, `GLOBAL_ACTION_VOLUME_*`, `Context.ROLE_MANAGER`, `PowerManager.standbyBucket` |
-| a Kotlin getter read as a property | 3 | `areNotificationsEnabled` instead of `areNotificationsEnabled()`, `isDeviceOwnerApp` without its argument |
-| a missing import | 3 | `Context` in `AppDump.kt` (the fourth error in that file was its cascade) |
+| a member that does not exist, has another name, or is hidden | 15 | `Build.PRODUCT_DEVICE`, `IPackageInstaller`, `setDeviceOwner`, `GLOBAL_ACTION_VOLUME_*`/`POWER_DIALER`, `Context.ROLE_MANAGER`, `PowerManager.standbyBucket` and its `STANDBY_BUCKET_*`, `ScanResult.rssi` (it is `level`) |
+| a Kotlin getter read as a property | 4 | `areNotificationsEnabled` instead of `areNotificationsEnabled()`, `isDeviceOwnerApp` without its argument (two messages on that line) |
+| a missing import | 3 + 1 cascade | `Context` in `AppDump.kt`; the "cannot infer T" at line 118 went with it |
 | a wrong argument list, or operator precedence | 4 | `wipeData()` with no flags, `clearDeviceOwnerApp()` with no package, `addPrimaryClipChangedListener` with a handler, `"size" to x ?: ""` |
 
 Nine rounds, one file per round, each followed by a build, so that the delta of
