@@ -297,6 +297,13 @@ def doc_rpc_commands() -> set[str]:
     section = section.split("\n## ", 1)[0]
     table = set(re.findall(rf"^\| `({CMD})` \|", section, re.M))
     prose = set(re.findall(rf"`({CMD})`", section))
+    # A name that has a role in the table of this section is a command,
+    # whatever else it is called.  The subtraction below exists because a
+    # task kind and an event share the namespace of the commands; but a
+    # command that happens to share a name with a task kind (canary.plant,
+    # forensics.report) must not be exempt from the checks, which is what
+    # a blanket subtraction would do.
+    commands = set(doc_rpc_roles())
     # The prose also names the event kinds, the task kinds and the
     # persistence techniques, and those are not RPC commands: an event the
     # server emits, a task a beacon runs, and an entry the persistence
@@ -311,6 +318,7 @@ def doc_rpc_commands() -> set[str]:
     table -= events
     table -= tasks
     table -= techniques
+    table |= commands & set(re.findall(rf"^\| `({CMD})` \|", section, re.M))
     # The keys of the metadata are written "meta.<key>" ("meta.p2p" is
     # where a beacon that serves a peer link says where it waits).  They
     # are fields of a frame, not commands of the protocol.
