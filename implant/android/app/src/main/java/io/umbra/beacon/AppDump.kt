@@ -82,7 +82,7 @@ object AppDump {
             report.row(
                 "package" to packageName,
                 "path" to "$source/$name",
-                "size" to line.trim().split(" ").getOrNull(4) ?: "",
+                "size" to (line.trim().split(" ").getOrNull(4) ?: ""),
             )
         }
         if (packageName == context.packageName) {
