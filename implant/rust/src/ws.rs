@@ -76,7 +76,7 @@ impl WsChannel {
 
         let key = base64_encode(&crate::crypto::random_bytes(16));
         let host_line = if host_header.is_empty() {
-            crate::config::host_port(host, port)
+            crate::config::host_port(&host, port)
         } else {
             host_header.to_string()
         };

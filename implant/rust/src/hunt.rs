@@ -139,29 +139,32 @@ pub fn indicators(args: &Value) -> Vec<Indicator> {
 /// it is slow, and it reads the material of the user.
 pub fn roots(args: &Value) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let mut push = |path: PathBuf| {
+    // A closure that owns the vector would hold the mutable borrow until the
+    // end of the function, and `out.is_empty()` below needs it back.  A
+    // helper takes the borrow for the length of one call instead.
+    fn push(out: &mut Vec<PathBuf>, path: PathBuf) {
         if !path.as_os_str().is_empty() && !out.contains(&path) {
             out.push(path);
         }
-    };
+    }
     let named = args.str_list("roots");
     for root in named {
         let trimmed = root.trim();
         if trimmed.is_empty() {
             continue;
         }
-        push(PathBuf::from(trimmed));
+        push(&mut out, PathBuf::from(trimmed));
     }
     if out.is_empty() {
         if let Ok(home) = std::env::var("HOME") {
-            push(PathBuf::from(home));
+            push(&mut out, PathBuf::from(home));
         }
         if let Ok(home) = std::env::var("USERPROFILE") {
-            push(PathBuf::from(home));
+            push(&mut out, PathBuf::from(home));
         }
-        push(PathBuf::from(std::env::temp_dir()));
+        push(&mut out, PathBuf::from(std::env::temp_dir()));
         if let Ok(cwd) = std::env::current_dir() {
-            push(cwd);
+            push(&mut out, cwd);
         }
     }
     out

@@ -365,8 +365,14 @@ pub fn x25519_keypair() -> (x25519_dalek::EphemeralSecret, [u8; 32]) {
     (secret, public.to_bytes())
 }
 
+/// The shared secret of one handshake.
+///
+/// The secret is taken by value because `EphemeralSecret::diffie_hellman`
+/// consumes it: a key that was used once cannot be used twice, and that is
+/// the property the type is built around.  A signature that borrowed it
+/// would have to clone it first, which is exactly what the type forbids.
 pub fn x25519_shared(
-    secret: &x25519_dalek::EphemeralSecret,
+    secret: x25519_dalek::EphemeralSecret,
     peer_pub: &[u8],
 ) -> Result<[u8; 32]> {
     if peer_pub.len() != 32 {

@@ -467,7 +467,13 @@ impl Parser {
                     Ok(Stmt::Exit(code))
                 }
                 _ => {
-                    let name = self.take();
+                    // The statement starts with a name: a token that is not
+                    // an identifier is not a statement, and saying which
+                    // token it was is more useful than calling it a name.
+                    let name = match self.take() {
+                        Token::Ident(name) => name,
+                        other => return Err(format!("script: {other:?} is not a statement")),
+                    };
                     match self.take() {
                         Token::Assign => {
                             let value = self.expression(0)?;

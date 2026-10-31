@@ -92,7 +92,7 @@ pub fn kill(args: &Value) -> Result<String, String> {
         }
         killed.push(pid.to_string());
     } else {
-        for p in find(name)? {
+        for p in find(&name)? {
             if terminate(p.pid)? {
                 killed.push(format!("{} ({})", p.pid, p.name));
             }

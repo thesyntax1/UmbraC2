@@ -494,7 +494,7 @@ fn now_millis() -> u128 {
 /// through the frames of the protocol.
 pub fn screen_stream(frames: usize, fps: u32) -> Result<Vec<Vec<u8>>, String> {
     let count = frames.clamp(1, 30);
-    let wait = Duration::from_millis(1000 / fps.clamp(1, 30).max(1));
+    let wait = Duration::from_millis(1000 / u64::from(fps.clamp(1, 30).max(1)));
     let mut out = Vec::new();
     for index in 0..count {
         if index > 0 {

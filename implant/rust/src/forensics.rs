@@ -421,7 +421,7 @@ fn finding(artefact: Artefact, path: &str, markers: &[String]) -> Finding {
             let matches = glob_matches(path);
             present = !matches.is_empty();
             for item in &matches {
-                size += file_size(item);
+                size += file_size(Path::new(item));
             }
             if !matches.is_empty() {
                 note = format!("{} ({} files)", note, matches.len());
@@ -663,7 +663,7 @@ pub fn wipe(ctx: &Context, args: &Value) -> Result<(String, Vec<(&'static str, V
         "wipe.run: {} artefacts of the engagement are still on this host\n",
         remaining.len()
     ));
-    for finding in remaining {
+    for finding in &remaining {
         text.push_str(&format!("  {} {}\n", finding.id, finding.path));
     }
     let extra = vec![

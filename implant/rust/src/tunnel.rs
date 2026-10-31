@@ -452,7 +452,7 @@ pub fn connect_peer(
     if !link::ct_eq(&want, &ack.bin_or("mac", &[])) {
         return Err("peer authentication failed".to_string());
     }
-    let shared = crypto::x25519_shared(&secret, &peer_pub)
+    let shared = crypto::x25519_shared(secret, &peer_pub)
         .map_err(|e| format!("x25519: {e}"))?;
     let mixed = crypto::hmac_sha256(psk, &shared);
     let (prk, km) = crypto::derive_session(&mixed, &nonce, &peer_nonce)
@@ -589,7 +589,7 @@ fn serve_peer(
     ]);
     let payload = upk::encode(&ack).map_err(|e| format!("encode peer ack: {e}"))?;
     write_frame(&mut stream, &payload)?;
-    let shared = crypto::x25519_shared(&secret, &peer_pub)
+    let shared = crypto::x25519_shared(secret, &peer_pub)
         .map_err(|e| format!("x25519: {e}"))?;
     let mixed = crypto::hmac_sha256(psk, &shared);
     let (prk, km) = crypto::derive_session(&mixed, &peer_nonce, &nonce)

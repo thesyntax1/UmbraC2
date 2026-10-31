@@ -1739,8 +1739,9 @@ pub fn set_shaping(args: &Value) -> Result<(String, Vec<(&'static str, Value)>),
     if args.get("reorder").is_some() {
         shaping.reorder = args.bool_or("reorder", shaping.reorder);
     }
-    state.shaping = shaping;
-    save_state(&state)?;
+    // The report is built from `shaping` before it is moved into the state:
+    // asking for its fields afterwards is a use after move, and the state has
+    // to be saved with the new value, so the order is the fix.
     let mut text = String::new();
     text.push_str(&format!(
         "shaping: mode {}, size {}, a padding frame every {}, reorder {}\n",
@@ -1750,6 +1751,8 @@ pub fn set_shaping(args: &Value) -> Result<(String, Vec<(&'static str, Value)>),
         shaping.reorder
     ));
     let extra = vec![("shaping", shaping.to_value())];
+    state.shaping = shaping;
+    save_state(&state)?;
     Ok((text, extra))
 }
 

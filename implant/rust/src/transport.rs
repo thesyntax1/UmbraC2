@@ -517,7 +517,7 @@ fn is_stale_connection(e: &io::Error) -> bool {
 }
 
 /// Read one HTTP/1.1 response and return (status, body, reusable).
-fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>)> {
+fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
     let mut buf = Vec::with_capacity(8192);
     let mut chunk = [0u8; 4096];
 

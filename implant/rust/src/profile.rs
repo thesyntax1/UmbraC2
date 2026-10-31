@@ -533,7 +533,9 @@ fn check_scheduled() -> Vec<Finding> {
     for path in existing(&paths) {
         let detail = std::fs::read_to_string(&path)
             .map(|text| {
-                let lines: Vec<&str> = text
+                // count() is a number, not a list of lines: the annotation
+                // said Vec<&str> and the format! below wants the number.
+                let lines = text
                     .lines()
                     .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
                     .count();
@@ -1176,7 +1178,7 @@ pub fn suggest(findings: &[Finding]) -> Vec<Suggestion> {
                 args: vec![("host".to_string(), finding.name.clone())],
             }),
             "sshkey" => Some(Suggestion {
-                title: "an ssh key may open other hosts",
+                title: "an ssh key may open other hosts".to_string(),
                 why: "the key belongs to a user of the machine".to_string(),
                 score: 65,
                 action: "use the key".to_string(),
@@ -1184,7 +1186,7 @@ pub fn suggest(findings: &[Finding]) -> Vec<Suggestion> {
                 args: vec![("target".to_string(), finding.name.clone())],
             }),
             "cloud" => Some(Suggestion {
-                title: "a cloud credential is on the machine",
+                title: "a cloud credential is on the machine".to_string(),
                 why: "the credential opens the cloud account of the user".to_string(),
                 score: 80,
                 action: format!("read {}", finding.name),
@@ -1192,7 +1194,7 @@ pub fn suggest(findings: &[Finding]) -> Vec<Suggestion> {
                 args: vec![("path".to_string(), finding.name.clone())],
             }),
             "container" if finding.severity == SEV_HIGH => Some(Suggestion {
-                title: "the container runtime is reachable",
+                title: "the container runtime is reachable".to_string(),
                 why: "the runtime socket is root on the host".to_string(),
                 score: 90,
                 action: "run a command in the host".to_string(),
@@ -1200,7 +1202,7 @@ pub fn suggest(findings: &[Finding]) -> Vec<Suggestion> {
                 args: vec![("cmd".to_string(), "id".to_string())],
             }),
             "wmi" => Some(Suggestion {
-                title: "a wmi subscription may be a persistence",
+                title: "a wmi subscription may be a persistence".to_string(),
                 why: "a wmi subscription runs with the privileges of its host".to_string(),
                 score: 55,
                 action: "read the subscription".to_string(),
@@ -1208,7 +1210,7 @@ pub fn suggest(findings: &[Finding]) -> Vec<Suggestion> {
                 args: vec![("cmd".to_string(), "wmic /namespace:\\\\root\\subscription path __EventFilter list brief".to_string())],
             }),
             "browser" => Some(Suggestion {
-                title: "the browser holds what the user typed",
+                title: "the browser holds what the user typed".to_string(),
                 why: "the browser data is the credential of a human".to_string(),
                 score: 60,
                 action: format!("read {}", finding.name),

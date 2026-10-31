@@ -249,7 +249,10 @@ fn amz_date(now: u64) -> (String, String) {
         (secs % 3600) / 60,
         secs % 60
     );
-    (date, format!("{date}T{time}Z"))
+    // Build the stamp first: the tuple moves `date` into its first element,
+    // so a format! that borrows it afterwards is a use after move.
+    let stamp = format!("{date}T{time}Z");
+    (date, stamp)
 }
 
 /// civil_from_days returns the year, the month and the day of a day count

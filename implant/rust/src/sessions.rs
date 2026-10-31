@@ -92,6 +92,26 @@ impl Stream {
 ///
 /// An empty command starts the platform's own shell, which is the
 /// interactive case; a command runs and stays open until it exits.
+/// Read one pipe of a child process into the channel until it closes.
+///
+/// The sender is dropped when the reader ends, so the receiver sees the end
+/// of the session when the last pipe is done.
+fn pump<R: Read + Send + 'static>(mut pipe: R, tx: std::sync::mpsc::Sender<Vec<u8>>) {
+    thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
 pub fn open(cmd: &str) -> Result<(String, Stream), String> {
     let mut command = shell_command(cmd);
     command
@@ -105,23 +125,14 @@ pub fn open(cmd: &str) -> Result<(String, Stream), String> {
 
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     // One reader for stdout and one for stderr: the operator wants both, and
-    // interleaving them is better than losing one of them.
-    for pipe in [stdout, stderr].into_iter().flatten() {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let mut pipe = pipe;
-            let mut buf = [0u8; 4096];
-            loop {
-                match pipe.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
+    // interleaving them is better than losing one of them.  They are two
+    // different types (ChildStdout and ChildStderr), so each goes through
+    // the same generic pump rather than into one array.
+    if let Some(pipe) = stdout {
+        pump(pipe, tx.clone());
+    }
+    if let Some(pipe) = stderr {
+        pump(pipe, tx.clone());
     }
     // The channel closes when both readers are done, which is the signal
     // that the session has nothing more to say.

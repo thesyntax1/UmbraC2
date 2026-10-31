@@ -155,7 +155,7 @@ pub fn client_handshake(
         return Err("server authentication failed (wrong PSK?)".to_string());
     }
 
-    let shared = crypto::x25519_shared(&secret, &server_pub)
+    let shared = crypto::x25519_shared(secret, &server_pub)
         .map_err(|e| format!("x25519: {e}"))?;
     let (prk, km) = crypto::derive_session(&shared, &cn, &sn)
         .map_err(|e| format!("derive session: {e}"))?;

@@ -779,7 +779,7 @@ fn install_technique(
         }
         "service" => {
             let service = args.str_or("service", name);
-            let output = install_service(service, name, staged)?;
+            let output = install_service(&service, name, staged)?;
             Ok((service.to_string(), output))
         }
         "startup" => {

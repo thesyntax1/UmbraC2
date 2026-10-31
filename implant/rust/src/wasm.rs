@@ -719,11 +719,11 @@ impl<'a> Machine<'a> {
                     }
                 }
                 0x0c => {
-                    let depth = read_index(body, &mut pc)?;
+                    let depth = read_index(body, &mut pc)? as usize;
                     pc = self.branch(&mut stack, &mut labels, depth, body)?;
                 }
                 0x0d => {
-                    let depth = read_index(body, &mut pc)?;
+                    let depth = read_index(body, &mut pc)? as usize;
                     let condition = as_i32(pop(&mut stack)?)?;
                     if condition != 0 {
                         pc = self.branch(&mut stack, &mut labels, depth, body)?;
@@ -805,7 +805,7 @@ impl<'a> Machine<'a> {
                         0x2c | 0x2d => 1,
                         _ => 2,
                     };
-                    let address = self.memory_address(body, &mut pc, stack)?;
+                    let address = self.memory_address(body, &mut pc, &mut stack)?;
                     let bytes = self.read_memory(address, width)?;
                     let value = match opcode {
                         0x28 => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -823,7 +823,7 @@ impl<'a> Machine<'a> {
                         0x32 | 0x33 => 2,
                         _ => 4,
                     };
-                    let address = self.memory_address(body, &mut pc, stack)?;
+                    let address = self.memory_address(body, &mut pc, &mut stack)?;
                     let bytes = self.read_memory(address, width)?;
                     let value = match opcode {
                         0x29 => i64::from_le_bytes([

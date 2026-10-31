@@ -101,7 +101,7 @@ pub fn join(
     if !crate::link::ct_eq(&want, mac) {
         return Err("vpn: the server did not authenticate itself".to_string());
     }
-    let shared = crypto::x25519_shared(&secret, eph).map_err(|e| format!("vpn: x25519: {e}"))?;
+    let shared = crypto::x25519_shared(secret, eph).map_err(|e| format!("vpn: x25519: {e}"))?;
     let mut mixed_input = LABEL_DH.to_vec();
     mixed_input.extend_from_slice(&shared);
     let mixed = crypto::hmac_sha256(psk, &mixed_input);
@@ -151,6 +151,7 @@ impl Tunnel {
         out.extend_from_slice(&sealed);
         self.socket
             .send(&out)
+            .map(|_| ())
             .map_err(|e| format!("vpn: send: {e}"))
     }
 
@@ -169,7 +170,7 @@ impl Tunnel {
     /// question from an answer.
     pub fn recv_sealed(&mut self) -> Result<(u8, Vec<u8>), String> {
         let mut buf = vec![0u8; 2048];
-        let (n, _) = self
+        let n = self
             .socket
             .recv(&mut buf)
             .map_err(|e| format!("vpn: receive: {e}"))?;
@@ -217,6 +218,7 @@ impl Tunnel {
         out.extend_from_slice(&sealed);
         self.socket
             .send(&out)
+            .map(|_| ())
             .map_err(|e| format!("vpn: send: {e}"))
     }
 
