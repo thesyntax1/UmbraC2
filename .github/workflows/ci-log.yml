@@ -122,6 +122,10 @@ jobs:
           cp /tmp/android.log ci-log/android-build.log
           [ -f /tmp/android-summary.txt ] && cp /tmp/android-summary.txt ci-log/android-summary.txt
           [ -f /tmp/android-lint.txt ] && cp /tmp/android-lint.txt ci-log/android-lint.txt
+          # The console output stops at the first lint failure; the report
+          # file carries all of them.
+          [ -f implant/android/app/build/reports/lint-results-debug.txt ] &&
+            cp implant/android/app/build/reports/lint-results-debug.txt ci-log/android-lint-report.txt || true
           git config user.name "umbra-ci"
           git config user.email "ci@users.noreply.github.com"
           git checkout -B ci/log-android
