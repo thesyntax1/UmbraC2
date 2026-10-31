@@ -185,6 +185,21 @@ var requirements = map[string]string{
 	"baseline.remove": Operator,
 	"baseline.check":  Operator,
 
+	// The wires to the outside world: writing one down, taking one
+	// away and ringing one are the work of the operator, because a
+	// wire is a place where the news of the engagement leaves the
+	// server.  Reading the ledger is a read.
+	"hook.add":    Operator,
+	"hook.list":   Viewer,
+	"hook.remove": Operator,
+	"hook.test":   Operator,
+
+	// The wall of the techniques and the digging box are reads, and
+	// nothing more: the wall counts what is done and the box finds
+	// what is written, so a viewer may look at both all day.
+	"attack.coverage": Viewer,
+	"search.query":    Viewer,
+
 	// Reading the queue of the approvals and one request of it is a read:
 	// a viewer sees what the team is waiting for.
 	"approval.list": Viewer,

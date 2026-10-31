@@ -40,6 +40,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
 	"github.com/thesyntax1/UmbraC2/server/internal/dash"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
+	"github.com/thesyntax1/UmbraC2/server/internal/hook"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
@@ -242,6 +243,17 @@ func run() error {
 		logger.Warn("the note ledger could not be read", "err", err)
 	}
 	srv.SetNotes(notes)
+
+	// The wires to the outside world: the URLs the events of the day
+	// are posted to, and the secrets that sign the posts.  The file is
+	// written for the server alone, because a wire anybody can speak
+	// on is a wire the team did not choose.
+	hooks := hook.New()
+	hooks.SetPath(hookPath(cfg.Server.DataFile))
+	if err := hooks.Load(); err != nil {
+		logger.Warn("the ledger of the wires could not be read", "err", err)
+	}
+	srv.SetHooks(hooks)
 
 	// The baseline of the watched paths: the size, the digest and the
 	// drift of each, on the hosts the team watches.  The file belongs
@@ -587,6 +599,18 @@ func notePath(dataFile string) string {
 		return filepath.Join("data", "notes.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "notes.json")
+}
+
+// hookPath is where the ledger of the wires to the outside world is
+// kept.
+//
+// The ledger holds the secrets the posts are signed with, so it is
+// written for the server alone and it lives beside the state file.
+func hookPath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "hooks.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "hooks.json")
 }
 
 // otpPath is where the secrets of the second factors are kept.

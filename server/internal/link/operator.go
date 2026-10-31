@@ -17,6 +17,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/approval"
+	"github.com/thesyntax1/UmbraC2/server/internal/attack"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
@@ -24,12 +25,14 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
+	"github.com/thesyntax1/UmbraC2/server/internal/hook"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
+	"github.com/thesyntax1/UmbraC2/server/internal/search"
 	"github.com/thesyntax1/UmbraC2/server/internal/session"
 	"github.com/thesyntax1/UmbraC2/server/internal/stager"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
@@ -44,6 +47,16 @@ const (
 	TaskKindExtension = "ext"
 	// TaskKindUpload writes a chunk of a file on an agent.
 	TaskKindUpload = "upload"
+)
+
+const (
+	// attackScanLimit is how much of the task history one look at the
+	// wall reads.  The wall counts the work of the engagement, not the
+	// archaeology of it.
+	attackScanLimit = 20000
+	// searchScanLimit is how much of the task history the digging box
+	// reads for one needle.
+	searchScanLimit = 20000
 )
 
 // artifactChunk is the size of one upload task when the server pushes a
@@ -2528,6 +2541,166 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(noteMap(entry))
 
+	// ---- the wires to the outside world ----------------------------------
+	case "hook.add":
+		// A wire is the address of a place the team chose, the kinds it
+		// wants to hear about and the secret that signs the posts.  The
+		// server posts to it and never asks it anything: a wire that
+		// could reach back would be a second way into the server.
+		if s.Hooks == nil {
+			return fail("hook.add: this server has no wires")
+		}
+		raw, _ := args["url"].(string)
+		secret, _ := args["secret"].(string)
+		entry, err := s.Hooks.Add(hook.Hook{
+			URL:     raw,
+			Kinds:   stringList(args["kinds"]),
+			Secret:  secret,
+			Creator: op.Name,
+		})
+		if err != nil {
+			return fail("hook.add: %v", err)
+		}
+		if err := s.Hooks.Save(); err != nil {
+			s.Log.Warn("the ledger of the wires could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": entry.ID, "url": entry.URL, "kinds": pathAny(entry.Kinds),
+			"creator": entry.Creator, "created": entry.Created.Format(time.RFC3339),
+		})
+
+	case "hook.list":
+		// The list of the wires carries the address and the last post,
+		// never the secret: the word the posts are signed with is the
+		// property of the file the server keeps.
+		if s.Hooks == nil {
+			return fail("hook.list: this server has no wires")
+		}
+		hooks := s.Hooks.List()
+		rows := make([]any, 0, len(hooks))
+		for _, entry := range hooks {
+			last, found := s.Hooks.Last(entry.ID)
+			rows = append(rows, hookMap(entry, last, found))
+		}
+		return reply(upk.Map{"hooks": rows, "count": int64(len(rows))})
+
+	case "hook.remove":
+		// The posts the wire made stay made; the wire is forgotten.
+		if s.Hooks == nil {
+			return fail("hook.remove: this server has no wires")
+		}
+		entryID, _ := args["id"].(string)
+		if err := s.Hooks.Remove(entryID); err != nil {
+			return fail("hook.remove: %v", err)
+		}
+		if err := s.Hooks.Save(); err != nil {
+			s.Log.Warn("the ledger of the wires could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": entryID, "removed": true})
+
+	case "hook.test":
+		// The operator who wrote a wire down learns now whether the
+		// other end is listening, instead of waiting for the
+		// engagement to make news.
+		if s.Hooks == nil {
+			return fail("hook.test: this server has no wires")
+		}
+		entryID, _ := args["id"].(string)
+		delivery, err := s.Hooks.Test(entryID, op.Name)
+		if err != nil {
+			return fail("hook.test: %v", err)
+		}
+		return reply(deliveryMap(delivery))
+
+	// ---- the wall of the techniques the team uses ------------------------
+	case "attack.coverage":
+		// The wall counts the finished work against the catalogue of
+		// the trade.  Reading it is a read: the answer changes nothing.
+		agentID, _ := args["agent"].(string)
+		tasks := s.Hub.Store().FilteredTasks(agentID, "", "", attackScanLimit)
+		usages := attack.Coverage(tasks)
+		rows := make([]any, 0, len(usages))
+		for _, usage := range usages {
+			rows = append(rows, usageMap(usage))
+		}
+		unmapped := attack.Unmapped(tasks)
+		return reply(upk.Map{
+			"techniques": rows,
+			"covered":    int64(attack.Covered(usages)),
+			"total":      int64(len(attack.Table)),
+			"unmapped":   pathAny(unmapped),
+			"agent":      agentID,
+		})
+
+	// ---- the digging box of the records ----------------------------------
+	case "search.query":
+		// One needle, every book: the tasks, the notes and the
+		// credentials.  The box reads and never changes, so a viewer
+		// may dig all day.
+		query, _ := args["query"].(string)
+		query = strings.TrimSpace(query)
+		if query == "" {
+			return fail("search.query: the needle was not written")
+		}
+		if len(query) > search.MaxQuery {
+			return fail("search.query: the needle is too long")
+		}
+		scope, _ := args["scope"].(string)
+		if scope == "" {
+			scope = "all"
+		}
+		if scope != "all" && scope != "tasks" && scope != "notes" && scope != "creds" {
+			return fail("search.query: the scope is %q, not all, tasks, notes or creds", scope)
+		}
+		agentID, _ := args["agent"].(string)
+		limit, _ := asInt64(args["limit"])
+		if limit <= 0 {
+			limit = 25
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		out := upk.Map{"query": query, "scope": scope}
+		count := 0
+		if scope == "all" || scope == "tasks" {
+			tasks := s.Hub.Store().FilteredTasks(agentID, "", "", searchScanLimit)
+			hits := search.Tasks(tasks, query, int(limit))
+			search.SortHits(hits)
+			rows := make([]any, 0, len(hits))
+			for _, hit := range hits {
+				rows = append(rows, hitMap(hit))
+			}
+			out["tasks"] = rows
+			count += len(rows)
+		}
+		if scope == "all" || scope == "notes" {
+			var notes []note.Note
+			if s.Notes != nil {
+				notes = s.Notes.List(agentID)
+			}
+			hits := search.Notes(notes, query, int(limit))
+			rows := make([]any, 0, len(hits))
+			for _, hit := range hits {
+				rows = append(rows, hitMap(hit))
+			}
+			out["notes"] = rows
+			count += len(rows)
+		}
+		if scope == "all" || scope == "creds" {
+			// The store narrows the rows by the needle; the secret of a
+			// credential is never part of what is searched or shown.
+			rows := s.Hub.Store().Credentials(agentID, "", query, int(limit))
+			hits := search.Creds(rows, query, int(limit))
+			lines := make([]any, 0, len(hits))
+			for _, hit := range hits {
+				lines = append(lines, hitMap(hit))
+			}
+			out["creds"] = lines
+			count += len(lines)
+		}
+		out["count"] = int64(count)
+		return reply(out)
+
 	// ---- the baseline of the paths the team watches ----------------------
 	case "baseline.add":
 		// The path of the baseline is named and the host is named: the
@@ -4122,6 +4295,95 @@ func noteMap(entry note.Note) upk.Map {
 	}
 	if entry.Pinned {
 		out["pinned"] = true
+	}
+	return out
+}
+
+// hookMap renders one wire for the wire.
+//
+// The answer carries the address, the kinds and the last post, never
+// the secret: the word the posts are signed with belongs to the file
+// of the server, and a list that leaked it would be a wire the team
+// did not choose.
+func hookMap(entry hook.Hook, last hook.Delivery, found bool) upk.Map {
+	out := upk.Map{
+		"id":      entry.ID,
+		"url":     entry.URL,
+		"kinds":   pathAny(entry.Kinds),
+		"creator": entry.Creator,
+		"created": entry.Created.Format(time.RFC3339),
+	}
+	if found {
+		out["last"] = deliveryMap(last)
+	}
+	return out
+}
+
+// deliveryMap renders one post the server made down a wire.
+func deliveryMap(d hook.Delivery) upk.Map {
+	out := upk.Map{
+		"hook_id":    d.HookID,
+		"kind":       d.Kind,
+		"when":       d.When.Format(time.RFC3339),
+		"status":     int64(d.Status),
+		"latency_ms": d.LatencyMS,
+	}
+	if d.Seq != 0 {
+		out["seq"] = int64(d.Seq)
+	}
+	if d.Err != "" {
+		out["err"] = d.Err
+	}
+	return out
+}
+
+// usageMap renders one technique of the wall: the number and the name
+// the trade talks in, how often it was the work of the team, on which
+// hosts and when last.
+func usageMap(usage attack.Usage) upk.Map {
+	out := upk.Map{
+		"id":     usage.ID,
+		"name":   usage.Name,
+		"tactic": usage.Tactic,
+		"tasks":  int64(usage.Tasks),
+	}
+	if len(usage.Agents) > 0 {
+		out["agents"] = pathAny(usage.Agents)
+	}
+	if !usage.Last.IsZero() {
+		out["last"] = usage.Last.Format(time.RFC3339)
+	}
+	return out
+}
+
+// hitMap renders one find of the digging box: the book, the record,
+// the field the needle was in and the piece of the text around it.
+func hitMap(hit search.Hit) upk.Map {
+	out := upk.Map{
+		"where":   hit.Where,
+		"field":   hit.Field,
+		"snippet": hit.Snippet,
+	}
+	if hit.TaskID != "" {
+		out["task_id"] = hit.TaskID
+	}
+	if hit.NoteID != "" {
+		out["note_id"] = hit.NoteID
+	}
+	if hit.CredID != "" {
+		out["cred_id"] = hit.CredID
+	}
+	if hit.AgentID != "" {
+		out["agent_id"] = hit.AgentID
+	}
+	if hit.Kind != "" {
+		out["kind"] = hit.Kind
+	}
+	if hit.State != "" {
+		out["state"] = hit.State
+	}
+	if !hit.At.IsZero() {
+		out["at"] = hit.At.Format(time.RFC3339)
 	}
 	return out
 }

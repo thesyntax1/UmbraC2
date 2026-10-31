@@ -1038,6 +1038,85 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the wires to the outside world --------------------------------------
+    def hook_add(self, url: str, kinds: Optional[List[str]] = None,
+                 secret: str = "") -> Dict[str, Any]:
+        """Write one wire down: the address, the kinds it carries and
+        the secret that signs the posts.
+
+        The kinds match a name exactly, and a name ending in a star
+        matches a beginning: ``task.*`` carries every event of a task;
+        an empty list carries everything.
+        """
+        payload: Dict[str, Any] = {"url": url}
+        if kinds:
+            payload["kinds"] = list(kinds)
+        if secret:
+            payload["secret"] = secret
+        res = self.rpc("hook.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def hook_list(self) -> Dict[str, Any]:
+        """The wires of the team, with the last post of each, and
+        never with the secrets."""
+        res = self.rpc("hook.list", {})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def hook_remove(self, hook_id: str) -> Dict[str, Any]:
+        """Take a wire out of the ledger.  The posts it made stay made."""
+        res = self.rpc("hook.remove", {"id": hook_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def hook_test(self, hook_id: str) -> Dict[str, Any]:
+        """Ring a wire right away, and say how the other end answered."""
+        res = self.rpc("hook.test", {"id": hook_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the wall of the techniques ------------------------------------------
+    def attack_coverage(self, agent_id: str = "") -> Dict[str, Any]:
+        """The wall of the techniques the team uses: which ones were
+        used, on which hosts, and when last.
+
+        A technique with no tasks is a door the team has not tried, and
+        that is the point of having the wall.
+        """
+        payload: Dict[str, Any] = {}
+        if agent_id:
+            payload["agent"] = agent_id
+        res = self.rpc("attack.coverage", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    # -- the digging box -----------------------------------------------------
+    def search_query(self, query: str, scope: str = "",
+                     agent_id: str = "", limit: int = 0) -> Dict[str, Any]:
+        """Dig one needle through the records: the tasks, the notes and
+        the credentials, with the piece of the text around each hit.
+
+        A needle of small letters matches any casing; a needle with a
+        capital means what it says.
+        """
+        payload: Dict[str, Any] = {"query": query}
+        if scope:
+            payload["scope"] = scope
+        if agent_id:
+            payload["agent"] = agent_id
+        if limit:
+            payload["limit"] = limit
+        res = self.rpc("search.query", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     # -- the file of a host ------------------------------------------------
     def dossier_get(self, agent_id: str) -> Dict[str, Any]:
         """The file of one host: what the server knows and what it did."""

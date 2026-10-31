@@ -1236,6 +1236,166 @@ def run_note(client: OperatorClient, console: Console, args: Any) -> int:
     return 2
 
 
+def run_hook(client: OperatorClient, console: Console, args: Any) -> int:
+    """The wires to the outside world.
+
+    A console watches the events by staying connected; a wire carries
+    them to a place the team wrote down — a chat room, a pager, a
+    ticket queue.  The server posts and never asks, and the delivery
+    book says how every post went.
+    """
+    action = getattr(args, "hook_cmd", "") or "list"
+    if action == "list":
+        payload = client.hook_list()
+        if args.json:
+            emit(payload)
+        else:
+            rows = payload.get("hooks") or []
+            if not rows:
+                print("no wires are written down")
+                return 0
+            print(f"{len(rows)} wires")
+            for row in rows:
+                kinds = ",".join(row.get("kinds") or []) or "all"
+                last = row.get("last") or {}
+                status = last.get("status", "")
+                status_txt = f"{status}" if status else "-"
+                when = str(last.get("when", "-"))
+                err = f"  err: {last.get('err')}" if last.get("err") else ""
+                print(f"  {row.get('id', '?'):<8} {row.get('url', '?')}")
+                print(f"           kinds: {kinds:<28} "
+                      f"last: {status_txt} at {when}{err}")
+        return 0
+    if action == "add":
+        kinds = [part.strip() for part in (args.kinds or "").split(",")
+                 if part.strip()]
+        payload = client.hook_add(args.url, kinds=kinds, secret=args.secret)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the wire {payload.get('id', '?')} is written down")
+            print(f"  url:    {payload.get('url', '?')}")
+            kinds = ",".join(payload.get("kinds") or []) or "all"
+            print(f"  kinds:  {kinds}")
+            print("  ring it once with: umbra hook test "
+                  f"{payload.get('id', '?')}")
+        return 0
+    if action == "remove":
+        payload = client.hook_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the wire {payload.get('id')} is forgotten")
+        return 0
+    if action == "test":
+        payload = client.hook_test(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            status = payload.get("status", 0)
+            latency = payload.get("latency_ms", "?")
+            if payload.get("err"):
+                print(f"the wire answered with nothing: {payload.get('err')}")
+                return 1
+            print(f"the wire answered: {status} in {latency} ms")
+            print("  the post was marked as a test; nobody was paged")
+        return 0
+    print(f"unknown hook command: {action}", file=sys.stderr)
+    return 2
+
+
+# The order of the columns of the wall is the order of the trade:
+# from the first look to the last blow.
+_ATTACK_TACTICS = [
+    "reconnaissance", "resource-development", "initial-access",
+    "execution", "persistence", "privilege-escalation",
+    "defense-evasion", "credential-access", "discovery",
+    "lateral-movement", "collection", "command-and-control",
+    "exfiltration", "impact",
+]
+
+
+def run_attack(client: OperatorClient, console: Console, args: Any) -> int:
+    """The wall of the techniques the team uses.
+
+    The MITRE ATT&CK catalogue is the common tongue of the trade: the
+    wall counts the finished work of the team against it.  A technique
+    with zero tasks is a door the team has not tried, and that is the
+    point of having the wall.
+    """
+    payload = client.attack_coverage(agent_id=args.agent)
+    if args.json:
+        emit(payload)
+        return 0
+    rows = payload.get("techniques") or []
+    covered = payload.get("covered", 0)
+    total = payload.get("total", len(rows))
+    where = f" on {args.agent}" if args.agent else ""
+    print(f"the wall{where}: {covered} of {total} techniques were used")
+    by_tactic: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        by_tactic.setdefault(row.get("tactic", "?"), []).append(row)
+    for tactic in _ATTACK_TACTICS:
+        group = by_tactic.get(tactic)
+        if not group:
+            continue
+        used = [row for row in group if row.get("tasks", 0) > 0]
+        if not used and not args.all:
+            continue
+        print(f"  {tactic}")
+        shown = group if args.all else used
+        for row in shown:
+            mark = "x" if row.get("tasks", 0) > 0 else " "
+            agents = len(row.get("agents") or [])
+            last = str(row.get("last", "-"))[:10] or "-"
+            print(f"   [{mark}] {row.get('id', '?'):<10} "
+                  f"{row.get('name', '?')[:44]:<44} "
+                  f"{row.get('tasks', 0):>4} tasks  {agents:>2} hosts  {last}")
+    unmapped = payload.get("unmapped") or []
+    if unmapped:
+        print("  kinds nobody mapped against the catalogue: "
+              + ", ".join(unmapped))
+    return 0
+
+
+def run_search(client: OperatorClient, console: Console, args: Any) -> int:
+    """The digging box: one needle through the records of the team.
+
+    The tasks, the notes and the credentials are dug at once, and each
+    hit comes with the piece of the text around the needle, so the
+    answer can be read without opening a second window.  A needle of
+    small letters matches any casing; a capital means what it says.
+    """
+    query = " ".join(args.words).strip()
+    if not query:
+        print("the needle was not written", file=sys.stderr)
+        return 2
+    payload = client.search_query(query, scope=args.scope,
+                                  agent_id=args.agent, limit=args.limit)
+    if args.json:
+        emit(payload)
+        return 0
+    count = payload.get("count", 0)
+    if not count:
+        print("nothing carries that word")
+        return 0
+    print(f"{count} records carry the word")
+    sections = (("tasks", "the tasks"), ("notes", "the notes"),
+                ("creds", "the creds"))
+    for key, title in sections:
+        rows = payload.get(key) or []
+        if not rows:
+            continue
+        print(f"  {title}")
+        for hit in rows:
+            record = hit.get("task_id") or hit.get("note_id") \
+                or hit.get("cred_id") or "?"
+            agent = hit.get("agent_id") or "-"
+            print(f"    {record:<12} {agent:<14} [{hit.get('field', '?')}]"
+                  f"  {hit.get('snippet', '')}")
+    return 0
+
+
 def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
     """The file of a host: what the server knows and what it did.
 
@@ -3647,6 +3807,54 @@ def build_parser() -> argparse.ArgumentParser:
     note_remove.add_argument("id")
     note_remove.add_argument("--json", action="store_true")
 
+    # ---- the wires to the outside world ----------------------------------
+    hook_cmd = sub.add_parser(
+        "hook",
+        help="the wires to the outside world: URLs the events are posted to")
+    hook_sub = hook_cmd.add_subparsers(dest="hook_cmd")
+
+    hook_list = hook_sub.add_parser("list", help="the wires of the team")
+    hook_list.add_argument("--json", action="store_true")
+
+    hook_add = hook_sub.add_parser("add", help="write a wire down")
+    hook_add.add_argument("url", help="where the posts go (http or https)")
+    hook_add.add_argument(
+        "--kinds", default="",
+        help="the event kinds the wire carries, comma separated; a name "
+             "ending in a star matches a beginning, the empty list is all")
+    hook_add.add_argument("--secret", default="",
+                          help="the word the posts are signed with (HMAC-SHA256)")
+    hook_add.add_argument("--json", action="store_true")
+
+    hook_remove = hook_sub.add_parser("remove", help="forget a wire")
+    hook_remove.add_argument("id")
+    hook_remove.add_argument("--json", action="store_true")
+
+    hook_test = hook_sub.add_parser(
+        "test", help="ring a wire once, marked as a test")
+    hook_test.add_argument("id")
+    hook_test.add_argument("--json", action="store_true")
+
+    # ---- the wall of the techniques --------------------------------------
+    attack_cmd = sub.add_parser(
+        "attack",
+        help="the wall of the ATT&CK techniques the team uses")
+    attack_cmd.add_argument("--agent", default="", help="one host")
+    attack_cmd.add_argument("--all", action="store_true",
+                            help="also the techniques nobody used")
+    attack_cmd.add_argument("--json", action="store_true")
+
+    # ---- the digging box -------------------------------------------------
+    search_cmd = sub.add_parser(
+        "search",
+        help="dig one needle through the tasks, the notes and the creds")
+    search_cmd.add_argument("words", nargs="+", help="the needle")
+    search_cmd.add_argument("--scope", default="all",
+                            choices=["all", "tasks", "notes", "creds"])
+    search_cmd.add_argument("--agent", default="", help="one host")
+    search_cmd.add_argument("--limit", type=int, default=25)
+    search_cmd.add_argument("--json", action="store_true")
+
     # ---- the second factor of the operator ------------------------------
     otp_cmd = sub.add_parser("otp", help="the second factor of the operator")
     otp_sub = otp_cmd.add_subparsers(dest="otp_cmd")
@@ -4735,6 +4943,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_dossier(client, console, args)
         elif args.cmd == "note":
             return run_note(client, console, args)
+        elif args.cmd == "hook":
+            return run_hook(client, console, args)
+        elif args.cmd == "attack":
+            return run_attack(client, console, args)
+        elif args.cmd == "search":
+            return run_search(client, console, args)
         elif args.cmd == "baseline":
             return run_baseline(client, console, args)
         elif args.cmd == "otp":

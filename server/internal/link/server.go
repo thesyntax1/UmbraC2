@@ -26,6 +26,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
 	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
 	"github.com/thesyntax1/UmbraC2/server/internal/health"
+	"github.com/thesyntax1/UmbraC2/server/internal/hook"
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
@@ -93,6 +94,11 @@ type Server struct {
 	// Optional: without it the server refuses the note commands
 	// instead of pretending they were written.
 	Notes *note.Registry
+	// Hooks is the ledger of the wires to the outside world: the URLs
+	// the events of the day are posted to.  Optional: without it the
+	// server keeps the news inside, and says so when it is asked for
+	// a wire.
+	Hooks *hook.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -181,6 +187,16 @@ func (s *Server) SetBaseline(b *baseline.Registry) { s.Baseline = b }
 
 // SetNotes attaches the ledger of the notes of the team.
 func (s *Server) SetNotes(n *note.Registry) { s.Notes = n }
+
+// SetHooks attaches the ledger of the wires to the outside world and
+// taps the hub with it, so every event the day brings is also posted
+// down the wires that carry its kind.
+func (s *Server) SetHooks(h *hook.Registry) {
+	s.Hooks = h
+	if h != nil && s.Hub != nil {
+		s.Hub.SetTap(h.Dispatch)
+	}
+}
 
 // SetOTP attaches the registry of the second factors.
 //

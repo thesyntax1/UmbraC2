@@ -176,6 +176,13 @@ type Hub struct {
 	nextSub int64
 	started time.Time
 
+	// tap is the wire of the outside world: when it is set, every event
+	// is handed to it after the consoles and the alert rules, still
+	// numbered the way the journal numbered it.  It is set once, before
+	// the server starts, and it must never block: the hub does not wait
+	// for the outside world, and neither does the tap.
+	tap func(Event)
+
 	// qmu guards the counters of the queue: the limits, the breakers and
 	// the quiet window.  It is its own lock, because the queue is read on
 	// the path of a check-in and must not wait for the hub's lock.
@@ -1471,6 +1478,19 @@ func (h *Hub) Emit(ev Event) {
 	// The alert rules run outside the lock: they read the store and may emit
 	// an event of their own.
 	h.checkAlerts(ev)
+	// The wire to the outside world runs last, after the consoles and the
+	// alerts, so what is posted is exactly what the journal kept.
+	if h.tap != nil {
+		h.tap(ev)
+	}
+}
+
+// SetTap hands every event to one more receiver, after the consoles and
+// the alert rules.  It is meant to be set once, before the server starts:
+// the wires of the team are wired when the server is wired, not while the
+// engagement is running.
+func (h *Hub) SetTap(fn func(Event)) {
+	h.tap = fn
 }
 
 // Session is one interactive session of an agent.

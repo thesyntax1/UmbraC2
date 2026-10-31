@@ -29,7 +29,9 @@ import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
+import urllib.error
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "operator"))
@@ -1163,6 +1165,12 @@ class MockServer:
         # that travel with the dossier of a host.
         self.notes: Dict[str, Dict[str, Any]] = {}
         self._note_seq = 0
+        # The wires to the outside world: the URLs the events are
+        # posted to, the kinds they carry and the secrets that sign
+        # the posts.  The delivery book tells how each post went.
+        self.hooks: Dict[str, Dict[str, Any]] = {}
+        self._hook_seq = 0
+        self.hook_deliveries: List[Dict[str, Any]] = []
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -3500,6 +3508,16 @@ class MockServer:
         "note.list": "viewer",
         "note.remove": "operator",
         "note.show": "viewer",
+        # The wires to the outside world: writing one down, taking one
+        # away and ringing one are the work of the operator; reading
+        # the ledger is a read.
+        "hook.add": "operator",
+        "hook.list": "viewer",
+        "hook.remove": "operator",
+        "hook.test": "operator",
+        # The wall of the techniques and the digging box are reads.
+        "attack.coverage": "viewer",
+        "search.query": "viewer",
         # The second factor: reading who has one is a read; making one
         # and taking it away is the work of an admin.
         "operator.otp.status": "viewer",
@@ -4986,6 +5004,221 @@ class MockServer:
                 del self.notes[note_id]
             return ok({"id": note_id, "removed": True})
 
+        # ---- the wires to the outside world ------------------------------
+        if cmd == "hook.add":
+            url = str(args.get("url", "") or "").strip()
+            if not url:
+                return fail("hook.add: the URL was not written")
+            if len(url) > 512:
+                return fail("hook.add: the URL is not one the server posts to")
+            parts = urlparse(url)
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                return fail("hook.add: the URL is not one the server posts to")
+            kinds = []
+            for pattern in _string_list(args.get("kinds")):
+                body = pattern[:-1] if pattern.endswith("*") else pattern
+                if (not body or len(pattern) > 64
+                        or not all(ch.isalnum() or ch in "._-" for ch in body)):
+                    return fail(f"hook.add: {pattern!r} is not a kind")
+                if pattern not in kinds:
+                    kinds.append(pattern)
+            if len(kinds) > 32:
+                return fail("hook.add: a wire carries at most 32 kinds")
+            with self._lock:
+                if len(self.hooks) >= 64:
+                    return fail("hook.add: the team writes down too many wires")
+                self._hook_seq += 1
+                hook_id = f"h-{self._hook_seq:04d}"
+                self.hooks[hook_id] = {
+                    "id": hook_id,
+                    "url": url,
+                    "kinds": kinds,
+                    "secret": str(args.get("secret", "") or ""),
+                    "creator": operator,
+                    "created": _now(),
+                }
+            return ok({"id": hook_id, "url": url, "kinds": kinds,
+                       "creator": operator, "created": _now()})
+
+        if cmd == "hook.list":
+            # The list carries the address and the last post, never the
+            # secret: the word the posts are signed with belongs to the
+            # ledger the server keeps.
+            with self._lock:
+                rows = [dict(h) for h in self.hooks.values()]
+                deliveries = list(self.hook_deliveries)
+            rows.sort(key=lambda hook: hook["id"])
+            for row in rows:
+                row.pop("secret", None)
+                for delivery in reversed(deliveries):
+                    if delivery["hook_id"] == row["id"]:
+                        row["last"] = dict(delivery)
+                        break
+            return ok({"hooks": rows, "count": len(rows)})
+
+        if cmd == "hook.remove":
+            hook_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if hook_id not in self.hooks:
+                    return fail(f"hook.remove: no such wire {hook_id!r}")
+                del self.hooks[hook_id]
+            return ok({"id": hook_id, "removed": True})
+
+        if cmd == "hook.test":
+            # The operator who wrote a wire down learns now whether the
+            # other end is listening, instead of waiting for news.
+            hook_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                hook = self.hooks.get(hook_id)
+                if hook is None:
+                    return fail(f"hook.test: no such wire {hook_id!r}")
+                hook = dict(hook)
+            delivery = self._post_hook(hook, {
+                "kind": "hook.test", "at": _now(),
+                "data": {"by": operator}, "test": True,
+            })
+            return ok(delivery)
+
+        # ---- the wall of the techniques the team uses --------------------
+        if cmd == "attack.coverage":
+            agent_id = str(args.get("agent", "") or "").strip()
+            with self._lock:
+                tasks = [dict(t) for t in self.tasks.values()]
+            done = [t for t in tasks if t.get("state") == "done"
+                    and (not agent_id or t.get("agent_id") == agent_id)]
+            rows = []
+            covered = 0
+            for technique_id, name, tactic, kinds in ATTACK_TABLE:
+                touched = [t for t in done if t.get("kind") in kinds]
+                agents = sorted({str(t.get("agent_id", ""))
+                                 for t in touched if t.get("agent_id")})
+                row = {"id": technique_id, "name": name, "tactic": tactic,
+                       "tasks": len(touched)}
+                if agents:
+                    row["agents"] = agents
+                last = max((float(t.get("completed") or t.get("created") or 0)
+                            for t in touched), default=0.0)
+                if last:
+                    row["last"] = last
+                if touched:
+                    covered += 1
+                rows.append(row)
+            mapped = {kind for _, _, _, kinds in ATTACK_TABLE
+                      for kind in kinds}
+            unmapped = sorted({str(t.get("kind", "")) for t in done
+                               if t.get("kind") and t["kind"] not in mapped
+                               and t["kind"] not in ATTACK_IGNORED})
+            return ok({"techniques": rows, "covered": covered,
+                       "total": len(ATTACK_TABLE), "unmapped": unmapped,
+                       "agent": agent_id})
+
+        # ---- the digging box of the records ------------------------------
+        if cmd == "search.query":
+            query = str(args.get("query", "") or "").strip()
+            if not query:
+                return fail("search.query: the needle was not written")
+            if len(query) > 256:
+                return fail("search.query: the needle is too long")
+            scope = str(args.get("scope", "") or "").strip() or "all"
+            if scope not in ("all", "tasks", "notes", "creds"):
+                return fail("search.query: the scope is %r" % scope)
+            agent_id = str(args.get("agent", "") or "").strip()
+            limit = int(args.get("limit") or 25)
+            limit = max(1, min(limit, 200))
+            fold = _smart_fold(query)
+            answer: Dict[str, Any] = {"query": query, "scope": scope}
+            count = 0
+            if scope in ("all", "tasks"):
+                with self._lock:
+                    tasks = [dict(t) for t in self.tasks.values()]
+                hits = []
+                for task in tasks:
+                    if agent_id and task.get("agent_id") != agent_id:
+                        continue
+                    fields = [("id", str(task.get("id", ""))),
+                              ("kind", str(task.get("kind", ""))),
+                              ("error", str(task.get("err", "") or "")),
+                              ("args", json.dumps(task.get("args") or {})),
+                              ("meta", json.dumps(task.get("meta") or {}))]
+                    raw = task.get("out") or b""
+                    if isinstance(raw, str):
+                        raw = raw.encode("utf-8", "replace")
+                    if _looks_text(raw):
+                        fields.append(("output",
+                                       raw.decode("utf-8", "replace")))
+                    for name, text in fields:
+                        piece = _snippet(text, query, fold)
+                        if not piece:
+                            continue
+                        hits.append({
+                            "where": "task", "task_id": task.get("id"),
+                            "agent_id": task.get("agent_id"),
+                            "kind": task.get("kind"),
+                            "state": task.get("state"),
+                            "field": name, "snippet": piece,
+                            "at": task.get("completed") or task.get("created"),
+                        })
+                        break
+                    if len(hits) >= limit:
+                        break
+                hits.sort(key=lambda hit: float(hit.get("at") or 0),
+                          reverse=True)
+                answer["tasks"] = hits
+                count += len(hits)
+            if scope in ("all", "notes"):
+                with self._lock:
+                    notes = [dict(n) for n in self.notes.values()]
+                hits = []
+                for entry in notes:
+                    if agent_id and entry.get("agent_id") != agent_id:
+                        continue
+                    for name, text in (("text", entry.get("text", "")),
+                                       ("author", entry.get("author", ""))):
+                        piece = _snippet(str(text), query, fold)
+                        if not piece:
+                            continue
+                        hits.append({
+                            "where": "note", "note_id": entry.get("id"),
+                            "agent_id": entry.get("agent_id"),
+                            "field": name, "snippet": piece,
+                            "at": entry.get("written"),
+                        })
+                        break
+                    if len(hits) >= limit:
+                        break
+                hits.sort(key=lambda hit: float(hit.get("at") or 0),
+                          reverse=True)
+                answer["notes"] = hits
+                count += len(hits)
+            if scope in ("all", "creds"):
+                # The secret of a credential is never part of what is
+                # searched or shown.
+                with self._lock:
+                    creds = [dict(c) for c in self.credentials]
+                hits = []
+                for row in creds:
+                    if agent_id and row.get("agent_id") != agent_id:
+                        continue
+                    for name in ("account", "target", "source", "kind",
+                                 "note"):
+                        piece = _snippet(str(row.get(name, "") or ""),
+                                         query, fold)
+                        if not piece:
+                            continue
+                        hits.append({
+                            "where": "creds", "cred_id": row.get("id"),
+                            "agent_id": row.get("agent_id"),
+                            "field": name, "snippet": piece,
+                            "at": row.get("collected"),
+                        })
+                        break
+                    if len(hits) >= limit:
+                        break
+                answer["creds"] = hits
+                count += len(hits)
+            answer["count"] = count
+            return ok(answer)
+
         # ---- the file of a host --------------------------------------------
         if cmd in ("dossier.get", "dossier.list"):
             with self._lock:
@@ -6059,6 +6292,97 @@ class MockServer:
                 q.put_nowait(ev)
             except queue.Full:
                 pass
+        # The wires of the outside world are served last, after the
+        # consoles, and never under the lock: a slow receiver keeps
+        # nothing waiting.
+        self._dispatch_hooks(ev)
+
+    # -- the wires to the outside world --------------------------------
+    # The mock answers the hook commands the way the real server does:
+    # a wire is an address, a list of the kinds it carries (a name
+    # ending in a star matches a beginning) and a secret that signs
+    # every post.  The posts really go out: the tests stand at the
+    # other end and check what the server told the world.
+
+    @staticmethod
+    def _carries(patterns: List[str], kind: str) -> bool:
+        """Whether one wire carries the kind of this event."""
+        if not patterns:
+            return True
+        for pattern in patterns:
+            if pattern == kind:
+                return True
+            if pattern.endswith("*") and kind.startswith(pattern[:-1]):
+                return True
+        return False
+
+    def _dispatch_hooks(self, ev: Dict[str, Any]) -> None:
+        """Post one event down every wire that carries its kind."""
+        with self._lock:
+            wires = [dict(h) for h in self.hooks.values()
+                     if self._carries(list(h.get("kinds") or []),
+                                      str(ev.get("kind", "")))]
+        for hook in wires:
+            thread = threading.Thread(
+                target=self._post_hook,
+                args=(hook, ev),
+                daemon=True,
+            )
+            thread.start()
+
+    def _post_hook(self, hook: Dict[str, Any], ev: Dict[str, Any]) -> Dict[str, Any]:
+        """Post one event down one wire and write the delivery down.
+
+        The body is the event the console would have seen, numbered and
+        timed the same way.  When the wire has a secret, the body is
+        signed with HMAC-SHA256 in hex after the word ``sha256=``, the
+        way the receivers of the world expect it.
+        """
+        body = json.dumps({
+            "seq": ev.get("seq", 0),
+            "kind": ev.get("kind", ""),
+            "agent_id": ev.get("agent_id", ""),
+            "task_id": ev.get("task_id", ""),
+            "at": ev.get("at", ""),
+            "data": ev.get("data") or {},
+            "test": bool(ev.get("test", False)),
+        }).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "umbra-hook/1",
+            "X-Umbra-Event": str(ev.get("kind", "")),
+        }
+        secret = str(hook.get("secret", "") or "")
+        if secret:
+            digest = hmac.new(secret.encode("utf-8"), body,
+                              hashlib.sha256).hexdigest()
+            headers["X-Umbra-Signature"] = f"sha256={digest}"
+        delivery = {
+            "hook_id": hook.get("id", ""),
+            "kind": ev.get("kind", ""),
+            "seq": ev.get("seq", 0),
+            "when": time.time(),
+            "status": 0,
+            "latency_ms": 0,
+            "err": "",
+        }
+        started = time.monotonic()
+        try:
+            req = urllib.request.Request(hook["url"], data=body,
+                                         headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                delivery["status"] = resp.status
+                resp.read(4096)
+        except urllib.error.HTTPError as exc:
+            delivery["status"] = exc.code
+        except Exception as exc:  # noqa: BLE001 - the wire is the outside world
+            delivery["err"] = str(exc)
+        delivery["latency_ms"] = int((time.monotonic() - started) * 1000)
+        with self._lock:
+            self.hook_deliveries.append(delivery)
+            if len(self.hook_deliveries) > 256:
+                del self.hook_deliveries[:len(self.hook_deliveries) - 256]
+        return delivery
 
 
 def _string_list(value: Any) -> List[str]:
@@ -6146,6 +6470,135 @@ def _audit_chain_hash(head: str, entry: Dict[str, Any]) -> str:
 # for each of them on their own platform.
 HUNT_KINDS = ("hash", "path", "mutex", "registry", "certificate",
               "process", "service")
+
+# The wall of the techniques the team uses (attack.coverage).  The
+# table mirrors server/internal/attack/attack.go row for row: the mock
+# answers the way the real server answers, so a test that counts the
+# wall here counts the same wall there.
+ATTACK_TABLE: List[Tuple[str, str, str, Tuple[str, ...]]] = [
+    ("T1595", "Active Scanning", "reconnaissance",
+     ("recon", "recon.suggest", "scan")),
+    ("T1082", "System Information Discovery", "discovery",
+     ("sysinfo", "env", "triage", "pwd")),
+    ("T1057", "Process Discovery", "discovery", ("ps",)),
+    ("T1083", "File and Directory Discovery", "discovery",
+     ("ls", "dir", "find")),
+    ("T1016", "System Network Configuration Discovery", "discovery",
+     ("netinfo", "wifi.profiles", "wifi.dump", "resolve")),
+    ("T1018", "Remote System Discovery", "discovery", ("domain.map",)),
+    ("T1046", "Network Service Discovery", "discovery", ("scan",)),
+    ("T1518.001", "Software Discovery: Security Software", "discovery",
+     ("av.survey", "evade.posture")),
+    ("T1120", "Peripheral Device Discovery", "discovery",
+     ("usb.history", "bluetooth.scan")),
+    ("T1059", "Command and Scripting Interpreter", "execution",
+     ("shell", "cmd", "script")),
+    ("T1106", "Native API", "execution", ("bof", "coff", "ext", "wasm")),
+    ("T1516", "Input Injection", "execution",
+     ("ui.tap", "ui.text", "ui.scroll", "ui.global", "ui.events",
+      "ui.stream")),
+    ("T1547", "Boot or Logon Autostart Execution", "persistence",
+     ("persist", "persist.list", "persist.verify", "persist.migrate",
+      "persist.health", "unpersist")),
+    ("T1068", "Exploitation for Privilege Escalation",
+     "privilege-escalation", ("privesc",)),
+    ("T1134", "Access Token Manipulation", "privilege-escalation",
+     ("token",)),
+    ("T1055", "Process Injection", "defense-evasion", ("inject",)),
+    ("T1620", "Reflective Code Loading", "defense-evasion",
+     ("shellcode", "coff", "bof")),
+    ("T1497", "Virtualization/Sandbox Evasion", "defense-evasion",
+     ("emulator.detect",)),
+    ("T1027", "Obfuscation", "defense-evasion",
+     ("evade.profile", "evade.shape", "hygiene.memory",
+      "hygiene.process")),
+    ("T1562", "Impair Defenses", "defense-evasion",
+     ("evade.killswitch", "evade.suicide")),
+    ("T1070.004", "Indicator Removal: File Deletion", "defense-evasion",
+     ("anti.forensic", "wipe.survey", "wipe.run", "wipe.verify",
+      "wipe.self")),
+    ("T1070.006", "Indicator Removal: Timestomp", "defense-evasion",
+     ("touch",)),
+    ("T1003", "OS Credential Dumping", "credential-access", ("creds",)),
+    ("T1552", "Unsecured Credentials", "credential-access",
+     ("wifi.profiles",)),
+    ("T1555", "Credentials from Password Stores", "credential-access",
+     ("browser.creds",)),
+    ("T1557", "Adversary-in-the-Middle", "credential-access",
+     ("phish.overlay",)),
+    ("T1021", "Remote Services", "lateral-movement",
+     ("wmi.exec", "smb.exec", "winrm.exec", "dcom.exec", "ssh.exec",
+      "ldap.query")),
+    ("T1005", "Data from Local System", "collection",
+     ("cat", "download", "tail", "app.dump", "call.logs", "sms.dump",
+      "contacts.dump")),
+    ("T1115", "Clipboard Data", "collection",
+     ("clipboard", "clipboard.watch", "clipboard.sniff")),
+    ("T1056", "Input Capture", "collection", ("keylog", "keylog.file")),
+    ("T1113", "Screen Capture", "collection",
+     ("screenshot", "ui.screen", "screen.stream", "live.screen")),
+    ("T1123", "Audio Capture", "collection", ("media.mic",)),
+    ("T1125", "Video Capture", "collection", ("media.camera",)),
+    ("T1430", "Location Tracking", "collection", ("gps.locate",)),
+    ("T1119", "Automated Collection", "collection",
+     ("triage", "forensics.report", "forensics.timeline")),
+    ("T1090", "Proxy", "command-and-control",
+     ("tunnel", "p2p", "session.open", "session.input",
+      "session.close")),
+    ("T1572", "Protocol Tunneling", "command-and-control", ("tunnel",)),
+    ("T1105", "Ingress Tool Transfer", "command-and-control",
+     ("upload", "update")),
+]
+
+# The kinds of the server itself: the tools of the watch are not the
+# work of the adversary, and the wall neither counts them nor reports
+# them as unmapped.
+ATTACK_IGNORED = frozenset((
+    "ping", "sleep", "exit", "decommission", "wipe.deadman",
+    "hunt.scan", "canary.plant", "canary.check", "baseline.look",
+    "host.guide", "evade.report", "hygiene.sleep",
+))
+
+
+def _smart_fold(query: str) -> bool:
+    """How the needle matches: small letters match any casing, a
+    capital means what it says."""
+    return query == query.lower()
+
+
+def _looks_text(raw: bytes) -> bool:
+    """Whether the bytes are probably words: the box does not search
+    what it cannot show, so screenshots stay unsearched."""
+    if not raw:
+        return False
+    peek = raw[:512]
+    odd = 0
+    for byte in peek:
+        if byte in (9, 10, 13) or 0x20 <= byte < 0x7F or byte >= 0x80:
+            continue
+        odd += 1
+    return odd <= len(peek) // 16
+
+
+def _snippet(text: str, needle: str, fold: bool,
+             before: int = 48, after: int = 96) -> str:
+    """The piece of the text around the first hit, one line, marked
+    with an ellipsis where it was cut.  Empty when there is no hit."""
+    text = text[:64 * 1024]
+    if fold:
+        at = text.lower().find(needle.lower())
+    else:
+        at = text.find(needle)
+    if at < 0:
+        return ""
+    start = max(0, at - before)
+    end = min(len(text), at + len(needle) + after)
+    piece = " ".join(text[start:end].split())
+    if not piece:
+        return ""
+    head = "…" if start > 0 else ""
+    tail = "…" if end < len(text) else ""
+    return head + piece + tail
 
 
 def _looks_like_hash(value: str) -> bool:
