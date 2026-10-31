@@ -46,6 +46,14 @@ jobs:
           grep -E '^(src|tests)/|^error' /tmp/rust.log | head -200 >> /tmp/rust-summary.txt || true
           wc -l /tmp/rust.log
 
+      - name: cargo test, full output
+        working-directory: implant/rust
+        run: |
+          cargo test --locked --all-targets --no-fail-fast >> /tmp/rust.log 2>&1 || true
+          echo >> /tmp/rust.log
+          echo "=== failures ===" >> /tmp/rust.log
+          grep -E '^test .* FAILED|^failures:|^---- .* ----|panicked at|^assertion' /tmp/rust.log | head -200 >> /tmp/rust.log || true
+
       - name: publish it
         run: |
           set -e
