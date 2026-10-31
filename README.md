@@ -22,6 +22,7 @@ not even the handshake.
 | Operator console + protocol reference implementation | Python 3.9+ | v0.1 core |
 | Protocol spec + cross-language conformance vectors | `docs/`, `contracts/` | v0.1 |
 | What actually works, with the test behind each claim | `docs/VERIFICATION-MATRIX.md` | audited |
+| The product, started and driven end to end (console + beacon + server) | `tests/test_real_server.py` | 13 tests, green |
 
 Implemented end-to-end in this version: mutual authentication, session
 establishment, beacon check-in, task dispatch and result collection, beacon
@@ -226,6 +227,8 @@ UmbraC2/
 | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) | the extension store, the command namespace, stagers, in-memory modules, reconnaissance |
 | [docs/SECURITY.md](docs/SECURITY.md) | threat model, cryptographic choices, attack surface, limitations |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | the certificate rotation, the recovery procedure, the maintenance window, the stuck queue |
+| [docs/VERIFICATION-MATRIX.md](docs/VERIFICATION-MATRIX.md) | what works, what is only claimed, and the test behind each row |
+| [docs/BACKUP-RECOVERY.md](docs/BACKUP-RECOVERY.md) | what is on the disk, what a restore can lose, the measured RTO, the drill |
 
 ## Tests
 

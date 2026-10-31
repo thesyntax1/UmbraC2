@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -594,5 +595,69 @@ func TestDeadlineAndTimeoutOfATask(t *testing.T) {
 	}
 	if task.Err != "the deadline passed" {
 		t.Fatalf("the reason was not kept: %q", task.Err)
+	}
+}
+
+// TestRecoveryTimeAtScale measures what a restart costs when the engagement
+// is not small.
+//
+// The recovery drill in tests/test_real_server.py measures the real binary
+// over a state of a few kilobytes, which is the honest number for a fresh
+// deployment and a misleading one for a campaign that has been running for a
+// month.  This test writes a state of twenty thousand tasks, closes the
+// store, opens it again, and reports both numbers: the size of the snapshot
+// and the time the open took.  The bound is deliberately generous — this is
+// a measurement with a sanity floor, not a performance promise, and a
+// promise would need a machine that is not shared with anything else.
+func TestRecoveryTimeAtScale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the scale drill writes twenty thousand tasks")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st.UpsertAgent(&store.Agent{ID: "agent-scale", Host: "web-01", State: "online"})
+
+	const tasks = 20000
+	output := bytes.Repeat([]byte("the output of a task, about a line\n"), 8)
+	started := time.Now()
+	for i := 0; i < tasks; i++ {
+		task := st.AddTask(&store.Task{
+			AgentID: "agent-scale", Kind: "ping", State: store.TaskQueued,
+			Args: map[string]any{"n": i},
+		})
+		st.Complete(task.ID, 0, output, "", nil)
+	}
+	build := time.Since(started)
+
+	started = time.Now()
+	if err := st.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	save := time.Since(started)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	started = time.Now()
+	again, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	open := time.Since(started)
+	if got := len(again.FilteredTasks("", "", "", tasks+1)); got != tasks {
+		t.Fatalf("the reopened store has %d tasks, want %d", got, tasks)
+	}
+
+	t.Logf("%d tasks: build %s, save %s, snapshot %.1f MB, open %s",
+		tasks, build.Round(time.Millisecond), save.Round(time.Millisecond),
+		float64(info.Size())/(1<<20), open.Round(time.Millisecond))
+	if open > 5*time.Second {
+		t.Fatalf("opening %d tasks took %s", tasks, open)
 	}
 }

@@ -43,6 +43,44 @@ Everything found, and what was done about it:
 | 8 | The acceptance test called "the build is green" never built anything; it asserted that a YAML file names jobs | medium (tooling) | fixed: it runs `go build`, `go vet` and `go test` when a toolchain exists, and skips loudly when it does not |
 | 9 | 15 Go packages have no test at all, including `approval` (the two-person rule) | honesty gap | the rule now has seven tests; the rest is listed below as it is |
 | 10 | GitHub Actions has never run: every job fails in two seconds with *"The job was not started because recent account payments have failed or your spending limit needs to be increased"* | operational | not fixable from the repository; recorded here and in `OPERATIONS.md` |
+| 11 | **Nothing in the repository started the server.** Every Python test ran against `tools/mock_server.py`, and the Go tests exercised packages, not the binary, so the product had been compiled and never run | verification gap | fixed: `tests/test_real_server.py` builds `cmd/umbra-server`, starts it on ephemeral ports and drives it over the wire — 13 tests, green |
+
+## The product, executed
+
+The gap above finding #11 is the one this pass closed.  `tests/test_real_server.py`
+is a suite that does not touch the mock: `go build -o … ./cmd/umbra-server`,
+start it on two loopback ports with a real keyring and a real PSK, then talk to
+it with the shipping console (`operator/umbra_cli`) and with the Python beacon
+of `tools/mock_server.py`.  Thirteen tests, and what each of them establishes:
+
+| Test | What it proves |
+|---|---|
+| `test_the_console_connects_and_reads_the_products_stats` | the operator listener answers a real handshake; `stats()` reports `umbra/v1` and `aes-256-gcm` |
+| `test_a_beacon_registers_and_a_task_round_trips` | a beacon registers over the wire and `netinfo` comes back `done` |
+| `test_the_product_refuses_what_the_role_table_forbids` | a viewer is refused `task.submit` *by the server*, not by the console |
+| `test_the_product_enforces_the_two_person_rule` | `approval_required` gates `netinfo`; alice may request, bob may approve, alice may not approve her own |
+| `test_the_audit_ledger_of_the_product_verifies` | `audit.tail` shows the calls and `audit.verify` returns the head |
+| `test_a_hostile_agent_is_refused_at_the_handshake` | the alphabet and the frame checks apply to the product, not just the console |
+| `test_a_half_written_frame_does_not_take_the_server_with_it` | a truncated operator frame is a closed session, not a panic |
+| `test_a_console_that_disappears_mid_call_does_not_disturb_the_queue` | a dropped console leaves the queue intact |
+| `test_a_sigkill_and_a_restart_keep_the_engagement` | `SIGKILL` → restart; the answered task is still `done`; **21 ms** cold start, **21 ms** restart, 3705-byte state |
+| `test_the_latency_of_the_product_is_measured` | 200 idle `stats()` calls: **p50 0.94 ms, p95 1.53 ms, max 1.95 ms** |
+| `test_a_deployment_without_an_admin_does_not_start` | a keyring with no admin is refused at start-up, with a message |
+| `test_a_malformed_token_line_does_not_start` | a bad `UMBRA_OPERATOR_TOKENS` entry is a start-up error, not a half-working server |
+| `test_the_product_rate_limits_a_burst` | 400 back-to-back calls hit the **40 calls/s per operator** budget and are refused by name |
+
+Two things this suite deliberately does **not** do: it does not run the Rust or
+the Android beacon (no toolchain here), and it does not measure load — 200
+sequential calls on loopback is a latency floor, not a capacity result.  The
+numbers are the honest RTO of the process, which is what the
+[backup and recovery page](BACKUP-RECOVERY.md) quotes.
+
+The start-up log of the product is itself a verification artefact: it says, in
+order, that the armory signature check is disabled (no `armory_key`), that the
+artifact store is `encrypted=false`, that the second-factor registry is
+unsealed (no `vault_key`), where the ledger lives and how many generations it
+keeps, and that the build is for authorised lab use only.  A deployment that
+finds those lines and ignores them has been warned.
 
 ## The seven questions, answered
 
@@ -61,7 +99,11 @@ per behaviour.
 The matrix that would let somebody say "every feature has an integration
 test" would have one row per behaviour (not per command) and a test for each.
 That does not exist.  What exists is: every command has *a* test, every
-security decision has a test (the table below), and the gaps are named.
+security decision has a test (the table below), the product itself is now
+started and driven by `tests/test_real_server.py` for the core paths
+(handshake, queue, RBAC, approval, audit, recovery, hostile input), and the
+gaps are named.  Still missing: one real-server test per *feature*, which is
+the row-per-behaviour table of P0.3 in the maturation plan.
 
 ### 2. Does one module crashing affect the others?
 
@@ -72,9 +114,13 @@ boundary (`link`) rather than around every package.  What is isolated is the
 its tasks; a beacon that sends garbage is a connection dropped, not a server
 down.
 
-There is no chaos test, no fault-injection harness, and no test that kills a
-goroutine and asserts the rest of the server still answers.  Status:
-**Partially Implemented**, by architecture and by reading, not by proof.
+`tests/test_real_server.py` now shows the two failures that matter most for
+one process: a hostile or truncated frame closes one session and the server
+keeps answering, and a `SIGKILL` of the whole process is survivable because
+the state on disk is re-read at start-up (21 ms here).  What is still absent
+is the internal case: no test kills a goroutine or a subsystem and asserts the
+rest still answers, and there is no chaos harness.  Status:
+**Partially Implemented** — the boundary is proven, the inside is not.
 
 ### 3. Can an operator reach another operator's data?
 
@@ -114,10 +160,18 @@ starting empty (the difference between a recovery and a data loss).
 `TestConcurrentSavesStayValid` now also asserts that the backup generation is
 a valid snapshot.
 
-What has never been tested is the operator procedure in `OPERATIONS.md`:
-stop the server, restore from a backup *of the deployment directory*, start
-it, and prove the engagement is intact.  That is a **Documented Only**
-procedure; nobody has run it end to end.
+What is now also proven on the real binary: a `SIGKILL` in the middle of an
+engagement, a restart, and a task that was answered before the kill still
+`done` after it (`tests/test_real_server.py::test_a_sigkill_and_a_restart_keep_the_engagement`),
+with the recovery time reported rather than guessed.  At scale, the store's own
+test opens a **16.2 MB, 20 000-task** snapshot in **103 ms**
+(`store_test.go::TestRecoveryTimeAtScale`).
+
+What has never been tested is the operator procedure of a restore *from
+off-machine storage*: stop the server, `restic restore`, start it, and prove
+the engagement is intact.  [`BACKUP-RECOVERY.md`](BACKUP-RECOVERY.md) writes
+the drill down, step by step, and marks the off-machine RTO **Not Verified**
+because nobody has run it.
 
 ### 6. Are there load and long-run tests?
 
@@ -126,8 +180,15 @@ latency measurement, and no test that runs the queue for hours.  What exists
 is bounded: the queue has documented limits (`max_in_flight_per_agent`,
 `max_deliver_per_second`), the frame layer bounds sizes, the audit ledger
 rotates, the OTP registry prunes, and the store's snapshot is coalesced — all
-of them are *arguments* about load, not measurements.  Status:
-**Not Verified**, and this is the largest remaining gap.
+of them are *arguments* about load, not measurements.
+
+What has been measured is narrower and is labelled as such: an idle round trip
+on loopback (p50 0.94 ms, p95 1.53 ms over 200 calls), the operator rate
+budget refusing a burst at 40 calls/s, and the open time of a 20 000-task
+snapshot (103 ms).  There is still **no** concurrency test, no test with
+thousands of sessions, no multi-hour soak, and no test of the documented queue
+limits.  Status: **Idle latency measured; load and soak Not Verified** — still
+the largest remaining gap.
 
 ### 7. Are security decisions enforced in code, not only documented?
 
@@ -168,7 +229,8 @@ code that exists and has never been executed here.
 | Task store and snapshot | Implemented | `server/internal/store` | 20 functions, incl. restore, torn write, concurrency |
 | Audit ledger | Implemented | `server/internal/audit` | 19 functions, chain, rotation, truncation |
 | Second factor (TOTP) | Implemented | `server/internal/otp` | 6 functions, sealed registry, pruning |
-| **Two-person rule** | **Implemented (new)** | `server/internal/approval` | 7 functions added by this audit |
+| **Two-person rule** | **Implemented** | `server/internal/approval` | 7 functions; and now enforced by the real server (`test_real_server.py`) |
+| **The product end to end (server binary + console + beacon)** | **Implemented (new)** | `server/cmd/umbra-server`, `operator/umbra_cli`, `tools/mock_server.py` | `tests/test_real_server.py`, 13 tests, green |
 | Queue, breakers, holds | Implemented (thin) | `server/internal/hub` | 4 functions for a 5-file package |
 | Credential vault | Partially | `server/internal/hub` | stores/reveals tested through `link`; no unit test of the vault |
 | Dashboard | Implemented | `server/internal/dash` | 4 Go functions + the jsdom smoke test |
@@ -187,12 +249,12 @@ code that exists and has never been executed here.
 | Notes | **Not Verified** | `server/internal/note` | 1 file, 0 tests |
 | Rust beacon (133 functions) | Not Verified here | `implant/rust` | no `cargo` on this machine; CI blocked |
 | Android beacon | Not Verified here | `implant/android` | no test source set; no JDK on this machine |
-| Python console + mock | Implemented | `operator/umbra_cli`, `tools/mock_server.py` | 365 cases pass |
+| Python console + mock | Implemented | `operator/umbra_cli`, `tools/mock_server.py` | 378 cases pass |
 | Go beacon | Implemented (thin) | `implant/go` | 41 functions; builds and passes |
-| Backup / restore *procedure* | Documented Only | `docs/OPERATIONS.md` | never executed end to end |
+| Backup / restore *procedure* | Partially | `docs/OPERATIONS.md`, [`BACKUP-RECOVERY.md`](BACKUP-RECOVERY.md) | process recovery after `SIGKILL` measured (21 ms); off-machine restore **Not Verified** |
 | Upgrade / migration *procedure* | Documented Only | `docs/OPERATIONS.md` | never executed end to end |
 | External audit export | Documented Only | `docs/SECURITY.md` | the ledger is local; exporting it is advice |
-| Load, soak and latency | Documented Only (limits) | `docs/PROTOCOL.md` §7.2o | no measurement |
+| Load, soak and latency | **Partially** | `docs/PROTOCOL.md` §7.2o | idle latency measured (p50 0.94 / p95 1.53 ms); soak and concurrency **Not Verified** |
 | Per-test scope records in the lab | Documented Only | `docs/OPERATIONS.md` | no harness writes them |
 
 ## What was executed for this page
@@ -206,7 +268,9 @@ code that exists and has never been executed here.
 | `go test ./... -race` (server) | clean | this audit |
 | `go test ./... -count=1 -race` (beacon) | 5 packages ok | this audit |
 | `gofmt -l server implant/go` | empty | this audit |
-| `.venv/bin/pytest tests/ -q` | 365 passed | this audit |
+| `.venv/bin/pytest tests/ -q` | 378 passed | this pass |
+| `.venv/bin/pytest tests/test_real_server.py -q` | **13 passed** — the binary is built, started and driven | this pass |
+| `go test ./internal/store -run TestRecoveryTimeAtScale -v` | 20 000 tasks, 16.2 MB, open 103 ms | this pass |
 | `python3 tools/check_consistency.py` | 152/152 RBAC, Go, Python, console | this audit |
 | `python3 tools/check_symbols.py`, `check_go_symbols.py` | ok | this audit |
 | `node tools/dash_smoke.mjs` | the dashboard renders; the hostile name stays text | this audit |
