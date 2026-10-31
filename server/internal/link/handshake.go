@@ -273,6 +273,13 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 	if !ok || id == "" || len(id) > 128 {
 		return nil, handshakeErr("invalid identity")
 	}
+	// The identity is a name, not a payload: it is rendered by every
+	// console, stored in every ledger and copied into every dossier, so
+	// the alphabet is settled once here instead of being escaped by every
+	// reader for ever.
+	if !validIdentity(id) {
+		return nil, identityRefusal(id)
+	}
 	pub, ok := hello["pub"].([]byte)
 	if !ok || len(pub) != 32 {
 		return nil, handshakeErr("invalid client public key")
@@ -324,7 +331,12 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 
 	meta := map[string]any{}
 	if m, ok := hello["meta"].(map[string]any); ok {
-		meta = m
+		// Every string a beacon sends about its host is cleaned before it
+		// is stored: control characters and the five characters a markup
+		// reader treats as structure are removed, and the length is
+		// bounded.  A host name with an accent survives; a host name that
+		// wants to be a tag does not.
+		meta = cleanMetaMap(m)
 	}
 	v, _ := number(hello["v"])
 	if !helloVersionKnown(int(v)) {
@@ -341,6 +353,7 @@ func verifyHello(hello map[string]any, cand candidate, cfg *config.Config) (*Hel
 		platform = m
 	}
 	implantVersion, _ := hello["iver"].(string)
+	implantVersion = cleanMeta(implantVersion)
 	abi, _ := number(hello["abi"])
 	return &HelloInfo{
 		Role:           byte(role),

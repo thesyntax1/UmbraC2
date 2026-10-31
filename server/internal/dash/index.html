@@ -377,6 +377,23 @@
     });
   }
 
+  // esc escapes a value for the places that have to build markup by hand
+  // (the reach is an SVG, and an SVG node is not a DOM element until the
+  // string is parsed).  The inventory is written by the hosts, so a value
+  // that was never escaped is a value that can run: the server refuses a
+  // name outside [A-Za-z0-9._:@-] and strips the markup characters from
+  // the metadata, and this is the second lock on the same door.
+  var ESCAPES = {
+    "&": "&amp;", "<": "&lt;", ">": "&gt;",
+    '"': "&quot;", "'": "&#39;", "`": "&#96;"
+  };
+  function esc(value) {
+    if (value === undefined || value === null) { return ""; }
+    return String(value).replace(/[&<>"'\u0060]/g, function (c) {
+      return ESCAPES[c] || c;
+    });
+  }
+
   function el(tag, text, cls) {
     var node = document.createElement(tag);
     if (text !== undefined && text !== null) { node.textContent = String(text); }
@@ -569,11 +586,11 @@
           previous = point;
         });
         var chainLabel = edge.path && edge.path.length
-          ? " via " + edge.path.join(" \u2192 ")
+          ? " via " + edge.path.map(esc).join(" \u2192 ")
           : "";
         parts.push('<text class="label" x="' + ((from.x + to.x) / 2) + '" y="' +
           ((from.y + to.y) / 2 - 4) + '" text-anchor="middle">' +
-          (edge.mode || "pivot") + " " + Math.round(moved / 1024) + "k" +
+          esc(edge.mode || "pivot") + " " + Math.round(moved / 1024) + "k" +
           chainLabel + "</text>");
       });
       shown.forEach(function (node) {
@@ -581,10 +598,10 @@
         var cls = "node" + (node.tunnels ? " pivot" : "") + (node.online ? "" : " off");
         parts.push('<circle class="' + cls + '" cx="' + at.x + '" cy="' + at.y + '" r="13"></circle>');
         parts.push('<text class="name" x="' + at.x + '" y="' + (at.y + 26) +
-          '" text-anchor="middle">' + node.agent_id.slice(0, 18) + "</text>");
+          '" text-anchor="middle">' + esc(String(node.agent_id).slice(0, 18)) + "</text>");
         if (node.transport) {
           parts.push('<text class="label" x="' + at.x + '" y="' + (at.y + 38) +
-            '" text-anchor="middle">' + node.transport + "</text>");
+            '" text-anchor="middle">' + esc(node.transport) + "</text>");
         }
       });
       parts.push("</svg>");
@@ -592,7 +609,7 @@
       parts.push('<div class="summary">' + edges.length + " pivots, " +
         clients.length + " proxy clients, " + connections.length +
         " connections, " + claims.length + " claims" +
-        (claims.length ? " (" + claims.join(", ") + ")" : "") + "</div>");
+        (claims.length ? " (" + claims.map(esc).join(", ") + ")" : "") + "</div>");
       box.innerHTML = parts.join("");
     });
   }

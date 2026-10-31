@@ -17,7 +17,9 @@ package dash
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,6 +61,52 @@ type Config struct {
 //
 //go:embed index.html
 var indexHTML string
+
+// contentPolicy is the policy of the page.
+//
+// The page has one inline script and one inline style sheet, and it uses
+// no inline event handler: so the policy names their hashes instead of
+// allowing inline script wholesale.  A second script that appears in the
+// page later — a dependency, a bookmarklet, an injected tag — has no hash
+// and therefore nowhere to run, which is the whole point of naming the
+// one that was reviewed.
+var contentPolicy = buildContentPolicy(indexHTML)
+
+// buildContentPolicy hashes the inline blocks of the page.
+//
+// A block that cannot be found is not an error: the policy then refuses
+// inline script entirely, which fails closed and is visible the first
+// time somebody opens the page.
+func buildContentPolicy(page string) string {
+	script := inlineHash(page, "<script>", "</script>")
+	scriptSrc := "'none'"
+	if script != "" {
+		scriptSrc = "'sha256-" + script + "'"
+	}
+	// Style keeps 'unsafe-inline': the page carries one style attribute,
+	// a hash and 'unsafe-inline' cancel each other in the same directive,
+	// and a style is not a way to run code.  Script gets the hash and
+	// nothing else.
+	return "default-src 'none'; script-src " + scriptSrc + "; style-src 'unsafe-inline'" +
+		"; img-src 'self' data:; connect-src 'self'; form-action 'none'; " +
+		"base-uri 'none'; frame-ancestors 'none'"
+}
+
+// inlineHash returns the base64 SHA-256 of the body of the first block
+// between open and close, or the empty string when there is no block.
+func inlineHash(page, open, close string) string {
+	start := strings.Index(page, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(page[start:], close)
+	if end < 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(page[start : start+end]))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
 
 // Server is the dashboard.
 type Server struct {
@@ -128,6 +176,18 @@ func (s *Server) Serve(ctx context.Context) error {
 // bookmark.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The headers of every answer, before anything else: a page that
+		// cannot be framed, cannot run an inline script and cannot sniff a
+		// content type is a page whose worst day is smaller.  The policy
+		// names the page itself, so a script that arrived from anywhere
+		// else has nowhere to run.
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		// The health check is the one endpoint that needs no token: it
 		// says that the process is alive and nothing else.
 		if r.URL != nil && r.URL.Path == "/healthz" {

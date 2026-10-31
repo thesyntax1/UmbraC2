@@ -34,7 +34,9 @@ Two handshake versions exist, and a server speaks both:
 
 from __future__ import annotations
 
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
@@ -50,6 +52,62 @@ __all__ = [
 ]
 
 MAX_SKEW = session.MAX_CLOCK_SKEW
+
+# The alphabet of a peer identity (docs/PROTOCOL.md,
+# "The name of a peer").  A name is a name, not a payload.
+IDENT_RE = re.compile(r"[A-Za-z0-9._:@-]{1,128}")
+
+# A metadata string is at most this many runes, and it carries no control
+# characters and none of the characters a markup reader treats as
+# structure.  The characters are stripped rather than escaped, exactly as
+# the Go server does, so both implementations store the same value
+# (docs/PROTOCOL.md, "The name of a peer").
+META_MAX = 256
+MARKUP_HOSTILE = frozenset("<>&\"'`")
+
+
+def clean_meta(value: str) -> str:
+    """Return the metadata string the server keeps, or "" if nothing is left.
+
+    Stripping is idempotent: cleaning a cleaned value gives the same
+    string back, which is what lets a console clean what it shows without
+    disagreeing with the server.
+    """
+    if not isinstance(value, str):
+        return ""
+    kept = []
+    for ch in value.strip():
+        if len(kept) >= META_MAX:
+            break
+        if ch in MARKUP_HOSTILE:
+            continue
+        if unicodedata.category(ch).startswith("C"):
+            continue
+        kept.append(ch)
+    return "".join(kept).strip()
+
+
+def clean_meta_map(value: Any) -> Dict[str, Any]:
+    """Clean the strings of a metadata map, one level down.
+
+    Keys are cleaned too.  A value that is not a string or a map is kept
+    as it is: the server stores numbers and booleans, and whether a
+    number is safe is not a question about characters.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, item in value.items():
+        name = clean_meta(key)
+        if not name:
+            continue
+        if isinstance(item, str):
+            out[name] = clean_meta(item)
+        elif isinstance(item, dict):
+            out[name] = clean_meta_map(item)
+        else:
+            out[name] = item
+    return out
 
 # The handshake versions this build speaks, newest first.
 #
@@ -323,6 +381,15 @@ def server_handshake(
         raise HandshakeError("invalid role")
     if not ident or len(ident) > 128:
         raise HandshakeError("invalid identity")
+    # A name is [A-Za-z0-9._:@-] and nothing else: the identity is rendered
+    # by every console and stored in every ledger, so the alphabet is the
+    # server's decision and the same one in every implementation
+    # (docs/PROTOCOL.md, "The name of a peer").
+    if not IDENT_RE.fullmatch(ident):
+        raise HandshakeError(
+            f"invalid identity {ident!r}: a name is [A-Za-z0-9._:@-], "
+            "at most 128 characters"
+        )
     if isinstance(client_pub, (bytes, bytearray)) is False or len(client_pub) != 32:
         raise HandshakeError("invalid client public key")
     if not isinstance(cn, (bytes, bytearray)) or len(cn) != 16:
@@ -385,8 +452,9 @@ def server_handshake(
         ack["abi"] = ABI_VERSION
         ack["compat"] = list(HELLO_VERSIONS)
         ack["limits"] = dict(limits or {})
+    meta = clean_meta_map(hello.get("meta", {}) or {})
     if on_peer is not None:
-        on_peer(ident, role, hello.get("meta", {}) or {})
+        on_peer(ident, role, meta)
     stream.send_frame(boot.encrypt(wire.MsgType.HELLO_ACK, b"\x02" + upk.encode(ack)))
 
     sess = session.Session(
@@ -395,7 +463,7 @@ def server_handshake(
     caps = hello.get("caps")
     if not isinstance(caps, (list, tuple)):
         # A version 1 beacon keeps the capability list in the metadata.
-        caps = (hello.get("meta", {}) or {}).get("caps", [])
+        caps = meta.get("caps", [])
     platform = hello.get("plat")
     if not isinstance(platform, dict):
         platform = {}
@@ -404,7 +472,7 @@ def server_handshake(
         peer_id=ident,
         session_id=sid,
         suite=suite,
-        meta=hello.get("meta", {}) or {},
+        meta=meta,
         cfg=ack["cfg"],
         version=version,
         caps=tuple(str(c) for c in caps),
