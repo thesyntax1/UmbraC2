@@ -246,13 +246,13 @@ HELLO fields:
 |---|---|---|
 | `v` | uint | handshake version: 1 or 2 (see §5.1) |
 | `role` | uint | 1 = agent, 2 = operator |
-| `id` | str | agent identity or operator name (≤ 128 bytes) |
+| `id` | str | agent identity or operator name: 1..128 characters of `[A-Za-z0-9._:@-]` (§5.2) |
 | `pub` | bin[32] | client ephemeral X25519 public key |
 | `cn` | bin[16] | client nonce |
 | `ts` | uint | unix seconds; `|now − ts| ≤ max_clock_skew_s` |
 | `suite` | uint | offered AEAD suite |
 | `auth` | bin[32] | `hello_auth` |
-| `meta` | map | agents: `host, os, arch, user, pid, integ, ver`; operators: `client, ver` |
+| `meta` | map | agents: `host, os, arch, user, pid, integ, ver`; operators: `client, ver`. Strings are cleaned (§5.2) |
 | `caps` | list[str] | **version 2 only**: the task kinds the implant can run (§7.2f) |
 | `iver` | str | **version 2 only**: the version of the implant |
 | `abi` | uint | **version 2 only**: the module ABI the implant speaks (§7.2j) |
@@ -306,6 +306,65 @@ answer arrives, so an event that is emitted in the same breath has to find a
 subscriber already; otherwise the console misses the first moments of the
 engagement — the first check-in of the beacon that just woke up, the first
 message of the colleague who is already there.
+
+### 5.2 The name of a peer
+
+A beacon is a program on a host somebody else controls, and it introduces
+itself with whatever string it likes.  Everything it says about itself —
+the identity, the host name, the user, the transport label, the version,
+the platform — is later rendered by a console, a dashboard, a dossier and
+a ledger.  The place to settle what those strings may contain is the door,
+once, not every reader for ever.
+
+**The identity is refused, never repaired.**  A name is 1 to 128
+characters of:
+
+```
+A-Z a-z 0-9 . _ - : @
+```
+
+Host names, user names, generated ids, `host:port` labels and
+`user@domain` names all fit.  A space, a quote, a slash, a tag, a
+newline, a null byte or a non-ASCII rune does not, and the handshake is
+refused with:
+
+```
+invalid identity "<the name, quoted>": a name is [A-Za-z0-9._:@-], at most 128 characters
+```
+
+Repairing the name instead would be the worse answer: two beacons that
+both called themselves something unsafe — `<script>`, `<script>` with a
+different case, `script` — would be repaired into one name, and the
+operator would see two hosts as one.  A refusal is a beacon that does not
+join and a log line that says why.
+
+**Metadata is stripped, not escaped.**  A metadata string is at most 256
+runes; control characters and the six characters a markup reader treats
+as structure — `< > & " '` and backtick — are removed; the result is
+trimmed.  A host name with an accent survives; a host name that wants to
+be an HTML tag becomes the plain word inside it.  Stripping is
+idempotent (`clean(clean(x)) == clean(x)`), so a console may clean what
+it renders and agree with what the server stored.  Maps are cleaned one
+level deep, keys included.
+
+Both are implemented in the same way, in the same places:
+
+| implementation | identity | metadata |
+|---|---|---|
+| `server/internal/link/identity.go` (the product) | `validIdentity`, `identityRefusal` | `cleanMeta`, `cleanMetaMap` |
+| `operator/umbra_cli/handshake.py` (the reference) | `IDENT_RE`, inline in `server_handshake` | `clean_meta`, `clean_meta_map` |
+| `tools/mock_server.py` (the test double) | through the reference handshake | through the reference handshake |
+
+The tests are `server/internal/link/identity_test.go` and
+`tests/test_protocol.py::test_a_name_is_an_alphabet_and_not_a_payload`,
+`::test_metadata_is_stripped_the_same_way_in_python` and
+`::test_the_mock_refuses_a_hostile_beacon_name`.
+
+A reader that displays a name is still expected to escape it, because a
+forward-compatible server may one day accept a name this build refuses.
+The renderer of the dashboard does (`esc()` in `server/internal/dash/index.html`),
+and the page carries a content security policy that names its one inline
+script by hash.
 
 ## 6. Session keys, nonces, rotation
 
@@ -2825,6 +2884,7 @@ body that was changed on the way no longer verifies.
 | bad magic/version/reserved/suite, frame > 1 MiB | connection dropped before AEAD work |
 | AEAD tag failure, nonce mismatch, size mismatch | connection dropped, frame counted as hostile |
 | HELLO version/role/identity/skew/HMAC failure | handshake rejected, source address penalised |
+| HELLO `id` outside the alphabet, or longer than 128 (§5.2) | handshake rejected with `invalid identity ...`, nothing stored, nothing logged under that name |
 | repeated handshake failures from one address (≥ 5) | address banned for 10 minutes |
 | unknown message type | logged and ignored (forward compatibility) |
 | bad upk (non-canonical, truncated, oversized) | connection dropped |

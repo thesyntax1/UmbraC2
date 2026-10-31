@@ -21,6 +21,7 @@ not even the handshake.
 | Implant (foreground service, JNI recon, task execution, pivot callback) | Kotlin + C++ (NDK) | v0.1 core |
 | Operator console + protocol reference implementation | Python 3.9+ | v0.1 core |
 | Protocol spec + cross-language conformance vectors | `docs/`, `contracts/` | v0.1 |
+| What actually works, with the test behind each claim | `docs/VERIFICATION-MATRIX.md` | audited |
 
 Implemented end-to-end in this version: mutual authentication, session
 establishment, beacon check-in, task dispatch and result collection, beacon

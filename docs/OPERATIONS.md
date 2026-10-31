@@ -2547,6 +2547,39 @@ Clock skew is the most common deployment issue: the handshake rejects peers whos
 `ts` differs by more than `max_clock_skew_s` (default 300 s). Keep both sides on
 NTP, or raise the limit if you accept the risk.
 
+## 6a. Building and testing without a Go installation
+
+The server and the Go beacon are pure standard library — `go.mod` has no
+`require` line — so the only thing needed to build them is a toolchain.
+When the machine does not have one, and installing it as root is not an
+option, the repository can fetch a prebuilt one from PyPI:
+
+```bash
+python3 tools/get_go.py                     # verifies a pinned digest, unpacks into ~/.cache/umbra-go
+export PATH="$HOME/.cache/umbra-go/go/bin:$PATH"
+export GOTOOLCHAIN=local GOPROXY=off        # no network, no surprise toolchain upgrade
+```
+
+Then the suites run as they do in CI:
+
+```bash
+make test-go            # go vet + go test ./...  (server)
+make test-py            # pytest; the acceptance test builds the Go modules too
+make check              # the static contract checks (no toolchain needed)
+node tools/dash_smoke.mjs /path/to/node_modules   # the dashboard in jsdom, optional
+```
+
+`pytest` runs `go build`, `go vet` and `go test` inside
+`tests/test_acceptance.py` when a `go` is on the `PATH`, and skips that step
+with a message when there is none: a build that was not attempted is not a
+build that passed.
+
+**This repository's workflow has never run.**  Every job of
+`.github/workflows/ci.yml` fails before its first step with *"The job was not
+started because recent account payments have failed or your spending limit
+needs to be increased"*.  Until that is resolved on the account, the checks
+above are the only ones that exist, and a green badge means nothing.
+
 ## 7. Hardening checklist
 
 - [ ] operator listener bound to loopback and reached over SSH/WireGuard

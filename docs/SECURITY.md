@@ -591,6 +591,65 @@ cycle, never between the check-in and the batch: the server may rotate
 the session keys right after the check-in, and a frame that is sealed with
 the old keys cannot be read.
 
+## 3.14 The dashboard, and the strings the hosts choose
+
+The dashboard is a web page with the operator's token in it, so a script
+that runs inside it runs with the operator's role: it can queue work
+through `/api/rpc`, read the vault's digests and open the engagement.  Two
+locks stand in front of that, and both were missing before this audit.
+
+**The first lock is at the door.**  A beacon names itself, and the name is
+stored, copied into the dossiers, written into the audit ledger and shown
+in every console.  The identity is now an alphabet (`[A-Za-z0-9._:@-]`,
+§5.2 of the protocol) and a name outside it is refused at the handshake, in
+the Go server and in the Python reference alike.  The metadata a beacon
+sends (`host`, `user`, `transport`, `ver`) is stripped of control
+characters and of `< > & " '` and backtick, and bounded to 256 runes.  A
+name that is refused is not repaired: repairing it would let two hosts
+collide on one name.
+
+**The second lock is in the renderer.**  The reach panel of the dashboard
+is an SVG built by concatenating a string, and that string used to carry
+the agent id, the transport label, the pivot mode and the hops of a path
+straight into `innerHTML`.  Any beacon could therefore choose a name like
+`<img src=x onerror=...>` and act with the role of whoever had the page
+open.  Every interpolated value is escaped now (`esc()` in
+`server/internal/dash/index.html`), and the page carries a content
+security policy that names its one inline script by SHA-256 and forbids
+every other source:
+
+```
+default-src 'none'; script-src 'sha256-…'; style-src 'unsafe-inline';
+img-src 'self' data:; connect-src 'self'; form-action 'none';
+base-uri 'none'; frame-ancestors 'none'
+```
+
+The policy is computed from the bytes of the page at startup
+(`buildContentPolicy`), so the header and the page cannot drift apart, and
+`TestThePolicyNamesThePageThatIsServed` fails if they ever do.  Every
+answer also carries `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+DENY`, `Referrer-Policy: no-referrer` (the token may travel in the query
+string) and a permissions policy with nothing granted.
+
+A reader must still escape: a future server may accept a name this build
+refuses, and the renderer is the lock that does not depend on the door.
+
+**The token in the URL.**  The dashboard accepts `?token=` because that is
+what a bookmark is, and it answers `no-store` with `no-referrer` so the
+token does not leak through the history of a link or a referrer header.
+It is still a URL: it appears in a shell history, in a proxy log and in a
+screenshot.  The bearer header is the shape to prefer, and the dashboard
+accepts both.
+
+**What is not covered.**  The dashboard has no CSRF token of its own: it
+authenticates with a bearer token that a cross-origin page cannot read,
+and the API answers JSON that no browser form can post, so the classic
+forgery does not apply — but a browser extension that reads
+`localStorage` is outside every lock on this page.  The page stores the
+token in `localStorage` so a refresh does not ask for it again; an
+operator who shares a machine with somebody else should use a private
+window.
+
 ## 4. Secret handling
 
 * Secrets come from environment variables or `0600` files, never from the JSON
@@ -953,6 +1012,28 @@ exactly the kind of thing the log exists to show.
     next to the state file.  It is not encrypted at rest the way the
     artifact store can be, so a deployment that treats the catalogue as
     sensitive has to protect the data directory itself.
+
+28. **The verification is younger than the code.**  Until this audit the
+    repository had never been compiled: no toolchain was on the machine
+    that wrote it, and the CI workflow has never started a job (*the
+    account's billing block fails every job before its first step*).  The
+    Go modules now build, `go vet` is clean, 25 packages pass, and the
+    acceptance test builds them when a toolchain is present — but
+    twenty-five modules shipped without that, so the *history* of every
+    claim in this document is "read by a person", not "executed by a
+    machine".  `docs/VERIFICATION-MATRIX.md` lists which of them still
+    have no test at all: the pivot manager, the layer-3 tunnel, the
+    extension store, the baseline, the tripwires, the COFF loader, the
+    DNS tunnel, the stager, the alias expansion and the tag rules.
+
+29. **The dashboard's HTML is not the dashboard's policy.**  The content
+    security policy is sent by the server and computed from the page, and
+    the Go test asserts it names the page that is served; no browser is
+    part of the suite, so a policy that a browser interprets differently
+    from the way it was written would be found by a person and not by a
+    test.  The page is plain HTML, one inline script and one inline style
+    sheet, and it is served only by this server — the risk is small, and
+    it is not zero.
 
 ## 6. Hardening advice
 
