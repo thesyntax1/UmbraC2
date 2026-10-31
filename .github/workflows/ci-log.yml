@@ -100,6 +100,19 @@ jobs:
           } > /tmp/android.log
           gradle --no-daemon assembleDebug >> /tmp/android.log 2>&1 || true
           grep -E '^e: |^w: .*error|FAILURE|What went wrong' /tmp/android.log | head -100 > /tmp/android-summary.txt || true
+          # The unit tests of the app (there is no test source set yet, and a
+          # NO-SOURCE is the honest answer to that) and lint, which is the
+          # only checker that looks at the manifest and the permissions.
+          gradle --no-daemon testDebugUnitTest >> /tmp/android.log 2>&1 || true
+          gradle --no-daemon lintDebug >> /tmp/android.log 2>&1 || true
+          grep -E '^[^ ]+: (Error|Warning): |^[0-9]+ errors?, [0-9]+ warnings?|^Lint found' /tmp/android.log | head -200 > /tmp/android-lint.txt || true
+          {
+            echo "=== native libraries in the debug apk ==="
+            unzip -l app/build/outputs/apk/debug/app-debug.apk 2>/dev/null | grep -E 'lib/|classes' || echo "no apk was produced"
+            echo
+            echo "=== unit test tasks ==="
+            grep -E 'Task :app:test.*UnitTest|NO-SOURCE' /tmp/android.log | tail -5 || true
+          } >> /tmp/android-summary.txt
           wc -l /tmp/android.log
 
       - name: publish it
@@ -108,6 +121,7 @@ jobs:
           mkdir -p ci-log
           cp /tmp/android.log ci-log/android-build.log
           [ -f /tmp/android-summary.txt ] && cp /tmp/android-summary.txt ci-log/android-summary.txt
+          [ -f /tmp/android-lint.txt ] && cp /tmp/android-lint.txt ci-log/android-lint.txt
           git config user.name "umbra-ci"
           git config user.email "ci@users.noreply.github.com"
           git checkout -B ci/log-android
