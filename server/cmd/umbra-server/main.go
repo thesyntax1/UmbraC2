@@ -382,6 +382,26 @@ func run() error {
 		}
 	}()
 
+	// The queue of the two-person rule is swept every minute: a request
+	// that nobody decided goes stale on its own, and the ledger on the
+	// disk says so even when nobody opens the queue.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if n := approvals.Expire(); n > 0 {
+					if err := approvals.Save(); err != nil {
+						logger.Warn("the queue of approvals could not be saved", "err", err)
+					}
+				}
+			case <-persist:
+				return
+			}
+		}
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
