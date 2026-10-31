@@ -1,5 +1,12 @@
 name: ci
 
+# NOTE: as of 2026-10-31 every job of this workflow fails before its first
+# step with "The job was not started because recent account payments have
+# failed or your spending limit needs to be increased".  The checks below
+# have never executed; see docs/VERIFICATION-MATRIX.md and the
+# "Building and testing" section of docs/OPERATIONS.md for the commands to
+# run by hand until the account is sorted out.
+#
 # Everything that can be checked without an implant target is checked here.
 # The Android app is built on demand (it needs the SDK/NDK) and is intentionally
 # not part of the default matrix.
@@ -32,6 +39,11 @@ jobs:
         run: python tools/check_consistency.py
       - name: static symbol check (go + rust, no toolchain needed)
         run: python tools/check_symbols.py
+      - name: the verification matrix is current and complete
+        run: |
+          python tools/audit_matrix.py --check --strict
+          python tools/audit_matrix.py --write docs/VERIFICATION.md
+          git diff --exit-code -- docs/VERIFICATION.md
       - name: protocol vectors + end-to-end against the mock server
         run: python -m pytest tests -q
       - name: vectors are reproducible
@@ -51,14 +63,14 @@ jobs:
       - uses: actions/setup-go@v5     # zizmor: ignore[unpinned-uses]
         with:
           go-version: "1.22"
-      # Advisory: `gofmt` was not available when these files were written, so
-      # it may still want to reflow something. Correctness gates below are hard.
-      - name: gofmt (advisory)
-        continue-on-error: true
+      # Hard gate since the tree was formatted with a real toolchain: a
+      # diff that nobody can read is a diff that hides a change.
+      - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
-            echo "::warning::these files need gofmt: $unformatted"
+            echo "::error::these files need gofmt: $unformatted"
+            exit 1
           fi
       - name: vet
         run: go vet ./...
@@ -85,13 +97,13 @@ jobs:
       - uses: actions/setup-go@v5     # zizmor: ignore[unpinned-uses]
         with:
           go-version: "1.22"
-      # Advisory: the same reason as the server job above.
-      - name: gofmt (advisory)
-        continue-on-error: true
+      # Hard gate, for the same reason as the server job above.
+      - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
-            echo "::warning::these files need gofmt: $unformatted"
+            echo "::error::these files need gofmt: $unformatted"
+            exit 1
           fi
       - name: vet
         run: go vet ./...
