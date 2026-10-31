@@ -133,7 +133,7 @@ object Hunt {
     /** Look for every indicator of the catalogue on this phone. */
     fun scan(args: Upk): Report {
         val items = indicators(args)
-        val roots = roots(args)
+        val dirs = roots(args)
         val findings = mutableListOf<Finding>()
         val skipped = mutableListOf<Pair<String, String>>()
         val limits = mutableListOf<String>()
@@ -196,12 +196,12 @@ object Hunt {
         // is hashed and compared.
         val hashes = items.filter { it.kind == "hash" }
         if (hashes.isNotEmpty()) {
-            for (root in roots) {
-                val walk = walk(root, 0, hashes, findings, limits)
-                visited += walk.visited
-                hashed += walk.hashed
-                bytes += walk.bytes
-                if (walk.stopped) break
+            for (root in dirs) {
+                val step = walk(root, 0, hashes, findings, limits)
+                visited += step.visited
+                hashed += step.hashed
+                bytes += step.bytes
+                if (step.stopped) break
             }
         }
 
@@ -212,7 +212,7 @@ object Hunt {
             hashed = hashed,
             bytes = bytes,
             limits = limits,
-            roots = roots.map { it.path },
+            roots = dirs.map { it.path },
         )
     }
 
@@ -242,11 +242,11 @@ object Hunt {
         val children = dir.listFiles() ?: return Walked(visited, hashed, bytes, false)
         for (child in children) {
             if (child.isDirectory) {
-                val walk = walk(child, depth + 1, hashes, findings, limits)
-                visited += walk.visited
-                hashed += walk.hashed
-                bytes += walk.bytes
-                if (walk.stopped) return Walked(visited, hashed, bytes, true)
+                val step = walk(child, depth + 1, hashes, findings, limits)
+                visited += step.visited
+                hashed += step.hashed
+                bytes += step.bytes
+                if (step.stopped) return Walked(visited, hashed, bytes, true)
                 continue
             }
             if (!child.isFile) continue

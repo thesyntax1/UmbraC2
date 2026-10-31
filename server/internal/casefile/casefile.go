@@ -209,9 +209,8 @@ func canonicalEvent(ev Event) string {
 // of artefacts, and nothing that could be changed without breaking the
 // hashes inside it.
 type File struct {
-	Version int        `json:"version"`
-	Case    *Case      `json:"case"`
-	Exports []Artefact `json:"exports,omitempty"`
+	Version int   `json:"version"`
+	Case    *Case `json:"case"`
 }
 
 // Registry holds the cases of one deployment.
@@ -244,10 +243,10 @@ func (r *Registry) Path() string {
 
 // registryFile is what the registry looks like on the disk.
 type registryFile struct {
-	Version int    `json:"version"`
-	Seq     int    `json:"seq"`
+	Version int       `json:"version"`
+	Seq     int       `json:"seq"`
 	SavedAt time.Time `json:"saved_at"`
-	Cases   []*Case `json:"cases"`
+	Cases   []*Case   `json:"cases"`
 }
 
 // Load reads the registry back.
@@ -521,7 +520,7 @@ func (r *Registry) Export(id, dir string) (string, error) {
 	out := filepath.Join(dir, fmt.Sprintf("%s.json", copy.ID))
 	raw, err := json.MarshalIndent(File{Version: 1, Case: copy}, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("case: encode %s: %w", c.ID, err)
+		return "", fmt.Errorf("case: encode %s: %w", copy.ID, err)
 	}
 	tmp := out + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {

@@ -194,8 +194,8 @@ func Score(h Host, now time.Time) Report {
 		rep.Parts = append(rep.Parts, Part{Name: "cadence", Weight: 15, Value: 0,
 			Note: "the host has never answered, so its cadence is unknown"})
 	case h.Interval <= 0:
-		cadence = 15
-		rep.Parts = append(rep.Parts, Part{Name: "cadence", Weight: 15, Value: 10,
+		cadence = 10
+		rep.Parts = append(rep.Parts, Part{Name: "cadence", Weight: 15, Value: cadence,
 			Note: "the interval of the host is unknown"})
 	case h.Jitter > h.Interval:
 		cadence = 5
