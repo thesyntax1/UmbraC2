@@ -2328,6 +2328,57 @@ never searched and never shown.
 The box reads and never changes: it is the read of a viewer, capped at
 two hundred hits, which is the way a box should stay.
 
+## 5w. The rhythm of the beacons
+
+```bash
+umbra rhythm                  # the fleet, clocks first
+umbra rhythm web-01           # the shape of one host, against its plan
+```
+
+An implant calls home on a clock somebody set; the rhythm says what it
+actually does: the window of the check-ins, the mean pause and its
+spread, the coefficient of variation, and a name for the shape — *a
+metronome* (a watcher can set a clock by it), *steady*, *breathing*,
+*wandering*, and *young* for a host with too few beats to say.  The
+per-host view prints the plan (the configured sleep and jitter) next to
+what the wire saw, because the plan and the world disagree often enough
+to be worth seeing side by side.
+
+The rhythm keeps moments, not bytes, and only in memory: the shape of a
+host is the shape of today.  A host that has to hide its breath widens
+its jitter; a host under suspicion that still breathes like a clock is
+the one to slow down.
+
+## 5x. The keys that open more than one door
+
+```bash
+umbra creds-reuse             # the secrets that serve on several hosts
+```
+
+The same password on two hosts is somebody reusing a key: a gift for
+the pivot (one secret, several doors) and a liability at the debrief
+(one hash, the whole domain).  The vault groups its records by the
+digest of the material and the answer says which hosts, which accounts
+and which targets — with only the first twelve hexits of the digest, so
+the proof of the reuse never becomes a second leak of the material.
+
+## 5y. The news of nothing
+
+```bash
+umbra silence add web-01 --seconds 300     # five quiet minutes is news
+umbra silence list                          # the promises, and the quiet
+umbra silence remove s-0001
+```
+
+The alarms of the day fire when something happens; a host that went
+quiet does nothing, and nothing fires no alarm.  The watch turns the
+nothing into an `agent.silent` event — the consoles see it, and a wire
+(`hook add … --kinds agent.silent`) pages the chat room of the team.
+One watch per host, a cooldown so a long absence is one problem and not
+a drumbeat, and the promise survives a restart in `silences.json`.  For
+a host nobody has ever seen, the clock starts when the promise is made:
+ten quiet seconds later, the absence of the ghost is news.
+
 ## 6. Monitoring
 
 ```bash

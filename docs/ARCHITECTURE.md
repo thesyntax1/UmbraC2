@@ -208,21 +208,33 @@ the number of the changes.
 
 `hook` is the ledger of the wires to the outside world: the URLs the
 events of the day are posted to.  The hub hands every event to the
-registry after the consoles and the alert rules (`Hub.SetTap`), and the
+registry after the consoles and the alert rules (`Hub.AddTap`), and the
 registry posts it down every wire that carries its kind, each post in a
 goroutine of its own, signed with the secret of the wire.  The ledger
 keeps the secrets (`0600`, next to the state file), the answers never
 carry them, and a book of the last deliveries says how each post went
 without asking the outside world anything.
 
-Two packages keep no ledger at all, because they only read: `attack` is
-the wall of the techniques the team uses — a table that lies the task
-kinds next to the ATT&CK techniques they belong to, and the walk that
-counts the finished tasks against it — and `search` is the digging box
+`silence` is the ledger of the watches of the silences: the promises
+to say the word when a host has been quiet for too long.  A sweep
+turns a long pause into an `agent.silent` event, so the nothing
+travels the way the something does — to the consoles and down the
+wires.
+
+Four packages keep no ledger at all, because they only read: `attack`
+is the wall of the techniques the team uses — a table that lies the
+task kinds next to the ATT&CK techniques they belong to, and the walk
+that counts the finished tasks against it; `search` is the digging box
 of the records, one needle through the tasks, the notes and the
-credentials, each hit with the piece of the text around it.  What they
-know is computed when it is asked for, so they can never disagree with
-the ledgers they read.
+credentials, each hit with the piece of the text around it; `rhythm`
+is the shape of the check-ins of the beacons, tapped from the same
+stream the wires drink from (`Hub.AddTap`), kept in memory because the
+shape of a host is the shape of today; and the reuse of the keys is
+computed from the vault itself, by digest, when it is asked for.  What
+these four know is computed when it is asked for, so they can never
+disagree with the ledgers they read.
+
+
 
 `otp` is the registry of the second factors of the operators.  The
 secret of an operator lives in the phone of the operator and never

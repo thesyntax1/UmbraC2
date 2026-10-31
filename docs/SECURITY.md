@@ -484,6 +484,35 @@ cannot be trolled for material equality; and the answer caps at two
 hundred hits, so a needle of one letter does not become a copy of the
 server's memory.
 
+## 3.12f The rhythm, the reuse and the silences
+
+Three features of the day are honest about being statements rather
+than shields.
+
+The rhythm is not a sensor of the adversary: it is the mirror of our
+own beacons.  It counts the moments the check-ins arrived and names
+their shape, so the team learns that a beacon can be clocked *before
+the watcher does*, and the fix — a wider jitter, a slower sleep — is
+done at our own console.  The registry keeps moments and not bytes,
+in memory only: the shape of a host is the shape of today, and a
+breach of the server does not hand the watcher the history of how we
+breathed.
+
+The reuse of the keys is computed by digest, never by value: two
+records with the same digest carry the same material, and the proof
+needs twelve hexits, not the secret.  A watcher of the answer learns
+that a key travels; it does not receive the key.
+
+The watches of the silences are honest about their one sharp edge:
+they are timers, not tripwires.  A host suppressed by force is quiet;
+a host whose cable was pulled is the same quiet.  The word the watch
+says is `agent.silent`, and the word means what it says — the silence
+is the news, and the reason of the silence is the operator's to dig
+out.  The watch never talks to the host, so the watch cannot become
+the thing that wakes it: a watch for silence that knocked on the door
+would be a heartbeat of our own making inside the network of somebody
+else.
+
 ## 3.13 The versions of the protocol
 
 The handshake version is not a security boundary, and it is worth saying

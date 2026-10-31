@@ -233,6 +233,39 @@
   </section>
 
   <section>
+    <h2>the rhythm</h2>
+    <div class="scroll">
+      <table id="rhythm">
+        <thead><tr><th>host</th><th>shape</th><th>mean pause</th><th>cv</th><th>beats</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The rhythm is the shape of the check-ins of the beacons; a beacon that calls home like a metronome is a beacon a watcher can set a clock by, so the clocks come first.</div>
+  </section>
+
+  <section>
+    <h2>the silences</h2>
+    <div class="scroll">
+      <table id="silences">
+        <thead><tr><th>watch</th><th>host</th><th>pause</th><th>quiet for</th><th>spoke</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The news of nothing: a host quiet past its promise becomes an event, and the wires can carry it to the pager of the team.</div>
+  </section>
+
+  <section>
+    <h2>the reused keys</h2>
+    <div class="scroll">
+      <table id="reuse">
+        <thead><tr><th>digest</th><th>kind</th><th>count</th><th>hosts</th><th>accounts</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="note">The same secret on two hosts is somebody reusing a key. The groups are named by the first twelve hexits of the digest, so the proof never becomes a second leak.</div>
+  </section>
+
+  <section>
     <h2>workflows</h2>
     <div class="scroll">
       <table id="workflows">
@@ -682,6 +715,72 @@
     });
   }
 
+  // The rhythm of the beacons: the shapes of the fleet, clocks first.
+  function refreshRhythm() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "rhythm.fleet", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#rhythm tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.fleet) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.agent_id || "";
+        tr.insertCell().textContent = row.shape || "";
+        tr.insertCell().textContent = row.beats >= 4
+          ? (row.interval_ms / 1000).toFixed(1) + " s" : "-";
+        tr.insertCell().textContent = row.beats >= 4
+          ? (row.cv / 10).toFixed(1) + "%" : "-";
+        tr.insertCell().textContent = row.beats || 0;
+      });
+    });
+  }
+
+  // The watches of the silences: the promises to worry, and how quiet
+  // each host is now.
+  function refreshSilences() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "silence.list", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#silences tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.watches) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.id || "";
+        tr.insertCell().textContent = row.agent_id || "";
+        tr.insertCell().textContent = (row.seconds || "?") + " s";
+        tr.insertCell().textContent = row.quiet_for !== undefined
+          ? row.quiet_for + " s" : "unseen";
+        tr.insertCell().textContent = row.last_fired
+          ? String(row.last_fired).slice(0, 19).replace("T", " ") : "never";
+      });
+    });
+  }
+
+  // The keys that open more than one door: the reuse of the secrets,
+  // named by twelve hexits and never by value.
+  function refreshReuse() {
+    return api("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "creds.reuse", args: {} })
+    }).then(function (answer) {
+      var body = document.querySelector("#reuse tbody");
+      body.innerHTML = "";
+      ((answer.data && answer.data.groups) || []).forEach(function (row) {
+        var tr = body.insertRow();
+        tr.insertCell().textContent = row.digest || "";
+        tr.insertCell().textContent = row.kind || "";
+        tr.insertCell().textContent = row.count || 0;
+        tr.insertCell().textContent = (row.hosts || []).join(", ");
+        tr.insertCell().textContent = (row.accounts || []).join(", ");
+      });
+    });
+  }
+
   function refreshApprovals() {
     return api("/api/rpc", {
       method: "POST",
@@ -815,6 +914,7 @@
       .then(refreshOperators).then(refreshWorkflows).then(refreshAlerts)
       .then(refreshCanaries).then(refreshBaseline).then(refreshApprovals)
       .then(refreshAttack).then(refreshHooks)
+      .then(refreshRhythm).then(refreshSilences).then(refreshReuse)
       .then(refreshOTP).then(refreshQueue).then(refreshOutput).catch(function (err) {
         state.textContent = "error: " + err.message;
         state.className = "off";

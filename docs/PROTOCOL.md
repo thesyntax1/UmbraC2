@@ -643,6 +643,12 @@ Operator RPC commands, with the minimum role each requires:
 | `hook.test` | operator | ring a wire once, marked `"test": true` so nobody is paged: `id`. The answer is the delivery itself |
 | `attack.coverage` | viewer | the wall of the ATT&CK techniques the team uses: optional `agent`. The answer is every technique with `tasks`, `agents` and `last`, the counts `covered`/`total`, and the `unmapped` kinds nobody taught the wall |
 | `search.query` | viewer | dig one needle through the tasks, the notes and the credentials: `query`, optional `scope` (`all`, `tasks`, `notes` or `creds`), `agent` and `limit` (≤ 200). A needle of small letters matches any casing; a capital means what it says. The secret of a credential is never searched and never shown |
+| `rhythm.get` | viewer | the shape of the check-ins of one host: `agent`; the window, the mean and the spread of the pauses, the coefficient of variation (per-mille), the name of the shape and the expected next beat, next to the cadence the operator asked for |
+| `rhythm.fleet` | viewer | the shapes of the fleet, clocks first: the beacon a watcher can set a watch by comes before the one that wanders; hosts too young for a shape come last |
+| `creds.reuse` | viewer | the secrets that serve on more than one host, grouped by digest: `digest` (first 12 hexits), `count`, `hosts`, `accounts`, `targets`, `kind`. Never a value |
+| `silence.add` | operator | promise to worry about a quiet host: `agent`, `seconds` (5..604800), optional `cooldown` (default ten times the pause). One watch per host |
+| `silence.list` | viewer | the watches, each with how quiet its host is now and when it last spoke |
+| `silence.remove` | operator | forget a watch: `id` |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -1538,6 +1544,7 @@ The kinds the server emits:
 | `agent.new` | a host checked in for the first time | the inventory of the host |
 | `agent.online` | a host is back | the inventory of the host |
 | `agent.offline` | a host has been quiet for longer than its grace window | — |
+| `agent.silent` | a silence watch fired: a host has been quiet past the pause an operator promised to worry about | `watch`, `seconds`, `quiet_for`, `promised` |
 | `agent.heartbeat` | the host is alive between two check-ins | `version`, `busy`, `abi` |
 | `agent.policy` | the cadence of the host was changed | `sleep`, `jitter` |
 | `agent.route` | the route of the host was changed | `primary`, `fallback`, `front`, `inspect` |
@@ -2339,6 +2346,43 @@ look like words — the screenshot, the memory read — stay unsearched,
 and the secret of a credential is never part of what is searched or
 shown.  The box reads and never changes, so it is the read of a
 viewer.
+
+**The rhythm of the beacons.**  An implant calls home on a clock
+somebody set: a sleep and a jitter.  What it actually does is measured
+by the rhythm (`rhythm.get`, `rhythm.fleet`): the hub hands every
+heartbeat to the registry, which keeps the moments — two hundred and
+fifty-six per host, and moments only, never what a beat carried — and
+answers with the mean pause, the spread, the coefficient of variation
+and a name for the shape.  A beacon that calls home like a metronome
+is a beacon a watcher can set a clock by, so the fleet view puts the
+clocks first; a host with fewer than four beats is "young", because
+two check-ins are not a shape.  The shape of a host is kept in memory
+on purpose: it is the shape of today, not the archaeology of last
+month.
+
+**The keys that open more than one door.**  The vault keeps the digest
+of every material it holds, and `creds.reuse` groups the records by it:
+the same secret on two hosts is somebody reusing a key — a password a
+pivot can try on the next host, a hash that appears where the first
+breach was, a token that tells the blue team how far the same
+credential travels.  The answer names the first twelve hexits of the
+digest, the count, the kind, the hosts, the accounts and the targets —
+never a value, so the proof of the reuse does not become a second leak
+of the material.
+
+**The news of nothing.**  The alarms of the day fire when something
+happens; a host that went quiet does nothing, and nothing fires no
+alarm.  A silence watch is the promise to worry: `silence.add` names a
+host and the pause that is news (one watch per host — nobody should
+wonder which of two promises is the real one), and a sweep of the
+server turns a pause longer than that into an `agent.silent` event, so
+the consoles and the wires learn of the nothing the way they learn of
+everything.  A fired watch holds its peace for its cooldown, because
+an absent host is one problem, not a drumbeat.  The watch reads the
+memory of the day and never talks to the host: a watch for silence
+that knocked on the door would wake what it watches.  The ledger lives
+beside the state file, written for the server alone, because a restart
+must not forget who promised to worry.
 
 **The file of a host.**  `dossier.get` puts everything the server knows
 about one host on one page: the identity, the health with the reasons
