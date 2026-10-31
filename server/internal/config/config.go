@@ -165,7 +165,7 @@ type Server struct {
 	// the live one.  Zero means the default of the audit package; the
 	// policy is a bound on the disk, so an engagement that runs for a
 	// year does not fill one.
-	AuditKeepFiles int `json:"audit_keep_files"`
+	AuditKeepFiles int    `json:"audit_keep_files"`
 	LogLevel       string `json:"log_level"`
 
 	// ArmoryDir caches the signed extensions, ArmoryKey is the PEM file

@@ -55,7 +55,7 @@ type Config struct {
 // is given and reports what they produced.
 type Beacon struct {
 	cfg      Config
-	started time.Time
+	started  time.Time
 	cycles   uint64
 	failures uint64
 	stop     bool

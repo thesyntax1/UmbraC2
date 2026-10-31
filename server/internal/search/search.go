@@ -68,7 +68,7 @@ type Hit struct {
 	// "text" or "author" for a note, the named fields for a credential.
 	Field string `json:"field"`
 	// Snippet is the piece of the text around the needle.
-	Snippet	string `json:"snippet"`
+	Snippet string `json:"snippet"`
 	// At is the moment the record belongs to.
 	At time.Time `json:"at,omitempty"`
 }

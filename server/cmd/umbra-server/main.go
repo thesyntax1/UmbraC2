@@ -30,9 +30,9 @@ import (
 	"time"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
+	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
-	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
@@ -53,8 +53,8 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
 	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
 	"github.com/thesyntax1/UmbraC2/server/internal/silence"
-	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
+	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 )
 
@@ -76,7 +76,7 @@ func run() error {
 		genPSK    = flag.Bool("gen-psk", false, "print a fresh 32-byte agent PSK and exit")
 		genToken  = flag.Bool("gen-token", false, "print a fresh 32-byte operator token and exit")
 		genConfig = flag.Bool("gen-config", false, "print the default configuration as JSON and exit")
-	genSPKI  = flag.String("gen-spki", "", "print the pinned public key of a certificate and exit")
+		genSPKI   = flag.String("gen-spki", "", "print the pinned public key of a certificate and exit")
 		printVer  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()

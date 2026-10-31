@@ -30,14 +30,14 @@ type Process struct {
 // instead of being filled with a plausible value.
 func Inventory() map[string]any {
 	inv := map[string]any{
-		"os":     osName(),
-		"arch":   archName(),
-		"cpus":   uint64(runtime.NumCPU()),
-		"pid":    uint64(os.Getpid()),
-		"ppid":   uint64(os.Getppid()),
-		"go":     runtime.Version(),
-		"iver":   Version,
-		"agent":  "go",
+		"os":    osName(),
+		"arch":  archName(),
+		"cpus":  uint64(runtime.NumCPU()),
+		"pid":   uint64(os.Getpid()),
+		"ppid":  uint64(os.Getppid()),
+		"go":    runtime.Version(),
+		"iver":  Version,
+		"agent": "go",
 	}
 	if host, err := os.Hostname(); err == nil && host != "" {
 		inv["host"] = host

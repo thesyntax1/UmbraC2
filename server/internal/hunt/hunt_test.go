@@ -11,10 +11,10 @@ import (
 func TestTheCatalogueKeepsTheIndicators(t *testing.T) {
 	c := hunt.New()
 	first, err := c.Add(hunt.Indicator{
-		Kind:  hunt.KindHash,
-		Value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		Label: "the loader of the ticket of March",
-		Note:  "seen on web-01",
+		Kind:   hunt.KindHash,
+		Value:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		Label:  "the loader of the ticket of March",
+		Note:   "seen on web-01",
 		Source: "TICKET-1138",
 	})
 	if err != nil {

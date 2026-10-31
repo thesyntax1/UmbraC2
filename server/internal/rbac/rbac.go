@@ -59,10 +59,10 @@ func AtLeast(have, want string) bool {
 // anything.
 var requirements = map[string]string{
 	// ---- read-only ----------------------------------------------------
-	"ping":           Viewer,
-	"whoami":         Viewer,
-	"server.stats":   Viewer,
-	"audit.tail":     Viewer,
+	"ping":         Viewer,
+	"whoami":       Viewer,
+	"server.stats": Viewer,
+	"audit.tail":   Viewer,
 	// The verification of the ledger walks the whole file, so it is the
 	// work of an operator: a viewer reads the trail, an operator proves
 	// that it has not been edited.
@@ -150,7 +150,7 @@ var requirements = map[string]string{
 	"forensics.wipe": Operator,
 	// The self-destruction and the decommissioning are the end of an
 	// engagement on that host, so they belong to the person who owns it.
-	"forensics.self":        Admin,
+	"forensics.self":         Admin,
 	"forensics.decommission": Admin,
 	// Arming the dead man's switch ends the implant on the host when the
 	// operator goes quiet: it is the end of an engagement waiting to
@@ -163,9 +163,9 @@ var requirements = map[string]string{
 	"hunt.list": Viewer,
 	// Filling the catalogue and sending it to a host is the work of the
 	// hunt, so it is an operator action.
-	"hunt.add":   Operator,
+	"hunt.add":    Operator,
 	"hunt.remove": Operator,
-	"hunt.sweep": Operator,
+	"hunt.sweep":  Operator,
 
 	// ---- the health of the fleet ----------------------------------------
 	// The score of the hosts is a read of the inventory: it says how
@@ -186,9 +186,9 @@ var requirements = map[string]string{
 	// The second factor of the operator.  Reading who has one is a
 	// read; making one and taking it away changes the way the team
 	// logs in, so it is the work of an admin.
-	"operator.otp.status":  Viewer,
-	"operator.otp.rotate":  Operator,
-	"operator.otp.remove":  Operator,
+	"operator.otp.status": Viewer,
+	"operator.otp.rotate": Operator,
+	"operator.otp.remove": Operator,
 
 	// The notes of the team: reading them is the read of a viewer,
 	// writing them the work of the operator, and taking them away
@@ -225,16 +225,16 @@ var requirements = map[string]string{
 	// door are reads; the watches of the silences are promises to
 	// worry, and a promise is written and taken away by the operator
 	// who made it.
-	"rhythm.get":     Viewer,
-	"rhythm.fleet":   Viewer,
-	"creds.reuse":    Viewer,
-	"silence.add":    Operator,
-	"silence.list":   Viewer,
-	"silence.remove": Operator,
-	"onboard.add":    Operator,
-	"onboard.list":   Viewer,
-	"onboard.remove": Operator,
-	"onboard.run":    Operator,
+	"rhythm.get":      Viewer,
+	"rhythm.fleet":    Viewer,
+	"creds.reuse":     Viewer,
+	"silence.add":     Operator,
+	"silence.list":    Viewer,
+	"silence.remove":  Operator,
+	"onboard.add":     Operator,
+	"onboard.list":    Viewer,
+	"onboard.remove":  Operator,
+	"onboard.run":     Operator,
 	"pivot.map":       Viewer,
 	"artifact.verify": Viewer,
 

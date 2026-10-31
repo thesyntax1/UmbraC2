@@ -39,7 +39,7 @@ var (
 	// LabelAttest separates the signature of a report from every other
 	// signature of the framework.
 	LabelAttest = []byte("umbra/w1/attest")
-	LabelRekey     = []byte("umbra/v1/rekey")
+	LabelRekey  = []byte("umbra/v1/rekey")
 )
 
 var (
