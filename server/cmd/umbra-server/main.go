@@ -38,6 +38,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
+	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/dash"
 	"github.com/thesyntax1/UmbraC2/server/internal/dnstun"
 	"github.com/thesyntax1/UmbraC2/server/internal/hook"
@@ -233,8 +234,25 @@ func run() error {
 	// care.
 	otpRegistry := otp.New()
 	otpRegistry.SetPath(otpPath(cfg.Server.DataFile))
+	// The secrets are sealed at rest when the server was given a vault
+	// key: a file that is only 0600 is protected against the wrong
+	// reader and not against the disk itself, and a backup of the disk is
+	// a second copy of every second factor the team owns.  The key is
+	// derived with a label of its own, so a sealed secret of the second
+	// factors never opens with the key of the credentials.
+	if raw := strings.TrimSpace(cfg.Server.VaultKey); raw != "" {
+		key := crypt.HkdfSHA256([]byte(raw), []byte("umbra/v1/otp"), []byte("second-factor"), 32)
+		if err := otpRegistry.SetKey(key); err != nil {
+			logger.Warn("the registry of the second factors stays unsealed", "err", err)
+		}
+	}
 	if err := otpRegistry.Load(); err != nil {
 		logger.Warn("the registry of the second factors could not be read", "err", err)
+	}
+	if otpRegistry.Sealed() {
+		logger.Info("the registry of the second factors is sealed at rest")
+	} else if len(cfg.Server.VaultKey) == 0 {
+		logger.Warn("the registry of the second factors is not sealed: set vault_key")
 	}
 	srv.SetOTP(otpRegistry)
 

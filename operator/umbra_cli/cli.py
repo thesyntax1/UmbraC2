@@ -2005,15 +2005,36 @@ def print_audit_verification(payload: Dict[str, Any], stream: Any = None) -> Non
     out = stream or sys.stdout
     entries = int(payload.get("entries", 0) or 0)
     head = str(payload.get("head", "") or "")
+    files = int(payload.get("files", 0) or 0)
+    # The anchor and the carried head are the two checks the chain alone
+    # cannot make: the first is the ledger's own memory, the second is
+    # the operator's, and only the second is out of the server's reach.
+    anchor = ""
+    if payload.get("anchored"):
+        if payload.get("anchor_ok"):
+            anchor = " ; the anchor still holds"
+        else:
+            anchor = " ; THE ANCHOR DOES NOT HOLD (the ledger is not the one it was)"
+    carried = ""
+    if payload.get("expected"):
+        if payload.get("matched"):
+            carried = " ; it ends where the carried head said"
+        else:
+            carried = " ; IT DOES NOT END WHERE THE CARRIED HEAD SAID"
+    if payload.get("gaps"):
+        gaps = ", ".join(f".{g}" for g in payload["gaps"])
+        print(f"the ledger is missing the generations {gaps}: a rotation was "
+              "removed after the fact", file=out)
     if payload.get("ok"):
-        print(f"the ledger is intact: {entries} entries, the chain ends at "
-              f"{head[:16]}", file=out)
+        where = f" in {files} file(s)" if files else ""
+        print(f"the ledger is intact: {entries} entries{where}, the chain "
+              f"ends at {head[:16]}{anchor}{carried}", file=out)
         return
     broken = int(payload.get("broken_at", 0) or 0)
     reason = str(payload.get("reason", "") or "the chain is broken")
     print(f"the ledger is broken at line {broken}: {reason}", file=out)
     print("the entries before that line are the ones that can still be "
-          "trusted", file=out)
+          f"trusted{anchor}{carried}", file=out)
 
 
 def print_hunt_indicators(payload: Dict[str, Any], stream: Any = None) -> None:
@@ -3954,6 +3975,9 @@ def build_parser() -> argparse.ArgumentParser:
     audit_cmd.add_argument("--verify", action="store_true",
                            help="check the chain of the ledger: a line that "
                                 "was edited after the fact breaks it")
+    audit_cmd.add_argument("--expect", default="",
+                           help="the head you wrote down somewhere else: the "
+                                "ledger must end where it said it would")
 
     # ---- the hunt: the indicators of the team -------------------------
     hunt_cmd = sub.add_parser("hunt",
@@ -5468,7 +5492,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             emit(client.stats())
         elif args.cmd == "audit":
             if args.verify:
-                payload = client.audit_verify()
+                payload = client.audit_verify(expect=args.expect)
                 if args.json:
                     emit(payload)
                 else:

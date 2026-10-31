@@ -497,17 +497,39 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if s.audit == nil || !s.audit.Enabled() {
 			return fail("audit.verify: this server has no audit log")
 		}
-		result, err := audit.Verify(s.audit.Path())
+		// The head the operator carried home is the one thing a rewrite
+		// of the ledger cannot satisfy; an empty one asks the chain
+		// alone.
+		expect := strings.TrimSpace(stringArg(args, "expect"))
+		result, err := audit.VerifyAgainst(s.audit.Path(), expect)
 		if err != nil {
 			return fail("audit.verify: %v", err)
 		}
-		return reply(upk.Map{
+		out := upk.Map{
 			"entries":   int64(result.Entries),
 			"ok":        result.OK,
 			"broken_at": int64(result.BrokenAt),
 			"head":      result.Head,
 			"reason":    result.Reason,
-		})
+			"files":     int64(result.Files),
+			"anchored":  result.Anchored,
+			"anchor_ok": result.AnchorOK,
+		}
+		if result.Anchor != "" {
+			out["anchor"] = result.Anchor
+		}
+		if len(result.Gaps) > 0 {
+			gaps := make([]any, 0, len(result.Gaps))
+			for _, gap := range result.Gaps {
+				gaps = append(gaps, int64(gap))
+			}
+			out["gaps"] = gaps
+		}
+		if result.Matcher() != nil {
+			out["expected"] = result.Expected
+			out["matched"] = *result.Matcher()
+		}
+		return reply(out)
 
 	case "server.stats":
 		return reply(toUpkMap(s.Hub.Stats()))
@@ -1123,17 +1145,37 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		// ask again, and the answer is the task it already made.  The
 		// key is read before anything is queued, so a retried click
 		// cannot leave two tasks behind.
-		idem := strings.TrimSpace(stringArg(args, "idem"))
+		idem := idemNormalize(stringArg(args, "idem"))
+		// The key is never cut: two long keys that share a prefix are
+		// two different questions, and cutting them would answer one
+		// with the other.
 		if len(idem) > idemKeyMax {
 			return fail("task.submit: the idem key is longer than %d characters", idemKeyMax)
 		}
-		if taskID, seen := s.idemLookup(idem); seen {
+		// The claim and the look are one critical section: a second
+		// console that arrives while the first is still queueing waits
+		// for its answer instead of queueing a second task.
+		if taskID, status := s.idemClaim(idem); status == idemDone {
 			return reply(upk.Map{
 				"task_id":   taskID,
 				"duplicate": true,
 				"by":        op.Name,
 				"idem":      idem,
 			})
+		} else if status == idemBusy {
+			return fail("task.submit: the same idem key is still being queued; ask again in a moment")
+		}
+		// A claim is a promise that is either kept or given back: a
+		// submission that failed queued nothing, so its key must not
+		// answer a retry with a task that does not exist.
+		claimed := idem != ""
+		settled := false
+		if claimed {
+			defer func() {
+				if !settled {
+					s.idemAbort(idem)
+				}
+			}()
 		}
 		if err := forensicGuard(role, kind); err != nil {
 			return fail("task.submit: %v", err)
@@ -1158,7 +1200,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		// the shelf the task came from if there is one.
 		source, _ := args["source"].(string)
 		s.ledgerAdd(t.ID, t.AgentID, t.Kind, op.Name, source)
-		s.idemRemember(idem, t.ID)
+		s.idemFinish(idem, t.ID)
+		settled = true
 		out := upk.Map{"task_id": t.ID, "agent_id": t.AgentID, "state": t.State,
 			"by": op.Name, "duplicate": false}
 		if source != "" {
@@ -3487,6 +3530,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		if s.OTP == nil {
 			return fail("operator.otp.status: this server has no registry of second factors")
 		}
+		sealed := s.OTP.Sealed()
 		items := s.OTP.Status()
 		rows := make([]any, 0, len(items))
 		for _, st := range items {
@@ -3499,7 +3543,11 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				"age":      st.Age,
 			})
 		}
-		return reply(upk.Map{"operators": rows, "count": int64(len(rows))})
+		return reply(upk.Map{
+			"operators": rows,
+			"count":     int64(len(rows)),
+			"sealed":    sealed,
+		})
 
 	case "operator.otp.remove":
 		// The second factor of an operator is taken away.

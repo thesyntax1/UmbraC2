@@ -25,12 +25,15 @@
 package otp
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- HMAC-SHA1 is what RFC 6238 asks for.
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,8 +125,14 @@ type Registry struct {
 	loaded  bool
 	nowFunc func() time.Time
 	// used is the last step a code was spent on, per operator: the
-	// second factor proves itself once, not once per window.
-	used map[string]int64
+	// second factor proves itself once, not once per window.  It is
+	// written to the disk with the secrets, because a replay that a
+	// restart forgets is a replay.
+	used    map[string]int64
+	// aead seals the secrets at rest.  A registry without one keeps
+	// them in the clear behind 0600, which is a lab posture and says
+	// so: Sealed is false and the status of every operator reports it.
+	aead cipher.AEAD
 }
 
 // New creates an empty registry.
@@ -141,6 +150,77 @@ func (r *Registry) SetPath(path string) {
 	defer r.mu.Unlock()
 	r.path = path
 }
+
+// SetKey seals the secrets at rest.
+//
+// The key is derived by the caller (HKDF over the vault key, with a
+// label of its own), so the file of the second factors and the vault of
+// the credentials never share a key.  A key of the wrong length is
+// refused and the registry keeps its unsealed posture rather than
+// silently pretending.
+func (r *Registry) SetKey(key []byte) error {
+	if len(key) == 0 {
+		return errors.New("otp: the key is empty")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return fmt.Errorf("otp: the key: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return fmt.Errorf("otp: the key: %w", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.aead = aead
+	return nil
+}
+
+// Sealed reports whether the secrets are encrypted at rest.
+func (r *Registry) Sealed() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.aead != nil
+}
+
+// sealLabel is the associated data of a sealed secret: a ciphertext made
+// for one purpose cannot be read as one made for another.
+const sealLabel = "umbra/otp/v1"
+
+// sealSecret encrypts one secret into the envelope of the file.
+//
+// The nonce travels in front of the ciphertext, so the same secret sealed
+// twice does not look the same twice.
+func sealSecret(aead cipher.AEAD, secret string) (string, error) {
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("otp: no randomness: %w", err)
+	}
+	out := aead.Seal(nonce, nonce, []byte(secret), []byte(sealLabel))
+	return sealedPrefix + hex.EncodeToString(out), nil
+}
+
+// openSecret decrypts one secret of the file.
+func openSecret(aead cipher.AEAD, value string) (string, error) {
+	if aead == nil {
+		return "", errors.New("otp: the file is sealed but the server has no key")
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(value, sealedPrefix))
+	if err != nil {
+		return "", fmt.Errorf("otp: the sealed secret: %w", err)
+	}
+	if len(raw) < aead.NonceSize() {
+		return "", errors.New("otp: the sealed secret is too short")
+	}
+	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], []byte(sealLabel))
+	if err != nil {
+		return "", errors.New("otp: the sealed secret does not open with this key")
+	}
+	return string(plain), nil
+}
+
+// sealedPrefix marks a secret that was sealed in the file.
+const sealedPrefix = "sealed:"
 
 // Path is where the registry is kept, empty when it is not kept.
 func (r *Registry) Path() string {
@@ -174,16 +254,51 @@ func (r *Registry) Load() error {
 		return fmt.Errorf("otp: parse %s: %w", path, err)
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.byOp = make(map[string]Secret, len(file.Secrets))
+	aead := r.aead
+	r.mu.Unlock()
+	// A sealed file without a key is refused, not silently emptied: a
+	// registry that comes up empty would turn the second factor off for
+	// the whole team without saying so.
+	sealed := file.Sealed || strings.HasPrefix(firstSecret(file.Secrets), sealedPrefix)
+	if sealed && aead == nil {
+		return errors.New("otp: the registry is sealed but the server has no key: set vault_key")
+	}
+	out := make(map[string]Secret, len(file.Secrets))
 	for _, sec := range file.Secrets {
 		if sec.Operator == "" || sec.Secret == "" {
 			continue
 		}
-		r.byOp[sec.Operator] = sec
+		if strings.HasPrefix(sec.Secret, sealedPrefix) {
+			plain, err := openSecret(aead, sec.Secret)
+			if err != nil {
+				return fmt.Errorf("otp: %s: %w", sec.Operator, err)
+			}
+			sec.Secret = plain
+		}
+		out[sec.Operator] = sec
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.byOp = out
+	// The steps that were already spent come back with the secrets: a
+	// restart must not give a code of this window a second life.
+	r.used = make(map[string]int64, len(file.Used))
+	for op, step := range file.Used {
+		if _, ok := out[op]; ok {
+			r.used[op] = step
+		}
 	}
 	r.loaded = true
 	return nil
+}
+
+// firstSecret is the value of the first secret of a file, for the reading
+// of a seal written by a build that did not say so in the header.
+func firstSecret(secrets []Secret) string {
+	if len(secrets) == 0 {
+		return ""
+	}
+	return secrets[0].Secret
 }
 
 // registryFile is what the registry looks like on the disk.
@@ -191,9 +306,15 @@ func (r *Registry) Load() error {
 // The version guards against a downgrade: a file written by a newer
 // build may hold fields this one would silently drop.
 type registryFile struct {
-	Version int      `json:"version"`
+	Version int       `json:"version"`
+	Sealed  bool      `json:"sealed,omitempty"`
 	SavedAt time.Time `json:"saved_at"`
-	Secrets []Secret `json:"secrets"`
+	Secrets []Secret  `json:"secrets"`
+
+	// Used is the last step a code was spent on, per operator.  It is
+	// written with the secrets so a restart cannot revive a code that
+	// was already used.
+	Used map[string]int64 `json:"used,omitempty"`
 }
 
 // Save writes the registry to the disk.
@@ -203,19 +324,37 @@ type registryFile struct {
 func (r *Registry) Save() error {
 	r.mu.RLock()
 	path := r.path
+	aead := r.aead
 	secrets := make([]Secret, 0, len(r.byOp))
 	for _, sec := range r.byOp {
 		secrets = append(secrets, sec)
+	}
+	used := make(map[string]int64, len(r.used))
+	for op, step := range r.used {
+		if _, ok := r.byOp[op]; ok {
+			used[op] = step
+		}
 	}
 	r.mu.RUnlock()
 	if path == "" {
 		return nil
 	}
+	if aead != nil {
+		for i := range secrets {
+			sealed, err := sealSecret(aead, secrets[i].Secret)
+			if err != nil {
+				return err
+			}
+			secrets[i].Secret = sealed
+		}
+	}
 	sort.Slice(secrets, func(i, j int) bool { return secrets[i].Operator < secrets[j].Operator })
 	raw, err := json.MarshalIndent(registryFile{
-		Version: 1,
+		Version: 2,
+		Sealed:  aead != nil,
 		SavedAt: time.Now().UTC(),
 		Secrets: secrets,
+		Used:    used,
 	})
 	if err != nil {
 		return fmt.Errorf("otp: the registry could not be written: %w", err)
@@ -365,16 +504,37 @@ func (r *Registry) VerifyOnce(operator, code string, now time.Time) bool {
 		return false
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.used == nil {
 		r.used = make(map[string]int64, 8)
 	}
 	if step <= r.used[sec.Operator] {
 		// The code is right and already spent: a console that lost
 		// its session asks again with the next code, not this one.
+		r.mu.Unlock()
 		return false
 	}
 	r.used[sec.Operator] = step
+	// A step older than a day is not a code anybody can present: the map
+	// is pruned so a long-lived server does not remember a year of them.
+	floor := now.UTC().Unix()/Period - 2*24*60*60/Period
+	for op, spent := range r.used {
+		if spent < floor {
+			delete(r.used, op)
+		}
+	}
+	path := r.path
+	r.mu.Unlock()
+	// The spent step is written down: a restart must not give a code of
+	// the window it was used in a second life.  A registry without a file
+	// keeps the memory in the process, which is what a lab asks for.
+	if path != "" {
+		if err := r.Save(); err != nil {
+			// The code was right and it is spent in memory; a disk
+			// that cannot be written is logged by the caller of the
+			// handshake, and the memory still refuses the replay.
+			return true
+		}
+	}
 	return true
 }
 

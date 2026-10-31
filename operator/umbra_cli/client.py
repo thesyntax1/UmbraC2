@@ -1277,14 +1277,20 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data
 
-    def audit_verify(self) -> Dict[str, Any]:
+    def audit_verify(self, expect: str = "") -> Dict[str, Any]:
         """Check the chain of the ledger of the server.
 
         The ledger of the operator is a chain of hashes: a line that was
         edited after the fact breaks the chain, and the answer says which
-        line it was.
+        line it was.  ``expect`` is the head the operator wrote down
+        somewhere the server cannot reach: a ledger that was rebuilt from
+        the first line to the last verifies as a chain and still does not
+        end where the carried head said it did.
         """
-        res = self.rpc("audit.verify")
+        payload: Dict[str, Any] = {}
+        if expect:
+            payload["expect"] = expect
+        res = self.rpc("audit.verify", payload)
         if not res.ok:
             raise OperatorError(res.error)
         return res.data or {}

@@ -6268,24 +6268,40 @@ class MockServer:
                        "source": new_task.get("source", "")})
 
         if cmd == "audit.verify":
-            # The verification of the ledger: the chain is walked and the
-            # first broken link is named.
+            # The verification of the ledger: the chain is walked, the
+            # first broken link is named, and a head the operator carried
+            # from the outside is compared with the end of the walk.
+            expect = str(args.get("expect", "") or "").strip()
             with self._lock:
                 entries = list(self.audit_entries)
             head = ""
+            broken = 0
+            reason = ""
             for number, entry in enumerate(entries, 1):
                 want = _audit_chain_hash(head, entry)
                 if want != entry.get("hash", ""):
-                    return ok({
-                        "entries": number - 1,
-                        "ok": False,
-                        "broken_at": number,
-                        "head": head,
-                        "reason": "the entry does not follow the one before it",
-                    })
+                    broken = number
+                    reason = "the entry does not follow the one before it"
+                    break
                 head = str(entry.get("hash", ""))
-            return ok({"entries": len(entries), "ok": True, "broken_at": 0,
-                       "head": head, "reason": ""})
+            answer = {
+                "entries": len(entries) if not broken else broken - 1,
+                "ok": not broken,
+                "broken_at": broken,
+                "head": head,
+                "reason": reason,
+                "files": 1,
+                "anchored": False,
+                "anchor_ok": False,
+            }
+            if expect:
+                answer["expected"] = expect
+                answer["matched"] = expect == head
+                if expect != head:
+                    answer["ok"] = False
+                    answer["reason"] = (
+                        "the ledger does not end where the expected head said it did")
+            return ok(answer)
 
         if cmd == "audit.tail":
             # The mock keeps the same append-only JSONL format in memory so the

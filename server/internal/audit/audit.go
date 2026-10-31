@@ -332,14 +332,39 @@ func (l *Logger) readHead() string {
 // a fresh file follows the last entry of the file before it, so the
 // verification has to walk the rotations before the current file.
 func ledgerFiles(path string) []string {
-	out := make([]string, 0, 6)
-	for i := 5; i >= 1; i-- {
+	out := make([]string, 0, MaxKeep+1)
+	for i := MaxKeep; i >= 1; i-- {
 		name := fmt.Sprintf("%s.%d", path, i)
 		if _, err := os.Stat(name); err == nil {
 			out = append(out, name)
 		}
 	}
 	return append(out, path)
+}
+
+// ledgerGaps says which generations the chain is missing.
+//
+// A rotation walks the files up one step, so the generations of a ledger
+// are a run: .1, .2, .3 without a hole.  A hole is either a file that was
+// deleted after the fact — which is exactly the thing the ledger exists
+// to survive — or a rotation that failed half way.  Either way the
+// verification has to say it instead of walking on quietly.
+func ledgerGaps(path string) []int {
+	present := map[int]bool{}
+	highest := 0
+	for i := 1; i <= MaxKeep; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", path, i)); err == nil {
+			present[i] = true
+			highest = i
+		}
+	}
+	gaps := make([]int, 0, 2)
+	for i := 1; i <= highest; i++ {
+		if !present[i] {
+			gaps = append(gaps, i)
+		}
+	}
+	return gaps
 }
 
 // lastHash returns the hash of the last entry of a file of the ledger.
@@ -419,8 +444,25 @@ func (l *Logger) Record(e Entry) error {
 	l.lines++
 	l.head = e.Hash
 	l.pushLocked(e)
+	// The anchor is written every so often and at every stop: it is the
+	// one line of the ledger that is cheap to carry home, and the check
+	// that survives a rewrite of the rest.
+	if l.lines%anchorEvery == 0 {
+		if err := WriteAnchor(l.path, l.head); err != nil {
+			// A ledger that cannot write its anchor is still a ledger:
+			// the chain is on the disk, and the next stop tries again.
+			_ = err
+		}
+	}
 	return nil
 }
+
+// anchorEvery is how many entries pass between two anchors.
+//
+// One anchor per few hundred commands is a file small enough to copy into
+// a ticket by hand, and recent enough that a rewrite of yesterday's tail
+// cannot hide behind it.
+const anchorEvery = 256
 
 // VerifyResult is the answer of the verification of a ledger.
 type VerifyResult struct {
@@ -434,6 +476,21 @@ type VerifyResult struct {
 	Head string `json:"head"`
 	// Reason says why the chain broke.
 	Reason string `json:"reason,omitempty"`
+	// Files is how many files of the ledger were walked, rotations
+	// included: the check covers the whole policy, not the current file.
+	Files int `json:"files"`
+	// Gaps are the generations the chain is missing (a deleted rotation).
+	Gaps []int `json:"gaps,omitempty"`
+	// Anchor is the head the anchor file remembers, when there is one.
+	Anchor string `json:"anchor,omitempty"`
+	// Anchored says whether the anchor was compared, and AnchorOK
+	// whether the ledger still agrees with it.
+	Anchored bool `json:"anchored"`
+	AnchorOK bool `json:"anchor_ok"`
+	// Expected is the head the caller brought from the outside, and
+	// Matched says whether the ledger ends where that head said it did.
+	Expected string `json:"expected,omitempty"`
+	Matched  *bool  `json:"matched,omitempty"`
 }
 
 // Verify walks a ledger and checks the chain of its hashes.
@@ -442,14 +499,28 @@ type VerifyResult struct {
 // an entry that was edited, removed or added after the fact cannot be
 // put back without breaking every link after it, and that is the whole
 // point of the chain.
-func Verify(path string) (VerifyResult, error) {
+func Verify(path string) (VerifyResult, error) { return VerifyAgainst(path, "") }
+
+// VerifyAgainst walks a ledger and compares its end with a head the caller
+// brought from the outside.
+//
+// `expect` is the answer to the question the chain alone cannot answer:
+// a chain that was rebuilt from the first line to the last is a chain
+// that verifies.  A head that was written down somewhere the server
+// cannot reach — a ticket, a board, another machine — is what turns the
+// ledger from tamper-evident into tamper-checked.  An empty `expect`
+// asks the chain alone.
+func VerifyAgainst(path, expect string) (VerifyResult, error) {
 	out := VerifyResult{OK: true}
 	if strings.TrimSpace(path) == "" {
 		return out, errors.New("audit: the ledger has no file")
 	}
+	files := ledgerFiles(path)
+	out.Files = len(files)
+	out.Gaps = ledgerGaps(path)
 	head := ""
 	line := 0
-	for _, file := range ledgerFiles(path) {
+	for _, file := range files {
 		f, err := os.Open(file)
 		if err != nil {
 			return out, fmt.Errorf("audit: open %s: %w", file, err)
@@ -487,7 +558,128 @@ func Verify(path string) (VerifyResult, error) {
 		}
 	}
 	out.Head = head
+	// The anchor: the head the logger wrote down the last time it
+	// stopped, and whether the ledger still ends there.
+	if anchor, ok := readAnchor(path); ok && anchor.Head != "" {
+		out.Anchored = true
+		out.Anchor = anchor.Head
+		// The anchor is the head of an earlier moment, so it is a prefix
+		// of the chain, not its end: the ledger agrees when the line the
+		// anchor counted at still hashes to what the anchor says.
+		out.AnchorOK = anchorAgrees(path, anchor)
+	}
+	if expected := strings.TrimSpace(expect); expected != "" {
+		out.Expected = expected
+		matched := expected == head
+		out.Matched = &matched
+		if !matched {
+			out.OK = false
+			if out.Reason == "" {
+				out.Reason = "the ledger does not end where the expected head said it did"
+			}
+		}
+	}
 	return out, nil
+}
+
+// Matcher is the verdict of an expected head, nil when none was given.
+//
+// It is a pointer because the difference between "the caller brought no
+// head" and "the caller's head did not match" is the whole answer.
+func (r VerifyResult) Matcher() *bool { return r.Matched }
+
+// anchor is the line the server wrote down, in plain sight.
+//
+// The file lives next to the ledger, so it is a consistency check and not
+// a defence on its own: an attacker who can rewrite the ledger can
+// rewrite the anchor beside it.  What makes it worth writing is the
+// ordinary failure — a truncated file, a restore from a backup that is
+// older than the ledger, a rotation that was deleted — and what makes it
+// worth shipping is the head the operator carries home.
+type anchor struct {
+	Head string    `json:"head"`
+	At   time.Time `json:"at"`
+}
+
+// anchorPath is where the head of the ledger is written down.
+func anchorPath(path string) string { return path + ".head" }
+
+// readAnchor reads the head the logger wrote down.
+func readAnchor(path string) (anchor, bool) {
+	raw, err := os.ReadFile(anchorPath(path))
+	if err != nil {
+		return anchor{}, false
+	}
+	var a anchor
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return anchor{}, false
+	}
+	return a, true
+}
+
+// WriteAnchor writes the head of the chain down beside the ledger.
+//
+// It is the check the operator can carry: a head written into a ticket
+// before a long night is the one thing a rewrite of the ledger cannot
+// satisfy.
+func WriteAnchor(path, head string) error {
+	if strings.TrimSpace(path) == "" || head == "" {
+		return nil
+	}
+	raw, err := json.Marshal(anchor{Head: head, At: time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	tmp := anchorPath(path) + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("audit: write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, anchorPath(path)); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("audit: write the anchor: %w", err)
+	}
+	return nil
+}
+
+// anchorAgrees says whether the chain still passes through the head the
+// anchor remembers.
+//
+// The anchor names one link of the chain, not its end: the ledger keeps
+// growing after the anchor was written.  A chain that was rewritten from
+// the first line to the last never produces that link again — the
+// attacker cannot forge a line whose hash is a hash they were given — so
+// the walk either meets the anchor or proves the ledger is not the one
+// that was anchored.  A ledger that was cut before the anchor fails the
+// same way, because the walk never reaches it.
+func anchorAgrees(path string, a anchor) bool {
+	if a.Head == "" {
+		return false
+	}
+	for _, file := range ledgerFiles(path) {
+		f, err := os.Open(file)
+		if err != nil {
+			return false
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			text := strings.TrimSpace(scanner.Text())
+			if text == "" {
+				continue
+			}
+			var e Entry
+			if err := json.Unmarshal([]byte(text), &e); err != nil {
+				_ = f.Close()
+				return false
+			}
+			if e.Hash == a.Head {
+				_ = f.Close()
+				return true
+			}
+		}
+		_ = f.Close()
+	}
+	return false
 }
 
 // Head returns the hash of the last entry written: the tip of the chain.
@@ -655,6 +847,16 @@ func (l *Logger) Close() error {
 	defer l.mu.Unlock()
 	if l.f == nil {
 		return nil
+	}
+	// The last word of the process is written down before the file is
+	// closed: an engagement that stops at the end of the day leaves the
+	// head of its ledger behind, and the next morning starts against it.
+	if l.head != "" {
+		if err := WriteAnchor(l.path, l.head); err != nil {
+			_ = l.f.Close()
+			l.f = nil
+			return err
+		}
 	}
 	err := l.f.Close()
 	l.f = nil
