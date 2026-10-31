@@ -3,6 +3,7 @@ package audit_test
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -405,5 +406,218 @@ func TestTheChainContinuesAfterARestart(t *testing.T) {
 	}
 	if !result.OK || result.Entries != 2 {
 		t.Fatalf("the chain must hold across the restart: %+v", result)
+	}
+}
+
+// The verification walks the whole retention policy, not the first five
+// files of it.
+//
+// A policy that keeps thirty generations and a check that reads five is a
+// check that says "the ledger is whole" about a quarter of it.
+func TestTheVerificationWalksAsFarAsTheRecordGoes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	// Eight generations of a ledger, written by hand in the order the
+	// rotation writes them: .8 is the oldest, the live file the newest.
+	head := ""
+	line := 0
+	write := func(name string, n int) {
+		var body strings.Builder
+		for i := 0; i < n; i++ {
+			line++
+			e := audit.Entry{Operator: "alice", Cmd: "agents.list", OK: true}
+			e.Now()
+			e.Hash = audit.ChainHash(head, e)
+			head = e.Hash
+			raw, err := json.Marshal(e)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			body.Write(raw)
+			body.WriteString("\n")
+		}
+		if err := os.WriteFile(name, []byte(body.String()), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for i := 8; i >= 1; i-- {
+		write(fmt.Sprintf("%s.%d", path, i), 2)
+	}
+	write(path, 2)
+
+	result, err := audit.Verify(path)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("the chain of eight generations did not verify: %s", result.Reason)
+	}
+	if result.Entries != 18 {
+		t.Fatalf("the verification walked %d lines, want 18", result.Entries)
+	}
+	if result.Files != 9 {
+		t.Fatalf("the verification walked %d files, want 9", result.Files)
+	}
+	if result.Head != head {
+		t.Fatalf("the head of the walk is not the head of the ledger")
+	}
+	if len(result.Gaps) != 0 {
+		t.Fatalf("the walk invented the gaps %v", result.Gaps)
+	}
+
+	// A deleted generation is a hole in the chain, and the answer says
+	// where the hole is instead of walking over it.
+	if err := os.Remove(path + ".4"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	result, err = audit.Verify(path)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(result.Gaps) != 1 || result.Gaps[0] != 4 {
+		t.Fatalf("the deleted generation was not reported: %v", result.Gaps)
+	}
+	if result.OK {
+		t.Fatal("a chain with a hole in it verified")
+	}
+}
+
+// A head carried from the outside is the check a rewrite cannot pass.
+func TestTheExpectedHeadIsTheCheckTheServerCannotPass(t *testing.T) {
+	log, path := openTemp(t, audit.Options{})
+	for i := 0; i < 4; i++ {
+		if err := log.Record(audit.Entry{Operator: "alice", Cmd: "agents.list", OK: true}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	head := log.Head()
+	if head == "" {
+		t.Fatal("the ledger has no head")
+	}
+	// The operator writes the head into a ticket before the night.
+	ok, err := audit.VerifyAgainst(path, head)
+	if err != nil {
+		t.Fatalf("VerifyAgainst: %v", err)
+	}
+	if !ok.OK || ok.Matched == nil || !*ok.Matched {
+		t.Fatalf("the head the operator carried did not match: %+v", ok)
+	}
+	// Somebody adds a line and rebuilds the chain: the chain verifies,
+	// and the head from the outside does not.
+	if err := log.Record(audit.Entry{Operator: "mallory", Cmd: "agents.kill", OK: true}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	after, err := audit.VerifyAgainst(path, head)
+	if err != nil {
+		t.Fatalf("VerifyAgainst: %v", err)
+	}
+	if after.OK {
+		t.Fatal("a ledger that grew past the carried head still passed the carried head")
+	}
+	if after.Matched == nil || *after.Matched {
+		t.Fatalf("the carried head matched a ledger it does not describe: %+v", after)
+	}
+	// Without a head the chain alone is checked, which is what it can do.
+	plain, err := audit.Verify(path)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if plain.Matched != nil {
+		t.Fatal("a verification without an expected head reported a match")
+	}
+}
+
+// The anchor is written by the ledger and read back by the check.
+func TestTheAnchorRemembersTheHead(t *testing.T) {
+	log, path := openTemp(t, audit.Options{})
+	for i := 0; i < 3; i++ {
+		if err := log.Record(audit.Entry{Operator: "alice", Cmd: "agents.list", OK: true}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	result, err := audit.Verify(path)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !result.Anchored {
+		t.Fatal("the ledger wrote no anchor")
+	}
+	if !result.AnchorOK {
+		t.Fatal("the anchor does not agree with the ledger")
+	}
+	if result.Anchor == "" {
+		t.Fatal("the anchor carries no head")
+	}
+	// A ledger that was rewritten from the first line is not the ledger
+	// the anchor describes, even when every link of it is valid.
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var body strings.Builder
+	head := ""
+	for _, text := range strings.Split(strings.TrimSpace(string(original)), "\n") {
+		var e audit.Entry
+		if err := json.Unmarshal([]byte(text), &e); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		e.Operator = "mallory"
+		e.Hash = ""
+		e.Hash = audit.ChainHash(head, e)
+		head = e.Hash
+		raw, err := json.Marshal(e)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		body.Write(raw)
+		body.WriteString("\n")
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rewritten, err := audit.Verify(path)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !rewritten.OK {
+		t.Fatal("the rewritten chain does not chain; the test is not testing the anchor")
+	}
+	if rewritten.AnchorOK {
+		t.Fatal("a rewritten ledger agreed with the anchor it was written before")
+	}
+}
+
+// The retention policy is a bound, and the rotation enforces it.
+func TestTheRetentionPolicyBoundsTheDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	log, err := audit.Open(audit.Options{Path: path, MaxBytes: 256, Keep: 2})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer log.Close()
+	for i := 0; i < 80; i++ {
+		if err := log.Record(audit.Entry{Operator: "alice", Cmd: "agents.list",
+			Detail: strings.Repeat("x", 40)}); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+	if log.Keep() != 2 {
+		t.Fatalf("the logger reports a keep of %d, want 2", log.Keep())
+	}
+	for i := 1; i <= 2; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", path, i)); err != nil {
+			t.Fatalf("the policy keeps .%d and it is not there: %v", i, err)
+		}
+	}
+	// Everything past the policy was removed: this is what stops a year of
+	// engagement from being a full disk.
+	for i := 3; i <= 6; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", path, i)); err == nil {
+			t.Fatalf(".%d is still on the disk although the policy keeps 2", i)
+		}
 	}
 }

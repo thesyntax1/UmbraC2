@@ -1,6 +1,8 @@
 package otp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -171,5 +173,137 @@ func TestTheAddressOfTheAuthenticator(t *testing.T) {
 	}
 	if !strings.Contains(uri, "digits=6") {
 		t.Errorf("the address does not say how many digits: %q", uri)
+	}
+}
+
+// A code is spent by use, and the spending survives a restart.
+//
+// The memory of the step is written with the secrets: a server that is
+// bounced in the middle of a window must not hand the same code a second
+// life, because the code that opened the console on the way out is the
+// code an attacker watched go past.
+func TestTheSpentCodeSurvivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "otp.json")
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	first := New()
+	first.SetPath(path)
+	sec, err := first.Rotate("alice", "the team")
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if err := first.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	code, err := Code(sec.Secret, now)
+	if err != nil {
+		t.Fatalf("Code: %v", err)
+	}
+	if !first.VerifyOnce("alice", code, now) {
+		t.Fatal("the first use of the code was refused")
+	}
+	if first.VerifyOnce("alice", code, now) {
+		t.Fatal("the same code was accepted twice in one process")
+	}
+
+	// The restart: a new registry reads the same file.
+	second := New()
+	second.SetPath(path)
+	if err := second.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if second.VerifyOnce("alice", code, now) {
+		t.Fatal("the same code was accepted after the restart")
+	}
+	// The next step is a new code, and it works.
+	later := now.Add(Period * time.Second)
+	next, err := Code(sec.Secret, later)
+	if err != nil {
+		t.Fatalf("Code: %v", err)
+	}
+	if !second.VerifyOnce("alice", next, later) {
+		t.Fatal("the code of the next step was refused")
+	}
+	// The plain check is still a check: it does not spend anything.
+	if !second.Verify("alice", next, later) {
+		t.Fatal("Verify refused a code the registry holds")
+	}
+}
+
+// The secrets are sealed at rest when the server has a key.
+func TestTheSecretsAreSealedAtRest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "otp.json")
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i*7 + 1)
+	}
+
+	r := New()
+	r.SetPath(path)
+	if err := r.SetKey(key); err != nil {
+		t.Fatalf("SetKey: %v", err)
+	}
+	if !r.Sealed() {
+		t.Fatal("the registry says it is not sealed")
+	}
+	sec, err := r.Rotate("alice", "the team")
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if err := r.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(raw), sec.Secret) {
+		t.Fatal("the secret is on the disk in the clear")
+	}
+	if !strings.Contains(string(raw), "sealed:") {
+		t.Fatal("the file does not say that it is sealed")
+	}
+
+	// A registry with the key reads it back and the codes still work.
+	back := New()
+	back.SetPath(path)
+	if err := back.SetKey(key); err != nil {
+		t.Fatalf("SetKey: %v", err)
+	}
+	if err := back.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	code, err := Code(sec.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Code: %v", err)
+	}
+	if !back.Verify("alice", code, time.Now().UTC()) {
+		t.Fatal("the code of a sealed secret was refused")
+	}
+
+	// A registry without the key refuses to pretend it is empty.
+	blind := New()
+	blind.SetPath(path)
+	if err := blind.Load(); err == nil {
+		t.Fatal("a sealed registry was read without a key")
+	}
+	if blind.Enabled("alice") {
+		t.Fatal("the blind registry believes it has a second factor")
+	}
+
+	// The wrong key is an error, not a silent empty registry.
+	wrong := New()
+	wrong.SetPath(path)
+	other := make([]byte, 32)
+	for i := range other {
+		other[i] = byte(i + 100)
+	}
+	if err := wrong.SetKey(other); err != nil {
+		t.Fatalf("SetKey: %v", err)
+	}
+	if err := wrong.Load(); err == nil {
+		t.Fatal("a sealed registry opened with the wrong key")
 	}
 }

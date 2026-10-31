@@ -12596,10 +12596,10 @@ def test_a_retried_submit_is_the_same_question() -> None:
     cli_src = read_text("operator/umbra_cli/cli.py")
     protocol = read_text("docs/PROTOCOL.md")
 
-    assert "func (s *Server) idemLookup(" in idem_go
-    assert "func (s *Server) idemRemember(" in idem_go
+    assert "func (s *Server) idemClaim(" in idem_go
+    assert "func (s *Server) idemFinish(" in idem_go
     assert "idemWindow" in idem_go and "idemMax" in idem_go
-    assert "s.idemLookup(" in operator and "s.idemRemember(" in operator
+    assert "s.idemClaim(" in operator and "s.idemFinish(" in operator
     assert "idem_keys" in mock_src
     assert "idem" in client_src and '"--idem"' in cli_src
     assert "`idem`" in protocol
@@ -12744,3 +12744,193 @@ def test_the_ledger_keeps_a_bound() -> None:
         doc = json.loads(read_text(name))
         keep = doc.get("audit_keep_files")
         assert isinstance(keep, int) and 0 <= keep <= 100, (name, keep)
+
+
+def test_the_key_of_a_submission_is_never_cut() -> None:
+    """A long key is two questions, not one.
+
+    The first version of the idempotency key remembered a key cut to 120
+    characters and looked it up whole: a retried click with a longer key
+    was never found again, so the guarantee held for every key but the
+    ones that were too long.  The key is now never cut — the submission is
+    refused past the bound — and the claim, the look and the release are
+    one critical section.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    idem_go = read_text("server/internal/link/idem.go")
+    operator = read_text("server/internal/link/operator.go")
+    mock_src = read_text("tools/mock_server.py")
+
+    # No trimming of the key anywhere: a cut key is a collision.
+    assert "key[:idemKeyMax]" not in idem_go, "a key is still cut on the way in"
+    assert "idemKeyMax" in idem_go and "len(idem) > idemKeyMax" in operator, (
+        "the length of a key is not checked at the door")
+    # The claim and the look happen together, and the claim is released
+    # when the submission fails.
+    assert "func (s *Server) idemClaim(" in idem_go
+    assert "func (s *Server) idemFinish(" in idem_go
+    assert "func (s *Server) idemAbort(" in idem_go
+    assert "s.idemClaim(" in operator and "s.idemFinish(" in operator
+    assert "s.idemAbort(" in operator, "a failed submit keeps its key"
+    assert "Pending" in idem_go, "the key is not reserved before the task exists"
+    assert "idemLookup" not in idem_go and "idemRemember" not in idem_go, (
+        "the look and the remember are still two steps")
+
+    token = b"idem-cut-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-cut", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the host never joined")
+        long_key = "k" * 200
+        # The bound is the same on both sides of the wire.
+        with pytest.raises(OperatorError):
+            client.submit("agent-cut", "shell", {"cmd": "id"}, idem=long_key)
+        assert "120 characters" in mock_src
+
+        # A submission that failed took nothing: the key is free and the
+        # retry under the same key is a real submission, not a duplicate.
+        with pytest.raises(OperatorError):
+            client.submit("nobody", "shell", {"cmd": "id"}, idem="click-x")
+        answer = client.rpc("task.submit", {"id": "agent-cut", "kind": "shell",
+                                           "args": {"cmd": "id"},
+                                           "idem": "click-x"}).data
+        assert answer.get("duplicate") is False, answer
+
+        # Two keys that only differ past the bound are two questions.
+        first = client.rpc("task.submit", {"id": "agent-cut", "kind": "shell",
+                                          "args": {"cmd": "id"},
+                                          "idem": "a" * 100 + "-one"}).data
+        second = client.rpc("task.submit", {"id": "agent-cut", "kind": "shell",
+                                           "args": {"cmd": "id"},
+                                           "idem": "a" * 100 + "-two"}).data
+        assert first["task_id"] != second["task_id"]
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_spent_code_and_the_sealed_secret() -> None:
+    """The second factor survives a restart and a stolen disk.
+
+    Three properties, checked where they can be checked from here: the step
+    a code was spent on is written with the secrets, the secrets are
+    sealed when the server has a key, and a sealed file without the key is
+    refused instead of being read as empty.
+    """
+    otp_go = read_text("server/internal/otp/otp.go")
+    otp_test = read_text("server/internal/otp/otp_test.go")
+    main_go = read_text("server/cmd/umbra-server/main.go")
+    operator = read_text("server/internal/link/operator.go")
+    protocol = read_text("docs/PROTOCOL.md")
+    operations = read_text("docs/OPERATIONS.md")
+
+    # The spent step is part of the file and comes back with it.
+    assert "Used map[string]int64" in otp_go, "the spent steps are not written down"
+    assert 'json:"used,omitempty"' in otp_go
+    assert "r.used[op] = step" in otp_go and "r.used[op] = step" in otp_go
+    assert "if path != \"\" {" in otp_go, (
+        "a successful code is not written back to the registry")
+
+    # The secrets are sealed at rest under a key of their own.
+    assert "func (r *Registry) SetKey(" in otp_go
+    assert "cipher.NewGCM" in otp_go
+    assert "sealLabel" in otp_go and "umbra/otp/v1" in otp_go
+    assert "openSecret" in otp_go and "sealSecret" in otp_go
+    assert "the file is sealed but the server has no key" in otp_go, (
+        "a sealed file without a key is read as empty")
+    assert "otpRegistry.SetKey(" in main_go, "the server never seals the file"
+    assert "umbra/v1/otp" in main_go, "the OTP key shares the label of the vault"
+    assert '"sealed":    sealed' in operator or '"sealed"' in operator
+
+    # And the tests that keep it that way are in the repository.
+    assert "TestTheSpentCodeSurvivesARestart" in otp_test
+    assert "TestTheSecretsAreSealedAtRest" in otp_test
+    assert "At rest" in protocol and "umbra/v1/otp" in protocol
+    assert "The secrets of the second factor" in operations
+
+
+def test_the_ledger_is_checked_as_far_as_it_is_kept() -> None:
+    """The retention policy is walked, and the head can be carried home.
+
+    The rotation keeps `audit_keep_files` generations; the verification
+    used to read five of them whatever the policy said, so a policy of
+    thirty was checked across a sixth of its record.  The walk now follows
+    the policy, names a missing generation, and compares the ledger with
+    the anchor and with a head the operator brings from outside.
+    """
+    audit_go = read_text("server/internal/audit/audit.go")
+    audit_test = read_text("server/internal/audit/audit_test.go")
+    operator = read_text("server/internal/link/operator.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+    operations = read_text("docs/OPERATIONS.md")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    # The walk follows the policy, not a constant of its own.
+    assert "for i := MaxKeep; i >= 1; i--" in audit_go, (
+        "the ledger is still walked as far as the hard-coded five")
+    assert "for i := 5; i >= 1; i--" not in audit_go
+    assert "func ledgerGaps(" in audit_go
+    assert "gaps" in audit_go and "out.Gaps" in audit_go
+
+    # The anchor and the carried head.
+    assert "func WriteAnchor(" in audit_go and "anchorEvery" in audit_go
+    assert "func anchorAgrees(" in audit_go
+    assert "func VerifyAgainst(" in audit_go
+    assert "func (r VerifyResult) Matcher()" in audit_go
+    assert "audit.VerifyAgainst(s.audit.Path(), expect)" in operator
+    assert "s.audit.Path(), expect" in operator
+    assert 'self.rpc("audit.verify", payload)' in client_src
+    assert '"--expect"' in cli_src
+    assert "anchor_ok" in protocol and "expect" in protocol
+    assert "head carried home" in operations
+
+    # The tests that keep it that way are in the repository.
+    assert "TestTheVerificationWalksAsFarAsTheRecordGoes" in audit_test
+    assert "TestTheExpectedHeadIsTheCheckTheServerCannotPass" in audit_test
+    assert "TestTheAnchorRemembersTheHead" in audit_test
+    assert "TestTheRetentionPolicyBoundsTheDisk" in audit_test
+    assert "TestAKeyIsClaimedOnce" in read_text("server/internal/link/idem_test.go")
+    assert "TestConcurrentClaimsOfOneKeyMakeOneTask" in read_text(
+        "server/internal/link/idem_test.go")
+
+    # The wire agrees: a head that does not match is not a success, and
+    # the console can ask with one.
+    token = b"audit-expect-token-0123456"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        client.rpc("events.test", {"kind": "test.ping"})
+        plain = client.audit_verify()
+        assert plain.get("ok") is True, plain
+        head = plain.get("head")
+        assert head, "the verification has no head"
+        assert plain.get("matched") is None, (
+            "a verification with no carried head reported a match")
+        # A head that is not the end of the ledger is refused: the audit
+        # of the verification itself is already a line by the time the
+        # next one runs, so even the head of a moment ago is behind.
+        other = client.audit_verify(expect="0" * 64)
+        assert other.get("matched") is False, other
+        assert other.get("ok") is False, "a wrong carried head passed"
+        assert other.get("expected") == "0" * 64, other
+        stale = client.audit_verify(expect=head)
+        assert stale.get("matched") is False, (
+            "a ledger that grew past the carried head still matched it")
+    finally:
+        client.close()
+        server.stop()
