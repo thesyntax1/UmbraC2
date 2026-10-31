@@ -17,11 +17,14 @@ The most important finding is not a feature: **the repository did not build.**
 Neither Go module compiled at `1e65697`.  Every wave of the last months was
 added without a toolchain on the machine that wrote it, verified by a
 consistency checker and by reading, and shipped.  When a toolchain was finally
-put next to the code, the server failed with five compile errors in five
-packages and the beacon failed with a redeclared type.  Twelve Go tests were
-also failing on facts: a numeric type the codec canonicalises, a default the
-record did not state, a sentinel error compared with `==`, a test whose name
-promised a removal it never made.
+put next to the code, the first `go vet ./...` printed five errors in five
+packages, fixing them uncovered four more, and the beacon failed with a
+redeclared type — ten compile errors in six packages.  Six Go tests were also
+failing on facts: a numeric type the codec canonicalises, a default the record
+did not state, a casing rule the package documents differently, a sentinel
+error compared with `==`, a backup generation the test did not expect, and a
+save-failure test that relied on the store refusing to start over a path it
+could not read.
 
 That is the difference this page exists to make visible: `git log` says the
 features exist, the compiler says they did not.
@@ -30,7 +33,7 @@ Everything found, and what was done about it:
 
 | # | Finding | Severity | State |
 |---|---|---|---|
-| 1 | The Go server did not compile: `casefile` unused variable, `hub` a call written into a slice literal, `dossier` a field that did not exist, `otp` `MarshalIndent` with one argument, `onboard` a test calling a three-value function as two | build-stopping | fixed, `go build ./...` and `go vet ./...` clean |
+| 1 | The Go server did not compile: `casefile` unused variable, `hub` a call written into a slice literal, `dossier` a field that did not exist, `otp` `MarshalIndent` with one argument, a block of statements pasted inside a composite literal in `operator.go`, `Config().AgentPSK` instead of `Config().Keyring.AgentPSK`, an undefined `watches`, an unused import, and a test calling a three-value function as two — nine errors in six packages | build-stopping | fixed, `go build ./...`, `go vet ./...` and `go test ./...` clean |
 | 2 | The Go beacon did not compile: a type and a function shared the name `forensicDeadmanState` | build-stopping | fixed, `go build ./...` clean |
 | 3 | The dashboard rendered the name a beacon chose into `innerHTML` of an SVG (`refreshReach`), with the operator's token in the page: stored XSS by any beacon | high | fixed in the handshake (the alphabet), in the renderer (`esc`), in the page policy (CSP by hash), and pinned by a jsdom test that fails when either lock is removed |
 | 4 | No identity alphabet anywhere: a peer could call itself `<script>` and every console, dossier and ledger copied it | high | fixed in Go, in the Python reference and through the mock; §5.2 of the protocol |
@@ -207,7 +210,7 @@ code that exists and has never been executed here.
 | `python3 tools/check_consistency.py` | 152/152 RBAC, Go, Python, console | this audit |
 | `python3 tools/check_symbols.py`, `check_go_symbols.py` | ok | this audit |
 | `node tools/dash_smoke.mjs` | the dashboard renders; the hostile name stays text | this audit |
-| GitHub Actions | **never ran** — billing block, 10 runs, 0 jobs started | this audit |
+| GitHub Actions | **never ran** — billing block; every run of this branch failed in ~2 s with 0 steps, 0 jobs started (checked 2026-10-31) | this audit |
 
 ## The limits of this page
 
