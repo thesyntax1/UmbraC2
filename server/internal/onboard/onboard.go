@@ -347,6 +347,13 @@ func (r *Registry) Add(p Playbook) (Playbook, error) {
 	p.Stages = stages
 	p.Tag = strings.TrimSpace(p.Tag)
 	p.Prefix = strings.TrimSpace(p.Prefix)
+	// The record says what the sweep does.  A pack that fires on every
+	// return and carries no cooldown is held back for an hour; leaving
+	// the field at zero would make the listing read as "no cooldown"
+	// while the sweep quietly applied one.
+	if !p.Once && p.Cooldown <= 0 {
+		p.Cooldown = 3600
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.plays) >= MaxPlaybooks {

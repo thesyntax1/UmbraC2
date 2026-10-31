@@ -319,7 +319,7 @@ func (l *AgentLink) agentKey() []byte {
 		}
 	}
 	if l.Hub != nil && l.Hub.Config() != nil {
-		return l.Hub.Config().AgentPSK
+		return l.Hub.Config().Keyring.AgentPSK
 	}
 	return nil
 }

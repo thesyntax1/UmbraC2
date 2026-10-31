@@ -128,7 +128,7 @@ type Registry struct {
 	// second factor proves itself once, not once per window.  It is
 	// written to the disk with the secrets, because a replay that a
 	// restart forgets is a replay.
-	used    map[string]int64
+	used map[string]int64
 	// aead seals the secrets at rest.  A registry without one keeps
 	// them in the clear behind 0600, which is a lab posture and says
 	// so: Sealed is false and the status of every operator reports it.
@@ -355,7 +355,7 @@ func (r *Registry) Save() error {
 		SavedAt: time.Now().UTC(),
 		Secrets: secrets,
 		Used:    used,
-	})
+	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("otp: the registry could not be written: %w", err)
 	}

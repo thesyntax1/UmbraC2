@@ -2,7 +2,6 @@ package link
 
 import (
 	"strings"
-	"sync"
 	"time"
 )
 

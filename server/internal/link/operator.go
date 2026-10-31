@@ -16,14 +16,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
-	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/approval"
+	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/attack"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
-	"github.com/thesyntax1/UmbraC2/server/internal/note"
-	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
@@ -31,6 +29,8 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
+	"github.com/thesyntax1/UmbraC2/server/internal/note"
+	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
@@ -664,11 +664,11 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		now := time.Now().UTC()
 		for _, hold := range holds {
 			row := upk.Map{
-				"agent":     hold.AgentID,
-				"by":        hold.By,
-				"since":     hold.Since.Format(time.RFC3339),
-				"held_sec":  int64(now.Sub(hold.Since).Seconds()),
-				"queued":    int64(len(s.Hub.Store().Candidates(hold.AgentID, 1000))),
+				"agent":      hold.AgentID,
+				"by":         hold.By,
+				"since":      hold.Since.Format(time.RFC3339),
+				"held_sec":   int64(now.Sub(hold.Since).Seconds()),
+				"queued":     int64(len(s.Hub.Store().Candidates(hold.AgentID, 1000))),
 				"indefinite": hold.Until.IsZero(),
 			}
 			if hold.Reason != "" {
@@ -698,10 +698,10 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				return reply(upk.Map{"frozen": false, "was": false})
 			}
 			s.Hub.Emit(hub.Event{Kind: "engagement.thawed", Data: map[string]any{
-				"by":      op.Name,
-				"held_by": moment.By,
+				"by":       op.Name,
+				"held_by":  moment.By,
 				"held_sec": int64(time.Since(moment.Since).Seconds()),
-				"expired": false,
+				"expired":  false,
 			}})
 			return reply(upk.Map{
 				"frozen":   false,
@@ -2321,7 +2321,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			rows = append(rows, upk.Map{
 				"id": ind.ID, "kind": ind.Kind, "value": ind.Value,
 				"label": ind.Label, "note": ind.Note, "source": ind.Source,
-				"hits": int64(ind.Hits),
+				"hits":  int64(ind.Hits),
 				"added": ind.Added.Format(time.RFC3339),
 			})
 		}
@@ -2451,12 +2451,12 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 				notes = append(notes, n)
 			}
 			reports = append(reports, upk.Map{
-				"agent_id": r.AgentID,
-				"score":    int64(r.Score),
-				"grade":    r.Grade,
-				"parts":    parts,
-				"notes":    notes,
-				"interval": int64(r.Interval),
+				"agent_id":  r.AgentID,
+				"score":     int64(r.Score),
+				"grade":     r.Grade,
+				"parts":     parts,
+				"notes":     notes,
+				"interval":  int64(r.Interval),
 				"last_seen": r.LastSeen.Format(time.RFC3339),
 			})
 		}
@@ -2503,9 +2503,9 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 			ok, _, _ := casefile.Verify(c)
 			rows = append(rows, upk.Map{
 				"id": c.ID, "title": c.Title, "state": c.State,
-				"operator": c.Operator,
-				"opened":   c.Opened.Format(time.RFC3339),
-				"closed":   c.Closed.Format(time.RFC3339),
+				"operator":  c.Operator,
+				"opened":    c.Opened.Format(time.RFC3339),
+				"closed":    c.Closed.Format(time.RFC3339),
 				"artefacts": int64(len(c.Artefacts)),
 				"events":    int64(len(c.Events)),
 				"head":      c.Head,
@@ -2547,8 +2547,8 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		return reply(upk.Map{
 			"id": c.ID, "title": c.Title, "notes": c.Notes,
 			"state": c.State, "operator": c.Operator,
-			"opened": c.Opened.Format(time.RFC3339),
-			"closed": c.Closed.Format(time.RFC3339),
+			"opened":    c.Opened.Format(time.RFC3339),
+			"closed":    c.Closed.Format(time.RFC3339),
 			"artefacts": artefacts, "events": events, "head": c.Head,
 			"intact": intact, "broken_at": int64(brokenAt), "reason": reason,
 		})
@@ -3394,7 +3394,7 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"artifacts": rows, "checked": int64(checked),
 			"broken": int64(broken),
-			"sealed":   s.Artifacts.Encrypted()})
+			"sealed": s.Artifacts.Encrypted()})
 
 	// ---- the baseline of the paths the team watches ----------------------
 	case "baseline.add":
@@ -5451,19 +5451,19 @@ func dossierMap(d dossier.Dossier) upk.Map {
 	for _, line := range d.Gaps {
 		gaps = append(gaps, line)
 	}
+	watches := make([]any, 0, len(d.Watches))
+	for _, w := range d.Watches {
+		watches = append(watches, upk.Map{
+			"id":      w.ID,
+			"path":    w.Path,
+			"label":   w.Label,
+			"state":   w.State,
+			"sha256":  w.SHA256,
+			"size":    w.Size,
+			"changes": int64(w.Changes),
+		})
+	}
 	out := upk.Map{
-		watches := make([]any, 0, len(d.Watches))
-		for _, w := range d.Watches {
-			watches = append(watches, upk.Map{
-				"id":       w.ID,
-				"path":     w.Path,
-				"label":    w.Label,
-				"state":    w.State,
-				"sha256":   w.SHA256,
-				"size":     w.Size,
-				"changes":  int64(w.Changes),
-			})
-		}
 		"id":             d.ID,
 		"host":           d.Host,
 		"os":             d.OS,

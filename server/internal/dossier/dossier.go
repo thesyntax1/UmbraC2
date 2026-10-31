@@ -138,6 +138,10 @@ type Host struct {
 	Canaries []canary.Canary
 	// Approvals are the requests about the host.
 	Approvals []approval.Request
+	// Watches are the paths the team watches on the host, and the
+	// drift of them.  Build copies them into the file the operator
+	// reads.
+	Watches []Watch
 	// Notes are the lines the console wrote about the host.  They live
 	// in the database of the console and not on the server, so they are
 	// not part of the dossier: the server does not read them.
@@ -233,11 +237,11 @@ func Build(h Host) Dossier {
 		Grade:         h.Health.Grade,
 		Parts:         h.Health.Parts,
 		Persist:       append([]Persist(nil), h.Persist...),
-		Canaries:       append([]canary.Canary(nil), h.Canaries...),
-		Approvals:      append([]approval.Request(nil), h.Approvals...),
-		Watches:        append([]Watch(nil), h.Watches...),
-		Notes:          append([]string(nil), h.Notes...),
-		Kinds:          map[string]int{},
+		Canaries:      append([]canary.Canary(nil), h.Canaries...),
+		Approvals:     append([]approval.Request(nil), h.Approvals...),
+		Watches:       append([]Watch(nil), h.Watches...),
+		Notes:         append([]string(nil), h.Notes...),
+		Kinds:         map[string]int{},
 	}
 	// The work of the host, counted.
 	tasks := append([]Task(nil), h.Tasks...)
@@ -348,7 +352,8 @@ func kindsLine(kinds map[string]int) string {
 //
 // A gap is not a failure: it is the place where the operator has to go
 // and look.
-func gaps(d Dossier) []string {	out := make([]string, 0, 4)
+func gaps(d Dossier) []string {
+	out := make([]string, 0, 4)
 	if d.LastSeen.IsZero() {
 		out = append(out, "the host has never answered")
 	}

@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/thesyntax1/UmbraC2/server/internal/alias"
+	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
-	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
@@ -36,11 +36,11 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/note"
 	"github.com/thesyntax1/UmbraC2/server/internal/onboard"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
-	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rhythm"
 	"github.com/thesyntax1/UmbraC2/server/internal/silence"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
+	"github.com/thesyntax1/UmbraC2/server/internal/tagrule"
 	"github.com/thesyntax1/UmbraC2/server/internal/vpn"
 	"github.com/thesyntax1/UmbraC2/server/internal/wire"
 )
@@ -54,7 +54,7 @@ type Server struct {
 	// taskLedger is the ledger of who asked: a bounded ring of the
 	// questions the fleet carried, hashed line over line, so two
 	// consoles can agree the queue they look at is the queue there is.
-	taskLedger   []ledgerAsk
+	taskLedger    []ledgerAsk
 	taskLedgerSeq int
 	taskLedgerMu  sync.Mutex
 
@@ -602,6 +602,24 @@ func (s *Server) Dossier(agentID string) (dossier.Dossier, bool) {
 	if s.Notes != nil {
 		for _, line := range s.Notes.List(agentID) {
 			notes = append(notes, line.Text)
+		}
+	}
+	// The paths the team watches on the host, and the drift of them.
+	// The file of the host carries them beside the tasks, because a
+	// path that moved is work the operator has to do.
+	watches := []dossier.Watch{}
+	if s.Baseline != nil {
+		for _, entry := range s.Baseline.List(agentID, "") {
+			watches = append(watches, dossier.Watch{
+				ID:      entry.ID,
+				Path:    entry.Path,
+				Label:   entry.Label,
+				State:   entry.State,
+				SHA256:  entry.Digest,
+				Size:    entry.Size,
+				Changes: entry.Changes,
+				Seen:    entry.Seen,
+			})
 		}
 	}
 	return dossier.Build(dossier.Host{

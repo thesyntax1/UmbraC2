@@ -146,7 +146,7 @@ func Chain(events []Event) (string, []int) {
 	head := ""
 	broken := []int{}
 	prev := ""
-	for i, ev := range events {
+	for _, ev := range events {
 		canonical := canonicalEvent(ev)
 		if ev.Prev != prev {
 			broken = append(broken, ev.Seq)

@@ -119,7 +119,7 @@ func TestManualRunAnswersTheCallerNotTheGate(t *testing.T) {
 	if err != nil || ok != 2 {
 		t.Fatalf("run: ok=%d err=%v calls=%v", ok, err, *calls)
 	}
-	if _, err = reg.Run("w-9999", "agent-any"); err == nil {
+	if _, _, err = reg.Run("w-9999", "agent-any"); err == nil {
 		t.Fatalf("a missing pack must not pretend to run")
 	}
 }
