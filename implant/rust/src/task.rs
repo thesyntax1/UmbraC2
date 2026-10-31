@@ -534,12 +534,16 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
                     let mut rows: Vec<(String, u64, String, String, String)> = Vec::new();
                     for entry in entries.flatten() {
                         let meta = entry.metadata().ok();
-                        let kind = match meta {
+                        // as_ref() everywhere: the directory flag, the size
+                        // and the timestamp are three readings of one
+                        // Metadata, and the first one must not take it.
+                        let kind = match meta.as_ref() {
                             Some(m) if m.is_dir() => "d",
                             _ => "-",
                         };
-                        let size = meta.map(|m| m.len()).unwrap_or(0);
+                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                         let modified = meta
+                            .as_ref()
                             .and_then(|m| m.modified().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| crate::proc::format_ts(d.as_secs() as i64))

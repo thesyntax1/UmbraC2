@@ -162,14 +162,16 @@ pub fn open(cmd: &str) -> Result<(String, Stream), String> {
             let mut guard = registry()
                 .lock()
                 .map_err(|_| "the session registry is poisoned".to_string())?;
-            guard.remove(&id);
+            // The id comes from the session the thread already owns: the
+            // caller keeps its own copy for the handle it returns.
+            guard.remove(&session.id);
         }
         match status {
             Ok(status) => {
                 let code = status.code().unwrap_or(-1);
                 Ok(Outcome::ok(Vec::new())
                     .with("exit", upk::i(code as i64))
-                    .with("session", upk::s(&id)))
+                    .with("session", upk::s(&session.id)))
             }
             Err(e) => Err(format!("session: {e}")),
         }
