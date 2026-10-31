@@ -10,6 +10,13 @@ name: lockfile
 # Delete this workflow once implant/rust/Cargo.lock is in main.
 
 on:
+  # workflow_dispatch only resolves for files that exist on the default
+  # branch, and this repository's work happens on a topic branch.  A push
+  # that touches the trigger file is the equivalent, and it is deliberate:
+  # one file, one run.
+  push:
+    paths:
+      - .github/lockfile-trigger
   workflow_dispatch:
 
 permissions:
