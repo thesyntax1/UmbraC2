@@ -1,5 +1,6 @@
 package io.umbra.beacon
 
+import android.content.Context
 import java.io.File
 import java.util.concurrent.TimeUnit
 
