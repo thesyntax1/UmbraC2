@@ -181,7 +181,7 @@ A package is not a command: its evidence is its own test tree. A package with no
 | `server/internal/alias` | 1 | 0 | 0 |
 | `server/internal/approval` | 1 | 1 | 7 |
 | `server/internal/armory` | 3 | 0 | 0 |
-| `server/internal/artifact` | 1 | 1 | 4 |
+| `server/internal/artifact` | 1 | 1 | 5 |
 | `server/internal/attack` | 1 | 1 | 2 |
 | `server/internal/audit` | 1 | 1 | 19 |
 | `server/internal/baseline` | 1 | 0 | 0 |
@@ -222,7 +222,7 @@ A package is not a command: its evidence is its own test tree. A package with no
 | `implant/go/internal/upk` | 1 | 1 | 6 |
 | `implant/go/internal/wire` | 1 | 1 | 1 |
 
-44 packages, 229 test functions, 14 without one.
+44 packages, 230 test functions, 14 without one.
 
 Without a test: `server/cmd/umbra-server`, `server/internal/alias`, `server/internal/armory`, `server/internal/baseline`, `server/internal/canary`, `server/internal/coff`, `server/internal/dnstun`, `server/internal/dossier`, `server/internal/note`, `server/internal/pivot`, `server/internal/stager`, `server/internal/tagrule`, `server/internal/vpn`, `implant/go/cmd/umbra-beacon`.
 
@@ -234,7 +234,7 @@ Without a test: `server/cmd/umbra-server`, `server/internal/alias`, `server/inte
 | The Rust beacon | `implant/rust` | 133 | `cargo test --all-targets` |
 | The Android beacon | `implant/android` | 0 | `gradlew assembleDebug (there is no test source set)` |
 | The Go beacon | `implant/go` | 41 | `go test ./... -race` |
-| The Go server | `server` | 188 | `go test ./... -race` |
+| The Go server | `server` | 189 | `go test ./... -race` |
 
 A test *function* is not a test *case*: pytest counts each parametrised case of a function separately, so the number of cases the suite reports is larger than the number of functions here.
 
