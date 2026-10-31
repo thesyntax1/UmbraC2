@@ -2,6 +2,7 @@ package io.umbra.beacon
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.usage.UsageStatsManager
 import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
@@ -123,12 +124,16 @@ object Vendor {
         } else {
             power.isIgnoringBatteryOptimizations(context.packageName).toString()
         }
-        out["standby_bucket"] = if (power == null) "unknown" else bucketName(power.standbyBucket)
+        // The standby bucket of an application is the usage stats manager's,
+        // not the power manager's: getAppStandbyBucket() is the bucket of the
+        // calling application and needs no permission to read.
+        val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+        out["standby_bucket"] = if (usage == null) "unknown" else bucketName(usage.appStandbyBucket)
         val notifications = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         out["notifications"] = if (notifications == null) {
             "unknown"
         } else {
-            notifications.areNotificationsEnabled.toString()
+            notifications.areNotificationsEnabled().toString()
         }
         // The accessibility service is the one permission that gives the
         // operator the screen of the phone, so the guide says whether it is
@@ -159,6 +164,7 @@ object Vendor {
     fun steps(context: Context): List<Step> {
         val out = mutableListOf<Step>()
         val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
         val packageName = context.packageName
 
         out.add(
@@ -209,7 +215,7 @@ object Vendor {
                 why = "a foreground service without a notification is killed by the system on many phones",
                 state = if (notifications == null) {
                     "unknown"
-                } else if (notifications.areNotificationsEnabled) {
+                } else if (notifications.areNotificationsEnabled()) {
                     "yes"
                 } else {
                     "no"
@@ -267,9 +273,9 @@ object Vendor {
                 id = "standby",
                 title = "keep the implant out of the rare bucket",
                 why = "the bucket decides how often the system lets the application do anything at all",
-                state = if (power == null) {
+                state = if (usage == null) {
                     "unknown"
-                } else if (power.standbyBucket == PowerManager.STANDBY_BUCKET_RARE) {
+                } else if (usage.appStandbyBucket == UsageStatsManager.STANDBY_BUCKET_RARE) {
                     "rare"
                 } else {
                     "kept"
@@ -396,10 +402,10 @@ object Vendor {
 
     /** The name of the standby bucket the phone put the implant in. */
     private fun bucketName(bucket: Int): String = when (bucket) {
-        PowerManager.STANDBY_BUCKET_ACTIVE -> "active"
-        PowerManager.STANDBY_BUCKET_WORKING_SET -> "working_set"
-        PowerManager.STANDBY_BUCKET_FREQUENT -> "frequent"
-        PowerManager.STANDBY_BUCKET_RARE -> "rare"
+        UsageStatsManager.STANDBY_BUCKET_ACTIVE -> "active"
+        UsageStatsManager.STANDBY_BUCKET_WORKING_SET -> "working_set"
+        UsageStatsManager.STANDBY_BUCKET_FREQUENT -> "frequent"
+        UsageStatsManager.STANDBY_BUCKET_RARE -> "rare"
         else -> "unknown"
     }
 }
