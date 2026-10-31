@@ -23,12 +23,22 @@ func TestSmallLettersMatchAnyCasing(t *testing.T) {
 	if hits[0].Field != "output" || !strings.Contains(hits[0].Snippet, "FLAG-TANGO") {
 		t.Fatalf("the snippet is not the piece around the word: %+v", hits[0])
 	}
-	// A capital in the needle means what it says.
-	if hits := Tasks(tasks, "flag-TANGO", 10); len(hits) != 1 {
-		t.Fatalf("the exact needle was not found: %v", hits)
+	// A capital in the needle means what it says: the box compares the
+	// way the operator typed, so a mixed needle only finds the text that
+	// carries the same capitals.
+	if hits := Tasks(tasks, "flag-TANGO", 10); len(hits) != 0 {
+		t.Fatalf("a mixed needle folded when it should not have: %v", hits)
 	}
 	if hits := Tasks(tasks, "FLAG-TANGO", 10); len(hits) != 1 {
 		t.Fatalf("the needle typed in capitals was not found: %v", hits)
+	}
+	mixed := []*store.Task{
+		{ID: "t-2", AgentID: "web-01", Kind: "shell", State: store.TaskDone,
+			Output:    []byte("the flag-Tango line, written exactly so\n"),
+			Completed: time.Now().UTC()},
+	}
+	if hits := Tasks(mixed, "flag-Tango", 10); len(hits) != 1 {
+		t.Fatalf("a mixed needle did not find its own casing: %v", hits)
 	}
 	if hits := Tasks(tasks, "tango-flag", 10); len(hits) != 0 {
 		t.Fatalf("the box found words that were never written: %v", hits)

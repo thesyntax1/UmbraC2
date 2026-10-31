@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -472,6 +473,24 @@ def test_the_suite_the_checkers_and_the_build_are_green():
             capture_output=True, text=True)
         assert proc.returncode == 0, tool + ": " + proc.stdout + proc.stderr
 
+    # The workflow is not the build.  When a toolchain is present the
+    # modules are built and tested here, because a job in a YAML file has
+    # never run a compiler; when it is absent the test says so instead of
+    # pretending.
+    go = shutil.which("go")
+    if go:
+        for module in ("server", os.path.join("implant", "go")):
+            for command in (["build", "./..."], ["vet", "./..."], ["test", "./...", "-count=1"]):
+                proc = subprocess.run(
+                    [go, *command], cwd=os.path.join(ROOT, module),
+                    capture_output=True, text=True, timeout=900,
+                )
+                assert proc.returncode == 0, (
+                    module + " go " + " ".join(command) + ":\n"
+                    + proc.stdout[-3000:] + proc.stderr[-3000:])
+    else:
+        pytest.skip("no Go toolchain on this machine: the modules were not built")
+
     # Every component of the repository is built by the workflow: the
     # server, the three implants and the console.
     workflow = read_text(".github/workflows/ci.yml")
@@ -575,3 +594,51 @@ def test_the_engagement_ends_with_one_command_each_and_the_record_is_whole(team)
     # The report can be written from the console's own view.
     report = client.posture_report()
     assert isinstance(report, list)
+
+
+# ---------------------------------------------------------------------------
+# The dashboard is a page, and a page has to run
+# ---------------------------------------------------------------------------
+
+def _jsdom_dir() -> str:
+    """Where jsdom is installed, if it is installed at all."""
+    candidates = [
+        os.environ.get("UMBRA_JSDOM_DIR", ""),
+        os.path.join(os.path.expanduser("~"), ".cache", "dashjs", "node_modules"),
+        "/tmp/dashjs/node_modules",
+    ]
+    for path in candidates:
+        if path and os.path.isdir(os.path.join(path, "jsdom")):
+            return path
+    return ""
+
+
+def test_the_dashboard_runs_in_a_dom_and_escapes_what_the_hosts_say():
+    """The page is executed, not read.
+
+    A Go test can prove the page is served with the right headers; it
+    cannot prove the script runs, and a typo would ship a blank dashboard
+    with every Go test green.  This runs the page in jsdom against a fake
+    server that answers with markup in a host name and in a pivot label,
+    and asserts two things at once: the page renders, and the markup is
+    shown as text rather than becoming an element.
+
+    jsdom is not a dependency of the repository, so the test skips when it
+    is not installed:
+
+        npm install --prefix /tmp/dashjs jsdom
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    modules = _jsdom_dir()
+    if not modules:
+        pytest.skip("jsdom is not installed (npm install --prefix /tmp/dashjs jsdom)")
+    result = subprocess.run(
+        [node, os.path.join(ROOT, "tools", "dash_smoke.mjs"), modules],
+        capture_output=True, text=True, timeout=120, cwd=ROOT,
+    )
+    if result.returncode == 77:
+        pytest.skip(result.stdout.strip() or "jsdom is not installed")
+    assert result.returncode == 0, (result.stdout + result.stderr)[-4000:]
+    assert "ok: the dashboard renders" in result.stdout, result.stdout

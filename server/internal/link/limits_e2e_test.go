@@ -42,7 +42,7 @@ func TestATaskHasADeadlineAndATimeout(t *testing.T) {
 	if _, ok := data["deadline"]; !ok {
 		t.Fatalf("the task has no deadline: %v", data)
 	}
-	if timeout, _ := data["timeout"].(int64); timeout != 45 {
+	if timeout := num(data["timeout"]); timeout != 45 {
 		t.Fatalf("the timeout is %v, want 45: %v", data["timeout"], data)
 	}
 
@@ -91,4 +91,25 @@ func TestATaskHasADeadlineAndATimeout(t *testing.T) {
 	if errText, _ := resp["err"].(string); errText == "" {
 		t.Fatalf("the refusal has no reason: %v", resp)
 	}
+}
+
+// num reads an integer from a decoded body.
+//
+// The codec writes a non-negative int64 as an unsigned integer (section 3
+// of the protocol makes that the canonical form), so a number that left
+// the server as int64 comes back as uint64.  Both are the same number; a
+// test that insists on one Go type is testing the codec, not the promise,
+// and would fail the day the encoder is corrected.
+func num(v any) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case uint64:
+		return int64(x)
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	}
+	return -1 << 62
 }

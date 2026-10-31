@@ -1,6 +1,7 @@
 package silence
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -74,7 +75,10 @@ func TestThePromiseIsBounded(t *testing.T) {
 	if _, err := r.Add(Watch{AgentID: "a", Seconds: 60}); err != nil {
 		t.Fatalf("a sane watch was refused: %v", err)
 	}
-	if _, err := r.Add(Watch{AgentID: "a", Seconds: 90}); err != ErrTwiceWatched {
+	// The refusal names the host, so it wraps the sentinel: the test asks
+	// whether the error *is* ErrTwiceWatched, not whether it is the bare
+	// value, which would forbid the message that makes the log useful.
+	if _, err := r.Add(Watch{AgentID: "a", Seconds: 90}); !errors.Is(err, ErrTwiceWatched) {
 		t.Fatalf("the second promise over the same silence was accepted: %v", err)
 	}
 	if err := r.Remove("s-0099"); err != ErrNoSuchWatch {

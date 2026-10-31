@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import base64
 import hashlib
+import inspect
 import hmac
 import io
 import json
@@ -2356,6 +2357,19 @@ def test_armory_install_run_and_remove():
 
         with pytest.raises(OperatorError):
             client.armory_run("does-not-exist", "agent-armory")
+
+        # The name of this test promises a removal, so it removes: a test
+        # that says "and remove" and stops at the run is a test whose name
+        # is a claim the body does not keep.
+        imported = client.armory_import("https://mirror.lab/armory.json")
+        assert imported["source"] == "https://mirror.lab/armory.json"
+        assert imported["entries"] >= 1
+
+        client.armory_remove("whoami")
+        after = client.armory_list()
+        assert not any(e["name"] == "whoami" for e in after["entries"])
+        with pytest.raises(OperatorError):
+            client.armory_remove("whoami")
     finally:
         client.close()
         agent.stop()
@@ -12933,4 +12947,109 @@ def test_the_ledger_is_checked_as_far_as_it_is_kept() -> None:
             "a ledger that grew past the carried head still matched it")
     finally:
         client.close()
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# The name of a peer, and the metadata beside it
+# ---------------------------------------------------------------------------
+
+def test_a_name_is_an_alphabet_and_not_a_payload():
+    """An identity is refused, not repaired, and the refusal says why.
+
+    The rule lives in three places (the Go server, the Python reference,
+    and the mock that the console is tested against) because a name that
+    one implementation accepts and another refuses is a name that splits
+    a fleet in two.  This test pins the Python side and the shared
+    alphabet; the Go side has its own test in identity_test.go.
+    """
+    from umbra_cli import handshake
+
+    for good in ("a", "web-01", "web-01.dc1", "agent_1", "host:4001",
+                 "ops@lab", "x" * 128):
+        assert handshake.IDENT_RE.fullmatch(good), good
+    for bad in ("", "web 01", "<script>alert(1)</script>", "a/b", "a\\b",
+                "a'b", 'a"b', "a&b", "a|b", "a;b", "a\nb", "ünïcode",
+                "x" * 129, " leading", "trailing "):
+        assert not handshake.IDENT_RE.fullmatch(bad), bad
+
+    # The refusal is written where the check is, and the check is inline in
+    # the server handshake; the end-to-end proof that it refuses is
+    # test_the_mock_refuses_a_hostile_beacon_name below.
+    source = inspect.getsource(handshake.server_handshake)
+    assert "invalid identity" in source, "the server handshake lost its refusal"
+    assert "A-Za-z0-9" in source, "the refusal no longer names the alphabet"
+
+
+def test_metadata_is_stripped_the_same_way_in_python():
+    """The Go server strips metadata; the reference does exactly the same.
+
+    Stripping is idempotent, so a console may clean what it renders
+    without disagreeing with what the server stored.
+    """
+    from umbra_cli import handshake
+
+    cases = {
+        "web-01": "web-01",
+        "  web-01  ": "web-01",
+        "<img src=x onerror=alert(1)>": "img src=x onerror=alert(1)",
+        "a & b": "a  b",
+        "host\x00name": "hostname",
+        "line\nbreak": "linebreak",
+        'quote"and\'apostrophe`': "quoteandapostrophe",
+    }
+    for raw, want in cases.items():
+        got = handshake.clean_meta(raw)
+        assert got == want, (raw, got, want)
+        assert handshake.clean_meta(got) == got, raw
+
+    wide = handshake.clean_meta("é" * 300)
+    assert len(wide) == handshake.META_MAX, len(wide)
+
+    meta = handshake.clean_meta_map({
+        "host": "<b>web-01</b>",
+        "user": "root\x00",
+        "retries": 3,
+        "nested": {"inner": "<script>", "n": 1},
+        "<evil>": "value",
+    })
+    assert meta["host"] == "bweb-01/b", meta
+    assert meta["user"] == "root", meta
+    assert meta["retries"] == 3, meta
+    assert meta["evil"] == "value", meta
+    assert meta["nested"]["inner"] == "script", meta
+    assert meta["nested"]["n"] == 1, meta
+
+
+def test_the_mock_refuses_a_hostile_beacon_name():
+    """The test double is as strict as the product at the door.
+
+    A mock that accepted `<script>` would let a console test pass against
+    a host name the real server refuses, and the difference would be
+    found in the field.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+
+    token = b"identity-token-0123456789abcd"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    good = FakeAgent(server.address, AGENT_PSK, "agent-ok")
+    bad = FakeAgent(server.address, AGENT_PSK, "<script>alert(1)</script>")
+    good.start()
+    bad.start()
+    try:
+        deadline = time.time() + 5
+        seen = []
+        while time.time() < deadline:
+            with server._lock:
+                seen = list(server.agents)
+            if "agent-ok" in seen:
+                break
+            time.sleep(0.05)
+        assert "agent-ok" in seen, seen
+        assert not any("<" in name for name in seen), seen
+    finally:
+        good.stop()
+        bad.stop()
         server.stop()

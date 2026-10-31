@@ -69,10 +69,20 @@ func TestConcurrentSavesStayValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
+	// Two files are expected, and only two: the snapshot and the one
+	// generation kept behind it.  A stray *third* file is a leak.
+	allowed := map[string]bool{"state.json": true, "state.json.bak": true}
 	for _, e := range entries {
-		if e.Name() != "state.json" {
+		if !allowed[e.Name()] {
 			t.Errorf("stray file after save: %s", e.Name())
 		}
+	}
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("the backup generation is missing: %v", err)
+	}
+	if !json.Valid(backup) {
+		t.Error("the backup generation is not valid JSON")
 	}
 	reopened, err := store.Open(path)
 	if err != nil {
@@ -97,17 +107,24 @@ func TestSaveWithoutPathIsANoOp(t *testing.T) {
 }
 
 func TestBackgroundSaveErrorReachesTheHandler(t *testing.T) {
-	dir := t.TempDir()
-	// A regular file where the directory should be: every write fails with
-	// ENOTDIR, deterministically.
-	blocker := filepath.Join(dir, "blocker")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write blocker: %v", err)
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permissions that make the write fail")
 	}
-	st, err := store.Open(filepath.Join(blocker, "state.json"))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// The directory is read-only from here on: every write inside it fails
+	// with EACCES, which is the failure a full disk or a moved volume
+	// produces in the field.  (A file or a directory placed *at* the
+	// snapshot path does not work: the store rotates it aside and saves
+	// anyway, which is the behaviour its own test pins.)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("blocker: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	reported := make(chan error, 1)
 	st.SetSaveErrorHandler(func(err error) {
@@ -125,6 +142,19 @@ func TestBackgroundSaveErrorReachesTheHandler(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("save failure never reached the handler")
+	}
+}
+
+// A snapshot that exists but cannot be read stops the open: starting empty
+// would let the next save overwrite a file that may still be recoverable.
+func TestAnUnreadableSnapshotStopsTheOpen(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	if _, err := store.Open(filepath.Join(blocker, "state.json")); err == nil {
+		t.Fatal("a store over an unreadable path opened as if it were empty")
 	}
 }
 
