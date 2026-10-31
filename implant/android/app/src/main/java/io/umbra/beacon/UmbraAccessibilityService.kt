@@ -2,6 +2,7 @@ package io.umbra.beacon
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
@@ -152,19 +153,42 @@ class UmbraAccessibilityService : AccessibilityService() {
 
     /** The system keys of the phone. */
     private fun global(action: String): String {
-        val code = when (action.lowercase()) {
+        val wanted = action.lowercase()
+        // Volume is not a global action of the accessibility service: there
+        // is no GLOBAL_ACTION_VOLUME_* in the platform.  The sound of the
+        // phone is the audio manager's, so it is asked there.
+        if (wanted == "volume_up" || wanted == "volume_down") {
+            return volume(up = wanted == "volume_up")
+        }
+        val code = when (wanted) {
             "back" -> GLOBAL_ACTION_BACK
             "home" -> GLOBAL_ACTION_HOME
             "recents", "recent" -> GLOBAL_ACTION_RECENTS
             "notifications" -> GLOBAL_ACTION_NOTIFICATIONS
-            "power", "dialer" -> GLOBAL_ACTION_POWER_DIALER
-            "volume_up" -> GLOBAL_ACTION_VOLUME_UP
-            "volume_down" -> GLOBAL_ACTION_VOLUME_DOWN
+            // The power key opens the power dialog; the platform has no
+            // "power dialer" action, so the old alias went with it.
+            "power" -> GLOBAL_ACTION_POWER_DIALOG
             "screenshot" -> GLOBAL_ACTION_TAKE_SCREENSHOT
             else -> throw IllegalArgumentException("unknown global action $action")
         }
         val done = performGlobalAction(code)
         return "global $action (${if (done) "the phone accepted it" else "the phone refused it"})\n"
+    }
+
+    /** The volume keys, through the audio manager of the phone. */
+    private fun volume(up: Boolean): String {
+        val audio = getSystemService(AudioManager::class.java)
+            ?: return "global volume: the phone has no audio manager\n"
+        try {
+            audio.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+                AudioManager.FLAG_SHOW_UI,
+            )
+        } catch (t: Throwable) {
+            return "global volume: the phone refused it (${t.message ?: "no reason given"})\n"
+        }
+        return "global ${if (up) "volume_up" else "volume_down"} (the phone adjusted the music stream)\n"
     }
 
     companion object {
