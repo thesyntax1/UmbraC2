@@ -19,6 +19,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
@@ -83,6 +84,10 @@ type Server struct {
 	// Optional: without it the console is asked for nothing more than
 	// its token.
 	OTP *otp.Registry
+	// Baseline is the registry of the paths the team watches and what
+	// was last seen of them.  Optional: without it the server refuses
+	// the baseline commands instead of pretending to watch anything.
+	Baseline *baseline.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -166,6 +171,9 @@ func (s *Server) SetApprovals(q *approval.Queue) { s.Approvals = q }
 // SetCanaries attaches the ledger of the tripwires.
 func (s *Server) SetCanaries(c *canary.Registry) { s.Canaries = c }
 
+// SetBaseline attaches the registry of the paths the team watches.
+func (s *Server) SetBaseline(b *baseline.Registry) { s.Baseline = b }
+
 // SetOTP attaches the registry of the second factors.
 //
 // Without a registry every console is asked for its token alone, which
@@ -204,18 +212,47 @@ func (s *Server) checkSecondFactor(info *HelloInfo) error {
 // short string, so the ledger and the answer the operator read can
 // never disagree.
 func (s *Server) taskCompleted(c hub.Completion) {
-	if s.Canaries == nil || c.Kind != "canary.check" {
-		return
-	}
-	states, _ := c.Meta["canary_states"].(string)
-	if states == "" {
-		return
-	}
-	if n := s.Canaries.RecordCheck(c.AgentID, states); n > 0 {
-		if err := s.Canaries.Save(); err != nil && s.Log != nil {
-			s.Log.Warn("the ledger of the canaries could not be saved", "err", err)
+	if s.Canaries != nil && c.Kind == "canary.check" {
+		if states, _ := c.Meta["canary_states"].(string); states != "" {
+			if n := s.Canaries.RecordCheck(c.AgentID, states); n > 0 {
+				if err := s.Canaries.Save(); err != nil && s.Log != nil {
+					s.Log.Warn("the ledger of the canaries could not be saved", "err", err)
+				}
+			}
 		}
 	}
+	if s.Baseline != nil && c.Kind == "baseline.look" {
+		raw, _ := c.Meta["baseline_snaps"].(string)
+		if raw != "" {
+			snaps := baseline.ParseSnapshots(raw)
+			if len(snaps) > 0 {
+				drifts := s.Baseline.Record(c.AgentID, snaps)
+				if err := s.Baseline.Save(); err != nil && s.Log != nil {
+					s.Log.Warn("the baseline could not be saved", "err", err)
+				}
+				if len(drifts) > 0 && s.Hub != nil {
+					s.Hub.Emit(hub.Event{
+						Kind:    "baseline.drifted",
+						AgentID: c.AgentID,
+						TaskID:  c.TaskID,
+						Data: map[string]any{
+							"drifted": int64(len(drifts)),
+							"paths":   driftPaths(drifts),
+						},
+					})
+				}
+			}
+		}
+	}
+}
+
+// driftPaths is the paths that moved, for the event the server pushes.
+func driftPaths(drifts []baseline.Drift) []any {
+	out := make([]any, 0, len(drifts))
+	for _, d := range drifts {
+		out = append(out, d.Path)
+	}
+	return out
 }
 
 // Dossier gathers the file of one host.

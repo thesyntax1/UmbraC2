@@ -99,6 +99,7 @@ func Capabilities() []any {
 		"hunt.scan",
 		// The tripwires: the canaries of the team, planted and looked at.
 		"canary.plant", "canary.check",
+		"baseline.look",
 	}
 	out := make([]any, 0, len(kinds))
 	for _, kind := range kinds {
@@ -183,6 +184,8 @@ func (b *Beacon) runTask(kind string, args map[string]any) Outcome {
 		return b.attested(b.taskCanaryPlant(args))
 	case "canary.check":
 		return b.attested(b.taskCanaryCheck(args))
+	case "baseline.look":
+		return b.attested(b.taskBaselineLook(args))
 	default:
 		return Outcome{Code: 127, Err: fmt.Sprintf("%s %q", errUnknownKind.Error(), kind)}
 	}

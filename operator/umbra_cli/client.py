@@ -903,6 +903,61 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the baseline of the watched paths -----------------------------------
+    def baseline_add(self, agent_id: str, path: str,
+                    label: str = "", note: str = "") -> Dict[str, Any]:
+        """Watch one path on one host.
+
+        The path is named and the host is named; the look is queued
+        separately, because the implant is the side that can read the
+        file.
+        """
+        payload: Dict[str, Any] = {"agent": agent_id, "path": path}
+        if label:
+            payload["label"] = label
+        if note:
+            payload["note"] = note
+        res = self.rpc("baseline.add", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def baseline_list(self, agent_id: str = "",
+                      state: str = "") -> Dict[str, Any]:
+        """The paths the team watches, with the state of the last look."""
+        payload: Dict[str, Any] = {}
+        if agent_id:
+            payload["agent"] = agent_id
+        if state:
+            payload["state"] = state
+        res = self.rpc("baseline.list", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def baseline_remove(self, entry_id: str) -> Dict[str, Any]:
+        """Stop watching a path.  The file on the host stays there."""
+        res = self.rpc("baseline.remove", {"id": entry_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def baseline_check(self, agent_id: str,
+                      wait: bool = False) -> Dict[str, Any]:
+        """Ask the host what its watched paths are.
+
+        The findings travel in the metadata of the answer as one short
+        JSON string, so the ledger of the server and the answer the
+        operator reads cannot disagree.
+        """
+        # wait is part of the API of the console; the RPC itself is
+        # asynchronous.
+        _ = wait
+        res = self.rpc("baseline.check", {"agent": agent_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     # -- the second factor -------------------------------------------------
     def operator_otp_status(self) -> Dict[str, Any]:
         """Who has a second factor, and how old it is.

@@ -1079,6 +1079,100 @@ def totp_code(secret: str, when: Optional[float] = None) -> str:
     return f"{value % 1000000:06d}"
 
 
+def run_baseline(client: OperatorClient, console: Console, args: Any) -> int:
+    """The paths the team watches on the hosts.
+
+    A baseline is not a tripwire: the team asks "is this host the one we
+    saw yesterday", and the answers are the size, the time and the digest
+    of each path.  The baseline only reads: a baseline that rewrote the
+    file it watches would destroy the very thing it is watching.
+    """
+    action = getattr(args, "baseline_cmd", "") or "list"
+    if action == "list":
+        payload = client.baseline_list(agent_id=args.agent, state=args.state)
+        if args.json:
+            emit(payload)
+        else:
+            rows = payload.get("entries") or []
+            if not rows:
+                print("the baseline is empty")
+                return 0
+            print(f"{len(rows)} watched paths")
+            for row in rows:
+                state = row.get("state", "?")
+                seen = row.get("seen", "")
+                size = row.get("size", 0)
+                path = row.get("path", "?")
+                note = row.get("note", "")
+                label = row.get("label", "")
+                line = f"  {row.get('id', '?'):<8} {state:<9} {size:>8}B"
+                line += f"  {path:<40}"
+                if label:
+                    line += f"  {label}"
+                if note:
+                    line += f"  {note}"
+                if seen:
+                    line += f"  (seen {seen})"
+                print(line)
+        return 0
+    if action == "add":
+        if not args.path:
+            print("a path is needed", file=sys.stderr)
+            return 2
+        payload = client.baseline_add(args.agent, args.path,
+                                        label=args.label, note=args.note)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the path is watched as {payload.get('id', '?')}: "
+                  f"{args.path} on {args.agent}")
+        return 0
+    if action == "remove":
+        payload = client.baseline_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the path {payload.get('id', args.id)} is not watched any "
+                  f"more; the file on the host stays where it is")
+        return 0
+    if action == "check":
+        payload = client.baseline_check(args.agent, wait=args.wait)
+        task_id = payload.get("task_id", "")
+        if args.json:
+            emit(payload)
+            return 0
+        print(f"the look was queued on {args.agent}: {task_id} "
+              f"({payload.get('paths', 0)} paths)")
+        if not args.wait or not task_id:
+            return 0
+        task = client.task(task_id)
+        if not task.get("state") or task.get("state") == "queued":
+            from .flows import run_bulk
+            run_bulk(client, console, "baseline.look", {"agent": args.agent},
+                     [{"task_id": task_id, "agent_id": args.agent}],
+                     cap=1, timeout=180.0, wait=True)
+            task = client.task(task_id)
+        answer = str(task.get("out", "") or task.get("err", "") or "")
+        if task.get("state") == "done":
+            print(f"  {args.agent}  done")
+            for line in answer.splitlines():
+                print(f"    {line}")
+            snapped = (task.get("meta") or {}).get("baseline_snaps")
+            if snapped:
+                change = 0
+                for line in answer.splitlines():
+                    if line.strip().startswith("missing") or "touched" in line:
+                        change += 1
+                if change:
+                    print(f"    (the drift is on the ledger: "
+                          f"{change} changes)")
+        else:
+            print(f"  {args.agent}  {task.get('state', '?')}  {answer}")
+        return 0
+    print(f"unknown baseline command: {action}", file=sys.stderr)
+    return 2
+
+
 def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
     """The file of a host: what the server knows and what it did.
 
@@ -3423,6 +3517,38 @@ def build_parser() -> argparse.ArgumentParser:
     canary_remove.add_argument("id")
     canary_remove.add_argument("--json", action="store_true")
 
+    # ---- the baseline of a host ------------------------------------------
+    baseline_cmd = sub.add_parser("baseline",
+                                  help="the paths the team watches on the hosts")
+    baseline_sub = baseline_cmd.add_subparsers(dest="baseline_cmd")
+
+    baseline_list = baseline_sub.add_parser("list",
+                                             help="the watched paths")
+    baseline_list.add_argument("--agent", default="", help="one host")
+    baseline_list.add_argument("--state", default="",
+                               help="only one state: unknown/present/changed/...")
+    baseline_list.add_argument("--json", action="store_true")
+
+    baseline_add = baseline_sub.add_parser("add", help="watch a path")
+    baseline_add.add_argument("--agent", required=True, help="the host")
+    baseline_add.add_argument("path", help="the path")
+    baseline_add.add_argument("--label", default="",
+                              help="what the path is, in the words of the team")
+    baseline_add.add_argument("--note", default="")
+    baseline_add.add_argument("--json", action="store_true")
+
+    baseline_remove = baseline_sub.add_parser("remove",
+                                               help="stop watching a path")
+    baseline_remove.add_argument("id")
+    baseline_remove.add_argument("--json", action="store_true")
+
+    baseline_check = baseline_sub.add_parser("check",
+                                              help="look at the watched paths")
+    baseline_check.add_argument("--agent", default="", help="the host")
+    baseline_check.add_argument("--wait", action="store_true",
+                                help="wait for and print the answer")
+    baseline_check.add_argument("--json", action="store_true")
+
     # ---- the file of a host ---------------------------------------------
     dossier_cmd = sub.add_parser("dossier",
                                   help="the file of a host: what the server "
@@ -4523,6 +4649,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_canary(client, console, args)
         elif args.cmd == "dossier":
             return run_dossier(client, console, args)
+        elif args.cmd == "baseline":
+            return run_baseline(client, console, args)
         elif args.cmd == "otp":
             return run_otp(client, console, args)
         elif args.cmd == "info":

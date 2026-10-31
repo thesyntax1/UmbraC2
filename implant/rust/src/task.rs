@@ -49,6 +49,7 @@ pub fn capabilities() -> Vec<&'static str> {
         "hunt.scan",
         // The tripwires: the canaries of the team, planted and looked at.
         "canary.plant", "canary.check",
+        "baseline.look",
     ]
 }
 
@@ -894,6 +895,7 @@ pub fn run(ctx: &Context, kind: &str, args: &Value) -> Outcome {
         // into the evidence file has to be provable.
         "canary.plant" => attested_answer(ctx, crate::canary::plant(args)),
         "canary.check" => attested_answer(ctx, crate::canary::check(args)),
+        "baseline.look" => attested_answer(ctx, crate::baseline::look(args)),
         // The senses of the desktop: the window table, the clipboard, the
         // screen in motion, the wireless networks, the browsers, the
         // security software, the USB keys and the memory of a process.

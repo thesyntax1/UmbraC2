@@ -2191,6 +2191,44 @@ else's is the work of an admin, and the refusal says so.
 the factor away and the console of that operator works with the token
 alone from then on.
 
+## 5r. The baseline of a host
+
+A tripwire says that somebody else was on the machine.  A baseline says
+that the host is the one you saw yesterday: the team names the paths
+that matter, and the server keeps the size, the time of the last change
+and the digest of each.
+
+```bash
+umbra baseline add web-01 /etc/app/config.json --label "the config of the app"
+umbra baseline list --agent web-01
+umbra baseline check web-01 --wait
+umbra baseline remove b-0001
+```
+
+**The baseline only reads.**  A baseline that rewrote the file it
+watches would destroy the very thing it is watching, so the check
+reads and it reports, and the operator decides what to do with the
+drift.
+
+**The drift is kept.**  A file that was touched twice does not look
+like a file that was touched once: the ledger of the server keeps the
+state of every path, the time of the last look, the time of the last
+drift and the number of the changes.
+
+**The look is signed.**  The findings of the look are written into a
+report that is attested like every other report of the engagement: a
+check of the baseline that goes into the evidence file is a check that
+has to be provable.
+
+**The look travels with the answer.**  The snapshots travel in the
+metadata of the answer as one short JSON string, so the ledger of the
+server and the answer the operator reads cannot disagree.
+
+The states are the five a watched path can be in: `unknown` when
+nobody ever looked, `present` when the file is as it was, `changed`
+when it was touched, `missing` when it is gone, `appeared` when it
+was gone and is back.
+
 ## 6. Monitoring
 
 ```bash

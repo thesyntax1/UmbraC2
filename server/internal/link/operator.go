@@ -18,6 +18,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/armory"
 	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
@@ -2463,7 +2464,97 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"dossiers": rows, "count": int64(len(rows))})
 
-	// ---- the second factor of the operator -------------------------------
+	// ---- the baseline of the paths the team watches ----------------------
+	case "baseline.add":
+		// The path of the baseline is named and the host is named: the
+		// rest of the entry says why the path is watched.  The server
+		// does not ask the file itself: the look is queued through
+		// baseline.check.
+		if s.Baseline == nil {
+			return fail("baseline.add: this server has no baseline")
+		}
+		agentID, _ := args["agent"].(string)
+		path, _ := args["path"].(string)
+		label, _ := args["label"].(string)
+		note, _ := args["note"].(string)
+		entry, err := s.Baseline.Add(baseline.Entry{
+			AgentID: agentID,
+			Path:    path,
+			Label:   label,
+			Note:    note,
+			AddedBy: op.Name,
+		})
+		if err != nil {
+			return fail("baseline.add: %v", err)
+		}
+		if err := s.Baseline.Save(); err != nil {
+			s.Log.Warn("the baseline could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": entry.ID, "agent_id": entry.AgentID, "path": entry.Path,
+			"state": entry.State, "added": entry.Added.Format(time.RFC3339),
+		})
+
+	case "baseline.list":
+		if s.Baseline == nil {
+			return fail("baseline.list: this server has no baseline")
+		}
+		agentID, _ := args["agent"].(string)
+		state, _ := args["state"].(string)
+		items := s.Baseline.List(agentID, state)
+		rows := make([]any, 0, len(items))
+		for _, entry := range items {
+			rows = append(rows, baselineMap(entry))
+		}
+		return reply(upk.Map{"entries": rows, "count": int64(len(rows))})
+
+	case "baseline.remove":
+		// The operator stops watching the path; the file on the host
+		// stays where it is.
+		if s.Baseline == nil {
+			return fail("baseline.remove: this server has no baseline")
+		}
+		entryID, _ := args["id"].(string)
+		if err := s.Baseline.Remove(entryID); err != nil {
+			return fail("baseline.remove: %v", err)
+		}
+		if err := s.Baseline.Save(); err != nil {
+			s.Log.Warn("the baseline could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": entryID, "removed": true})
+
+	case "baseline.check":
+		// The look: the server asks the hosts about the paths that are
+		// watched on them, and the answer of the implant says what is
+		// there.  The findings travel in the metadata of the answer as
+		// one short JSON string, so the ledger and the answer the
+		// operator reads cannot disagree.
+		if s.Baseline == nil {
+			return fail("baseline.check: this server has no baseline")
+		}
+		agentID, _ := args["agent"].(string)
+		if agentID == "" {
+			return fail("baseline.check: the host was not named")
+		}
+		paths := s.Baseline.Paths(agentID)
+		if len(paths) == 0 {
+			return fail("baseline.check: no paths are watched on that host")
+		}
+		list := make([]any, 0, len(paths))
+		for _, path := range paths {
+			list = append(list, path)
+		}
+		t, err := s.Hub.SubmitTask(agentID, "baseline.look",
+			map[string]any{"paths": list})
+		if err != nil {
+			return fail("baseline.check: %v", err)
+		}
+		return reply(upk.Map{
+			"task_id": t.ID, "agent_id": t.AgentID, "state": t.State,
+			"paths": int64(len(paths)),
+		})
+
+	// ---- the server-side file store ------------------------------------
 	case "operator.otp.rotate":
 		// A new secret for an operator.
 		//
@@ -3953,6 +4044,45 @@ func huntIndicatorPayload(payload hunt.Indicators) []any {
 
 // approvalMap renders a request of the queue for the wire.
 //
+// baselineMap renders one watched path for the wire.
+//
+// The drift is kept, not only the state: a file that was changed twice
+// does not look like a file that was changed once, because the
+// baseline keeps the number of the changes and the time of the last
+// look.
+func baselineMap(entry baseline.Entry) upk.Map {
+	out := upk.Map{
+		"id":       entry.ID,
+		"agent_id": entry.AgentID,
+		"path":     entry.Path,
+		"label":    entry.Label,
+		"state":    entry.State,
+		"sha256":   entry.Digest,
+		"size":     entry.Size,
+		"changes":  int64(entry.Changes),
+		"added":    entry.Added.Format(time.RFC3339),
+	}
+	if entry.LastNote != "" {
+		out["last_note"] = entry.LastNote
+	}
+	if !entry.ModTime.IsZero() {
+		out["mtime"] = entry.ModTime.Format(time.RFC3339)
+	}
+	if !entry.Seen.IsZero() {
+		out["seen"] = entry.Seen.Format(time.RFC3339)
+	}
+	if !entry.Changed.IsZero() {
+		out["changed"] = entry.Changed.Format(time.RFC3339)
+	}
+	if entry.AddedBy != "" {
+		out["added_by"] = entry.AddedBy
+	}
+	if entry.Note != "" {
+		out["note"] = entry.Note
+	}
+	return out
+}
+
 // The times that are not there are not sent: a request that was never
 // decided has no decided_at, and a key with an empty value is a lie
 // the console would have to know about.
@@ -4064,6 +4194,18 @@ func dossierMap(d dossier.Dossier) upk.Map {
 		gaps = append(gaps, line)
 	}
 	out := upk.Map{
+		watches := make([]any, 0, len(d.Watches))
+		for _, w := range d.Watches {
+			watches = append(watches, upk.Map{
+				"id":       w.ID,
+				"path":     w.Path,
+				"label":    w.Label,
+				"state":    w.State,
+				"sha256":   w.SHA256,
+				"size":     w.Size,
+				"changes":  int64(w.Changes),
+			})
+		}
 		"id":             d.ID,
 		"host":           d.Host,
 		"os":             d.OS,
@@ -4076,6 +4218,7 @@ func dossierMap(d dossier.Dossier) upk.Map {
 		"checkins":       int64(d.Checkins),
 		"score":          int64(d.Score),
 		"grade":          d.Grade,
+		"watches":        watches,
 		"tasks":          tasks,
 		"parts":          parts,
 		"tasks_done":     int64(d.Done),

@@ -57,6 +57,31 @@ type Task struct {
 	Attested bool
 }
 
+// Watch is one path the team watches on a host, with the drift of it.
+type Watch struct {
+	// ID is the short name of the watch: "b-0007".
+	ID string `json:"id"`
+	// Path is the path that is watched.
+	Path string `json:"path"`
+	// Label says what it is in the words of the team.
+	Label string `json:"label,omitempty"`
+	// State is "unknown", "present", "changed", "missing" or
+	// "appeared".
+	State string `json:"state"`
+	// SHA256 is the digest of the last look.
+	SHA256 string `json:"sha256,omitempty"`
+	// Size is the size of the file of the last look.
+	Size int64 `json:"size,omitempty"`
+	// Seen is when the last look was taken.
+	Seen time.Time `json:"seen,omitempty"`
+	// Changed is when the drift was noticed the last time.
+	Changed time.Time `json:"changed,omitempty"`
+	// Changes is how many times the path drifted.
+	Changes int `json:"changes"`
+	// LastNote says what the last look saw.
+	LastNote string `json:"last_note,omitempty"`
+}
+
 // Persist is one entry of the persistence of the host.
 type Persist struct {
 	// Technique is the id of the technique.
@@ -168,6 +193,9 @@ type Dossier struct {
 	Canaries []canary.Canary `json:"canaries,omitempty"`
 	// Approvals are the requests about the host.
 	Approvals []approval.Request `json:"approvals,omitempty"`
+	// Watches are the paths the team watches on the host, and the
+	// drift of them.
+	Watches []Watch `json:"watches,omitempty"`
 	// Kinds says how much work of every kind the server ran on the host.
 	Kinds map[string]int `json:"kinds,omitempty"`
 	// Notes are the lines the console wrote about the host.
@@ -207,6 +235,7 @@ func Build(h Host) Dossier {
 		Persist:       append([]Persist(nil), h.Persist...),
 		Canaries:       append([]canary.Canary(nil), h.Canaries...),
 		Approvals:      append([]approval.Request(nil), h.Approvals...),
+		Watches:        append([]Watch(nil), h.Watches...),
 		Notes:          append([]string(nil), h.Notes...),
 		Kinds:          map[string]int{},
 	}

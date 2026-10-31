@@ -411,6 +411,30 @@ not protect the agent link either -- that is the key of the agent.  And
 it is not a proof of who is at the keyboard: a code that is read aloud
 is a code that is used, and the window is a window.
 
+## 3.12c The baseline of the hosts
+
+The baseline (`internal/baseline`) is not a tripwire: it does not
+protect what it watches, it only reads it.  A baseline that rewrote the
+file it watches would destroy the very thing it is watching, so the
+check reads and it reports, and the operator decides what to do with
+the drift.
+
+**The state is kept, not only the verdict.**  A file that was changed
+twice does not look like a file that was changed once: the ledger keeps
+the state of every path, the time of the last look, the time of the
+last drift and the number of the changes.
+
+**The findings travel with the answer.**  The snapshots travel in the
+metadata of the answer as one short JSON string, so the ledger of the
+server and the answer the operator reads cannot disagree.  The look is
+signed like every other report of the engagement, so a check of the
+baseline that goes into the evidence file is a check that has to be
+provable.
+
+**What the baseline does not do.**  It does not prove that a host is
+clean: it proves that the paths that were named are as they were, or
+that they are not.  A machine that was never watched says nothing.
+
 ## 3.13 The versions of the protocol
 
 The handshake version is not a security boundary, and it is worth saying

@@ -69,6 +69,7 @@ main: load config → build keyring → open store → start listeners
 | `canary` | the tripwires | the ledger of the canaries the team planted: the secret of the file stays with the implant, the verdict comes back in the metadata of the task and the ledger keeps the history |
 | `dossier` | the file of a host | the read model that puts one host on one page: the identity, the health, the work that was run, the persistence, the tripwires, the requests and what is not known |
 | `otp` | the second factor | the registry of the secrets of the operator: RFC 6238 with six digits, a window of one step on each side, a constant-time comparison, and a secret that is shown once |
+| `baseline` | the baseline of the hosts | the paths the team watches, and the drift of them: a file that was changed twice does not look like a file that was changed once |
 
 ### Connection handling
 
@@ -189,6 +190,13 @@ wrote; the server keeps the ledger of the verdicts.  The verdicts travel
 in the metadata of the task that checked them, as one short string, and
 the hub calls the ledger when a task finishes (`Hub.OnComplete`), so the
 ledger and the answer the operator reads cannot disagree.
+
+`baseline` is the registry of the paths the team watches.  The implant
+answers with the size, the time of the last change and the digest of
+every path, and the server writes the drift into its ledger: a file
+that was changed twice does not look like a file that was changed
+once, because the ledger keeps the state, the time of the last look and
+the number of the changes.
 
 `otp` is the registry of the second factors of the operators.  The
 secret of an operator lives in the phone of the operator and never

@@ -169,6 +169,14 @@ var requirements = map[string]string{
 	"operator.otp.rotate":  Operator,
 	"operator.otp.remove":  Operator,
 
+	// The baseline of the paths the team watches: reading it is a
+	// read, planting a path and looking at it are the work of the
+	// team.
+	"baseline.add":    Operator,
+	"baseline.list":   Viewer,
+	"baseline.remove": Operator,
+	"baseline.check":  Operator,
+
 	// Reading the queue of the approvals and one request of it is a read:
 	// a viewer sees what the team is waiting for.
 	"approval.list": Viewer,

@@ -516,6 +516,7 @@ Task kinds understood by the reference implants:
 | `hunt.scan` | `indicators` (list of `id`, `kind`, `value`, `label`), optional `roots` (list of directories) | the indicators of the team that are on this host: one line per finding, plus the kinds that do not apply to the platform and the limits of the walk (it changes nothing; the report is attested) |
 | `canary.plant` | `id`, `token`, optional `label` and `path` | plants a tripwire: a file with the token of the canary in it, in a place where nothing of the engagement belongs; the implant keeps the facts of it (the size, the time, the digest) next to the canary |
 | `canary.check` | `canaries` (list of `id`) | looks at the tripwires of the host and says whether they are as they were planted: `intact`, `changed` or `missing` (the verdicts travel in the metadata of the answer; the report is attested) |
+| `baseline.look` | `paths` (list of paths, or one string of paths, one per line) | looks at the paths the team watches and reports the size, the digest and the time of the last change of each (the snapshots travel in the metadata of the answer; the report is attested) |
 | `update` | `path`, optional `sha256` | replaces the running implant with a verified one |
 
 ### 7.1 Result metadata and chunked transfer
@@ -625,6 +626,10 @@ Operator RPC commands, with the minimum role each requires:
 | `canary.remove` | operator | stop watching a tripwire: `id`; the file on the host stays where it is |
 | `dossier.get` | viewer | the file of one host: the identity, the health with its reasons, the work that was run, the persistence, the tripwires, the requests and what is not known |
 | `dossier.list` | viewer | the files of every host, the weakest first |
+| `baseline.add` | operator | watch a path on a host: `agent`, `path`, optional `label` and `note`; the look is queued separately with `baseline.check` |
+| `baseline.list` | viewer | the paths the team watches: optional `agent` and `state` (`unknown`, `present`, `changed`, `missing` or `appeared`) |
+| `baseline.remove` | operator | stop watching a path: `id`; the file on the host stays where it is |
+| `baseline.check` | operator | look at the watched paths of a host: `agent`; the findings travel in the metadata of the answer, and the server writes the drift into the ledger |
 | `operator.otp.status` | viewer | who has a second factor, whether it is on, and how old the secret is. The secrets are never in the answer |
 | `operator.otp.rotate` | operator | make a new secret for an operator: optional `operator` (default: yourself) and `issuer` (the name the phone shows). The secret is in the answer once and never again |
 | `operator.otp.remove` | operator | take the second factor of an operator away: optional `operator` (default: yourself). The console of that operator works with the token alone from then on |
@@ -2249,6 +2254,26 @@ host: a check that repaired the canary would hide the very thing it is
 looking for.  The secret of the file never travels to the console --
 `canary.list` and `canary.get` leave it out, and so does every answer
 of the server.
+
+**The baseline of a host.**  `baseline.add` names a path the team
+watches on a host -- the configuration of the service, the script that
+starts it, the key that opens it.  `baseline.check` asks the host about
+its watched paths and the answer of the implant says what is there:
+the size, the time of the last change and the digest of every path.
+
+The baseline only reads: a baseline that rewrote the file it watches
+would destroy the very thing it is watching.  A path that is gone is
+reported as gone, because "no file" is what the team wanted to be
+told.  The findings travel in the metadata of the answer as one short
+JSON string, so the ledger of the server and the answer the operator
+reads cannot disagree, and the drift is kept: a file that was changed
+twice does not look like a file that was changed once, because the
+ledger keeps the number of the changes and the time of the last look.
+
+The states are the five a watched path can be in: `unknown` when nobody
+ever looked, `present` when the file is as it was, `changed` when it
+was touched, `missing` when it is gone, and `appeared` when it was
+gone and is back.
 
 **The file of a host.**  `dossier.get` puts everything the server knows
 about one host on one page: the identity, the health with the reasons

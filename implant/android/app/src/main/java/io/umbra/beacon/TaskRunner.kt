@@ -51,6 +51,8 @@ object TaskRunner {
         "hunt.scan",
         // the tripwires: the canaries of the team, planted and looked at
         "canary.plant", "canary.check",
+        // the baseline: the paths the team watches on the phone
+        "baseline.look",
     )
 
     /**
@@ -480,6 +482,9 @@ object TaskRunner {
             // file has to be provable.
             "canary.plant" -> canaryPlant(args)
             "canary.check" -> canaryCheck(args)
+            // The baseline of the phone: the paths the team watches
+            // looked at.  The look is signed like every other report.
+            "baseline.look" -> baselineLook(args)
 
             // ---- network reach and the local environment ------------------
             "env" -> environment(args.field("filter")?.text() ?: "")
@@ -1088,6 +1093,24 @@ object TaskRunner {
         outcome.with("canary_states", Upk.str(looked.states))
         outcome.with("canary_checked", Upk.num(looked.checked))
         outcome.with("canary_touched", Upk.num(looked.touched))
+        return outcome
+    }
+
+    /**
+     * The look at the paths the team watches.
+     *
+     * The baseline does not repair what it looks at: it reads, it
+     * reports, and the operator decides what to do with the drift.
+     */
+    private fun baselineLook(args: Upk): Outcome {
+        val report = Baseline.look(args)
+        if (report.error.isNotEmpty()) {
+            return Outcome(1, ByteArray(0), report.error)
+        }
+        val outcome = attested(report.text)
+        outcome.with("baseline_snaps", Upk.str(Baseline.renderSnaps(report.snaps)))
+        outcome.with("baseline_looked", Upk.num(report.snaps.size.toLong()))
+        outcome.with("baseline_missing", Upk.num(report.gone))
         return outcome
     }
 

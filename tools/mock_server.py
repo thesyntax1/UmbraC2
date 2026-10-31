@@ -106,6 +106,8 @@ AGENT_CAPS = [
     "hunt.scan",
     # The tripwires: the canaries of the team, planted and looked at.
     "canary.plant", "canary.check",
+    # The baseline: the paths the team watches.
+    "baseline.look",
 ]
 
 # The module ABI.
@@ -1153,6 +1155,10 @@ class MockServer:
         # that are asked for when a console connects.  The test double
         # keeps them in the clear, because the tests need to see them.
         self.otp_secrets: Dict[str, Dict[str, Any]] = {}
+        # The baseline of the engagement: the paths the team watches
+        # and what was last seen of them.
+        self.baseline: Dict[str, Dict[str, Any]] = {}
+        self._baseline_seq = 0
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -2751,6 +2757,90 @@ class MockServer:
                 "canaries": changed,
             })
 
+    def _baseline_result(self, task: Dict[str, Any], task_id: str) -> None:
+        """Keep the baseline: what the implant saw, written into the ledger.
+
+        The findings travel in the metadata of the answer as one short
+        JSON string, so the baseline and the answer the operator reads
+        cannot disagree.
+        """
+        if str(task.get("kind", "")) != "baseline.look":
+            return
+        meta = task.get("meta") or {}
+        raw = str(meta.get("baseline_snaps", "") or "")
+        if not raw:
+            return
+        try:
+            snaps = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(snaps, list):
+            return
+        agent_id = str(task.get("agent_id", ""))
+        drifts: List[Dict[str, Any]] = []
+        changed = 0
+        with self._lock:
+            for snap in snaps:
+                if not isinstance(snap, dict):
+                    continue
+                path = str(snap.get("path", "") or "")
+                if not path:
+                    continue
+                entry = _baseline_find(self.baseline, agent_id, path)
+                if entry is None:
+                    continue
+                before = str(entry.get("sha256", "") or "")
+                seen = _now()
+                exists = bool(snap.get("exists"))
+                before_state = entry["state"]
+                if not exists:
+                    entry["state"] = "missing"
+                    entry["sha256"] = ""
+                    entry["size"] = 0
+                    entry["last_note"] = "the file is gone"
+                elif entry["state"] == "missing":
+                    entry["state"] = "appeared"
+                    entry["sha256"] = str(snap.get("sha256", "") or "")
+                    entry["size"] = int(snap.get("size", 0) or 0)
+                    entry["last_note"] = "the file is back"
+                elif not before or before == str(snap.get("sha256", "") or ""):
+                    entry["state"] = "present"
+                    entry["sha256"] = str(snap.get("sha256", "") or "")
+                    entry["size"] = int(snap.get("size", 0) or 0)
+                    entry["last_note"] = "the file is as it was"
+                else:
+                    entry["state"] = "changed"
+                    entry["sha256"] = str(snap.get("sha256", "") or "")
+                    entry["size"] = int(snap.get("size", 0) or 0)
+                    entry["changes"] = int(entry.get("changes", 0) or 0) + 1
+                    entry["changed"] = seen
+                    entry["last_note"] = "the file was touched"
+                mtime = int(snap.get("mtime", 0) or 0)
+                if mtime:
+                    entry["mtime"] = mtime
+                entry["seen"] = seen
+                if entry["state"] != before_state and \
+                        entry["state"] in ("changed", "missing", "appeared"):
+                    drifts.append({
+                        "id": entry["id"],
+                        "agent_id": entry["agent_id"],
+                        "path": entry["path"],
+                        "state": entry["state"],
+                        "before": before,
+                        "after": entry["sha256"],
+                        "note": entry["last_note"],
+                    })
+                changed += 1
+        if changed:
+            self.emit("baseline.checked", agent_id, task_id=task_id, data={
+                "paths": changed,
+            })
+        if drifts:
+            self.emit("baseline.drifted", agent_id, task_id=task_id, data={
+                "drifted": len(drifts),
+                "paths": [str(d["path"]) for d in drifts],
+            })
+
     def _heartbeat(self, agent_id: str, msg: Dict[str, Any]) -> None:
         """Record a heartbeat of a beacon."""
         busy = 0
@@ -3208,6 +3298,7 @@ class MockServer:
         # A check of the tripwires reports the verdict of every canary of
         # the host: the server writes them into its ledger.
         self._canary_result(snapshot, task_id)
+        self._baseline_result(snapshot, task_id)
         # A credential task hands its material to the vault.
         if creds is not None:
             self._creds_result(snapshot, task_id, creds)
@@ -3393,6 +3484,12 @@ class MockServer:
         # The file of a host is a read of everything the server knows.
         "dossier.get": "viewer",
         "dossier.list": "viewer",
+        # The baseline: reading it is harmless; the changes are the
+        # work of the team.
+        "baseline.add": "operator",
+        "baseline.list": "viewer",
+        "baseline.remove": "operator",
+        "baseline.check": "operator",
         # The second factor: reading who has one is a read; making one
         # and taking it away is the work of an admin.
         "operator.otp.status": "viewer",
@@ -4748,6 +4845,87 @@ class MockServer:
                 del self.canaries[canary_id]
             return ok({"id": canary_id, "removed": True})
 
+        # ---- the baseline of a host ------------------------------------------
+        if cmd == "baseline.add":
+            # The path of the baseline is named, the host is named, and
+            # the rest of the entry says why it is watched.  The server
+            # does not ask the file itself: the look is queued through
+            # baseline.check.
+            agent_id = str(args.get("agent", "") or "").strip()
+            path = str(args.get("path", "") or "").strip()
+            label = str(args.get("label", "") or "").strip()
+            note = str(args.get("note", "") or "").strip()
+            if not agent_id:
+                return fail("baseline.add: the host of the path was not named")
+            if not path:
+                return fail("baseline.add: the path was not named")
+            with self._lock:
+                for entry in self.baseline.values():
+                    if entry["agent_id"] == agent_id and entry["path"] == path:
+                        return fail("baseline.add: the path is already watched "
+                                    "on that host")
+                self._baseline_seq += 1
+                entry_id = f"b-{self._baseline_seq:04d}"
+                self.baseline[entry_id] = {
+                    "id": entry_id,
+                    "agent_id": agent_id,
+                    "path": path,
+                    "label": label,
+                    "note": note,
+                    "added": _now(),
+                    "added_by": operator,
+                    "state": "unknown",
+                    "sha256": "",
+                    "size": 0,
+                    "mtime": 0,
+                    "seen": 0,
+                    "changed": 0,
+                    "changes": 0,
+                    "last_note": "",
+                }
+            return ok({"id": entry_id, "agent_id": agent_id, "path": path,
+                       "state": "unknown"})
+
+        if cmd == "baseline.list":
+            agent_id = str(args.get("agent", "") or "").strip()
+            state = str(args.get("state", "") or "").strip()
+            with self._lock:
+                rows = [dict(e) for e in self.baseline.values()]
+            if agent_id:
+                rows = [row for row in rows if row["agent_id"] == agent_id]
+            if state:
+                rows = [row for row in rows if row["state"] == state]
+            rows.sort(key=lambda row: (row["agent_id"], row["path"]))
+            return ok({"entries": rows, "count": len(rows)})
+
+        if cmd == "baseline.remove":
+            # The operator stops watching the path; the file on the
+            # host stays where it is.
+            entry_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if entry_id not in self.baseline:
+                    return fail(f"baseline.remove: no such entry {entry_id!r}")
+                del self.baseline[entry_id]
+            return ok({"id": entry_id, "removed": True})
+
+        if cmd == "baseline.check":
+            # The look: the server asks the hosts about the paths that
+            # are watched on them, and the answer of the implant says
+            # what is there.  The findings travel in the metadata of the
+            # answer as one short JSON string, so the ledger and the
+            # answer the operator reads cannot disagree.
+            agent_id = str(args.get("agent", "") or "").strip()
+            if not agent_id:
+                return fail("baseline.check: the host was not named")
+            with self._lock:
+                paths = sorted({e["path"] for e in self.baseline.values()
+                                if e["agent_id"] == agent_id})
+            if not paths:
+                return fail("baseline.check: no paths are watched on that host")
+            task = self._queue_task(agent_id, "baseline.look", {"paths": paths})
+            return ok({"task_id": task["id"], "agent_id": agent_id,
+                       "state": task["state"], "paths": len(paths)})
+
         # ---- the file of a host --------------------------------------------
         if cmd in ("dossier.get", "dossier.list"):
             with self._lock:
@@ -5977,6 +6155,21 @@ def _case_verify(case: Dict[str, Any]) -> Tuple[bool, int, str]:
     if case.get("head") and case["head"] != prev:
         return False, len(case.get("events", [])), "the head of the chain does not fit"
     return True, 0, ""
+
+
+def _baseline_find(registry: Dict[str, Dict[str, Any]], agent_id: str,
+                   path: str) -> Optional[Dict[str, Any]]:
+    """The entry of one watched path on one host, or None.
+
+    The caller holds the lock of the registry.  The path is matched
+    exactly: a look that lands on a path nobody watches is ignored,
+    because the look may have been run against a baseline that was
+    replaced.
+    """
+    for entry in registry.values():
+        if entry.get("agent_id") == agent_id and entry.get("path") == path:
+            return entry
+    return None
 
 
 def _approval_expire(request: Dict[str, Any]) -> None:
@@ -7977,6 +8170,8 @@ class FakeAgent(threading.Thread):
             return self._hunt(kind, args)
         if kind in ("canary.plant", "canary.check"):
             return self._canary(kind, args)
+        if kind == "baseline.look":
+            return self._baseline(args)
         if kind in ("evade.report", "evade.posture", "evade.profile", "evade.shape",
                     "evade.killswitch", "hygiene.memory", "hygiene.process",
                     "host.guide"):
@@ -8237,6 +8432,81 @@ class FakeAgent(threading.Thread):
         }
         meta["attest"] = crypto.attest(self.psk, report).hex()
         return 0, report, "", meta
+
+    def _baseline(self, args: Dict[str, Any]) -> Tuple[int, bytes, str, Dict[str, Any]]:
+        """The look at the paths the team watches on the fake host.
+
+        The mock is not a host, so it reads the paths from the disk of
+        the sandbox, the way the test that wants to see the drift can
+        watch a real file.
+        """
+        items = args.get("paths")
+        wanted: List[str] = []
+        if isinstance(items, (list, tuple)):
+            for item in items:
+                path = str(item or "").strip()
+                if path and path not in wanted:
+                    wanted.append(path)
+        elif isinstance(items, str):
+            for line in items.splitlines():
+                path = line.strip()
+                if path and path not in wanted:
+                    wanted.append(path)
+        if not wanted:
+            return 1, b"", "baseline.look: no path was named", {}
+        snaps: List[Dict[str, Any]] = []
+        lines: List[str] = []
+        gone = 0
+        for path in sorted(wanted):
+            snap = self._baseline_snap(path)
+            if snap["exists"]:
+                lines.append(f"  {path:<48} present")
+                lines.append(f"    {snap['size']} bytes, digest {snap['sha256']}")
+            else:
+                gone += 1
+                lines.append(f"  {path:<48} missing")
+                lines.append("    the file is gone")
+            snaps.append(snap)
+        report = ("\n".join([
+            f"baseline.look: {len(snaps)} paths looked at, {gone} of them "
+            f"are gone",
+        ] + lines) + "\n").encode()
+        meta = {
+            "baseline_snaps": json.dumps(snaps),
+            "baseline_looked": len(snaps),
+            "baseline_missing": gone,
+        }
+        meta["attest"] = crypto.attest(self.psk, report).hex()
+        return 0, report, "", meta
+
+    def _baseline_snap(self, path: str) -> Dict[str, Any]:
+        """One look at one path, from the disk of the sandbox."""
+        if not os.path.exists(path):
+            return {
+                "path": path,
+                "size": 0,
+                "mtime": 0,
+                "sha256": "",
+                "exists": False,
+            }
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            return {
+                "path": path,
+                "size": os.path.getsize(path),
+                "mtime": int(os.path.getmtime(path)),
+                "sha256": "",
+                "exists": False,
+            }
+        return {
+            "path": path,
+            "size": len(data),
+            "mtime": int(os.path.getmtime(path)),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "exists": True,
+        }
 
     def _canary_state(self, canary_id: str) -> Tuple[str, str]:
         """The state of one canary of the fake host."""

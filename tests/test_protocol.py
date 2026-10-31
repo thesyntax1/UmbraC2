@@ -10781,3 +10781,142 @@ def test_the_console_needs_the_code_of_the_moment():
     finally:
         alice.close()
         server.stop()
+
+
+def test_the_baseline_says_what_was_touched():
+    """The baseline of a host: the paths the team watches.
+
+    A hunt looks for the indicators of somebody else; a baseline asks a
+    different question: is this host the one we saw yesterday?  The team
+    names the paths, the implant looks at them, and the server keeps the
+    drift.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    baseline_go = read_text("server/internal/baseline/baseline.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    go_tasks = read_text("implant/go/internal/beacon/tasks.go")
+    rust_task = read_text("implant/rust/src/task.rs")
+    kotlin_task = read_text(
+        "implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The baseline is a package of its own, with a lock and a file.
+    assert "package baseline" in baseline_go, "there is no baseline"
+    assert "func (r *Registry) Add(" in baseline_go
+    assert "func (r *Registry) Record(" in baseline_go
+    assert "func (r *Registry) Save(" in baseline_go
+    assert "0o600" in baseline_go, "the baseline is not written for the owner only"
+
+    # The server answers the four commands of the baseline.
+    for command in ("baseline.add", "baseline.list", "baseline.remove",
+                    "baseline.check"):
+        assert re.search(rf'case [^:\n]*"{command}"', operator), (
+            f"the server has no {command}")
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # Reading the baseline is a viewer; planting a path and looking at
+    # it are the work of the team.
+    assert re.search(r'"baseline.add":\s+Operator,', rbac)
+    assert re.search(r'"baseline.list":\s+Viewer,', rbac)
+    assert re.search(r'"baseline.remove":\s+Operator,', rbac)
+    assert re.search(r'"baseline.check":\s+Operator,', rbac)
+
+    # The task kind is understood by the three implants.
+    assert 'case "baseline.look":' in go_tasks, "the go beacon cannot look"
+    assert '"baseline.look" =>' in rust_task, "the rust beacon cannot look"
+    assert '"baseline.look" ->' in kotlin_task, "the android beacon cannot look"
+    assert 'baseline.look' in protocol, "the protocol does not name the look"
+
+    # And the console has a command for it.
+    assert "run_baseline" in cli_src
+    assert 'sub.add_parser("baseline"' in cli_src
+
+    token = b"baseline-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-baseline", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+
+        # The path is named.
+        watched = client.baseline_add("agent-baseline", "/etc/app/config.json",
+                                      label="the config of the app")
+        assert watched.get("id"), watched
+        assert watched.get("state") == "unknown", watched
+
+        # The baseline knows the path.
+        listed = client.baseline_list()
+        assert listed["count"] == 1, listed
+        assert listed["entries"][0]["path"] == "/etc/app/config.json", listed
+        assert listed["entries"][0]["state"] == "unknown", listed
+
+        # The look is queued on the host.
+        checked = client.baseline_check("agent-baseline")
+        task_id = checked.get("task_id")
+        assert task_id, checked
+        assert checked["paths"] == 1, checked
+
+        # The implant answered and the ledger learned the look.
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the look never came back"
+        task = client.task(task_id)
+        assert task.get("state") == "done", task
+        assert (task.get("meta") or {}).get("attested"), task
+        meta = task.get("meta") or {}
+        raw = str(meta.get("baseline_snaps", "") or "")
+        assert raw, meta
+        snaps = json.loads(raw)
+        assert len(snaps) == 1, snaps
+        assert snaps[0]["path"] == "/etc/app/config.json", snaps
+        assert snaps[0]["exists"] is True or snaps[0]["exists"] is False, snaps
+
+        # The baseline says what the look found.
+        got = client.baseline_list(agent_id="agent-baseline")
+        assert got["count"] == 1, got
+        assert got["entries"][0]["state"] in ("present", "changed",
+                                             "missing", "appeared"), got
+
+        # The path can stop being watched: the file on the host stays.
+        removed = client.baseline_remove(got["entries"][0]["id"])
+        assert removed.get("removed") is True, removed
+        assert client.baseline_list()["count"] == 0
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_reaches_the_baseline():
+    """The console has a command for the baseline.
+
+    A command nobody can type is a command that does not exist, so the
+    parser knows the watched paths, the look and the entry that stops.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["baseline", "list"])
+    assert args.cmd == "baseline" and args.baseline_cmd == "list"
+    args = parser.parse_args(["baseline", "add", "--agent", "web-01",
+                               "/etc/app/config.json",
+                               "--label", "the config"])
+    assert args.baseline_cmd == "add" and args.agent == "web-01"
+    assert args.path == "/etc/app/config.json"
+    args = parser.parse_args(["baseline", "remove", "b-0001"])
+    assert args.baseline_cmd == "remove" and args.id == "b-0001"
+    args = parser.parse_args(["baseline", "check", "--agent", "web-01", "--wait"])
+    assert args.baseline_cmd == "check" and args.agent == "web-01"
+    assert args.wait is True

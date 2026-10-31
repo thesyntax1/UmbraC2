@@ -43,6 +43,7 @@
 
 pub mod beacon;
 pub mod bof;
+pub mod baseline;
 pub mod canary;
 pub mod config;
 pub mod creds;
