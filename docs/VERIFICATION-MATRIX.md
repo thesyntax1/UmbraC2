@@ -44,8 +44,9 @@ Everything found, and what was done about it:
 | 9 | 15 Go packages have no test at all, including `approval` (the two-person rule) | honesty gap | the rule now has seven tests; the rest is listed below as it is |
 | 10 | This page said GitHub Actions had never run, and named a billing block as the reason. **That was wrong.** The workflow has been running: on `9455226` the `go server`, `go implant` and `protocol` jobs were green and Rust and Android were red | operational (and a false statement in this document) | corrected in the table below; the red jobs are findings #12 and #13 |
 | 11 | **Nothing in the repository started the server.** Every Python test ran against `tools/mock_server.py`, and the Go tests exercised packages, not the binary, so the product had been compiled and never run | verification gap | fixed: `tests/test_real_server.py` builds `cmd/umbra-server`, starts it on ephemeral ports and drives it over the wire — 13 tests, green |
-| 12 | The **Rust beacon has never compiled**: `cargo` was never on a machine that had the code, and CI says 36 errors (`E0061`, `E0277`, `E0308` ×15, `E0382` ×4, `E0502`, `E0507`, `E0599`, …) across `wasm.rs`, `vpn.rs`, `transport.rs`, `profile.rs`, `script.rs`, `task.rs` and others | build-stopping | `Cargo.lock` generated and committed (55 packages); the errors are now visible as CI annotations; first fixes landed (`domain.me`, `remove_var`), the rest is open |
+| 12 | The **Rust beacon has never compiled**: `cargo` was never on a machine that had the code, and CI says 36 errors (`E0061`, `E0277`, `E0308` ×15, `E0382` ×4, `E0502`, `E0507`, `E0599`, …) across `wasm.rs`, `vpn.rs`, `transport.rs`, `profile.rs`, `script.rs`, `task.rs` and others | build-stopping | **fixed** on `93b679c`: 38 errors closed in five rounds with no `unwrap`, `allow` or security check removed — the crate compiles, `cargo test --locked --all-targets` is **125 + 8 passed, 0 failed**, and the default, `chacha` and macOS ×2 jobs are green.  The seven tests that failed afterwards were code defects too (jitter escaping the operator's window, three `whoami` parsers, migration order, a wrong test fixture); each is listed in [`BUILD-EVIDENCE.md`](BUILD-EVIDENCE.md) §4 |
 | 13 | The **Android app does not compile** (Kotlin error, `assembleDebug` fails) and the JDK/Gradle/SDK versions were implicit | build-stopping | versions pinned (`buildToolsVersion 34.0.0`, `.java-version` 17, AGP 8.5.2, Kotlin 1.9.24, Gradle 8.7); the compiler error is surfaced by `scripts/ci_tail.sh`; the fix is open |
+| 14 | **No job compiles the Windows half of the Rust beacon.** 118 `cfg(windows)` blocks across 18 files are never given to a compiler: the linux job does not see them, the macOS job checks two apple targets, and the Windows twin of the `E0382` fixed in `keylog_to_file` had the identical defect | verification gap | the Windows twin was fixed by reading it, and this row exists so that the reading is not mistaken for a build.  A `x86_64-pc-windows-gnu` check is the work that would close it; it is not in this pass |
 
 
 ## The product, executed
@@ -251,7 +252,7 @@ code that exists and has never been executed here.
 | Tag rules | **Not Verified** | `server/internal/tagrule` | 1 file, 0 tests |
 | Alias expansion | **Not Verified** | `server/internal/alias` | 1 file, 0 tests |
 | Notes | **Not Verified** | `server/internal/note` | 1 file, 0 tests |
-| Rust beacon (44 files, 28.7k lines) | Not Verified here | `implant/rust` | no `cargo` on this machine; CI blocked |
+| Rust beacon (44 files, 28.7k lines) | **Implemented (CI-verified)** | `implant/rust` | compiles with `--locked`; 125 unit + 8 vector tests pass on default and `chacha`; release binary runs `--selftest`; no `cargo` on this machine, so every number is CI's |
 | Android beacon | Not Verified here | `implant/android` | no test source set; no JDK on this machine |
 | Python console + mock | Implemented | `operator/umbra_cli`, `tools/mock_server.py` | 378 cases pass |
 | Go beacon | Implemented (thin) | `implant/go` | 41 functions; builds and passes |
@@ -281,6 +282,7 @@ code that exists and has never been executed here.
 | GitHub Actions, `ci.yml` on `9455226` (run 41223934045) | **green**: `go server`, `go implant`, `protocol`; **red**: `rust beacon` ×2, `rust beacon macOS`, `android` | CI |
 | GitHub Actions, `ci.yml` on `e458440` (run 41226570798) and `411ecd1` (run 41227067330) | same split; Rust reports **36 compile errors**, Android a Kotlin compilation failure | CI |
 | GitHub Actions, `ci.yml` on `d9aa1a9` (run 41227557468) | **green**: `go server` ×2 toolchains, `go implant` ×2, `protocol` on Python 3.11 and 3.12; **red**: `rust beacon` ×2, `rust beacon macOS`, `android` | CI |
+| GitHub Actions, `ci.yml` on `93b679c` (run 41233256649) | **green**: `go server` ×2, `go implant` ×2, `protocol` ×2, **`rust beacon` ×2**, **`rust beacon macOS`**; **red**: `android` only.  9 of 10 jobs | CI |
 | GitHub Actions, `diagnostics.yml` on `9455226` | **green** (6 jobs) | CI |
 | `go test ./...` under go1.22.10 and go1.27.3, build + vet + test + `-race` | 25 packages ok both versions, `gofmt` empty, beacon 5 packages ok | this pass |
 | `pip install --require-hashes -r requirements-dev.lock` in a fresh venv, then `pytest tests/ -q` | **378 passed** (the first clean-env run surfaced two timing-sensitive tests, which were fixed) | this pass |
@@ -298,7 +300,13 @@ code that exists and has never been executed here.
 * Every "Implemented" row means *a test executed this code and would fail if
   the behaviour changed*.  It does not mean the behaviour is complete; a
   command with one happy-path test is implemented and thin.
-* The Rust and Android beacons are **not** verified: they do not compile, and
-  the CI jobs that would have said so are red rather than absent.  That is the
-  difference this correction makes: a red job is evidence, a job that never ran
-  is silence.
+* The Rust beacon is verified **by CI, on linux**, because no toolchain can be
+  installed on the maintaining machine: 125 + 8 tests, three targets, one SHA.
+  The macOS targets are type-checked on Linux and never linked or executed; the
+  Windows half is not compiled at all (finding #14); and no Rust test has ever
+  spoken to a real server — the Go and Python beacons are the ones with an
+  end-to-end run.
+* The Android beacon is **not** verified: `assembleDebug` fails on a Kotlin
+  compilation error, and the job that says so is red rather than absent.  That
+  is the difference this correction makes: a red job is evidence, a job that
+  never ran is silence.
