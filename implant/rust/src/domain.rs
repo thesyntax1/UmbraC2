@@ -714,17 +714,29 @@ pub fn parse_group_table(text: &str) -> Vec<(String, String)> {
         if trimmed.starts_with("The command") {
             break;
         }
-        let columns = columns(trimmed);
-        if columns.len() < 3 {
-            continue;
-        }
-        // The type column is one word ("Alias", "Group") or two ("Well-known
-        // group"), so the SID is the first column that looks like one.
-        let sid = match columns.iter().find(|column| column.starts_with("S-1-")) {
-            Some(sid) => sid.clone(),
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        // The SID is the first token that looks like one.
+        let sid_at = match tokens.iter().position(|token| token.starts_with("S-1-")) {
+            Some(index) => index,
             None => continue,
         };
-        out.push((columns[0].clone(), sid));
+        // The type column sits between the name and the SID: one word
+        // ("Alias", "Group") or two ("Well-known group").  Everything before
+        // it is the name, spaces and all, so "CORP\\Domain Admins" and
+        // "NT AUTHORITY\\SYSTEM" survive whole.
+        let two_words = sid_at >= 2 && tokens[sid_at - 2..sid_at].join(" ") == "Well-known group";
+        let type_start = if two_words {
+            sid_at - 2
+        } else if sid_at >= 1 {
+            sid_at - 1
+        } else {
+            continue;
+        };
+        let name = tokens[..type_start].join(" ");
+        if name.is_empty() {
+            continue;
+        }
+        out.push((name, tokens[sid_at].to_string()));
     }
     out
 }
@@ -832,34 +844,6 @@ pub fn parse_dc_list(text: &str) -> Vec<String> {
 }
 
 /// Is the line a separator (a row of dashes)?
-/// Split a table row of `whoami` or `net` into its columns.
-///
-/// The columns are separated by runs of two or more spaces, because a single
-/// space is part of a name: "NT AUTHORITY\\SYSTEM" and "CORP\\Domain Admins"
-/// are one column each, and splitting on every space cuts them in half.
-fn columns(line: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut gaps = 0usize;
-    for ch in line.chars() {
-        if ch == ' ' || ch == '\t' {
-            gaps += 1;
-            continue;
-        }
-        if !current.is_empty() && gaps >= 2 {
-            out.push(std::mem::take(&mut current));
-        } else if !current.is_empty() && gaps == 1 {
-            current.push(' ');
-        }
-        gaps = 0;
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
-}
-
 fn is_separator(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.len() < 10 {
