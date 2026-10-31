@@ -11029,3 +11029,380 @@ def test_the_console_reaches_the_notes():
     assert args.note_cmd == "show" and args.id == "n-0001"
     args = parser.parse_args(["note", "remove", "n-0001"])
     assert args.note_cmd == "remove" and args.id == "n-0001"
+
+
+def test_the_wires_carry_the_events_to_the_place_the_team_chose():
+    """The wires to the outside world: the webhooks of the team.
+
+    A console watches the events by staying connected; the team that
+    wants the news somewhere else writes down a URL, and the server
+    posts every event that matches to it, signed with the word of the
+    wire.  The delivery book says how every post went, and the secret
+    never leaves the ledger.
+    """
+    import http.server
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer, FakeAgent  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    hook_go = read_text("server/internal/hook/hook.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    hub_go = read_text("server/internal/hub/hub.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The ledger is a package of its own, with a lock and a file.
+    assert "package hook" in hook_go, "there is no ledger of the wires"
+    assert "func (r *Registry) Add(" in hook_go
+    assert "func (r *Registry) Dispatch(" in hook_go
+    assert "func (r *Registry) Test(" in hook_go
+    assert "0o600" in hook_go, "the ledger is not written for the owner only"
+    assert "X-Umbra-Signature" in hook_go, "the posts are not signed"
+
+    # The hub hands every event to the wire, after the consoles and the
+    # alert rules.
+    assert "func (h *Hub) SetTap(" in hub_go, "the hub has no tap"
+    assert "h.tap(ev)" in hub_go, "the tap is never called"
+
+    # The server answers the four commands of the wires.
+    for command in ("hook.add", "hook.list", "hook.remove", "hook.test"):
+        assert re.search(rf'case [^:\n]*"{command}"', operator), (
+            f"the server has no {command}")
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+        assert f"`{command}`" in protocol
+
+    # Writing a wire down and ringing it are the work of the operator;
+    # reading the ledger is a read.
+    assert re.search(r'"hook.add":\s+Operator,', rbac)
+    assert re.search(r'"hook.list":\s+Viewer,', rbac)
+    assert re.search(r'"hook.remove":\s+Operator,', rbac)
+    assert re.search(r'"hook.test":\s+Operator,', rbac)
+
+    posts = []
+    posts_lock = threading.Lock()
+
+    class Listener(http.server.BaseHTTPRequestHandler):
+        """The place the team chose: it keeps what it was told."""
+
+        def do_POST(self):  # noqa: N802 - the library names the method
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            with posts_lock:
+                posts.append({"path": self.path,
+                              "event": self.headers.get("X-Umbra-Event"),
+                              "signature": self.headers.get(
+                                  "X-Umbra-Signature"),
+                              "body": body})
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):  # keep the test output quiet
+            pass
+
+    site = http.server.HTTPServer(("127.0.0.1", 0), Listener)
+    site_thread = threading.Thread(target=site.serve_forever, daemon=True)
+    site_thread.start()
+    url = f"http://127.0.0.1:{site.server_address[1]}/news"
+
+    token = b"wire-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-wires", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+
+        # A wire that is not an address is refused.
+        with pytest.raises(Exception):
+            client.hook_add("ftp://example.org/x")
+
+        # The wire is written down: it carries the results of the tasks,
+        # and its posts are signed.
+        written = client.hook_add(url, kinds=["task.result"], secret="pw123")
+        assert written.get("id", "").startswith("h-"), written
+
+        # The work of the day produces an event the wire carries.
+        task_id = client.submit("agent-wires", "shell",
+                                {"cmd": "echo down-the-wire"})
+        assert wait_until(
+            lambda: client.task(task_id).get("state") in ("done", "failed"),
+            timeout=15), "the task never came back"
+        assert wait_until(
+            lambda: any(p["event"] == "task.result" for p in posts),
+
+            timeout=10), "the wire carried nothing"
+
+        with posts_lock:
+            post = next(p for p in posts if p["event"] == "task.result")
+        body = json.loads(post["body"])
+        assert body["kind"] == "task.result", body
+        assert body["task_id"] == task_id, body
+        assert body["agent_id"] == "agent-wires", body
+        want = "sha256=" + hmac.new(b"pw123", post["body"],
+                                    hashlib.sha256).hexdigest()
+        assert post["signature"] == want, "the post is not signed with the word of the wire"
+
+        # The delivery book says how the post went.
+        assert wait_until(lambda: (
+            (client.hook_list().get("hooks") or [{}])[0].get("last", {})
+            .get("status") == 200), timeout=10), "the book stayed empty"
+        listed = client.hook_list()
+        assert listed["count"] == 1, listed
+        row = listed["hooks"][0]
+        assert "secret" not in row, "the list leaked the word of the wire"
+        assert row["last"]["kind"] == "task.result", row
+
+        # An event the wire does not carry stays at home.
+        before = len(posts)
+        server.emit("agent.heartbeat", "agent-wires")
+        time.sleep(0.5)  # widen the window on purpose: a post that must NOT arrive can only be proven by waiting
+        assert len(posts) == before, "the wire carried what it did not ask for"
+
+        # The wire can be rung once, marked as a test, so nobody is paged.
+        rung = client.hook_test(written["id"])
+        assert rung.get("status") == 200, rung
+        assert wait_until(lambda: any(
+            p["event"] == "hook.test" for p in posts), timeout=10)
+        with posts_lock:
+            probe = next(p for p in reversed(posts)
+                         if p["event"] == "hook.test")
+        assert json.loads(probe["body"]).get("test") is True
+
+        # The wire can be forgotten; the posts it made stay made.
+        removed = client.hook_remove(written["id"])
+        assert removed.get("removed") is True, removed
+        assert client.hook_list()["count"] == 0
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+        site.shutdown()
+
+
+def test_the_wall_of_techniques_counts_the_work_of_the_team():
+    """The wall of the ATT&CK techniques the team uses.
+
+    The catalogue of the trade is the common tongue: the wall lies the
+    task kinds next to the techniques they belong to and counts the
+    finished work of the team — which techniques were used, on which
+    hosts, and when last.  A zero is a door the team has not tried.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer, FakeAgent, ATTACK_TABLE  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    attack_go = read_text("server/internal/attack/attack.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    # The wall is a package of its own, and it is a statement: a table,
+    # a coverage walk, and the list of what nobody mapped.
+    assert "package attack" in attack_go, "there is no wall"
+    assert "var Table = []Technique" in attack_go
+    assert "func Coverage(" in attack_go
+    assert "func Unmapped(" in attack_go
+    for technique in ("T1059", "T1083", "T1005", "T1090"):
+        assert technique in attack_go, f"the wall does not know {technique}"
+
+    assert re.search(r'case [^:\n]*"attack.coverage"', operator)
+    assert re.search(r'"attack.coverage":\s+Viewer,', rbac)
+    assert 'self.rpc("attack.coverage"' in client_src
+    assert "`attack.coverage`" in protocol
+    assert "function attack" in read_text("server/internal/dash/index.html") \
+        or "attack.coverage" in read_text("server/internal/dash/index.html"), (
+        "the dashboard does not show the wall")
+
+    token = b"wall-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-wall", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10)
+
+        # Two pieces of work: the interpreter and the discovery.
+        first = client.submit("agent-wall", "shell", {"cmd": "echo wall"})
+        second = client.submit("agent-wall", "find", {"path": ".", "name": "umbra"})
+        for task_id in (first, second):
+            assert wait_until(
+                lambda tid=task_id: client.task(tid).get("state")
+                in ("done", "failed"), timeout=15), f"{task_id} never back"
+            assert client.task(task_id)["state"] == "done"
+
+        wall = client.attack_coverage()
+        assert wall["total"] == len(ATTACK_TABLE), (
+            "the mock and the wall disagree about the catalogue")
+        assert wall["covered"] >= 2, wall
+        by_id = {row["id"]: row for row in wall["techniques"]}
+        assert by_id["T1059"]["tasks"] >= 1, by_id["T1059"]
+        assert "agent-wall" in by_id["T1059"].get("agents", []), by_id["T1059"]
+        assert by_id["T1059"].get("last"), by_id["T1059"]
+        assert by_id["T1083"]["tasks"] >= 1, by_id["T1083"]
+        # A door the team has not tried is a zero, and it is said so.
+        assert by_id["T1123"]["tasks"] == 0, by_id["T1123"]
+        assert not by_id["T1123"].get("agents"), by_id["T1123"]
+        assert wall["unmapped"] == [], wall
+
+        # The wall can be read for one host, and an unknown host has
+        # never tried a door.
+        one = client.attack_coverage(agent_id="agent-wall")
+        assert one["covered"] >= 2, one
+        none = client.attack_coverage(agent_id="no-such-host")
+        assert none["covered"] == 0, none
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_search_box_digs_through_the_records():
+    """The digging box: one needle through the tasks, notes and creds.
+
+    The records of an engagement accrete faster than anybody reads
+    them.  The box takes the needle and answers with the books that
+    carry it and the piece of the text around each hit.  A needle of
+    small letters matches any casing; a capital means what it says.
+    The secret of a credential is never searched and never shown.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer, FakeAgent  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    search_go = read_text("server/internal/search/search.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    protocol = read_text("docs/PROTOCOL.md")
+
+    assert "package search" in search_go, "there is no digging box"
+    assert "func Tasks(" in search_go
+    assert "func Notes(" in search_go
+    assert "func Creds(" in search_go
+    assert "func Fold(" in search_go, "the box is not polite about casing"
+    assert "looksText" in search_go, "the box would dig through pictures"
+    assert re.search(r'case [^:\n]*"search.query"', operator)
+    assert re.search(r'"search.query":\s+Viewer,', rbac)
+    assert 'self.rpc("search.query"' in client_src
+    assert "run_search" in cli_src
+    assert "`search.query`" in protocol
+
+    token = b"dig-token-0123456789"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-dig", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10)
+
+        # A word in the output of a task, in a note, and in the words of
+        # a queued one.  The output carries the needle while the words
+        # of the command carry only its base64 shadow, so the hit names
+        # the output and not the arguments.
+        shadow = base64.b64encode(b"TANGO-NEEDLE-9182").decode()
+        task_id = client.submit("agent-dig", "shell",
+                                {"cmd": f"echo {shadow} | base64 -d"})
+        wait_until(lambda: client.task(task_id).get("state") == "done",
+                   timeout=15)
+        client.note_add("agent-dig", "the host hummed tango-needle-9182 all day")
+        queued = client.submit("agent-dig", "shell",
+                               {"cmd": "cat /root/tango-plan-5542.txt"})
+
+        # Small letters match any casing; each hit says where it was.
+        found = client.search_query("tango-needle-9182")
+        assert found["count"] >= 2, found
+        task_hits = found["tasks"]
+        assert any(hit.get("task_id") == task_id and hit["field"] == "output"
+                   for hit in task_hits), task_hits
+        piece = next(hit["snippet"] for hit in task_hits
+                     if hit.get("task_id") == task_id)
+        assert "TANGO-NEEDLE-9182" in piece, piece
+        assert client.search_query("tango-needle-9182", scope="notes")[
+            "notes"], "the note stayed hidden"
+
+        # The words of a queued task are found, even before it runs.
+        planned = client.search_query("tango-plan-5542", scope="tasks")
+        assert any(hit.get("task_id") == queued and hit["field"] == "args"
+                   for hit in planned["tasks"]), planned
+
+        # A capital in the needle means what it says.
+        exact = client.search_query("TANGO-needle", scope="tasks")
+        assert not exact.get("tasks"), exact
+
+        # The secrets that came home can be found, without the search
+        # ever touching the secret itself.
+        creds_task = client.submit("agent-dig", "creds", {"raw": True})
+        assert wait_until(
+            lambda: client.task(creds_task).get("state") == "done",
+            timeout=15)
+        rows = client.creds_list()
+        assert rows, "the vault stayed empty"
+        word = rows[0].get("account") or rows[0].get("target")
+        assert word, rows[0]
+        digs = client.search_query(str(word), scope="creds")
+        assert digs["creds"], "the vault stayed hidden"
+        for hit in digs["creds"]:
+            assert "secret" not in hit.get("snippet", "").lower() \
+                or rows[0].get("account", "").lower() in \
+                hit.get("snippet", "").lower()
+        # The find of a credential names its account, its target, its
+        # source, its kind or its note — never the secret itself.
+        for hit in digs["creds"]:
+            assert hit.get("field") in (
+                "account", "target", "source", "kind", "note"), hit
+        # A scope that is not one is refused, and an empty needle as well.
+        with pytest.raises(Exception):
+            client.search_query("tango", scope="everything")
+        with pytest.raises(Exception):
+            client.search_query("   ")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_reaches_the_wires_the_wall_and_the_box():
+    """The console has a command for each of the three.
+
+    A command nobody can type is a command that does not exist, so the
+    parser knows the wires, the wall and the digging box.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    cli_src = read_text("operator/umbra_cli/cli.py")
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["hook", "list"])
+    assert args.cmd == "hook" and args.hook_cmd == "list"
+    args = parser.parse_args(["hook", "add", "https://chat.example.org/x",
+                              "--kinds", "task.*,agent.online",
+                              "--secret", "pw"])
+    assert args.hook_cmd == "add" and args.url.endswith("/x")
+    assert args.kinds == "task.*,agent.online" and args.secret == "pw"
+    args = parser.parse_args(["hook", "remove", "h-0001"])
+    assert args.hook_cmd == "remove" and args.id == "h-0001"
+    args = parser.parse_args(["hook", "test", "h-0001"])
+    assert args.hook_cmd == "test" and args.id == "h-0001"
+
+    args = parser.parse_args(["attack", "--agent", "web-01", "--all"])
+    assert args.cmd == "attack" and args.agent == "web-01" and args.all
+
+    args = parser.parse_args(["search", "flag", "tango", "--scope", "tasks",
+                              "--agent", "web-01", "--limit", "10"])
+    assert args.cmd == "search" and args.words == ["flag", "tango"]
+    assert args.scope == "tasks" and args.agent == "web-01" and args.limit == 10
+
+    for runner in ("run_hook", "run_attack", "run_search"):
+        assert f"def {runner}(" in cli_src, f"the console lacks {runner}"
