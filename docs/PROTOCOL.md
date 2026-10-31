@@ -626,6 +626,10 @@ Operator RPC commands, with the minimum role each requires:
 | `canary.remove` | operator | stop watching a tripwire: `id`; the file on the host stays where it is |
 | `dossier.get` | viewer | the file of one host: the identity, the health with its reasons, the work that was run, the persistence, the tripwires, the requests and what is not known |
 | `dossier.list` | viewer | the files of every host, the weakest first |
+| `note.add` | operator | write a line of words about a host: `agent`, `text`; the line travels with the dossier of the host and the ledger is written for the server alone |
+| `note.list` | viewer | the notes of one host or of the team: optional `agent` |
+| `note.show` | viewer | one note by id: `id` |
+| `note.remove` | operator | remove a note: `id`; the host and the dossier of the host stay as they are |
 | `baseline.add` | operator | watch a path on a host: `agent`, `path`, optional `label` and `note`; the look is queued separately with `baseline.check` |
 | `baseline.list` | viewer | the paths the team watches: optional `agent` and `state` (`unknown`, `present`, `changed`, `missing` or `appeared`) |
 | `baseline.remove` | operator | stop watching a path: `id`; the file on the host stays where it is |
@@ -2274,6 +2278,18 @@ The states are the five a watched path can be in: `unknown` when nobody
 ever looked, `present` when the file is as it was, `changed` when it
 was touched, `missing` when it is gone, and `appeared` when it was
 gone and is back.
+
+**The notes of the team.**  The dossier of a host is what the server
+knows; the notes are what the team says.  A note is one short line of
+words, the operator who wrote it and the moment it was written, and it
+travels with the dossier of the host, so it is where the host is
+looked at and nowhere else.
+
+`note.add` writes the line, `note.list` lists the lines of one host or
+of the whole team, `note.show` shows one line, and `note.remove` takes
+it away.  The ledger lives next to the state file of the server, it is
+written for the server alone, and the dossier of a host carries the
+notes about it on the same page.
 
 **The file of a host.**  `dossier.get` puts everything the server knows
 about one host on one page: the identity, the health with the reasons

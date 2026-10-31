@@ -1173,6 +1173,69 @@ def run_baseline(client: OperatorClient, console: Console, args: Any) -> int:
     return 2
 
 
+def run_note(client: OperatorClient, console: Console, args: Any) -> int:
+    """The notes the team writes about the hosts.
+
+    The dossier of a host is what the server knows; the notes are what
+    the team says.  A note is one short line of words, the operator who
+    wrote it and the moment it was written, and it travels with the
+    dossier of the host, so it is where the host is looked at.
+    """
+    action = getattr(args, "note_cmd", "") or "list"
+    if action == "list":
+        payload = client.note_list(agent_id=args.agent)
+        if args.json:
+            emit(payload)
+        else:
+            rows = payload.get("notes") or []
+            if not rows:
+                print("no notes are written")
+                return 0
+            print(f"{len(rows)} notes")
+            for row in rows:
+                state = "on" if row.get("pinned") else "off"
+                marker = ">" if row.get("pinned") else " "
+                print(f" {marker} {row.get('id', '?'):<8} {row.get('agent_id', '?'):<14}"
+                      + f" {row.get('written', '?'):<10} {row.get('author', '?'):<12}"
+                      + f"  {row.get('text', '')}")
+        return 0
+    if action == "add":
+        if not args.agent:
+            print("the host was not named", file=sys.stderr)
+            return 2
+        if not args.text:
+            print("the line was not written", file=sys.stderr)
+            return 2
+        payload = client.note_add(args.agent, args.text)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the note {payload.get('id', '?')} is written on "
+                  f"{payload.get('agent_id', '?')}: {payload.get('text', '')}")
+        return 0
+    if action == "show":
+        payload = client.note_show(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"note {payload.get('id', args.id)} "
+                  f"of {payload.get('agent_id', '?')}, "
+                  f"by {payload.get('author', '?')}, "
+                  f"written at {payload.get('written', '?')}")
+            print(f"  {payload.get('text', '')}")
+        return 0
+    if action == "remove":
+        payload = client.note_remove(args.id)
+        if args.json:
+            emit(payload)
+        else:
+            print(f"the note {payload.get('id', args.id)} is taken away; "
+                  f"the host stays as it is")
+        return 0
+    print(f"unknown note command: {action}", file=sys.stderr)
+    return 2
+
+
 def run_dossier(client: OperatorClient, console: Console, args: Any) -> int:
     """The file of a host: what the server knows and what it did.
 
@@ -2850,6 +2913,7 @@ def print_help() -> None:
   canary [list|show|plant|check|remove]  the tripwires of the engagement
   dossier [list|show]         the file of a host: what the server knows
   otp [status|rotate|remove|code]  the second factor of the operator
+  note [list|add|show|remove]   the notes the team writes about hosts
   quit                      disconnect and exit"""
     )
 
@@ -3562,6 +3626,26 @@ def build_parser() -> argparse.ArgumentParser:
     dossier_show = dossier_sub.add_parser("show", help="the file of one host")
     dossier_show.add_argument("agent")
     dossier_show.add_argument("--json", action="store_true")
+
+    note_cmd = sub.add_parser("note", help="the notes the team writes about hosts")
+    note_sub = note_cmd.add_subparsers(dest="note_cmd")
+
+    note_list = note_sub.add_parser("list", help="the notes of one host or of the team")
+    note_list.add_argument("--agent", default="", help="one host")
+    note_list.add_argument("--json", action="store_true")
+
+    note_add = note_sub.add_parser("add", help="write a note about a host")
+    note_add.add_argument("--agent", required=True, help="the host")
+    note_add.add_argument("text")
+    note_add.add_argument("--json", action="store_true")
+
+    note_show = note_sub.add_parser("show", help="one note by id")
+    note_show.add_argument("id")
+    note_show.add_argument("--json", action="store_true")
+
+    note_remove = note_sub.add_parser("remove", help="take a note away")
+    note_remove.add_argument("id")
+    note_remove.add_argument("--json", action="store_true")
 
     # ---- the second factor of the operator ------------------------------
     otp_cmd = sub.add_parser("otp", help="the second factor of the operator")
@@ -4649,6 +4733,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_canary(client, console, args)
         elif args.cmd == "dossier":
             return run_dossier(client, console, args)
+        elif args.cmd == "note":
+            return run_note(client, console, args)
         elif args.cmd == "baseline":
             return run_baseline(client, console, args)
         elif args.cmd == "otp":

@@ -1159,6 +1159,10 @@ class MockServer:
         # and what was last seen of them.
         self.baseline: Dict[str, Dict[str, Any]] = {}
         self._baseline_seq = 0
+        # The notes of the team about the hosts: the lines of words
+        # that travel with the dossier of a host.
+        self.notes: Dict[str, Dict[str, Any]] = {}
+        self._note_seq = 0
         # The credential vault of the engagement.  The Go server keeps the
         # values encrypted when a key is configured; the test double keeps
         # them in the clear, because the tests need to see them.
@@ -3490,6 +3494,12 @@ class MockServer:
         "baseline.list": "viewer",
         "baseline.remove": "operator",
         "baseline.check": "operator",
+        # The notes of the team: reading them is a read, writing them
+        # is the work of the operator.
+        "note.add": "operator",
+        "note.list": "viewer",
+        "note.remove": "operator",
+        "note.show": "viewer",
         # The second factor: reading who has one is a read; making one
         # and taking it away is the work of an admin.
         "operator.otp.status": "viewer",
@@ -4925,6 +4935,56 @@ class MockServer:
             task = self._queue_task(agent_id, "baseline.look", {"paths": paths})
             return ok({"task_id": task["id"], "agent_id": agent_id,
                        "state": task["state"], "paths": len(paths)})
+
+        # ---- the notes of the team about a host -------------------------------
+        if cmd == "note.add":
+            agent_id = str(args.get("agent", "") or "").strip()
+            text = str(args.get("text", "") or "").strip()
+            if not agent_id:
+                return fail("note.add: the host was not named")
+            if not text:
+                return fail("note.add: the line was not written")
+            with self._lock:
+                self._note_seq += 1
+                note_id = f"n-{self._note_seq:04d}"
+                self.notes[note_id] = {
+                    "id": note_id,
+                    "agent_id": agent_id,
+                    "text": text,
+                    "author": operator,
+                    "written": _now(),
+                    "pinned": False,
+                }
+            return ok({"id": note_id, "agent_id": agent_id, "text": text,
+                       "author": operator, "written": _now()})
+
+        if cmd == "note.list":
+            agent_id = str(args.get("agent", "") or "").strip()
+            with self._lock:
+                rows = [dict(n) for n in self.notes.values()]
+            if agent_id:
+                rows = [row for row in rows if row["agent_id"] == agent_id]
+            rows.sort(key=lambda row: (not row.get("pinned", False),
+                                        -int(row.get("written", 0))))
+            return ok({"notes": rows, "count": len(rows)})
+
+        if cmd == "note.show":
+            note_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                row = self.notes.get(note_id)
+                if row is None:
+                    return fail(f"note.show: no such note {note_id!r}")
+                return ok(dict(row))
+
+        if cmd == "note.remove":
+            # The operator stops watching the line; the host and the
+            # dossier of the host stay as they are.
+            note_id = str(args.get("id", "") or "").strip()
+            with self._lock:
+                if note_id not in self.notes:
+                    return fail(f"note.remove: no such note {note_id!r}")
+                del self.notes[note_id]
+            return ok({"id": note_id, "removed": True})
 
         # ---- the file of a host --------------------------------------------
         if cmd in ("dossier.get", "dossier.list"):

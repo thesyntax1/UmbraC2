@@ -169,6 +169,14 @@ var requirements = map[string]string{
 	"operator.otp.rotate":  Operator,
 	"operator.otp.remove":  Operator,
 
+	// The notes of the team: reading them is the read of a viewer,
+	// writing them the work of the operator, and taking them away
+	// the work of the operator who wrote them or of an admin.
+	"note.add":    Operator,
+	"note.list":   Viewer,
+	"note.remove": Operator,
+	"note.show":   Viewer,
+
 	// The baseline of the paths the team watches: reading it is a
 	// read, planting a path and looking at it are the work of the
 	// team.

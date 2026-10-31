@@ -34,6 +34,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/artifact"
 	"github.com/thesyntax1/UmbraC2/server/internal/approval"
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
+	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/config"
@@ -43,6 +44,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/link"
 	"github.com/thesyntax1/UmbraC2/server/internal/mtls"
+	"github.com/thesyntax1/UmbraC2/server/internal/note"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/rbac"
@@ -230,6 +232,26 @@ func run() error {
 		logger.Warn("the registry of the second factors could not be read", "err", err)
 	}
 	srv.SetOTP(otpRegistry)
+
+	// The notes of the team about the hosts: the lines the team writes
+	// on the page of a host, the way a file is annotated and the way
+	// somebody else reads it later.
+	notes := note.New()
+	notes.SetPath(notePath(cfg.Server.DataFile))
+	if err := notes.Load(); err != nil {
+		logger.Warn("the note ledger could not be read", "err", err)
+	}
+	srv.SetNotes(notes)
+
+	// The baseline of the watched paths: the size, the digest and the
+	// drift of each, on the hosts the team watches.  The file belongs
+	// to the team, so it lives beside the state file.
+	baselineReg := baseline.New()
+	baselineReg.SetPath(baselinePath(cfg.Server.DataFile))
+	if err := baselineReg.Load(); err != nil {
+		logger.Warn("the baseline could not be read", "err", err)
+	}
+	srv.SetBaseline(baselineReg)
 
 	// The layer-3 tunnel between the console and the beacons.
 	if cfg.Server.VPNListen != "" {
@@ -542,6 +564,29 @@ func approvalPath(dataFile string) string {
 		return filepath.Join("data", "approval.json")
 	}
 	return filepath.Join(filepath.Dir(dataFile), "approval.json")
+}
+
+// baselinePath is where the ledger of the watched paths is kept.
+//
+// The baseline says what the team watches, and that is not for the
+// world: the file is written for the server alone, beside the state
+// file.
+func baselinePath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "baseline.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "baseline.json")
+}
+
+// notePath is where the ledger of the notes of the team is kept.
+//
+// The notes are the words of the team, not of the world: the file is
+// written for the server alone and it lives beside the state file.
+func notePath(dataFile string) string {
+	if dataFile == "" {
+		return filepath.Join("data", "notes.json")
+	}
+	return filepath.Join(filepath.Dir(dataFile), "notes.json")
 }
 
 // otpPath is where the secrets of the second factors are kept.

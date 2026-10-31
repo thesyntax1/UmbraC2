@@ -29,6 +29,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/hub"
 	"github.com/thesyntax1/UmbraC2/server/internal/hunt"
 	"github.com/thesyntax1/UmbraC2/server/internal/keyring"
+	"github.com/thesyntax1/UmbraC2/server/internal/note"
 	"github.com/thesyntax1/UmbraC2/server/internal/otp"
 	"github.com/thesyntax1/UmbraC2/server/internal/pivot"
 	"github.com/thesyntax1/UmbraC2/server/internal/store"
@@ -88,6 +89,10 @@ type Server struct {
 	// was last seen of them.  Optional: without it the server refuses
 	// the baseline commands instead of pretending to watch anything.
 	Baseline *baseline.Registry
+	// Notes is the ledger of the lines the team writes about a host.
+	// Optional: without it the server refuses the note commands
+	// instead of pretending they were written.
+	Notes *note.Registry
 
 	httpMu       sync.Mutex
 	httpSessions map[string]*httpSession
@@ -173,6 +178,9 @@ func (s *Server) SetCanaries(c *canary.Registry) { s.Canaries = c }
 
 // SetBaseline attaches the registry of the paths the team watches.
 func (s *Server) SetBaseline(b *baseline.Registry) { s.Baseline = b }
+
+// SetNotes attaches the ledger of the notes of the team.
+func (s *Server) SetNotes(n *note.Registry) { s.Notes = n }
 
 // SetOTP attaches the registry of the second factors.
 //
@@ -331,6 +339,14 @@ func (s *Server) Dossier(agentID string) (dossier.Dossier, bool) {
 			}
 		}
 	}
+	// The notes of the team about the host: the dossier says what the
+	// server knows and the notes say what the team remembers of it.
+	notes := []string{}
+	if s.Notes != nil {
+		for _, line := range s.Notes.List(agentID) {
+			notes = append(notes, line.Text)
+		}
+	}
 	return dossier.Build(dossier.Host{
 		ID:            agent.ID,
 		Host:          agent.Host,
@@ -353,6 +369,8 @@ func (s *Server) Dossier(agentID string) (dossier.Dossier, bool) {
 		Persist:       persist,
 		Canaries:      canaries,
 		Approvals:     approvals,
+		Watches:       watches,
+		Notes:         notes,
 	}), true
 }
 

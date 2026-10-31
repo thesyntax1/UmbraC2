@@ -20,6 +20,7 @@ import (
 	"github.com/thesyntax1/UmbraC2/server/internal/audit"
 	"github.com/thesyntax1/UmbraC2/server/internal/baseline"
 	"github.com/thesyntax1/UmbraC2/server/internal/canary"
+	"github.com/thesyntax1/UmbraC2/server/internal/note"
 	"github.com/thesyntax1/UmbraC2/server/internal/casefile"
 	"github.com/thesyntax1/UmbraC2/server/internal/crypt"
 	"github.com/thesyntax1/UmbraC2/server/internal/dossier"
@@ -2464,6 +2465,69 @@ func (s *Server) handleRPC(log *slog.Logger, op *hub.Operator, req map[string]an
 		}
 		return reply(upk.Map{"dossiers": rows, "count": int64(len(rows))})
 
+	// ---- the notes the team writes about a host ----------------------------
+	case "note.add":
+		// A line of words about a host, written by the operator who is
+		// asking for it.  The notes travel with the dossier of the host,
+		// so a note that is not where the host is looked at is a note
+		// nobody finds.
+		if s.Notes == nil {
+			return fail("note.add: this server has no note ledger")
+		}
+		agentID, _ := args["agent"].(string)
+		text, _ := args["text"].(string)
+		entry, err := s.Notes.Add(note.Note{
+			AgentID: agentID,
+			Text:    text,
+			Author:  op.Name,
+		})
+		if err != nil {
+			return fail("note.add: %v", err)
+		}
+		if err := s.Notes.Save(); err != nil {
+			s.Log.Warn("the note ledger could not be saved", "err", err)
+		}
+		return reply(upk.Map{
+			"id": entry.ID, "agent_id": entry.AgentID, "text": entry.Text,
+			"author": entry.Author, "written": entry.Written.Format(time.RFC3339),
+		})
+
+	case "note.list":
+		if s.Notes == nil {
+			return fail("note.list: this server has no note ledger")
+		}
+		agentID, _ := args["agent"].(string)
+		items := s.Notes.List(agentID)
+		rows := make([]any, 0, len(items))
+		for _, entry := range items {
+			rows = append(rows, noteMap(entry))
+		}
+		return reply(upk.Map{"notes": rows, "count": int64(len(rows))})
+
+	case "note.remove":
+		if s.Notes == nil {
+			return fail("note.remove: this server has no note ledger")
+		}
+		entryID, _ := args["id"].(string)
+		if err := s.Notes.Remove(entryID); err != nil {
+			return fail("note.remove: %v", err)
+		}
+		if err := s.Notes.Save(); err != nil {
+			s.Log.Warn("the note ledger could not be saved", "err", err)
+		}
+		return reply(upk.Map{"id": entryID, "removed": true})
+
+	case "note.show":
+		if s.Notes == nil {
+			return fail("note.show: this server has no note ledger")
+		}
+		entryID, _ := args["id"].(string)
+		entry, found := s.Notes.Get(entryID)
+		if !found {
+			return fail("note.show: no such note %q", entryID)
+		}
+		return reply(noteMap(entry))
+
 	// ---- the baseline of the paths the team watches ----------------------
 	case "baseline.add":
 		// The path of the baseline is named and the host is named: the
@@ -4044,6 +4108,24 @@ func huntIndicatorPayload(payload hunt.Indicators) []any {
 
 // approvalMap renders a request of the queue for the wire.
 //
+// noteMap renders one note for the wire.
+//
+// A note is a short line of words: the operator who wrote it, when it
+// was written, and what it says.  The wire carries them as they are.
+func noteMap(entry note.Note) upk.Map {
+	out := upk.Map{
+		"id":       entry.ID,
+		"agent_id": entry.AgentID,
+		"text":     entry.Text,
+		"author":   entry.Author,
+		"written":  entry.Written.Format(time.RFC3339),
+	}
+	if entry.Pinned {
+		out["pinned"] = true
+	}
+	return out
+}
+
 // baselineMap renders one watched path for the wire.
 //
 // The drift is kept, not only the state: a file that was changed twice

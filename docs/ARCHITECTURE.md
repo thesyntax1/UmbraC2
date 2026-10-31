@@ -70,6 +70,7 @@ main: load config → build keyring → open store → start listeners
 | `dossier` | the file of a host | the read model that puts one host on one page: the identity, the health, the work that was run, the persistence, the tripwires, the requests and what is not known |
 | `otp` | the second factor | the registry of the secrets of the operator: RFC 6238 with six digits, a window of one step on each side, a constant-time comparison, and a secret that is shown once |
 | `baseline` | the baseline of the hosts | the paths the team watches, and the drift of them: a file that was changed twice does not look like a file that was changed once |
+| `note` | the notes of the team | the lines the team writes about the hosts: one line, one author, one time, on the dossier of the host |
 
 ### Connection handling
 
@@ -190,6 +191,13 @@ wrote; the server keeps the ledger of the verdicts.  The verdicts travel
 in the metadata of the task that checked them, as one short string, and
 the hub calls the ledger when a task finishes (`Hub.OnComplete`), so the
 ledger and the answer the operator reads cannot disagree.
+
+`note` is the ledger of the notes the team writes about the hosts.
+The line of words is one per note: the author, the moment it was
+written, and the agent it is about.  The ledger lives beside the state
+file, and the dossier of a host carries the notes about it on the same
+page, so the words the team writes about a host are where the host is
+looked at.
 
 `baseline` is the registry of the paths the team watches.  The implant
 answers with the size, the time of the last change and the digest of

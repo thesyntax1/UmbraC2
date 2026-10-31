@@ -1002,6 +1002,42 @@ class OperatorClient:
             raise OperatorError(res.error)
         return res.data or {}
 
+    # -- the notes of the team about a host ---------------------------------
+    def note_add(self, agent_id: str, text: str) -> Dict[str, Any]:
+        """Write one line of words about a host.
+
+        The note travels with the dossier of the host, so a note that
+        is not where the host is looked at is a note nobody finds.
+        """
+        res = self.rpc("note.add", {"agent": agent_id, "text": text})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def note_list(self, agent_id: str = "") -> Dict[str, Any]:
+        """The notes of one host, or of the team when none is named."""
+        payload: Dict[str, Any] = {}
+        if agent_id:
+            payload["agent"] = agent_id
+        res = self.rpc("note.list", payload)
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def note_show(self, note_id: str) -> Dict[str, Any]:
+        """One note, with the hand that wrote it."""
+        res = self.rpc("note.show", {"id": note_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
+    def note_remove(self, note_id: str) -> Dict[str, Any]:
+        """Take a line of words away.  The host stays as it is."""
+        res = self.rpc("note.remove", {"id": note_id})
+        if not res.ok:
+            raise OperatorError(res.error)
+        return res.data or {}
+
     # -- the file of a host ------------------------------------------------
     def dossier_get(self, agent_id: str) -> Dict[str, Any]:
         """The file of one host: what the server knows and what it did."""

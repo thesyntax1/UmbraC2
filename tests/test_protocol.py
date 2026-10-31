@@ -10920,3 +10920,112 @@ def test_the_console_reaches_the_baseline():
     args = parser.parse_args(["baseline", "check", "--agent", "web-01", "--wait"])
     assert args.baseline_cmd == "check" and args.agent == "web-01"
     assert args.wait is True
+
+
+def test_the_notes_of_the_team_travel_with_the_host():
+    """The notes of the team are the words they write about a host.
+
+    The dossier of a host is what the server knows; the notes are what
+    the team says.  A note is one short line of words, the operator who
+    wrote it and the moment it was written, and it travels with the
+    host it is about, so a note that is not where the host is looked
+    at is a note nobody finds.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    note_go = read_text("server/internal/note/note.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The ledger is a package of its own, with a lock and a file.
+    assert "package note" in note_go, "there is no ledger of the notes"
+    assert "func (r *Registry) Add(" in note_go
+    assert "func (r *Registry) List(" in note_go
+    assert "func (r *Registry) Save(" in note_go
+    assert "0o600" in note_go, "the ledger is not written for the owner only"
+
+    # The server answers the four commands of the notes.
+    for command in ("note.add", "note.list", "note.remove", "note.show"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # Reading the notes is a viewer; writing and taking away are the
+    # work of the operator.
+    assert re.search(r'"note.add":\s+Operator,', rbac)
+    assert re.search(r'"note.list":\s+Viewer,', rbac)
+    assert re.search(r'"note.remove":\s+Operator,', rbac)
+    assert re.search(r'"note.show":\s+Viewer,', rbac)
+
+    # And the console has a command for it.
+    assert "run_note" in cli_src
+    assert 'sub.add_parser("note"' in cli_src
+
+    token = b"note-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    alice = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        alice.connect()
+
+        # A note is not written without the host it is about.
+        with pytest.raises(Exception):
+            alice.note_add("", "a note without a host")
+        # Nor without the line of words.
+        with pytest.raises(Exception):
+            alice.note_add("web-01", "  ")
+
+        # The first note is written.
+        written = alice.note_add("web-01", "fileserver of the bridge subnet")
+        assert written.get("id"), written
+        assert written.get("agent_id") == "web-01", written
+        assert written.get("author") == "alice", written
+
+        # The dossier of the host carries the note.
+        listed = alice.note_list(agent_id="web-01")
+        assert listed["count"] == 1, listed
+        assert listed["notes"][0]["agent_id"] == "web-01", listed
+        assert listed["notes"][0]["text"] == "fileserver of the bridge subnet", listed
+        assert listed["notes"][0]["author"] == "alice", listed
+
+        # One note by itself, with the hand that wrote it.
+        one = alice.note_show(written["id"])
+        assert one.get("id") == written["id"], one
+        assert one.get("text") == "fileserver of the bridge subnet", one
+        assert one.get("author") == "alice", one
+
+        # The note of one host is not the note of another.
+        assert alice.note_list(agent_id="sql-01")["count"] == 0
+
+        # The note can be taken away, and the ledger says so.
+        removed = alice.note_remove(written["id"])
+        assert removed.get("removed") is True, removed
+        assert alice.note_list(agent_id="web-01")["count"] == 0
+    finally:
+        alice.close()
+        server.stop()
+
+
+def test_the_console_reaches_the_notes():
+    """The console has a command for the notes.
+
+    A command nobody can type is a command that does not exist, so the
+    parser knows the add, the list, the show and the remove.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["note", "list"])
+    assert args.cmd == "note" and args.note_cmd == "list"
+    args = parser.parse_args(["note", "add", "--agent", "web-01", "the web server"])
+    assert args.note_cmd == "add" and args.agent == "web-01"
+    assert args.text == "the web server"
+    args = parser.parse_args(["note", "show", "n-0001"])
+    assert args.note_cmd == "show" and args.id == "n-0001"
+    args = parser.parse_args(["note", "remove", "n-0001"])
+    assert args.note_cmd == "remove" and args.id == "n-0001"

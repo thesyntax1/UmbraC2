@@ -2229,6 +2229,27 @@ nobody ever looked, `present` when the file is as it was, `changed`
 when it was touched, `missing` when it is gone, `appeared` when it
 was gone and is back.
 
+## 5s. The notes the team writes about the hosts
+
+The dossier of a host is what the server knows about it; the notes are
+what the team says:
+
+```bash
+umbra note add web-01 "the fileserver of the bridge subnet"
+umbra note list --agent web-01
+umbra note remove n-0001
+```
+
+The note is one short line of words, the operator who wrote it and the
+moment it was written.  It travels with the dossier of the host, so a
+note that is not where the host is looked at is a note nobody finds,
+and the dossier of a host carries the notes about it on the same page.
+
+The ledger of the notes lives next to the state file (`notes.json`),
+it is written for the server alone (`0600`), and every note can be
+taken away, because the words a team writes about a host are the words
+of the engagement only while it is going on.
+
 ## 6. Monitoring
 
 ```bash
