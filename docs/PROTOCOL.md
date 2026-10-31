@@ -625,6 +625,9 @@ Operator RPC commands, with the minimum role each requires:
 | `canary.remove` | operator | stop watching a tripwire: `id`; the file on the host stays where it is |
 | `dossier.get` | viewer | the file of one host: the identity, the health with its reasons, the work that was run, the persistence, the tripwires, the requests and what is not known |
 | `dossier.list` | viewer | the files of every host, the weakest first |
+| `operator.otp.status` | viewer | who has a second factor, whether it is on, and how old the secret is. The secrets are never in the answer |
+| `operator.otp.rotate` | operator | make a new secret for an operator: optional `operator` (default: yourself) and `issuer` (the name the phone shows). The secret is in the answer once and never again |
+| `operator.otp.remove` | operator | take the second factor of an operator away: optional `operator` (default: yourself). The console of that operator works with the token alone from then on |
 | `agents.sleep` | operator | change beacon cadence |
 | `agents.policy` | operator | push the cadence and the sleep obfuscation to many agents |
 | `agents.tag` | operator | label agents: `mode` is `add`, `remove` or `set` |
@@ -2208,8 +2211,9 @@ the server and the wipe of the engagement.
 **The console.**  `umbra hunt list|add|remove|sweep`, `umbra health`,
 `umbra case list|show|create|add|close`,
 `umbra approval list|show|request|approve|deny`,
-`umbra canary list|show|plant|check|remove` and
-`umbra dossier list|show`.
+`umbra canary list|show|plant|check|remove`,
+`umbra dossier list|show` and
+`umbra otp status|rotate|remove|code`.
 
 **The two-person rule.**  `approval.request` puts an operation into the
 queue of the team: the kind of the operation, the host it is about,
@@ -2253,6 +2257,33 @@ kinds), the persistence with the entries that are broken, the tripwires,
 the requests, and the things the server does not know.  `dossier.list`
 does the same for every host and sorts them weakest first: the host
 that needs attention comes before the host that does not.
+
+**The second factor.**  The token of an operator is a secret that lives
+in the configuration of the server and in the memory of the console.
+The second factor is a secret that lives in the phone of the operator
+and never travels: the console sends the six digits of the moment in
+the metadata of the handshake and the server checks them before it
+answers.
+
+`operator.otp.rotate` makes a new secret for an operator and hands it
+out once -- the base32 secret and the `otpauth://` address the phone of
+the authenticator reads.  `operator.otp.status` says who has a secret,
+whether it is on and how old it is, and it never carries the secret
+itself.  `operator.otp.remove` takes the secret away, and the console
+of that operator works with the token alone from then on, which is what
+a team wants when a phone is lost.
+
+The codes follow RFC 6238 with HMAC-SHA1 and six digits, which is what
+the authenticator applications of every phone understand, and the
+server accepts a window of one step (thirty seconds) on each side: the
+clock of a phone is not the clock of the server.  The comparison is
+constant time, the file of the secrets belongs to the server alone
+(`0o600`), and an operator may rotate or remove its own second factor
+while somebody else's is the work of an admin.
+
+The console sends the code with `--otp` or `$UMBRA_OTP`, and
+`umbra otp code --secret ...` prints the code of the moment for a lab
+that has no phone.
 
 ## 8. Transports
 

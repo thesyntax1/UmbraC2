@@ -2152,6 +2152,45 @@ is the place where the operator has to go and look.
 **The files are sorted weakest first**, so the host that needs
 attention comes before the host that does not.
 
+## 5q. The second factor of the operator
+
+The token of an operator is a secret that lives in the configuration of
+the server and in the memory of the console.  The second factor is a
+secret that lives in the phone of the operator and never travels.
+
+```bash
+umbra otp status                  # who has a second factor, and how old it is
+umbra otp rotate --operator bob   # a new secret for bob, shown once
+umbra otp remove --operator bob   # take it away again
+umbra otp code --secret <base32>  # the code of the moment (for a lab)
+```
+
+**The code travels in the handshake.**  The console sends it in the
+metadata of the HELLO, and the server checks it *before* it answers: a
+console without the right code never gets a session, so it never sees
+an event and never reaches a command.  The console sends it with
+`--otp 123456` or `$UMBRA_OTP`.
+
+**The secret is shown once.**  `operator.otp.rotate` makes a new secret
+and hands it out in the answer, together with the `otpauth://` address
+the phone of the authenticator reads.  The server keeps its copy in
+`data/otp.json`, written for the server alone (`0600`), and it never
+sends it again -- `operator.otp.status` says who has one, whether it is
+on and how old it is, and leaves the secret out.
+
+**The codes are the codes of the phone.**  They follow RFC 6238 with
+HMAC-SHA1 and six digits, which is what every authenticator
+application understands, and the server accepts a window of one step
+(thirty seconds) on each side, because the clock of a phone is not the
+clock of the server.  The comparison is constant time.
+
+**An operator may turn its own second factor on and off.**  Somebody
+else's is the work of an admin, and the refusal says so.
+
+**When a phone is lost**, `umbra otp remove --operator <name>` takes
+the factor away and the console of that operator works with the token
+alone from then on.
+
 ## 6. Monitoring
 
 ```bash

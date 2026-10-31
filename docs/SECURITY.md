@@ -380,6 +380,37 @@ planted.  An intruder who never looks at a file the implant wrote
 changes nothing, and the canary stays `intact`.  The tripwire is a
 cheap signal, not a proof.
 
+## 3.12b The second factor of the operator
+
+The token of an operator proves that the console holds a secret.  The
+second factor proves that the person at the keyboard holds another
+one, and the second secret never travels: the console sends the six
+digits of the moment and the phone of the operator keeps the secret.
+
+**The check is before the answer.** The code travels in the metadata of
+the HELLO and is checked in the hook of the handshake, before the
+HELLO_ACK is written.  A console without the right code never gets a
+session: it never subscribes to the events and never reaches a command.
+
+**The comparison is constant time.** The code of the moment is compared
+with `subtle.ConstantTimeCompare`, and the window is one step (thirty
+seconds) on each side, because the clock of a phone is not the clock of
+the server.  A server that compared the codes byte by byte would leak
+the code one byte at a time.
+
+**The secret is shown once.** `operator.otp.rotate` hands out the
+secret and the address of the authenticator exactly once, and the
+registry of the secrets is written `0600` next to the state file.
+`operator.otp.status` says who has a secret and how old it is; it never
+carries the secret itself, and neither does any event the server
+pushes.
+
+**What the second factor does not do.** It does not replace the token:
+both are needed, and a code without the token opens nothing.  It does
+not protect the agent link either -- that is the key of the agent.  And
+it is not a proof of who is at the keyboard: a code that is read aloud
+is a code that is used, and the window is a window.
+
 ## 3.13 The versions of the protocol
 
 The handshake version is not a security boundary, and it is worth saying

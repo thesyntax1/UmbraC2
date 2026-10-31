@@ -68,6 +68,7 @@ main: load config → build keyring → open store → start listeners
 | `approval` | the two-person rule | the queue of the operations that wait for a second pair of eyes: the requester cannot decide, a request nobody decides goes stale, and the decision queues the work |
 | `canary` | the tripwires | the ledger of the canaries the team planted: the secret of the file stays with the implant, the verdict comes back in the metadata of the task and the ledger keeps the history |
 | `dossier` | the file of a host | the read model that puts one host on one page: the identity, the health, the work that was run, the persistence, the tripwires, the requests and what is not known |
+| `otp` | the second factor | the registry of the secrets of the operator: RFC 6238 with six digits, a window of one step on each side, a constant-time comparison, and a secret that is shown once |
 
 ### Connection handling
 
@@ -188,6 +189,15 @@ wrote; the server keeps the ledger of the verdicts.  The verdicts travel
 in the metadata of the task that checked them, as one short string, and
 the hub calls the ledger when a task finishes (`Hub.OnComplete`), so the
 ledger and the answer the operator reads cannot disagree.
+
+`otp` is the registry of the second factors of the operators.  The
+secret of an operator lives in the phone of the operator and never
+travels: the console sends the six digits of the moment in the metadata
+of the handshake and the server checks them in the hook of the
+handshake, before the answer is written, so a console without the right
+code never gets a session.  The registry is a file next to the state
+file (`0600`), the comparison is constant time, and the status of the
+second factors never carries the secrets.
 
 `dossier` is not a ledger: it is a read model.  It takes the records the
 server has (the agent, the tasks, the persistence, the posture) and the
