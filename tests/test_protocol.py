@@ -11685,3 +11685,296 @@ def test_the_console_reaches_the_rhythm_the_reuse_and_the_silence():
     args = parser.parse_args(["silence", "remove", "s-0001"])
     assert args.silence_cmd == "remove" and args.id == "s-0001"
     assert "run_silence" in cli_src
+
+
+def test_the_welcome_lands_on_the_first_hello() -> None:
+    """The welcome packs: the first five minutes of a host, written down once.
+
+    Every engagement greets a new host the same way; the playbook is the
+    greeting, written down, and it fires the moment the host first calls
+    home.  A pack that goes once answers only the first hello of each
+    host, and a manual run answers the operator who runs it, whatever
+    the gate of the pack says.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    onboard_go = read_text("server/internal/onboard/onboard.go")
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    # The shelf is a package of its own, with a lock and a file.
+    assert "package onboard" in onboard_go, "there is no welcome"
+    assert "func (r *Registry) Add(" in onboard_go
+    assert "func (r *Registry) Run(" in onboard_go
+    assert "func (r *Registry) Save(" in onboard_go
+    assert "0o600" in onboard_go, "the shelf is not written for the owner only"
+
+    # The server answers the four commands of the welcome.
+    for command in ("onboard.add", "onboard.list", "onboard.remove",
+                    "onboard.run"):
+        assert f'case "{command}"' in operator, f"the server has no {command}"
+        assert f'self.rpc("{command}"' in client_src, (
+            f"the console cannot reach {command}")
+
+    # Reading the shelf is a viewer; writing, taking away and running are
+    # the work of the operator.
+    assert re.search(r'"onboard\.add":\s+Operator,', rbac)
+    assert re.search(r'"onboard\.list":\s+Viewer,', rbac)
+    assert re.search(r'"onboard\.remove":\s+Operator,', rbac)
+    assert re.search(r'"onboard\.run":\s+Operator,', rbac)
+
+    # And the console has a command for it.
+    assert "run_onboard" in cli_src
+    assert 'sub.add_parser(' in cli_src and '"onboard"' in cli_src
+
+    token = b"onboard-token-0123456789a"
+    server = MockServer(AGENT_PSK, {"alice": token})
+
+    def onboards_fired() -> int:
+        evs = client.events(after=0).get("events", [])
+        return len([e for e in evs if e.get("kind") == "onboard.fired"])
+
+    server.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        # The welcome is written: a survey and a look.
+        pack = client.onboard_add("first five minutes", [
+            {"kind": "sysinfo"},
+            {"kind": "hash", "args": {"path": "/etc/passwd"}},
+        ])
+        assert pack["id"] == "w-0001", pack
+        assert pack["once"] is True, pack
+        assert len(pack["stages"]) == 2, pack
+
+        # The new host calls home: the welcome lands before the
+        # operator lifts a finger, and the ledger speaks of it.
+        agent = FakeAgent(server.address, AGENT_PSK, "agent-welcome",
+                          interval=0.2)
+        agent.start()
+        assert wait_until(lambda: onboards_fired() >= 1, timeout=12), (
+            "the ledger never spoke of the welcome")
+        try:
+            assert wait_until(
+                lambda: bool([t for t in client.tasks(agent_id="agent-welcome")
+                              if t.get("kind") == "sysinfo"]),
+                timeout=12), "the welcome never landed"
+            kinds = [t.get("kind") for t in client.tasks(agent_id="agent-welcome")]
+            assert "sysinfo" in kinds and "hash" in kinds, kinds
+
+            # The host stays: no encore.  If it returned, the once-pack
+            # would not fire again either, but the mock does not bounce
+            # agents in a test — the stage count is the word.
+            count_before = len(kinds)
+
+            # The manual welcome answers the caller, not the gate: the
+            # same play runs again because the operator runs it.
+            ran = client.onboard_run("w-0001", "agent-welcome")
+            assert ran.get("queued") == 2, ran
+            assert wait_until(
+                lambda: len([t for t in client.tasks(agent_id="agent-welcome")
+                             if t.get("kind") == "sysinfo"]) == 2,
+                timeout=12), "the manual run queued nothing"
+            assert onboards_fired() >= 2, "the ledger spoke too quietly"
+            listed = client.onboard_list()
+            assert listed["playbooks"][0]["fires"] == 2, listed
+            assert listed["playbooks"][0]["last_agent"] == "agent-welcome", (
+                listed)
+            assert count_before == 2, kinds
+
+            # The shelf lets a play go.
+            removed = client.onboard_remove("w-0001")
+            assert removed.get("removed") is True, removed
+            assert client.onboard_list()["count"] == 0
+        finally:
+            agent.stop()
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_the_map_of_the_doors_shows_who_stands_behind_whom() -> None:
+    """The pivots as a tree: the shape of the reach.
+
+    The pivot list is a table of doors.  The map is the shape: every hop
+    of the way home of a door is a branch, and the door hangs on the
+    last hop — so the operator sees that the second network is behind
+    the first, not only that the doors are open.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient  # noqa: WPS433
+
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    assert 'case "pivot.map"' in operator, "the server has no map of the doors"
+    assert "pivotTree(" in operator, "the map is not drawn"
+    assert re.search(r'"pivot\.map":\s+Viewer,', rbac)
+    assert 'self.rpc("pivot.map"' in client_src
+    assert "run_pivot_map" in cli_src
+
+    token = b"map-token-0123456789abcdef"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    first = FakeAgent(server.address, AGENT_PSK, "agent-first", interval=0.2)
+    first.start()
+    second = FakeAgent(server.address, AGENT_PSK, "agent-second", interval=0.2)
+    second.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: len(client.agents()) == 2, timeout=10), (
+            "the agents never showed up")
+
+        # A direct door and a door behind it: the first hop of the way
+        # home of the second door is the first host.
+        client.pivot_open("agent-first", mode="socks")
+        chained = client.pivot_open("agent-first", mode="socks",
+                                    path=["agent-second"])
+        assert chained.get("path") == ["agent-second"], chained
+
+        mapping = client.pivot_map()
+        assert mapping["doors"] == 2, mapping
+        assert mapping["hosts"] == 2, mapping
+        assert mapping["deepest"] == 2, mapping
+        tree = mapping["tree"]
+        assert tree["agent_id"] == "server", tree
+        top = {b["agent_id"]: b for b in tree["children"]}
+        # The direct door hangs on the first host, at the top row.
+        assert "agent-first" in top, top
+        assert top["agent-first"]["tunnels"] == 1, top
+        assert top["agent-first"]["children"] == [], top
+        # The chained door hangs one branch deeper: the exit host
+        # stands behind the relay, under it in the tree.
+        relay = top["agent-second"]
+        assert relay["tunnels"] == 0, relay
+        assert len(relay["children"]) == 1, relay
+        door = relay["children"][0]
+        assert door["agent_id"] == "agent-first", door
+        assert door["tunnels"] == 1 and door["depth"] == 2, door
+        rows = mapping["rows"]
+        direct = [r for r in rows if not r.get("parent")]
+        chained = [r for r in rows if r.get("parent") == "agent-second"]
+        assert len(direct) == 1 and direct[0]["host"] == "agent-first", rows
+        assert len(chained) == 1 and chained[0]["host"] == "agent-first", rows
+        assert chained[0]["depth"] == 2, chained
+    finally:
+        client.close()
+        first.stop()
+        second.stop()
+        server.stop()
+
+
+def test_the_evidence_keeps_its_word() -> None:
+    """The verify reads the bytes and asks the manifest again.
+
+    The store says what each blob must be; the digest is the name of the
+    blob on the disk, so a blob that was swapped is a blob that no
+    longer answers to its name — and the report says which one.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from mock_server import FakeAgent, MockServer  # noqa: WPS433
+    from umbra_cli.client import OperatorClient, OperatorError  # noqa: WPS433
+
+    operator = read_text("server/internal/link/operator.go")
+    rbac = read_text("server/internal/rbac/rbac.go")
+    client_src = read_text("operator/umbra_cli/client.py")
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    assert 'case "artifact.verify"' in operator, "the server verifies nothing"
+    assert "sha256.Sum256" in operator, "the server does not ask the bytes"
+    assert re.search(r'"artifact\.verify":\s+Viewer,', rbac)
+    assert 'self.rpc("artifact.verify"' in client_src
+    assert "run_artifact_verify" in cli_src
+
+    token = b"verify-token-0123456789ab"
+    server = MockServer(AGENT_PSK, {"alice": token})
+    server.start()
+    agent = FakeAgent(server.address, AGENT_PSK, "agent-verify", interval=0.2)
+    agent.start()
+    client = OperatorClient(server.address, token.decode(), "alice")
+    try:
+        client.connect()
+        assert wait_until(lambda: bool(client.agents()), timeout=10), (
+            "the agent never showed up")
+
+        # Two pieces of evidence come home.
+        client.artifact_put("loot/one.txt", b"the words of the host")
+        client.artifact_put("loot/two.txt", b"the words of the host, again")
+        report = client.artifact_verify()
+        assert report["checked"] == 2, report
+        assert report["broken"] == 0, report
+        assert all(row["verified"] for row in report["artifacts"]), report
+
+        # One blob is swapped on the disk: the manifest said a name and
+        # the blob no longer answers to it.
+        with server._lock:
+            server.artifacts["loot/one.txt"]["data"] = b"a swapped blob"
+        report = client.artifact_verify()
+        assert report["checked"] == 2 and report["broken"] == 1, report
+        rows = {row["name"]: row for row in report["artifacts"]}
+        assert rows["loot/one.txt"]["verified"] is False, rows
+        assert rows["loot/one.txt"]["found"], rows
+        assert rows["loot/two.txt"]["verified"] is True, rows
+
+        # One blob alone can be asked about.
+        one = client.artifact_verify("loot/two.txt")
+        assert one["checked"] == 1 and one["broken"] == 0, one
+        with pytest.raises(OperatorError):
+            client.artifact_verify("loot/nobody.txt")
+    finally:
+        client.close()
+        agent.stop()
+        server.stop()
+
+
+def test_the_console_reaches_the_welcome_the_map_and_the_verify() -> None:
+    """The console knows the welcome, the map and the verify.
+
+    A command nobody can type is a command that does not exist, so the
+    parser knows the plays on the shelf, the fires by hand, the tree of
+    the doors and the re-hash of the store.
+    """
+    from umbra_cli import cli  # noqa: WPS433
+
+    parser = cli.build_parser()
+    cli_src = read_text("operator/umbra_cli/cli.py")
+
+    args = parser.parse_args(["onboard", "list"])
+    assert args.cmd == "onboard" and args.onboard_cmd == "list"
+    args = parser.parse_args(["onboard", "add", "first five minutes",
+                              "sysinfo", "hash:path=/etc/passwd",
+                              "--tag", "linux", "--repeat",
+                              "--cooldown", "1800"])
+    assert args.onboard_cmd == "add"
+    assert args.name == "first five minutes"
+    assert args.stages == ["sysinfo", "hash:path=/etc/passwd"]
+    assert args.tag == "linux" and args.repeat is True
+    assert args.cooldown == 1800
+    args = parser.parse_args(["onboard", "run", "w-0001", "web-01"])
+    assert args.onboard_cmd == "run" and args.id == "w-0001"
+    assert args.agent == "web-01"
+    args = parser.parse_args(["onboard", "remove", "w-0001"])
+    assert args.onboard_cmd == "remove" and args.id == "w-0001"
+    assert "run_onboard" in cli_src
+
+    args = parser.parse_args(["pivot-map"])
+    assert args.cmd == "pivot-map"
+    assert "run_pivot_map" in cli_src
+
+    args = parser.parse_args(["artifact-verify"])
+    assert args.cmd == "artifact-verify" and args.name == ""
+    args = parser.parse_args(["artifact-verify", "loot/one.txt"])
+    assert args.name == "loot/one.txt"
+    assert "run_artifact_verify" in cli_src
+
+    # The stage arguments parse like the tasks they queue.
+    assert cli.parse_kv("path=/etc/passwd,recursive=true,depth=2") == {
+        "path": "/etc/passwd", "recursive": True, "depth": 2}
