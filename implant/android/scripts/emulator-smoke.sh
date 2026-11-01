@@ -89,7 +89,7 @@ hold() { cp "$2" "$OUT/raw/$1" 2>/dev/null || true; }
 # what the test believed it was.
 tap_text() {
     local text="$1" index="${2:-0}" xml coords
-    xml="$OUT/raw/ui-$(echo "$text" | tr -c 'a-zA-Z0-9' '_')-$index.xml"
+    xml="$OUT/raw/ui-$(printf '%s' "$text" | tr -c 'a-zA-Z0-9' '_')-$index.xml"
     adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1
     adb exec-out cat /sdcard/window_dump.xml >"$xml" 2>/dev/null
     coords=$(python3 - "$xml" "$text" "$index" <<'PY'
@@ -106,7 +106,7 @@ for node in re.finditer(r'<node[^>]*>', data):
     bounds = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', tag)
     if not text or not bounds:
         continue
-    if text.group(1) != want:
+    if not re.search(want, text.group(1)):
         continue
     x1, y1, x2, y2 = (int(v) for v in bounds.groups())
     found.append(((x1 + x2) // 2, (y1 + y2) // 2))
@@ -122,12 +122,23 @@ PY
     return 0
 }
 
-# has_text <text>: is a node with this exact text on the screen?
-has_text() {
-    local text="$1" xml="$OUT/raw/ui-has-$(echo "$1" | tr -c 'a-zA-Z0-9' '_').xml"
+# ui_texts <name>: every non-empty text on the screen, one per line.
+ui_texts() {
+    local name="$1" xml="$OUT/raw/ui-$name.xml"
     adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1
     adb exec-out cat /sdcard/window_dump.xml >"$xml" 2>/dev/null
-    grep -q "text=\"$text\"" "$xml" 2>/dev/null
+    grep -o 'text="[^"]*"' "$xml" 2>/dev/null | sed 's/^text="//; s/"$//' | grep -v '^$'
+}
+
+# has_text <regex>: is there a node whose text matches, on the screen?
+#
+# A regular expression, not an exact string: the platform's own dialog says
+# "Don’t allow" with a typographic apostrophe (U+2019), and an exact match on
+# "Don't allow" found nothing on an emulator where the dialog was plainly on
+# the screen.
+has_text() {
+    local pattern="$1"
+    ui_texts "has-$(printf '%s' "$1" | tr -c 'a-zA-Z0-9' '_')" | grep -qE "$pattern"
 }
 
 # service_state: what the activity manager says about BeaconService, or empty.
@@ -319,10 +330,23 @@ fi
 # so the denial is performed on the dialog, not by a shell command.
 # ---------------------------------------------------------------------------
 
-if has_text "Don't allow"; then
+# The dialog is the platform's, and it appears a moment after the activity.
+# The button says "Don’t allow" with U+2019 on API 33 and 34, so the match is
+# a pattern; the exact text that was found is kept as evidence.
+dialog_seen=no
+for _ in $(seq 1 15); do
+    if has_text "Don.?t allow|DENY|Deny"; then
+        dialog_seen=yes
+        break
+    fi
+    sleep 1
+done
+ui_texts "before-denial" >"$OUT/raw/texts-before-denial.txt" 2>&1 || true
+
+if [ "$dialog_seen" = "yes" ]; then
     record notif-dialog PASS "the application asks for POST_NOTIFICATIONS on first launch" \
-        "the platform dialog is on the screen"
-    tap_text "Don't allow" || true
+        "the platform dialog is on the screen: $(grep -m1 'notifications' "$OUT/raw/texts-before-denial.txt" | cut -c1-80)"
+    tap_text "Don.?t allow|DENY|Deny" || true
     sleep 2
     capture package-dump-after-deny dumpsys package "$PKG"
     state=$(grep -A2 'POST_NOTIFICATIONS' "$OUT/raw/package-dump-after-deny.txt" | tr -d '\r' | tr '\n' ' ')
@@ -440,21 +464,33 @@ fi
 # is /proc/<pid>/maps.
 # ---------------------------------------------------------------------------
 
-pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
-maps=""
-if [ -n "$pid" ]; then
+# The library is loaded when the beacon's handshake is built, which happens
+# the first time the loop opens a channel: the loopback socket is what makes
+# that reachable.  It is given twenty seconds.
+mapped=""
+maps_readable=no
+for _ in $(seq 1 20); do
+    pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
+    [ -z "$pid" ] && { sleep 1; continue; }
     maps=$(adb shell run-as "$PKG" cat "/proc/$pid/maps" 2>/dev/null | tr -d '\r')
-    if ! printf '%s' "$maps" | grep -q 'libumbra.so'; then
+    if [ -z "$maps" ]; then
         if adb root >/dev/null 2>&1; then
             adb wait-for-device >/dev/null 2>&1
-            sleep 3
+            sleep 2
         fi
         maps=$(adb shell cat "/proc/$pid/maps" 2>/dev/null | tr -d '\r')
     fi
-fi
+    [ -n "$maps" ] && maps_readable=yes
+    mapped=$(printf '%s' "$maps" | grep 'libumbra\.so' | head -3)
+    [ -n "$mapped" ] && break
+    sleep 1
+done
 printf '%s\n' "$maps" >"$OUT/raw/proc-maps-libumbra.txt"
-mapped=$(printf '%s' "$maps" | grep 'libumbra\.so' | head -3)
-link_error=$(adb logcat -d -v brief 2>/dev/null | grep -E "UnsatisfiedLinkError|dlopen failed|couldn't find \"libumbra" | head -3)
+# Only the failures that name this application or this library.  The first
+# version grepped the whole log for "dlopen failed" and found the emulator's
+# own missing codec libraries, which have nothing to do with the implant.
+link_error=$(adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
+    | grep -iE 'umbra' | grep -E "UnsatisfiedLinkError|dlopen failed|couldn't find" | head -3)
 
 if [ -n "$mapped" ]; then
     record native-load PASS "the native library is mapped into the running process" \
@@ -471,9 +507,9 @@ elif [ -n "$link_error" ]; then
         "$(printf '%s' "$link_error" | head -2 | tr '\n' ' ')"
     record native-abi NOT APPLICABLE "the mapped library is the one built for the device ABI" \
         "nothing was loaded"
-else
+elif [ "$maps_readable" = "no" ]; then
     record native-load NOT VERIFIED "the native library is mapped into the running process" \
-        "the library was not found in /proc/${pid:-?}/maps and neither run-as nor adb root could read it"
+        "no reading of /proc/${pid:-?}/maps was possible (neither run-as nor adb root), so nothing was observed either way"
     record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
         "no reading of the process map was possible"
 fi
