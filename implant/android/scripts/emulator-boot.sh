@@ -67,6 +67,7 @@ AVD="umbra-api$API"
     echo "emulator:   $(command -v emulator || echo missing)"
     echo "adb:        $(command -v adb || echo missing)"
     echo "kvm:        $(ls -l /dev/kvm 2>&1)"
+    echo "pulse:      $(ldconfig -p 2>/dev/null | grep -c libpulse || echo 0) libpulse entries"
     nproc
     free -g | head -2
 } >"$OUT/harness.txt" 2>&1
@@ -101,7 +102,10 @@ if [ "$avd_listed" != "1" ]; then
 fi
 
 # 3. the emulator
-"$SDK/emulator/emulator" -version >"$OUT/emulator-version.txt" 2>&1 || true
+{
+    echo "emulator: $("$SDK/emulator/emulator" -version 2>&1 | head -3)"
+    echo "accepted-licenses: $(ls "$SDK/licenses" 2>/dev/null | tr '\n' ' ')"
+} >>"$OUT/harness.txt" 2>&1
 "$SDK/emulator/emulator" -avd "$AVD" \
     -no-window -no-audio -no-boot-anim -no-snapshot \
     -gpu swiftshader_indirect -accel on -memory 2048 \

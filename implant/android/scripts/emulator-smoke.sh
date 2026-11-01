@@ -144,7 +144,9 @@ command -v adb >/dev/null 2>&1 || { echo "no adb on PATH" >&2; exit 2; }
 # Every adb call gets a ceiling.  A wedged emulator answers nothing and an
 # unanswered `adb shell` blocks until the job's own timeout, which is how the
 # first version of this test produced no report at all.
-adb() { timeout 120 command adb "$@"; }
+# `timeout` execs its argument, so it cannot run the shell builtin `command`:
+# the first version of this line made every adb call fail with ENOENT.
+adb() { timeout 120 "$(command -v adb)" "$@"; }
 
 # ---------------------------------------------------------------------------
 # 0. the device
