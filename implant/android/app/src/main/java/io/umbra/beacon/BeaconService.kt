@@ -180,8 +180,22 @@ class BeaconService : Service(), Beacon.Listener {
 
     override fun onDestroy() {
         beacon?.stop()
+        beacon = null
+        running = null
         active.set(false)
         releaseWakeLock()
+        // A notification that outlives its service is a lie on the screen of
+        // the user: it says the beacon is running when nothing is.  The
+        // fourteenth run stopped the service with `am stopservice` and found
+        // the notification still posted, because this method never took it
+        // down -- stopBeacon() did, and the system's own stop does not go
+        // through stopBeacon().
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         super.onDestroy()
     }
 
