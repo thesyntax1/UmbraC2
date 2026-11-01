@@ -40,6 +40,14 @@ export ANDROID_SDK_ROOT="$SDK"
 export ANDROID_HOME="$SDK"
 export PATH="$SDK/platform-tools:$SDK/emulator:$SDK/cmdline-tools/latest/bin:$PATH"
 
+# The AVD lives in a directory this script owns.  The runner image sets its
+# own ANDROID_*_HOME, and a check against $HOME/.android found nothing while
+# the AVD had been created somewhere else: the test then reported "the AVD
+# could not be created" about an AVD that existed.
+export ANDROID_AVD_HOME="$OUT/avd"
+export ANDROID_EMULATOR_HOME="$OUT/emulator-home"
+mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_EMULATOR_HOME"
+
 IMAGE="system-images;android-$API;google_apis;x86_64"
 AVD="umbra-api$API"
 
@@ -67,11 +75,21 @@ fi
 # 2. the device
 echo no | avdmanager create avd --force --name "$AVD" --package "$IMAGE" --device "pixel_5" \
     >"$OUT/avd-create.log" 2>&1
-if [ ! -d "$HOME/.android/avd/$AVD.avd" ]; then
+avd_listed=0
+"$SDK/emulator/emulator" -list-avds >"$OUT/avd-list.txt" 2>&1 || true
+if ! grep -qx "$AVD" "$OUT/avd-list.txt"; then
     echo no | avdmanager create avd --force --name "$AVD" --package "$IMAGE" \
         >>"$OUT/avd-create.log" 2>&1
+    "$SDK/emulator/emulator" -list-avds >"$OUT/avd-list.txt" 2>&1 || true
 fi
-if [ ! -d "$HOME/.android/avd/$AVD.avd" ]; then
+grep -qx "$AVD" "$OUT/avd-list.txt" && avd_listed=1
+{
+    echo "avd home: $ANDROID_AVD_HOME"
+    ls -la "$ANDROID_AVD_HOME" 2>&1
+    echo "--- emulator -list-avds:"
+    cat "$OUT/avd-list.txt" 2>&1
+} >>"$OUT/avd-create.log" 2>&1
+if [ "$avd_listed" != "1" ]; then
     echo "the AVD could not be created (see avd-create.log)" | tee -a "$OUT/harness.txt"
     exit 2
 fi
