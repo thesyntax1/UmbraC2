@@ -554,11 +554,24 @@ fi
 # The library is loaded when the beacon's handshake is built, which happens
 # the first time the loop opens a channel: the loopback socket is what makes
 # that reachable.  It is given twenty seconds.
+# The channel the beacon opens is a socket on the host, mapped into the
+# device by `adb reverse`.  Without that rule the application cannot reach
+# anything, the channel never opens, and the library is never loaded -- so the
+# mapping is part of the evidence, not scenery.
+reverse_list=$(adb reverse --list 2>&1 | tr -d '\r')
+printf '%s\n' "$reverse_list" >"$OUT/raw/adb-reverse-list.txt"
+reverse_up=no
+if printf '%s' "$reverse_list" | grep -q 'tcp:4001'; then
+    reverse_up=yes
+fi
+
 mapped=""
 maps_readable=no
+maps_pid=""
 for _ in $(seq 1 20); do
     pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
     [ -z "$pid" ] && { sleep 1; continue; }
+    maps_pid=$pid
     maps=$(adb shell run-as "$PKG" cat "/proc/$pid/maps" 2>/dev/null | tr -d '\r')
     if [ -z "$maps" ]; then
         if adb root >/dev/null 2>&1; then
@@ -573,6 +586,16 @@ for _ in $(seq 1 20); do
     sleep 1
 done
 printf '%s\n' "$maps" >"$OUT/raw/proc-maps-libumbra.txt"
+
+# What the application says it is doing.  The foreground notification is the
+# only place the implant writes down its own state, so it is quoted instead of
+# guessed at.
+app_block=$(notification_state | grep -A40 "pkg=$PKG" | head -60 || true)
+app_text=$(printf '%s\n' "$app_block" \
+    | grep -m1 -oE 'android\.text=String \([^)]*\)' \
+    | sed 's/^android\.text=String (//; s/)$//' || true)
+printf '%s\n' "${app_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text.txt"
+
 # Only the failures that name this application or this library.  The first
 # version grepped the whole log for "dlopen failed" and found the emulator's
 # own missing codec libraries, which have nothing to do with the implant.
@@ -596,9 +619,26 @@ elif [ -n "$link_error" ]; then
         "nothing was loaded"
 elif [ "$maps_readable" = "no" ]; then
     record native-load NOT VERIFIED "the native library is mapped into the running process" \
-        "no reading of /proc/${pid:-?}/maps was possible (neither run-as nor adb root), so nothing was observed either way"
+        "no reading of /proc/${maps_pid:-?}/maps was possible (neither run-as nor adb root), so nothing was observed either way"
     record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
         "no reading of the process map was possible"
+elif [ "$reverse_up" = "no" ]; then
+    # The maps were read and the library is not in them -- but the socket the
+    # application is built to reach was never mapped into the device, so the
+    # channel could not have opened.  That is a hole in the test, and it is
+    # reported as one rather than as a defect of the application.
+    record native-load NOT VERIFIED "the native library is mapped into the running process" \
+        "the maps of pid $maps_pid are readable and hold no libumbra.so, but no adb reverse rule maps tcp:4001, so the channel was never reachable; the application says: ${app_text:-no notification text}"
+    record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
+        "nothing was loaded because nothing was reachable"
+else
+    # The socket is mapped and the library is still absent.  Its load follows
+    # the success of the channel, and the last thing the application wrote is
+    # the only account of why that did not happen.
+    record native-load NOT VERIFIED "the native library is mapped into the running process" \
+        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application says: ${app_text:-no notification text}"
+    record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
+        "nothing was loaded, so there was no mapping to judge"
 fi
 
 # ---------------------------------------------------------------------------

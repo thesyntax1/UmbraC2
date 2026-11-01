@@ -165,6 +165,19 @@ sleep 2
 
 # 5. the test
 #
+# The socket the application is built to reach lives on the host (the workflow
+# starts a loopback netcat before this script).  `adb reverse` needs a device
+# that is already up, which is why the mapping is made here and not in the
+# workflow: the ninth run issued it before the SDK was installed and the file
+# it left behind said only "adb: command not found", so the application's
+# connection was refused and the native library was never loaded.
+{
+    echo "$ adb reverse tcp:4001 tcp:4001"
+    adb reverse tcp:4001 tcp:4001 2>&1 || true
+    echo "$ adb reverse --list"
+    adb reverse --list 2>&1 || true
+} >"$OUT/adb-reverse.txt"
+
 # The harness has its own timeout: an adb call against a wedged emulator blocks
 # forever, and a job that hits the 60 minute limit publishes nothing at all.
 timeout 1500 bash "$(dirname "$0")/emulator-smoke.sh" --apk "$APK" --out "$OUT/report" --api "$API" \

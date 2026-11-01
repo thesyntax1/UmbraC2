@@ -114,9 +114,14 @@ jobs:
           WS="${GITHUB_WORKSPACE:-$(pwd)}"
           OUT="$WS/results/api-${{ matrix.api }}"
           mkdir -p "$OUT"
+          # The netcat is the socket the application is built to reach.  It is
+          # started here, on the host; the mapping into the device needs adb and
+          # a booted device, so emulator-boot.sh makes it after the boot.  This
+          # step used to call `adb reverse` itself, before the SDK was
+          # installed: the file it wrote said "adb: command not found" and the
+          # application's connection was refused for the whole run.
           (timeout 1800 nc -lk 127.0.0.1 4001 > "$OUT/nc.log" 2>&1 &) || true
           sleep 1
-          adb reverse tcp:4001 tcp:4001 > "$OUT/adb-reverse.txt" 2>&1 || true
           bash "$WS/implant/android/scripts/emulator-boot.sh" \
             --api "${{ matrix.api }}" \
             --apk "$WS/apk/app-debug.apk" \
@@ -127,7 +132,7 @@ jobs:
           if [ -f "$OUT/report/result.json" ] && grep -q '"FAIL"' "$OUT/report/result.json"; then
             echo "::error::the smoke test found a failing check on API ${{ matrix.api }}"
           fi
-          adb reverse --remove-all > /dev/null 2>&1 || true
+          "$ANDROID_SDK_ROOT/platform-tools/adb" reverse --remove-all > /dev/null 2>&1 || true
           exit $rc
 
       - name: keep the report even when a check failed
