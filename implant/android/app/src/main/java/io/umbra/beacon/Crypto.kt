@@ -1,8 +1,10 @@
 package io.umbra.beacon
 
 import java.math.BigInteger
+import java.security.InvalidAlgorithmParameterException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
+import java.security.ProviderException
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.SecureRandom
@@ -162,9 +164,25 @@ object Crypto {
 
     fun x25519Keypair(): Ephemeral {
         val kpg = KeyPairGenerator.getInstance("XDH")
-        kpg.initialize(xdhParams)
+        // Android's own provider refused the named spec on API 33 and API 34:
+        // "No AlgorithmParameterSpec classes are supported" (emulator run of
+        // d9b4c44, the application's own notification).  The curve the
+        // generator builds is X25519 either way, so the spec is offered first
+        // and the generator's default is used when the platform refuses it.
+        // A default that is not X25519 is caught below by the size of the
+        // public key, not assumed away.
+        try {
+            kpg.initialize(xdhParams)
+        } catch (_: InvalidAlgorithmParameterException) {
+            // the default of the XDH generator is X25519
+        } catch (_: ProviderException) {
+            // some providers wrap the refusal in an unchecked exception
+        }
         val kp = kpg.generateKeyPair()
         val pub = kp.public as XECPublicKey
+        if (pub.u.bitLength() > 256) {
+            throw CryptoException("the platform built a key that is not X25519")
+        }
         return Ephemeral(kp.private, bigIntToLe32(pub.u))
     }
 
