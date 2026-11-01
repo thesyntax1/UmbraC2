@@ -1,0 +1,68 @@
+src/bof.rs:237:9: [1m[33mwarning[0m: unused import: `std::ffi::c_void`
+src/dns.rs:22:15: [1m[33mwarning[0m: unused imports: `Read` and `Write`
+src/netinfo.rs:8:5: [1m[33mwarning[0m: unused import: `std::fs`
+src/persist.rs:1772:14: [1m[33mwarning[0m: type `SC_HANDLE` should have an upper camel case name: help: convert the identifier to upper camel case: `ScHandle`
+src/post.rs:268:32: [1m[33mwarning[0m: unused imports: `c_int`, `c_long`, and `c_ulong`
+src/post.rs:359:5: [1m[33mwarning[0m: unused doc comment
+src/proc.rs:13:5: [1m[33mwarning[0m: unused import: `std::fs`
+src/proc.rs:249:14: [1m[33mwarning[0m: type `SIZE_T` should have an upper camel case name: help: convert the identifier to upper camel case: `SizeT`
+src/vpn.rs:20:15: [1m[33mwarning[0m: unused imports: `Read` and `Write`
+src/evade.rs:1908:5: [1m[33mwarning[0m: unreachable expression: unreachable expression
+src/beacon.rs:716:25: [1m[33mwarning[0m: value assigned to `batch` is never read: this value is reassigned later and never used
+src/beacon.rs:1179:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/evade.rs:646:9: [1m[33mwarning[0m: variable does not need to be mutable
+src/mail.rs:194:20: [1m[33mwarning[0m: value assigned to `last` is never read: this value is reassigned later and never used
+src/migrate.rs:295:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/persist.rs:1188:17: [1m[33mwarning[0m: variable does not need to be mutable
+src/profile.rs:681:9: [1m[33mwarning[0m: unused variable: `home`: help: if this is intentional, prefix it with an underscore: `_home`
+src/profile.rs:859:21: [1m[33mwarning[0m: value assigned to `query` is never read: this value is reassigned later and never used
+src/forensics.rs:406:23: [1m[33mwarning[0m: value assigned to `present` is never read: this value is reassigned later and never used
+src/transport.rs:272:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/shellcode.rs:132:13: [1m[33mwarning[0m: unused variable: `context`: help: if this is intentional, prefix it with an underscore: `_context`
+src/vpn.rs:367:9: [1m[33mwarning[0m: variable does not need to be mutable
+src/bof.rs:46:7: [1m[33mwarning[0m: constant `IMAGE_SCN_CNT_CODE` is never used
+src/bof.rs:48:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_READ` is never used
+src/bof.rs:49:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_WRITE` is never used
+src/evade.rs:68:7: [1m[33mwarning[0m: constant `VENDORS` is never used
+src/evade.rs:1048:4: [1m[33mwarning[0m: function `utc_time` is never used
+src/proc.rs:247:14: [1m[33mwarning[0m: type alias `WORD` is never used
+src/proc.rs:249:14: [1m[33mwarning[0m: type alias `SIZE_T` is never used
+src/profile.rs:492:4: [1m[33mwarning[0m: function `hex_address` is never used
+src/senses.rs:61:4: [1m[33mwarning[0m: function `run_bytes` is never used
+src/senses.rs:1271:4: [1m[33mwarning[0m: function `looks_secret` is never used
+src/wasm.rs:78:5: [1m[33mwarning[0m: field `results` is never read
+src/proc.rs:254:13: [1m[33mwarning[0m: structure field `dwSize` should have a snake case name: help: convert the identifier to snake case: `dw_size`
+src/proc.rs:255:13: [1m[33mwarning[0m: structure field `cntUsage` should have a snake case name: help: convert the identifier to snake case: `cnt_usage`
+src/proc.rs:256:13: [1m[33mwarning[0m: structure field `th32ProcessID` should have a snake case name: help: convert the identifier to snake case: `th32_process_id`
+src/proc.rs:257:13: [1m[33mwarning[0m: structure field `th32DefaultHeapID` should have a snake case name: help: convert the identifier to snake case: `th32_default_heap_id`
+src/proc.rs:258:13: [1m[33mwarning[0m: structure field `th32ModuleID` should have a snake case name: help: convert the identifier to snake case: `th32_module_id`
+src/proc.rs:259:13: [1m[33mwarning[0m: structure field `cntThreads` should have a snake case name: help: convert the identifier to snake case: `cnt_threads`
+src/proc.rs:260:13: [1m[33mwarning[0m: structure field `th32ParentProcessID` should have a snake case name: help: convert the identifier to snake case: `th32_parent_process_id`
+src/proc.rs:261:13: [1m[33mwarning[0m: structure field `pcPriClassBase` should have a snake case name: help: convert the identifier to snake case: `pc_pri_class_base`
+src/proc.rs:262:13: [1m[33mwarning[0m: structure field `dwFlags` should have a snake case name: help: convert the identifier to snake case: `dw_flags`
+src/proc.rs:263:13: [1m[33mwarning[0m: structure field `szExeFile` should have a snake case name: help: convert the identifier to snake case: `sz_exe_file`
+src/desktop.rs:35:13: [1m[33mwarning[0m: structure field `biSize` should have a snake case name: help: convert the identifier to snake case: `bi_size`
+src/desktop.rs:36:13: [1m[33mwarning[0m: structure field `biWidth` should have a snake case name: help: convert the identifier to snake case: `bi_width`
+src/desktop.rs:37:13: [1m[33mwarning[0m: structure field `biHeight` should have a snake case name: help: convert the identifier to snake case: `bi_height`
+src/desktop.rs:38:13: [1m[33mwarning[0m: structure field `biPlanes` should have a snake case name: help: convert the identifier to snake case: `bi_planes`
+src/desktop.rs:39:13: [1m[33mwarning[0m: structure field `biBitCount` should have a snake case name: help: convert the identifier to snake case: `bi_bit_count`
+src/desktop.rs:40:13: [1m[33mwarning[0m: structure field `biCompression` should have a snake case name: help: convert the identifier to snake case: `bi_compression`
+src/desktop.rs:41:13: [1m[33mwarning[0m: structure field `biSizeImage` should have a snake case name: help: convert the identifier to snake case: `bi_size_image`
+src/desktop.rs:42:13: [1m[33mwarning[0m: structure field `biXPelsPerMeter` should have a snake case name: help: convert the identifier to snake case: `bi_xpels_per_meter`
+src/desktop.rs:43:13: [1m[33mwarning[0m: structure field `biYPelsPerMeter` should have a snake case name: help: convert the identifier to snake case: `bi_ypels_per_meter`
+src/desktop.rs:44:13: [1m[33mwarning[0m: structure field `biClrUsed` should have a snake case name: help: convert the identifier to snake case: `bi_clr_used`
+src/desktop.rs:45:13: [1m[33mwarning[0m: structure field `biClrImportant` should have a snake case name: help: convert the identifier to snake case: `bi_clr_important`
+src/desktop.rs:50:13: [1m[33mwarning[0m: structure field `bmiHeader` should have a snake case name: help: convert the identifier to snake case: `bmi_header`
+src/desktop.rs:51:13: [1m[33mwarning[0m: structure field `bmiColors` should have a snake case name: help: convert the identifier to snake case: `bmi_colors`
+src/post.rs:404:9: [1m[33mwarning[0m: `ReadProcessMemory` redeclared with a different signature: this signature doesn't match the previous declaration
+src/post.rs:461:9: [1m[33mwarning[0m: `GetTokenInformation` redeclared with a different signature: this signature doesn't match the previous declaration
+src/wasm.rs:1279:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1325:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1359:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1369:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1405:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1408:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1441:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1499:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1509:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/main.rs:236:17: [1m[33mwarning[0m: variable does not need to be mutable

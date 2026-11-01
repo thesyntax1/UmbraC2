@@ -1,0 +1,660 @@
+rustc:  rustc 1.99.1 (58cf8f9c3 2026-10-13)
+target: x86_64-pc-windows-gnu
+linker: x86_64-w64-mingw32-gcc (GCC) 13-win32
+ld:     GNU ld (GNU Binutils) 2.45.90.20260125
+head:   af4dc3bac9fa69d6e6adc049269391e69ddf3c14
+
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m block-buffer v0.10.4
+[1m[92m  Downloaded[0m cfg-if v1.0.5
+[1m[92m  Downloaded[0m aead v0.5.2
+[1m[92m  Downloaded[0m aes v0.8.4
+[1m[92m  Downloaded[0m opaque-debug v0.3.1
+[1m[92m  Downloaded[0m rand_chacha v0.3.1
+[1m[92m  Downloaded[0m subtle v2.6.1
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m zeroize_derive v1.5.0
+[1m[92m  Downloaded[0m version_check v0.9.5
+[1m[92m  Downloaded[0m universal-hash v0.5.1
+[1m[92m  Downloaded[0m crypto-common v0.1.7
+[1m[92m  Downloaded[0m curve25519-dalek-derive v0.1.1
+[1m[92m  Downloaded[0m rustc_version v0.4.1
+[1m[92m  Downloaded[0m generic-array v0.14.7
+[1m[92m  Downloaded[0m ghash v0.5.1
+[1m[92m  Downloaded[0m inout v0.1.4
+[1m[92m  Downloaded[0m cpufeatures v0.2.17
+[1m[92m  Downloaded[0m polyval v0.6.2
+[1m[92m  Downloaded[0m cipher v0.4.4
+[1m[92m  Downloaded[0m ppv-lite86 v0.2.21
+[1m[92m  Downloaded[0m digest v0.10.7
+[1m[92m  Downloaded[0m rand_core v0.6.4
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m sha2 v0.10.9
+[1m[92m  Downloaded[0m zeroize v1.9.1
+[1m[92m  Downloaded[0m semver v1.0.28
+[1m[92m  Downloaded[0m ctr v0.9.2
+[1m[92m  Downloaded[0m getrandom v0.2.17
+[1m[92m  Downloaded[0m quote v1.0.47
+[1m[92m  Downloaded[0m proc-macro2 v1.0.107
+[1m[92m  Downloaded[0m hmac v0.12.1
+[1m[92m  Downloaded[0m unicode-ident v1.0.27
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m serde_derive v1.0.229
+[1m[92m  Downloaded[0m aes-gcm v0.10.3
+[1m[92m  Downloaded[0m x25519-dalek v2.0.1
+[1m[92m  Downloaded[0m serde v1.0.229
+[1m[92m  Downloaded[0m typenum v1.20.1
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m rand v0.8.8
+[1m[92m  Downloaded[0m serde_json v1.0.154
+[1m[92m  Downloaded[0m hkdf v0.12.4
+[1m[92m  Downloaded[0m syn v2.0.119
+[1m[92m  Downloaded[0m syn v3.0.9
+[1m[92m  Downloaded[0m curve25519-dalek v4.1.3
+[1m[92m  Downloaded[0m zerocopy v0.8.63
+[1m[92m  Downloaded[0m libc v0.2.191
+[1m[92m    Checking[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m version_check v0.9.5
+[1m[92m    Checking[0m typenum v1.20.1
+[1m[92m    Checking[0m subtle v2.6.1
+[1m[92m    Checking[0m getrandom v0.2.17
+[1m[92m   Compiling[0m proc-macro2 v1.0.107
+[1m[92m    Checking[0m rand_core v0.6.4
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m   Compiling[0m unicode-ident v1.0.27
+[1m[92m    Checking[0m cpufeatures v0.2.17
+[1m[92m   Compiling[0m semver v1.0.28
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m   Compiling[0m zerocopy v0.8.63
+[1m[92m   Compiling[0m rustc_version v0.4.1
+[1m[92m   Compiling[0m curve25519-dalek v4.1.3
+[1m[92m    Checking[0m crypto-common v0.1.7
+[1m[92m    Checking[0m inout v0.1.4
+[1m[92m    Checking[0m block-buffer v0.10.4
+[1m[92m    Checking[0m cipher v0.4.4
+[1m[92m    Checking[0m digest v0.10.7
+[1m[92m    Checking[0m universal-hash v0.5.1
+[1m[92m    Checking[0m opaque-debug v0.3.1
+[1m[92m    Checking[0m polyval v0.6.2
+[1m[92m   Compiling[0m syn v2.0.119
+[1m[92m    Checking[0m ghash v0.5.1
+[1m[92m    Checking[0m hmac v0.12.1
+[1m[92m    Checking[0m ctr v0.9.2
+[1m[92m    Checking[0m aes v0.8.4
+[1m[92m    Checking[0m aead v0.5.2
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m    Checking[0m aes-gcm v0.10.3
+[1m[92m    Checking[0m hkdf v0.12.4
+[1m[92m    Checking[0m sha2 v0.10.9
+[1m[92m   Compiling[0m serde_json v1.0.154
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m    Checking[0m ppv-lite86 v0.2.21
+[1m[92m    Checking[0m rand_chacha v0.3.1
+[1m[92m    Checking[0m rand v0.8.8
+[1m[92m   Compiling[0m zeroize_derive v1.5.0
+[1m[92m   Compiling[0m curve25519-dalek-derive v0.1.1
+[1m[92m    Checking[0m zeroize v1.9.1
+[1m[92m    Checking[0m x25519-dalek v2.0.1
+[1m[92m    Checking[0m umbra-beacon v0.1.0 (/home/runner/work/UmbraC2/UmbraC2/implant/rust)
+src/bof.rs:237:9: [1m[33mwarning[0m: unused import: `std::ffi::c_void`
+src/dns.rs:22:15: [1m[33mwarning[0m: unused imports: `Read` and `Write`
+src/netinfo.rs:8:5: [1m[33mwarning[0m: unused import: `std::fs`
+src/persist.rs:1772:14: [1m[33mwarning[0m: type `SC_HANDLE` should have an upper camel case name: help: convert the identifier to upper camel case: `ScHandle`
+src/post.rs:268:32: [1m[33mwarning[0m: unused imports: `c_int`, `c_long`, and `c_ulong`
+src/post.rs:359:5: [1m[33mwarning[0m: unused doc comment
+src/proc.rs:13:5: [1m[33mwarning[0m: unused import: `std::fs`
+src/proc.rs:249:14: [1m[33mwarning[0m: type `SIZE_T` should have an upper camel case name: help: convert the identifier to upper camel case: `SizeT`
+src/vpn.rs:20:15: [1m[33mwarning[0m: unused imports: `Read` and `Write`
+src/evade.rs:1908:5: [1m[33mwarning[0m: unreachable expression: unreachable expression
+src/beacon.rs:716:25: [1m[33mwarning[0m: value assigned to `batch` is never read: this value is reassigned later and never used
+src/beacon.rs:1179:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/evade.rs:646:9: [1m[33mwarning[0m: variable does not need to be mutable
+src/mail.rs:194:20: [1m[33mwarning[0m: value assigned to `last` is never read: this value is reassigned later and never used
+src/migrate.rs:295:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/persist.rs:1188:17: [1m[33mwarning[0m: variable does not need to be mutable
+src/profile.rs:681:9: [1m[33mwarning[0m: unused variable: `home`: help: if this is intentional, prefix it with an underscore: `_home`
+src/profile.rs:859:21: [1m[33mwarning[0m: value assigned to `query` is never read: this value is reassigned later and never used
+src/forensics.rs:406:23: [1m[33mwarning[0m: value assigned to `present` is never read: this value is reassigned later and never used
+src/transport.rs:272:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/shellcode.rs:132:13: [1m[33mwarning[0m: unused variable: `context`: help: if this is intentional, prefix it with an underscore: `_context`
+src/vpn.rs:367:9: [1m[33mwarning[0m: variable does not need to be mutable
+src/bof.rs:46:7: [1m[33mwarning[0m: constant `IMAGE_SCN_CNT_CODE` is never used
+src/bof.rs:48:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_READ` is never used
+src/bof.rs:49:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_WRITE` is never used
+src/evade.rs:68:7: [1m[33mwarning[0m: constant `VENDORS` is never used
+src/evade.rs:1048:4: [1m[33mwarning[0m: function `utc_time` is never used
+src/proc.rs:247:14: [1m[33mwarning[0m: type alias `WORD` is never used
+src/proc.rs:249:14: [1m[33mwarning[0m: type alias `SIZE_T` is never used
+src/profile.rs:492:4: [1m[33mwarning[0m: function `hex_address` is never used
+src/senses.rs:61:4: [1m[33mwarning[0m: function `run_bytes` is never used
+src/senses.rs:1271:4: [1m[33mwarning[0m: function `looks_secret` is never used
+src/wasm.rs:78:5: [1m[33mwarning[0m: field `results` is never read
+src/proc.rs:254:13: [1m[33mwarning[0m: structure field `dwSize` should have a snake case name: help: convert the identifier to snake case: `dw_size`
+src/proc.rs:255:13: [1m[33mwarning[0m: structure field `cntUsage` should have a snake case name: help: convert the identifier to snake case: `cnt_usage`
+src/proc.rs:256:13: [1m[33mwarning[0m: structure field `th32ProcessID` should have a snake case name: help: convert the identifier to snake case: `th32_process_id`
+src/proc.rs:257:13: [1m[33mwarning[0m: structure field `th32DefaultHeapID` should have a snake case name: help: convert the identifier to snake case: `th32_default_heap_id`
+src/proc.rs:258:13: [1m[33mwarning[0m: structure field `th32ModuleID` should have a snake case name: help: convert the identifier to snake case: `th32_module_id`
+src/proc.rs:259:13: [1m[33mwarning[0m: structure field `cntThreads` should have a snake case name: help: convert the identifier to snake case: `cnt_threads`
+src/proc.rs:260:13: [1m[33mwarning[0m: structure field `th32ParentProcessID` should have a snake case name: help: convert the identifier to snake case: `th32_parent_process_id`
+src/proc.rs:261:13: [1m[33mwarning[0m: structure field `pcPriClassBase` should have a snake case name: help: convert the identifier to snake case: `pc_pri_class_base`
+src/proc.rs:262:13: [1m[33mwarning[0m: structure field `dwFlags` should have a snake case name: help: convert the identifier to snake case: `dw_flags`
+src/proc.rs:263:13: [1m[33mwarning[0m: structure field `szExeFile` should have a snake case name: help: convert the identifier to snake case: `sz_exe_file`
+src/desktop.rs:35:13: [1m[33mwarning[0m: structure field `biSize` should have a snake case name: help: convert the identifier to snake case: `bi_size`
+src/desktop.rs:36:13: [1m[33mwarning[0m: structure field `biWidth` should have a snake case name: help: convert the identifier to snake case: `bi_width`
+src/desktop.rs:37:13: [1m[33mwarning[0m: structure field `biHeight` should have a snake case name: help: convert the identifier to snake case: `bi_height`
+src/desktop.rs:38:13: [1m[33mwarning[0m: structure field `biPlanes` should have a snake case name: help: convert the identifier to snake case: `bi_planes`
+src/desktop.rs:39:13: [1m[33mwarning[0m: structure field `biBitCount` should have a snake case name: help: convert the identifier to snake case: `bi_bit_count`
+src/desktop.rs:40:13: [1m[33mwarning[0m: structure field `biCompression` should have a snake case name: help: convert the identifier to snake case: `bi_compression`
+src/desktop.rs:41:13: [1m[33mwarning[0m: structure field `biSizeImage` should have a snake case name: help: convert the identifier to snake case: `bi_size_image`
+src/desktop.rs:42:13: [1m[33mwarning[0m: structure field `biXPelsPerMeter` should have a snake case name: help: convert the identifier to snake case: `bi_xpels_per_meter`
+src/desktop.rs:43:13: [1m[33mwarning[0m: structure field `biYPelsPerMeter` should have a snake case name: help: convert the identifier to snake case: `bi_ypels_per_meter`
+src/desktop.rs:44:13: [1m[33mwarning[0m: structure field `biClrUsed` should have a snake case name: help: convert the identifier to snake case: `bi_clr_used`
+src/desktop.rs:45:13: [1m[33mwarning[0m: structure field `biClrImportant` should have a snake case name: help: convert the identifier to snake case: `bi_clr_important`
+src/desktop.rs:50:13: [1m[33mwarning[0m: structure field `bmiHeader` should have a snake case name: help: convert the identifier to snake case: `bmi_header`
+src/desktop.rs:51:13: [1m[33mwarning[0m: structure field `bmiColors` should have a snake case name: help: convert the identifier to snake case: `bmi_colors`
+src/post.rs:404:9: [1m[33mwarning[0m: `ReadProcessMemory` redeclared with a different signature: this signature doesn't match the previous declaration
+src/post.rs:461:9: [1m[33mwarning[0m: `GetTokenInformation` redeclared with a different signature: this signature doesn't match the previous declaration
+src/wasm.rs:1279:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1325:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1359:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1369:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1405:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1408:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1441:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1499:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1509:13: [1m[33mwarning[0m: variable does not need to be mutable
+[1m[33mwarning[0m: `umbra-beacon` (lib) generated 56 warnings (3 duplicates) (run `cargo fix --lib -p umbra-beacon` to apply 10 suggestions)
+src/main.rs:236:17: [1m[33mwarning[0m: variable does not need to be mutable
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon" test) generated 1 warning (1 duplicate)
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon") generated 1 warning (run `cargo fix --bin "umbra-beacon" -p umbra-beacon` to apply 1 suggestion)
+[1m[33mwarning[0m: `umbra-beacon` (lib test) generated 67 warnings (53 duplicates) (run `cargo fix --lib -p umbra-beacon --tests` to apply 13 suggestions)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 13.12s
+
+=== one error per line ===
+
+=== cargo build ===
+[1m[92m   Compiling[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m typenum v1.20.1
+[1m[92m   Compiling[0m subtle v2.6.1
+[1m[92m   Compiling[0m cpufeatures v0.2.17
+[1m[92m   Compiling[0m getrandom v0.2.17
+[1m[92m   Compiling[0m zerocopy v0.8.63
+[1m[92m   Compiling[0m opaque-debug v0.3.1
+[1m[92m   Compiling[0m zeroize v1.9.1
+[1m[92m   Compiling[0m rand_core v0.6.4
+[1m[92m   Compiling[0m curve25519-dalek v4.1.3
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m   Compiling[0m x25519-dalek v2.0.1
+[1m[92m   Compiling[0m crypto-common v0.1.7
+[1m[92m   Compiling[0m inout v0.1.4
+[1m[92m   Compiling[0m block-buffer v0.10.4
+[1m[92m   Compiling[0m cipher v0.4.4
+[1m[92m   Compiling[0m digest v0.10.7
+[1m[92m   Compiling[0m universal-hash v0.5.1
+[1m[92m   Compiling[0m ctr v0.9.2
+[1m[92m   Compiling[0m polyval v0.6.2
+[1m[92m   Compiling[0m hmac v0.12.1
+[1m[92m   Compiling[0m aes v0.8.4
+[1m[92m   Compiling[0m aead v0.5.2
+[1m[92m   Compiling[0m ghash v0.5.1
+[1m[92m   Compiling[0m hkdf v0.12.4
+[1m[92m   Compiling[0m sha2 v0.10.9
+[1m[92m   Compiling[0m aes-gcm v0.10.3
+[1m[92m   Compiling[0m ppv-lite86 v0.2.21
+[1m[92m   Compiling[0m rand_chacha v0.3.1
+[1m[92m   Compiling[0m rand v0.8.8
+[1m[92m   Compiling[0m umbra-beacon v0.1.0 (/home/runner/work/UmbraC2/UmbraC2/implant/rust)
+[1m[33mwarning[0m[1m: unused import: `std::ffi::c_void`[0m
+   [1m[94m--> [0msrc/bof.rs:237:9
+    [1m[94m|[0m
+[1m[94m237[0m [1m[94m|[0m     use std::ffi::c_void;
+    [1m[94m|[0m         [1m[33m^^^^^^^^^^^^^^^^[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: unused imports: `Read` and `Write`[0m
+  [1m[94m--> [0msrc/dns.rs:22:15
+   [1m[94m|[0m
+[1m[94m22[0m [1m[94m|[0m use std::io::{Read, Write};
+   [1m[94m|[0m               [1m[33m^^^^[0m  [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: unused import: `std::fs`[0m
+ [1m[94m--> [0msrc/netinfo.rs:8:5
+  [1m[94m|[0m
+[1m[94m8[0m [1m[94m|[0m use std::fs;
+  [1m[94m|[0m     [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: type `SC_HANDLE` should have an upper camel case name[0m
+    [1m[94m--> [0msrc/persist.rs:1772:14
+     [1m[94m|[0m
+[1m[94m1772[0m [1m[94m|[0m     pub type SC_HANDLE = *mut c_void;
+     [1m[94m|[0m              [1m[33m^^^^^^^^^[0m [1m[33mhelp: convert the identifier to upper camel case: `ScHandle`[0m
+     [1m[94m|[0m
+     [1m[94m= [0m[1mnote[0m: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+[1m[33mwarning[0m[1m: unused imports: `c_int`, `c_long`, and `c_ulong`[0m
+   [1m[94m--> [0msrc/post.rs:268:32
+    [1m[94m|[0m
+[1m[94m268[0m [1m[94m|[0m     use std::os::raw::{c_char, c_int, c_long, c_ulong};
+    [1m[94m|[0m                                [1m[33m^^^^^[0m  [1m[33m^^^^^^[0m  [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: unused doc comment[0m
+   [1m[94m--> [0msrc/post.rs:359:5
+    [1m[94m|[0m
+[1m[94m359[0m [1m[94m|[0m [1m[33m/[0m     /// DPAPI.  Crypt32 is not one of the libraries the mingw linker pulls
+[1m[94m360[0m [1m[94m|[0m [1m[33m|[0m     /// in by default, so the block names it: without the attribute the
+[1m[94m361[0m [1m[94m|[0m [1m[33m|[0m     /// symbol is undefined at link time, not at compile time.
+    [1m[94m|[0m [1m[33m|______________________________________________________________^[0m
+[1m[94m362[0m [1m[94m|[0m       #[link(name = "crypt32")]
+[1m[94m363[0m [1m[94m|[0m [1m[94m/[0m     extern "system" {
+[1m[94m364[0m [1m[94m|[0m [1m[94m|[0m         pub fn CryptUnprotectData(
+[1m[94m365[0m [1m[94m|[0m [1m[94m|[0m             data_in: *mut DataBlob,
+[1m[94m366[0m [1m[94m|[0m [1m[94m|[0m             entropy: *mut DataBlob,
+[1m[94m...[0m   [1m[94m|[0m
+[1m[94m370[0m [1m[94m|[0m [1m[94m|[0m         ) -> i32;
+[1m[94m371[0m [1m[94m|[0m [1m[94m|[0m     }
+    [1m[94m|[0m [1m[94m|_____-[0m [1m[94mrustdoc does not generate documentation for extern blocks[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mhelp[0m: use `//` for a plain comment
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: unused import: `std::fs`[0m
+  [1m[94m--> [0msrc/proc.rs:13:5
+   [1m[94m|[0m
+[1m[94m13[0m [1m[94m|[0m use std::fs;
+   [1m[94m|[0m     [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: type `SIZE_T` should have an upper camel case name[0m
+   [1m[94m--> [0msrc/proc.rs:249:14
+    [1m[94m|[0m
+[1m[94m249[0m [1m[94m|[0m     pub type SIZE_T = usize;
+    [1m[94m|[0m              [1m[33m^^^^^^[0m [1m[33mhelp: convert the identifier to upper camel case: `SizeT`[0m
+
+[1m[33mwarning[0m[1m: unused imports: `Read` and `Write`[0m
+  [1m[94m--> [0msrc/vpn.rs:20:15
+   [1m[94m|[0m
+[1m[94m20[0m [1m[94m|[0m use std::io::{Read, Write};
+   [1m[94m|[0m               [1m[33m^^^^[0m  [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: unreachable expression[0m
+    [1m[94m--> [0msrc/evade.rs:1908:5
+     [1m[94m|[0m
+[1m[94m1906[0m [1m[94m|[0m         return millis as f64 / 3_600_000.0;
+     [1m[94m|[0m         [1m[94m----------------------------------[0m [1m[94many code following this expression is unreachable[0m
+[1m[94m1907[0m [1m[94m|[0m     }
+[1m[94m1908[0m [1m[94m|[0m     0.0
+     [1m[94m|[0m     [1m[33m^^^[0m [1m[33munreachable expression[0m
+     [1m[94m|[0m
+     [1m[94m= [0m[1mnote[0m: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: value assigned to `batch` is never read[0m
+   [1m[94m--> [0msrc/beacon.rs:716:25
+    [1m[94m|[0m
+[1m[94m716[0m [1m[94m|[0m         let mut batch = upk::map(vec![]);
+    [1m[94m|[0m                         [1m[33m^^^^^^^^^^^^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m749[0m [1m[94m|[0m                     batch = body;
+    [1m[94m|[0m                     [1m[94m-----[0m [1m[94m`batch` is overwritten here before the previous value is read[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/evade.rs:646:9
+    [1m[94m|[0m
+[1m[94m646[0m [1m[94m|[0m     let mut out = Vec::new();
+    [1m[94m|[0m         [1m[94m----[0m[1m[33m^^^[0m
+    [1m[94m|[0m         [1m[94m|[0m
+    [1m[94m|[0m         [1m[94mhelp: remove this `mut`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: value assigned to `last` is never read[0m
+   [1m[94m--> [0msrc/mail.rs:194:20
+    [1m[94m|[0m
+[1m[94m194[0m [1m[94m|[0m     let mut last = String::new();
+    [1m[94m|[0m                    [1m[33m^^^^^^^^^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m197[0m [1m[94m|[0m         last = line.clone();
+    [1m[94m|[0m         [1m[94m----[0m [1m[94m`last` is overwritten here before the previous value is read[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/migrate.rs:295:13
+    [1m[94m|[0m
+[1m[94m295[0m [1m[94m|[0m         let mut name = wide(program);
+    [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^[0m
+    [1m[94m|[0m             [1m[94m|[0m
+    [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/persist.rs:1188:17
+     [1m[94m|[0m
+[1m[94m1188[0m [1m[94m|[0m             let mut text = fs::read_to_string(&path).unwrap_or_default();
+     [1m[94m|[0m                 [1m[94m----[0m[1m[33m^^^^[0m
+     [1m[94m|[0m                 [1m[94m|[0m
+     [1m[94m|[0m                 [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: unused variable: `home`[0m
+   [1m[94m--> [0msrc/profile.rs:681:9
+    [1m[94m|[0m
+[1m[94m681[0m [1m[94m|[0m     let home = home();
+    [1m[94m|[0m         [1m[33m^^^^[0m [1m[33mhelp: if this is intentional, prefix it with an underscore: `_home`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: value assigned to `query` is never read[0m
+   [1m[94m--> [0msrc/profile.rs:859:21
+    [1m[94m|[0m
+[1m[94m859[0m [1m[94m|[0m     let mut query = String::new();
+    [1m[94m|[0m                     [1m[33m^^^^^^^^^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m865[0m [1m[94m|[0m             query = rest.trim().to_string();
+    [1m[94m|[0m             [1m[94m-----[0m [1m[94m`query` is overwritten here before the previous value is read[0m
+
+[1m[33mwarning[0m[1m: value assigned to `present` is never read[0m
+   [1m[94m--> [0msrc/forensics.rs:406:23
+    [1m[94m|[0m
+[1m[94m406[0m [1m[94m|[0m     let mut present = false;
+    [1m[94m|[0m                       [1m[33m^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m411[0m [1m[94m|[0m             present = true;
+    [1m[94m|[0m             [1m[94m--------------[0m [1m[94m`present` is overwritten here before the previous value is read[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/transport.rs:272:13
+    [1m[94m|[0m
+[1m[94m272[0m [1m[94m|[0m         let mut stream = TcpStream::connect_timeout(
+    [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^[0m
+    [1m[94m|[0m             [1m[94m|[0m
+    [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/vpn.rs:367:9
+    [1m[94m|[0m
+[1m[94m367[0m [1m[94m|[0m     let mut tunnel = join(server, psk, ident, Duration::from_secs(15))?;
+    [1m[94m|[0m         [1m[94m----[0m[1m[33m^^^^^^[0m
+    [1m[94m|[0m         [1m[94m|[0m
+    [1m[94m|[0m         [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_CNT_CODE` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:46:7
+   [1m[94m|[0m
+[1m[94m46[0m [1m[94m|[0m const IMAGE_SCN_CNT_CODE: u32 = 0x0000_0020;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_MEM_READ` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:48:7
+   [1m[94m|[0m
+[1m[94m48[0m [1m[94m|[0m const IMAGE_SCN_MEM_READ: u32 = 0x4000_0000;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_MEM_WRITE` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:49:7
+   [1m[94m|[0m
+[1m[94m49[0m [1m[94m|[0m const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `VENDORS` is never used[0m
+  [1m[94m--> [0msrc/evade.rs:68:7
+   [1m[94m|[0m
+[1m[94m68[0m [1m[94m|[0m const VENDORS: [&str; 8] = [
+   [1m[94m|[0m       [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `utc_time` is never used[0m
+    [1m[94m--> [0msrc/evade.rs:1048:4
+     [1m[94m|[0m
+[1m[94m1048[0m [1m[94m|[0m fn utc_time() -> LocalTime {
+     [1m[94m|[0m    [1m[33m^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: type alias `WORD` is never used[0m
+   [1m[94m--> [0msrc/proc.rs:247:14
+    [1m[94m|[0m
+[1m[94m247[0m [1m[94m|[0m     pub type WORD = u16;
+    [1m[94m|[0m              [1m[33m^^^^[0m
+
+[1m[33mwarning[0m[1m: type alias `SIZE_T` is never used[0m
+   [1m[94m--> [0msrc/proc.rs:249:14
+    [1m[94m|[0m
+[1m[94m249[0m [1m[94m|[0m     pub type SIZE_T = usize;
+    [1m[94m|[0m              [1m[33m^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `hex_address` is never used[0m
+   [1m[94m--> [0msrc/profile.rs:492:4
+    [1m[94m|[0m
+[1m[94m492[0m [1m[94m|[0m fn hex_address(value: &str) -> String {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `run_bytes` is never used[0m
+  [1m[94m--> [0msrc/senses.rs:61:4
+   [1m[94m|[0m
+[1m[94m61[0m [1m[94m|[0m fn run_bytes(cmd: &str, timeout_secs: u64) -> Option<Vec<u8>> {
+   [1m[94m|[0m    [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `looks_secret` is never used[0m
+    [1m[94m--> [0msrc/senses.rs:1271:4
+     [1m[94m|[0m
+[1m[94m1271[0m [1m[94m|[0m fn looks_secret(text: &str) -> bool {
+     [1m[94m|[0m    [1m[33m^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: field `results` is never read[0m
+  [1m[94m--> [0msrc/wasm.rs:78:5
+   [1m[94m|[0m
+[1m[94m76[0m [1m[94m|[0m struct FuncType {
+   [1m[94m|[0m        [1m[94m--------[0m [1m[94mfield in this struct[0m
+[1m[94m77[0m [1m[94m|[0m     params: Vec<u8>,
+[1m[94m78[0m [1m[94m|[0m     results: Vec<u8>,
+   [1m[94m|[0m     [1m[33m^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `FuncType` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+[1m[33mwarning[0m[1m: structure field `dwSize` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:254:13
+    [1m[94m|[0m
+[1m[94m254[0m [1m[94m|[0m         pub dwSize: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `dw_size`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+[1m[33mwarning[0m[1m: structure field `cntUsage` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:255:13
+    [1m[94m|[0m
+[1m[94m255[0m [1m[94m|[0m         pub cntUsage: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `cnt_usage`[0m
+
+[1m[33mwarning[0m[1m: structure field `th32ProcessID` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:256:13
+    [1m[94m|[0m
+[1m[94m256[0m [1m[94m|[0m         pub th32ProcessID: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `th32_process_id`[0m
+
+[1m[33mwarning[0m[1m: structure field `th32DefaultHeapID` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:257:13
+    [1m[94m|[0m
+[1m[94m257[0m [1m[94m|[0m         pub th32DefaultHeapID: usize,
+    [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `th32_default_heap_id`[0m
+
+[1m[33mwarning[0m[1m: structure field `th32ModuleID` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:258:13
+    [1m[94m|[0m
+[1m[94m258[0m [1m[94m|[0m         pub th32ModuleID: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `th32_module_id`[0m
+
+[1m[33mwarning[0m[1m: structure field `cntThreads` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:259:13
+    [1m[94m|[0m
+[1m[94m259[0m [1m[94m|[0m         pub cntThreads: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `cnt_threads`[0m
+
+[1m[33mwarning[0m[1m: structure field `th32ParentProcessID` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:260:13
+    [1m[94m|[0m
+[1m[94m260[0m [1m[94m|[0m         pub th32ParentProcessID: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `th32_parent_process_id`[0m
+
+[1m[33mwarning[0m[1m: structure field `pcPriClassBase` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:261:13
+    [1m[94m|[0m
+[1m[94m261[0m [1m[94m|[0m         pub pcPriClassBase: LONG,
+    [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `pc_pri_class_base`[0m
+
+[1m[33mwarning[0m[1m: structure field `dwFlags` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:262:13
+    [1m[94m|[0m
+[1m[94m262[0m [1m[94m|[0m         pub dwFlags: DWORD,
+    [1m[94m|[0m             [1m[33m^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `dw_flags`[0m
+
+[1m[33mwarning[0m[1m: structure field `szExeFile` should have a snake case name[0m
+   [1m[94m--> [0msrc/proc.rs:263:13
+    [1m[94m|[0m
+[1m[94m263[0m [1m[94m|[0m         pub szExeFile: [u16; 260],
+    [1m[94m|[0m             [1m[33m^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `sz_exe_file`[0m
+
+[1m[33mwarning[0m[1m: structure field `biSize` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:35:13
+   [1m[94m|[0m
+[1m[94m35[0m [1m[94m|[0m         pub biSize: DWORD,
+   [1m[94m|[0m             [1m[33m^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_size`[0m
+
+[1m[33mwarning[0m[1m: structure field `biWidth` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:36:13
+   [1m[94m|[0m
+[1m[94m36[0m [1m[94m|[0m         pub biWidth: LONG,
+   [1m[94m|[0m             [1m[33m^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_width`[0m
+
+[1m[33mwarning[0m[1m: structure field `biHeight` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:37:13
+   [1m[94m|[0m
+[1m[94m37[0m [1m[94m|[0m         pub biHeight: LONG,
+   [1m[94m|[0m             [1m[33m^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_height`[0m
+
+[1m[33mwarning[0m[1m: structure field `biPlanes` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:38:13
+   [1m[94m|[0m
+[1m[94m38[0m [1m[94m|[0m         pub biPlanes: WORD,
+   [1m[94m|[0m             [1m[33m^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_planes`[0m
+
+[1m[33mwarning[0m[1m: structure field `biBitCount` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:39:13
+   [1m[94m|[0m
+[1m[94m39[0m [1m[94m|[0m         pub biBitCount: WORD,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_bit_count`[0m
+
+[1m[33mwarning[0m[1m: structure field `biCompression` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:40:13
+   [1m[94m|[0m
+[1m[94m40[0m [1m[94m|[0m         pub biCompression: DWORD,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_compression`[0m
+
+[1m[33mwarning[0m[1m: structure field `biSizeImage` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:41:13
+   [1m[94m|[0m
+[1m[94m41[0m [1m[94m|[0m         pub biSizeImage: DWORD,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_size_image`[0m
+
+[1m[33mwarning[0m[1m: structure field `biXPelsPerMeter` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:42:13
+   [1m[94m|[0m
+[1m[94m42[0m [1m[94m|[0m         pub biXPelsPerMeter: LONG,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_xpels_per_meter`[0m
+
+[1m[33mwarning[0m[1m: structure field `biYPelsPerMeter` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:43:13
+   [1m[94m|[0m
+[1m[94m43[0m [1m[94m|[0m         pub biYPelsPerMeter: LONG,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_ypels_per_meter`[0m
+
+[1m[33mwarning[0m[1m: structure field `biClrUsed` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:44:13
+   [1m[94m|[0m
+[1m[94m44[0m [1m[94m|[0m         pub biClrUsed: DWORD,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_clr_used`[0m
+
+[1m[33mwarning[0m[1m: structure field `biClrImportant` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:45:13
+   [1m[94m|[0m
+[1m[94m45[0m [1m[94m|[0m         pub biClrImportant: DWORD,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bi_clr_important`[0m
+
+[1m[33mwarning[0m[1m: structure field `bmiHeader` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:50:13
+   [1m[94m|[0m
+[1m[94m50[0m [1m[94m|[0m         pub bmiHeader: BITMAPINFOHEADER,
+   [1m[94m|[0m             [1m[33m^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bmi_header`[0m
+
+[1m[33mwarning[0m[1m: structure field `bmiColors` should have a snake case name[0m
+  [1m[94m--> [0msrc/desktop.rs:51:13
+   [1m[94m|[0m
+[1m[94m51[0m [1m[94m|[0m         pub bmiColors: [u32; 3],
+   [1m[94m|[0m             [1m[33m^^^^^^^^^[0m [1m[33mhelp: convert the identifier to snake case: `bmi_colors`[0m
+
+[1m[33mwarning[0m[1m: `ReadProcessMemory` redeclared with a different signature[0m
+   [1m[94m--> [0msrc/post.rs:404:9
+    [1m[94m|[0m
+[1m[94m404[0m [1m[94m|[0m [1m[33m/[0m         pub fn ReadProcessMemory(
+[1m[94m405[0m [1m[94m|[0m [1m[33m|[0m             process: *mut c_void,
+[1m[94m406[0m [1m[94m|[0m [1m[33m|[0m             address: *mut c_void,
+[1m[94m407[0m [1m[94m|[0m [1m[33m|[0m             buffer: *mut c_void,
+[1m[94m408[0m [1m[94m|[0m [1m[33m|[0m             size: usize,
+[1m[94m409[0m [1m[94m|[0m [1m[33m|[0m             read: *mut usize,
+[1m[94m410[0m [1m[94m|[0m [1m[33m|[0m         ) -> i32;
+    [1m[94m|[0m [1m[33m|_________________^[0m [1m[33mthis signature doesn't match the previous declaration[0m
+    [1m[94m|[0m
+   [1m[94m::: [0msrc/hygiene.rs:176:9
+    [1m[94m|[0m
+[1m[94m176[0m [1m[94m|[0m [1m[94m/[0m         fn ReadProcessMemory(
+[1m[94m177[0m [1m[94m|[0m [1m[94m|[0m             process: *mut c_void,
+[1m[94m178[0m [1m[94m|[0m [1m[94m|[0m             address: *const c_void,
+[1m[94m179[0m [1m[94m|[0m [1m[94m|[0m             buffer: *mut c_void,
+[1m[94m180[0m [1m[94m|[0m [1m[94m|[0m             size: usize,
+[1m[94m181[0m [1m[94m|[0m [1m[94m|[0m             read: *mut usize,
+[1m[94m182[0m [1m[94m|[0m [1m[94m|[0m         ) -> i32;
+    [1m[94m|[0m [1m[94m|_________________-[0m [1m[94m`ReadProcessMemory` previously declared here[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: expected `unsafe extern "system" fn(*mut c_void, *const c_void, *mut c_void, usize, *mut usize) -> i32`
+               found `[1m[35munsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, usize, *mut usize) -> i32[0m`
+    [1m[94m= [0m[1mnote[0m: `#[warn(clashing_extern_declarations)]` on by default
+
+[1m[33mwarning[0m[1m: `GetTokenInformation` redeclared with a different signature[0m
+    [1m[94m--> [0msrc/post.rs:461:9
+     [1m[94m|[0m
+[1m[94m 461[0m [1m[94m|[0m [1m[33m/[0m         pub fn GetTokenInformation(
+[1m[94m 462[0m [1m[94m|[0m [1m[33m|[0m             token: *mut c_void,
+[1m[94m 463[0m [1m[94m|[0m [1m[33m|[0m             class: u32,
+[1m[94m 464[0m [1m[94m|[0m [1m[33m|[0m             info: *mut c_void,
+[1m[94m 465[0m [1m[94m|[0m [1m[33m|[0m             length: u32,
+[1m[94m 466[0m [1m[94m|[0m [1m[33m|[0m             returned: *mut u32,
+[1m[94m 467[0m [1m[94m|[0m [1m[33m|[0m         ) -> i32;
+     [1m[94m|[0m [1m[33m|_________________^[0m [1m[33mthis signature doesn't match the previous declaration[0m
+     [1m[94m|[0m
+    [1m[94m::: [0msrc/persist.rs:1803:9
+     [1m[94m|[0m
+[1m[94m1803[0m [1m[94m|[0m [1m[94m/[0m         pub fn GetTokenInformation(
+[1m[94m1804[0m [1m[94m|[0m [1m[94m|[0m             token: HANDLE,
+[1m[94m1805[0m [1m[94m|[0m [1m[94m|[0m             class: i32,
+[1m[94m1806[0m [1m[94m|[0m [1m[94m|[0m             information: *mut u8,
+[1m[94m1807[0m [1m[94m|[0m [1m[94m|[0m             length: DWORD,
+[1m[94m1808[0m [1m[94m|[0m [1m[94m|[0m             returned: *mut DWORD,
+[1m[94m1809[0m [1m[94m|[0m [1m[94m|[0m         ) -> BOOL;
+     [1m[94m|[0m [1m[94m|__________________-[0m [1m[94m`GetTokenInformation` previously declared here[0m
+     [1m[94m|[0m
+     [1m[94m= [0m[1mnote[0m: expected `unsafe extern "system" fn(*mut c_void, i32, *mut u8, u32, *mut u32) -> i32`
+                found `[1m[35munsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32, *mut u32) -> i32[0m`
+
+[1m[33mwarning[0m: `umbra-beacon` (lib) generated 56 warnings (run `cargo fix --lib -p umbra-beacon` to apply 12 suggestions)
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/main.rs:236:17
+    [1m[94m|[0m
+[1m[94m236[0m [1m[94m|[0m             let mut next = |i: &mut usize| -> Result<String, String> {
+    [1m[94m|[0m                 [1m[94m----[0m[1m[33m^^^^[0m
+    [1m[94m|[0m                 [1m[94m|[0m
+    [1m[94m|[0m                 [1m[94mhelp: remove this `mut`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon") generated 1 warning (run `cargo fix --bin "umbra-beacon" -p umbra-beacon` to apply 1 suggestion)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 7.90s
+target/x86_64-pc-windows-gnu/debug/umbra-beacon.exe: PE32+ executable for MS Windows 5.02 (console), x86-64, 20 sections
