@@ -11,11 +11,25 @@ import android.os.Build
 object SysInfo {
     private var nativeReady = false
 
+    /**
+     * Why the native library is not loaded, in the platform's own words.
+     *
+     * The first eleven emulator runs could not answer this: the failure was
+     * swallowed into `nativeReady = false`, the beacon carried on with the
+     * Java fallbacks, and the report could only say that no mapping existed.
+     * A load that fails is a fact about the build and the device, and it is
+     * written down now instead of being turned into a quiet default.
+     */
+    @Volatile var nativeError: String = ""
+        private set
+
     init {
         nativeReady = try {
             System.loadLibrary("umbra")
             true
         } catch (t: Throwable) {
+            nativeError = "${t.javaClass.simpleName}: ${t.message}"
+            android.util.Log.e("umbra", "the native library did not load: $nativeError", t)
             false
         }
     }

@@ -306,6 +306,11 @@ class Beacon(
     private fun uptimeSeconds(): Long = (System.currentTimeMillis() - startedAt) / 1000
 
     private fun meta(): Upk.MapV {
+        // The platform's own reason travels with the beacon's state, because a
+        // silent fallback is the one thing this project does not report.
+        if (!SysInfo.nativeReady) {
+            log("native library not loaded: ${SysInfo.nativeError.ifEmpty { "no error was recorded" }}")
+        }
         val meta = SysInfo.meta(config.version)
         val address = peerAddress
         if (address.isNotEmpty()) {
