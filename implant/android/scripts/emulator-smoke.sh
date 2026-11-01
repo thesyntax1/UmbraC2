@@ -212,6 +212,33 @@ command -v adb >/dev/null 2>&1 || { echo "no adb on PATH" >&2; exit 2; }
 # the first version of this line made every adb call fail with ENOENT.
 adb() { timeout 120 "$(command -v adb)" "$@"; }
 
+# start_service: get BeaconService running, by the button if the button can be
+# tapped and by the shell if it cannot.  Echoes the way it was started.  Every
+# fallback start is appended to the raw evidence, so a report that says the
+# service was started by the shell says it for every start that happened.
+start_service() {
+    if tap_text "Start beacon"; then
+        printf 'the consent screen button'
+        return 0
+    fi
+    adb root >/dev/null 2>&1 && adb wait-for-device >/dev/null 2>&1 && sleep 3
+    adb shell am start-foreground-service -n "$SERVICE_COMPONENT" \
+        >>"$OUT/raw/am-start-service.txt" 2>&1
+    printf 'am start-foreground-service, because the button could not be tapped'
+}
+
+# wait_for_service_record: the activity manager answers "started" before the
+# service is in its list; wait for the list, not for the answer.
+wait_for_service_record() {
+    for _ in $(seq 1 15); do
+        if service_state | grep -q "$SERVICE_COMPONENT"; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # 0. the device
 # ---------------------------------------------------------------------------
@@ -485,11 +512,16 @@ grant_rc=$?
 adb shell am force-stop "$PKG" >/dev/null 2>&1
 sleep 2
 adb shell am start -W -n "$ACTIVITY" >/dev/null 2>&1
-sleep 3
-if tap_text "Start beacon"; then
+sleep 4
+# The service has to start *after* the grant.  A notification suppressed at
+# enqueue time is not restored by granting the permission afterwards, and the
+# eighth run read that suppression as "the code never posts a notification".
+granted_started_by=$(start_service)
+if wait_for_service_record; then
     sleep 6
+    granted_service="the activity manager holds a record for $SERVICE_COMPONENT"
 else
-    sleep 2
+    granted_service="no ServiceRecord for $SERVICE_COMPONENT after the start"
 fi
 notif=$(notification_state)
 printf '%s\n' "$notif" >"$OUT/raw/notifications-granted.txt"
@@ -508,7 +540,7 @@ elif printf '%s' "$notif" | grep -q "pkg=$PKG"; then
     fi
 else
     record notification FAIL "the foreground service posts its notification when it may" \
-        "no notification for $PKG although the permission is granted and the service is \"$(printf '%s' "$state" | grep -o 'isForeground=[a-z]*' | head -1)\""
+        "no notification for $PKG although the permission is granted; started by $granted_started_by, $granted_service"
 fi
 
 # ---------------------------------------------------------------------------
@@ -576,7 +608,28 @@ fi
 # question, and the only answer is what happens next.
 # ---------------------------------------------------------------------------
 
+# A process with no service in it has nothing to restart.  The eighth run
+# killed a process whose service had already been removed by force-stop and
+# read the silence as "Android refused the sticky flag": the service record is
+# established before the kill, and the state before it is written down.
+pre_state=$(service_state)
+if ! printf '%s' "$pre_state" | grep -q "$SERVICE_COMPONENT"; then
+    kill_started_by=$(start_service)
+    wait_for_service_record >/dev/null 2>&1 || true
+    sleep 4
+    pre_state=$(service_state)
+fi
+printf '%s\n' "$pre_state" >"$OUT/raw/services-before-kill.txt"
+
 pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
+if printf '%s' "$pre_state" | grep -q "$SERVICE_COMPONENT"; then
+    nothing_reason="there was no process to kill"
+else
+    # Without a running service a kill proves nothing about START_STICKY, so
+    # the process is left alone and the record says what was missing.
+    nothing_reason="no foreground service was running before the kill, so there was nothing to restart"
+    pid=""
+fi
 if [ -n "$pid" ]; then
     # As root the plain kill works; without root the same UID may still signal
     # its own process, which is what run-as gives it.  `su 0` was tried first
@@ -615,9 +668,9 @@ if [ -n "$pid" ]; then
     fi
 else
     record kill-restart NOT VERIFIED "the process comes back after a SIGKILL" \
-        "there was no process to kill"
+        "$nothing_reason"
     record service-restart NOT VERIFIED "the service, not only the process, is restored" \
-        "there was no process to kill"
+        "$nothing_reason"
 fi
 
 # ---------------------------------------------------------------------------
