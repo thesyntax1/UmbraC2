@@ -208,6 +208,42 @@ jobs:
             sh ../../scripts/ci_tail.sh cargo check --locked --all-targets --target "$target" --message-format=short || exit $?
           done
 
+  rust-windows:
+    name: rust beacon (the windows target compiles)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: implant/rust
+    steps:
+      - uses: actions/checkout@v4           # zizmor: ignore[unpinned-uses]
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses]
+        with:
+          targets: x86_64-pc-windows-gnu
+      # Every Windows code path of the crate sits behind cfg(windows), so
+      # neither the linux job nor the two macOS targets ever see it.  The
+      # target's linker is not needed to type-check, but it is needed to
+      # link, and a beacon that type-checks and does not link is half a
+      # result -- so both are done and the artefact is inspected.
+      - name: the toolchain the target needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+          echo "rustc:  $(rustc --version)"
+          echo "linker: $(x86_64-w64-mingw32-gcc --version | head -1)"
+          echo "ld:     $(x86_64-w64-mingw32-ld --version | head -1)"
+      - name: check every target, windows included
+        run: sh ../../scripts/ci_tail.sh cargo check --locked --all-targets --target x86_64-pc-windows-gnu --message-format=short
+      - name: link the binary
+        run: sh ../../scripts/ci_tail.sh cargo build --locked --target x86_64-pc-windows-gnu
+      - name: the artefact is a PE32+ executable for the target
+        run: |
+          file target/x86_64-pc-windows-gnu/debug/umbra-beacon.exe
+          file target/x86_64-pc-windows-gnu/debug/umbra-beacon.exe | grep -q 'PE32+'
+          # It cannot be run here: this is a linux machine.  What this step
+          # proves is that the linker produced the file it asked for.
+
   android:
     name: android implant (compile only)
     runs-on: ubuntu-latest
