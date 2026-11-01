@@ -445,6 +445,21 @@ fi
 # POST_NOTIFICATIONS to run, it needs it for its notification to be seen.
 # ---------------------------------------------------------------------------
 
+# `adb root` restarts adbd, and every `adb reverse` rule dies with it.  The
+# mapping made by the boot script was gone by the time this section needed it:
+# the tenth run took root in the tap fallback below, and the script's own
+# `adb reverse --list` was empty ever after, so the application's connection
+# was refused and the native library was never reachable.  Root is taken here,
+# once, before the beacon exists; a later `adb root` on an adbd that is
+# already root does not restart anything, so the rule survives.
+adb root >/dev/null 2>&1 && adb wait-for-device >/dev/null 2>&1 && sleep 2
+{
+    echo "$ adb reverse tcp:4001 tcp:4001"
+    adb reverse tcp:4001 tcp:4001 2>&1 || true
+    echo "$ adb reverse --list"
+    adb reverse --list 2>&1 || true
+} >"$OUT/raw/adb-reverse.txt"
+
 ensure_front || true
 started_by="the consent screen button"
 if tap_text "Start beacon"; then
@@ -592,8 +607,8 @@ printf '%s\n' "$maps" >"$OUT/raw/proc-maps-libumbra.txt"
 # guessed at.
 app_block=$(notification_state | grep -A40 "pkg=$PKG" | head -60 || true)
 app_text=$(printf '%s\n' "$app_block" \
-    | grep -m1 -oE 'android\.text=String \([^)]*\)' \
-    | sed 's/^android\.text=String (//; s/)$//' || true)
+    | grep -m1 'android\.text=String (' \
+    | sed 's/^.*android\.text=String (//; s/)$//' || true)
 printf '%s\n' "${app_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text.txt"
 
 # Only the failures that name this application or this library.  The first
