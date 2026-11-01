@@ -270,3 +270,17 @@ jobs:
           UMBRA_PSK: 00000000000000000000000000000000000000000000000000000000000000ff
           UMBRA_AGENT_ID: ci-build
         run: sh ../../scripts/ci_tail.sh gradle --no-daemon assembleDebug
+      # The APK is the artefact the emulator job installs: it is built here,
+      # once, and the smoke test takes this file and no other.  The digest is
+      # printed so that the two runs can be compared by hand as well.
+      - name: publish the debug APK for the smoke test
+        working-directory: implant/android
+        run: |
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'lib/.*\.so'
+      - uses: actions/upload-artifact@v4      # zizmor: ignore[unpinned-uses]
+        with:
+          name: umbra-debug-apk
+          path: implant/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

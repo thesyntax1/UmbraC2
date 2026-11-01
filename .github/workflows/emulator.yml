@@ -1,0 +1,169 @@
+name: emulator
+
+# Aşama 4: the Android implant on an emulator.
+#
+# This workflow exists because "it compiles" and "it runs" are different
+# claims.  It installs the APK that ci.yml built for the *same commit* -- no
+# build happens here, so the artefact under test cannot drift from the
+# artefact CI proved -- and it asserts only what a command on the emulator
+# observed.  A checked item that could not be performed is written as
+# NOT VERIFIED and says why; nothing is retried until it looks green.
+#
+# It is not part of the release gate's job matrix on purpose.  The gate asks
+# whether each platform's binary has run on its own platform; this workflow's
+# run id is the evidence for the Android half of that question, and the gate
+# reads it from release-evidence.json rather than from a green dot here.
+#
+# The emulator talks to no server.  The only listening socket is a loopback
+# netcat the script opens through `adb reverse`, and it speaks no protocol:
+# it exists so the beacon's handshake path is reached (and therefore its
+# native library is loaded) without anything operational happening.  No task
+# is queued, no command is executed.
+
+on:
+  push:
+    branches: ["arena/af25ce6b-umbrac2"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: emulator (API ${{ matrix.api }}, ${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write     # the results branch
+      actions: read       # the APK of the ci.yml run for this commit
+    strategy:
+      fail-fast: false
+      matrix:
+        api: ["33", "34"]
+        arch: [x86_64]
+    steps:
+      - uses: actions/checkout@v4              # zizmor: ignore[unpinned-uses]
+
+      - uses: actions/setup-java@v5            # zizmor: ignore[unpinned-uses]
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The APK under test is the one ci.yml produced for this exact commit.
+      # ci.yml runs at the same moment as this workflow, so the artefact is
+      # waited for rather than rebuilt: a rebuild would be a second artefact
+      # and the evidence would be about the wrong file.
+      - name: the APK ci.yml built for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          mkdir -p apk
+          echo "waiting for the ci.yml run of ${GITHUB_SHA} ..."
+          run_id=""
+          for _ in $(seq 1 90); do
+            run_id=$(gh run list --workflow=ci.yml --limit 40 \
+              --json databaseId,headSha,status \
+              --jq "[.[] | select(.headSha == \"${GITHUB_SHA}\")][0].databaseId" || true)
+            if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+              status=$(gh run view "$run_id" --json status,conclusion \
+                --jq '.status')
+              if [ "$status" = "completed" ]; then
+                conclusion=$(gh run view "$run_id" --json conclusion --jq '.conclusion')
+                echo "ci.yml run $run_id finished: $conclusion"
+                break
+              fi
+            fi
+            sleep 20
+          done
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "::error::no ci.yml run for ${GITHUB_SHA}"
+            exit 1
+          fi
+          echo "$run_id" > apk/ci-run-id.txt
+          gh run download "$run_id" -n umbra-debug-apk -D apk || {
+            echo "::error::the ci.yml run $run_id has no umbra-debug-apk artefact (the android job must have failed)"
+            exit 1
+          }
+          ls -l apk
+          sha256sum apk/app-debug.apk | tee apk/sha256.txt
+
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: the emulator and the smoke test
+        uses: reactivecircus/android-emulator-runner@v2   # zizmor: ignore[unpinned-uses]
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: ${{ matrix.arch }}
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            set -u
+            # The beacon is built to call 127.0.0.1:4001.  adb reverse maps
+            # that port on the device to the same port on this runner, so the
+            # only thing the implant can reach is a loopback socket that
+            # speaks no protocol at all.
+            (timeout 900 nc -lk 127.0.0.1 4001 > "$RUNNER_TEMP/nc.log" 2>&1 &) || true
+            sleep 1
+            adb reverse tcp:4001 tcp:4001 || echo "adb reverse failed: the handshake path may not be reached"
+            mkdir -p results
+            bash implant/android/scripts/emulator-smoke.sh \
+              --apk apk/app-debug.apk \
+              --out "results/api-${{ matrix.api }}" \
+              --api "${{ matrix.api }}"
+            rc=$?
+            adb reverse --remove-all || true
+            exit $rc
+
+      - name: keep the report even when a check failed
+        if: always()
+        run: |
+          ls -la "results/api-${{ matrix.api }}" || true
+          cat "results/api-${{ matrix.api }}/result.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4        # zizmor: ignore[unpinned-uses]
+        if: always()
+        with:
+          name: emulator-smoke-api${{ matrix.api }}
+          path: results/api-${{ matrix.api }}
+          if-no-files-found: warn
+
+  # A branch is the postbox this repository can read from the machine that
+  # fixes the failures: the job log lives on a blob host it cannot reach.
+  publish:
+    name: publish the results
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4              # zizmor: ignore[unpinned-uses]
+      - uses: actions/download-artifact@v4     # zizmor: ignore[unpinned-uses]
+        with:
+          pattern: emulator-smoke-api*
+          path: results
+          merge-multiple: false
+      - name: commit them to ci/log-emulator
+        run: |
+          set -eu
+          mkdir -p ci-log
+          cp -r results/* ci-log/ 2>/dev/null || true
+          find ci-log -type f | sort
+          git config user.name "umbra-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -B ci/log-emulator
+          git add -f ci-log
+          git commit -m "log: emulator smoke of $(git rev-parse --short HEAD)" || echo "nothing changed"
+          git push --force origin ci/log-emulator
