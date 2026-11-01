@@ -90,7 +90,7 @@
         <!-- The service of the beacon.  It carries the data sync and the
              microphone types, and announces at run time only the ones the
              user granted: Android 14 refuses a type whose permission is
-             missing.  The capture of the screen is not declared here -- it
+             missing.  The capture of the screen is not declared here: it
              belongs to ProjectionService below, which holds the consent
              token the platform asks for before that type may be used. -->
         <service
