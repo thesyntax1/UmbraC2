@@ -99,48 +99,33 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The emulator is started by a script of this repository and not by a
+      # third-party action, because the action's failure mode is a red dot:
+      # its log lives on a blob host this repository cannot read from, and a
+      # stage whose whole point is evidence cannot afford that.  Everything
+      # the SDK, the AVD, the emulator and the test say is written into the
+      # report directory and uploaded.
       - name: the emulator and the smoke test
-        uses: reactivecircus/android-emulator-runner@v2   # zizmor: ignore[unpinned-uses]
-        with:
-          api-level: ${{ matrix.api }}
-          target: google_apis
-          arch: ${{ matrix.arch }}
-          profile: pixel_5
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            set -u
-            # Absolute paths: whatever directory the runner hands this script,
-            # the artefact it installs and the report it writes are the ones in
-            # the workspace.  The whole run is mirrored into the report
-            # directory, because the job log lives on a host this repository
-            # cannot read from -- a failure has to survive in the artefact.
-            WS="${GITHUB_WORKSPACE:-$(pwd)}"
-            OUT="$WS/results/api-${{ matrix.api }}"
-            mkdir -p "$OUT"
-            {
-              echo "workspace: $WS"
-              echo "cwd:       $(pwd)"
-              echo "apk:       $(ls -l "$WS/apk/app-debug.apk" 2>&1)"
-              echo "adb:       $(command -v adb) $(adb version 2>&1 | head -1)"
-              echo "options:   $ANDROID_EMULATOR_OPTIONS"
-            } > "$OUT/harness.txt" 2>&1
-            # The beacon is built to call 127.0.0.1:4001.  adb reverse maps
-            # that port on the device to the same port on this runner, so the
-            # only thing the implant can reach is a loopback socket that
-            # speaks no protocol at all.
-            (timeout 900 nc -lk 127.0.0.1 4001 > "$OUT/nc.log" 2>&1 &) || true
-            sleep 1
-            adb reverse tcp:4001 tcp:4001 >> "$OUT/harness.txt" 2>&1 \
-              || echo "adb reverse failed: the handshake path may not be reached" | tee -a "$OUT/harness.txt"
-            bash "$WS/implant/android/scripts/emulator-smoke.sh" \
-              --apk "$WS/apk/app-debug.apk" \
-              --out "$OUT" \
-              --api "${{ matrix.api }}" > "$OUT/run.log" 2>&1
-            rc=$?
-            cat "$OUT/run.log"
-            adb reverse --remove-all >> "$OUT/harness.txt" 2>&1 || true
-            exit $rc
+        run: |
+          set -u
+          WS="${GITHUB_WORKSPACE:-$(pwd)}"
+          OUT="$WS/results/api-${{ matrix.api }}"
+          mkdir -p "$OUT"
+          (timeout 1800 nc -lk 127.0.0.1 4001 > "$OUT/nc.log" 2>&1 &) || true
+          sleep 1
+          adb reverse tcp:4001 tcp:4001 > "$OUT/adb-reverse.txt" 2>&1 || true
+          bash "$WS/implant/android/scripts/emulator-boot.sh" \
+            --api "${{ matrix.api }}" \
+            --apk "$WS/apk/app-debug.apk" \
+            --out "$OUT" > "$OUT/harness.log" 2>&1
+          rc=$?
+          tail -40 "$OUT/harness.log" || true
+          [ -f "$OUT/report/result.md" ] && cat "$OUT/report/result.md" >> "$GITHUB_STEP_SUMMARY" || true
+          if [ -f "$OUT/report/result.json" ] && grep -q '"FAIL"' "$OUT/report/result.json"; then
+            echo "::error::the smoke test found a failing check on API ${{ matrix.api }}"
+          fi
+          adb reverse --remove-all > /dev/null 2>&1 || true
+          exit $rc
 
       - name: keep the report even when a check failed
         if: always()
