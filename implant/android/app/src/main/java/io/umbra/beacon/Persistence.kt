@@ -476,7 +476,7 @@ object Persistence {
         if (context == null) return false
         return try {
             val scheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as? JobScheduler
-                scheduler != null && scheduler.allPendingJobs.any { it.id == UmbraJobService.JOB_ID }
+            scheduler != null && scheduler.allPendingJobs.any { it.id == UmbraJobService.JOB_ID }
         } catch (t: Throwable) {
             false
         }
@@ -535,7 +535,7 @@ object Persistence {
         if (context == null) return false
         return try {
             val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
-                manager != null && manager.isDeviceOwnerApp(context.packageName)
+            manager != null && manager.isDeviceOwnerApp(context.packageName)
         } catch (t: Throwable) {
             false
         }
