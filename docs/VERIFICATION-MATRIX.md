@@ -46,10 +46,13 @@ Everything found, and what was done about it:
 | 11 | **Nothing in the repository started the server.** Every Python test ran against `tools/mock_server.py`, and the Go tests exercised packages, not the binary, so the product had been compiled and never run | verification gap | fixed: `tests/test_real_server.py` builds `cmd/umbra-server`, starts it on ephemeral ports and drives it over the wire — 13 tests, green |
 | 12 | The **Rust beacon has never compiled**: `cargo` was never on a machine that had the code, and CI says 36 errors (`E0061`, `E0277`, `E0308` ×15, `E0382` ×4, `E0502`, `E0507`, `E0599`, …) across `wasm.rs`, `vpn.rs`, `transport.rs`, `profile.rs`, `script.rs`, `task.rs` and others | build-stopping | **fixed** on `93b679c`: 38 errors closed in five rounds with no `unwrap`, `allow` or security check removed — the crate compiles, `cargo test --locked --all-targets` is **125 + 8 passed, 0 failed**, and the default, `chacha` and macOS ×2 jobs are green.  The seven tests that failed afterwards were code defects too (jitter escaping the operator's window, three `whoami` parsers, migration order, a wrong test fixture); each is listed in [`BUILD-EVIDENCE.md`](BUILD-EVIDENCE.md) §4 |
 | 13 | The **Android app does not compile**: `assembleDebug` fails, and the annotation list named twenty Kotlin errors (the compiler had emitted **twenty-seven**) | build-stopping | **fixed** on `1aac1a9`: nine rounds, one file each, every fix checked against the platform reference — not an API-level problem (`minSdk 33` already covers every API used), but fifteen members that do not exist, are spelled differently or are hidden, four Java getters read as properties, three missing imports (with one cascade) and four wrong argument lists.  `assembleDebug` builds three ABIs and the NDK is pinned to the version the first green build used.  Test log and per-round table in [`BUILD-EVIDENCE.md`](BUILD-EVIDENCE.md) §5 |
-| 14 | **No job compiles the Windows half of the Rust beacon.** 118 `cfg(windows)` blocks across 18 files are never given to a compiler: the linux job does not see them, the macOS job checks two apple targets, and the Windows twin of the `E0382` fixed in `keylog_to_file` had the identical defect | verification gap | the Windows twin was fixed by reading it, and this row exists so that the reading is not mistaken for a build.  A `x86_64-pc-windows-gnu` check is the work that would close it; it is not in this pass |
+| 14 | **No job compiles the Windows half of the Rust beacon.** 118 `cfg(windows)` blocks across 18 files were never given to a compiler: the linux job does not see them, the macOS job checks two apple targets, and the Windows twin of an `E0382` fixed by reading had the identical defect | verification gap | **fixed** on `e1e27b0`: a `x86_64-pc-windows-gnu` job checks every target and links the binary with mingw-w64.  It found **17 defects in four rounds** — a call to a function that does not exist, two C strings terminated with a byte, an ordinal cast through a pointer, raw dereferences outside `unsafe`, a moved two-integer struct, an immutable counter, a missing `crypt32` link — none of which any other job could see.  The binary has **never been executed** |
 | 15 | **The annotation API under-reported the Android build.**  The first classification named twenty errors because that is what the check-run annotations carried; the raw compiler output has twenty-seven.  A count taken from annotations is a count of the page, not of the compiler | medium (tooling and reporting) | corrected in `BUILD-EVIDENCE.md` §5 and in this row; the raw log is the source (`ci/log-android`, `ci-log/android-build.log`) |
-| 16 | **The Android app compiles and lint still fails**: 22 errors — 15 `MissingPermission` (`Sense.kt` ×9, `BluetoothScan.kt` ×2, `Lab.kt` ×2, `Media.kt`, `Forensics.kt`), 1 `ScheduleExactAlarm`, 4 `PermissionImpliesUnsupportedChromeOsHardware` in the manifest, 2 `SuspiciousIndentation` — and 30 warnings | security / compliance | **open**.  Lint is not part of the release job; a green `assembleDebug` says the compiler accepts the code and nothing about the permissions it asks for |
+| 16 | **The Android app compiled and lint still failed**: 22 errors — 15 `MissingPermission`, 1 `ScheduleExactAlarm`, 4 `PermissionImpliesUnsupportedChromeOsHardware`, 2 `SuspiciousIndentation` — and 30 warnings | security / compliance | **errors fixed** on `e1e27b0` (`lintDebug` green, 0 errors), one finding at a time: permission guards that name what was refused, the exact-alarm fallback that says which alarm the phone got, `required=false` for the hardware the code already treats as optional, and `REQUEST_DELETE_PACKAGES` declared with the AOSP branch that checks it.  **29 warnings remain** and are untriaged |
 | 17 | **The Android implant has no test and has never run.**  `testDebugUnitTest` reports `NO-SOURCE`, and no emulator or phone has started the APK | verification gap | open by construction: there is no test source set, and no device in this environment.  The module is therefore *compiled*, not *verified* in the sense this page uses for the Go server |
+| 18 | **The release gate named one condition and called it the gate.**  `RELEASE-PROCESS.md` said a green `ci.yml` was the release, and `tools/release_gate.py` printed `OPEN` when every job was green, although the platform runs, the Android tests, the protocol conformance, the hardening findings and the provenance were all missing | process (and a false statement in this document set) | **fixed**: the gate is nine conditions, the tool checks two mechanically and reads the rest from `release-evidence.json`, and a green CI run is one row.  The gate is closed for five reasons on the commit where every job is green |
+| 19 | **The state of the implant is not durable and its files have no mode.**  `save_entries` writes to a temporary file and renames it, which survives a power cut without a half-written file but not without a lost one (`fsync` is never called), and `0o600` appears nowhere in the crate | data integrity / information disclosure | **open** — hardening pass, not a compile fix |
+| 20 | **The transport's hostile input is untested.**  `content_length` falls back to `None` with `ok()`, the header limit is a constant nobody has exceeded in a test, and the wasm step budget has no wall-clock bound | robustness | **open** — hardening pass |
 
 
 ## The product, executed
@@ -256,7 +259,7 @@ code that exists and has never been executed here.
 | Alias expansion | **Not Verified** | `server/internal/alias` | 1 file, 0 tests |
 | Notes | **Not Verified** | `server/internal/note` | 1 file, 0 tests |
 | Rust beacon (44 files, 28.7k lines) | **Implemented (CI-verified)** | `implant/rust` | compiles with `--locked`; 125 unit + 8 vector tests pass on default and `chacha`; release binary runs `--selftest`; no `cargo` on this machine, so every number is CI's |
-| Android beacon | **Compiled (CI-verified build)** | `implant/android` | `assembleDebug` green on `1aac1a9`, three ABIs, NDK pinned; no test source set, no device, 22 lint errors open |
+| Android beacon | **Compiled and lint-clean (CI)** | `implant/android` | `assembleDebug` and `lintDebug` green on `e1e27b0`, three ABIs, NDK pinned, 0 lint errors and 29 warnings; no test source set, no device |
 | Python console + mock | Implemented | `operator/umbra_cli`, `tools/mock_server.py` | 378 cases pass |
 | Go beacon | Implemented (thin) | `implant/go` | 41 functions; builds and passes |
 | Backup / restore *procedure* | Partially | `docs/OPERATIONS.md`, [`BACKUP-RECOVERY.md`](BACKUP-RECOVERY.md) | process recovery after `SIGKILL` measured (21 ms); off-machine restore **Not Verified** |
@@ -287,6 +290,8 @@ code that exists and has never been executed here.
 | GitHub Actions, `ci.yml` on `d9aa1a9` (run 41227557468) | **green**: `go server` ×2 toolchains, `go implant` ×2, `protocol` on Python 3.11 and 3.12; **red**: `rust beacon` ×2, `rust beacon macOS`, `android` | CI |
 | GitHub Actions, `ci.yml` on `93b679c` (run 41233256649) | **green**: `go server` ×2, `go implant` ×2, `protocol` ×2, **`rust beacon` ×2**, **`rust beacon macOS`**; **red**: `android` only.  9 of 10 jobs | CI |
 | GitHub Actions, `ci.yml` on `1aac1a9` (run 41237459010) | **green: all ten jobs** — `go server` ×2, `go implant` ×2, `protocol` ×2, `rust beacon` ×2, `rust beacon macOS`, **`android implant`**.  The first fully green commit | CI |
+| GitHub Actions, `ci.yml` on `e1e27b0` (run 41289349561) | **green: all eleven jobs**, including **`rust beacon (the windows target compiles)`**.  The windows artefact is a *PE32+ executable for MS Windows 5.02 (console), x86-64, 20 sections* | CI |
+| `gradle --no-daemon lintDebug` on `e1e27b0` | **green**: 0 errors, 29 warnings (the run before it had 2, the first 22) | CI, `ci/log-android` |
 | `gradle --no-daemon lintDebug` on `1aac1a9` | **failed**: 22 errors, 30 warnings (`ci/log-android`, temporary) | this pass |
 | `gradle --no-daemon testDebugUnitTest` on `1aac1a9` | `NO-SOURCE` — there is no test source set | this pass |
 | GitHub Actions, `diagnostics.yml` on `9455226` | **green** (6 jobs) | CI |
@@ -312,10 +317,15 @@ code that exists and has never been executed here.
   Windows half is not compiled at all (finding #14); and no Rust test has ever
   spoken to a real server — the Go and Python beacons are the ones with an
   end-to-end run.
-* The Android beacon is **compiled, not verified**.  `assembleDebug` is green
-  on `1aac1a9`, and that proves the Kotlin compiler accepts the code and the
-  packaging step produces an APK.  It proves nothing about whether the app
+* The Android beacon is **compiled and lint-clean, not verified**.
+  `assembleDebug` and `lintDebug` are green on `e1e27b0`, which proves the
+  Kotlin compiler accepts the code, the packaging step produces an APK and the
+  static analysis finds no error.  It proves nothing about whether the app
   starts, whether its permissions are granted, whether the native library
   loads on a real ABI, or whether the foreground service survives a phone's
-  battery rules.  Lint findings 16 and the absence of tests (17) are the
-  concrete form of that gap.
+  battery rules.  Findings 17 (no tests, no device) and the 29 untriaged
+  warnings are the concrete form of that gap.
+* The Rust beacon **compiles and links for Windows** and has **never run
+  there**: the job runs on linux, and `file` on the artefact is the last thing
+  that was checked.  Finding 14 is closed as a *build* finding and the platform
+  run is a separate condition of the release gate.

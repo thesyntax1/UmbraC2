@@ -8,8 +8,8 @@
 > The rule: a row is green only if the command in it ran and exited zero on
 > the commit named at the top.  Everything else says what it is.
 
-Commit of record: `1aac1a9` (CI run 41237459010) — the first commit whose
-every CI job is green.
+Commit of record: `e1e27b0` (CI run 41289349561) — eleven jobs of eleven,
+including the Windows target that no job had ever compiled.
 Reviewed: 2026-10-31.
 
 ## The summary
@@ -19,8 +19,8 @@ Reviewed: 2026-10-31.
 | Go server | green on 1.22.10 **and** 1.27.3 | 25 packages, `-race` clean | **green** (1.22 and stable) | verified on two toolchains |
 | Go beacon | green on 1.22.10 and 1.27.3 | 5 packages, `-race` clean | **green** (1.22 and stable) | verified on two toolchains |
 | Python console + protocol | n/a | 378 passed in a clean venv from the hashed lock | **green** (3.11 and 3.12) | verified from a lock file |
-| Rust beacon | **green** on all three targets | 125 unit + 8 vector tests, 0 failed | **green** (default, `chacha`, macOS ×2) | compiled, tested and run as a binary |
-| Android implant | **green** (`assembleDebug`, three ABIs, NDK pinned) | 27 compile errors closed; no unit tests exist; 22 lint errors open | **green** (10 of 10 jobs on `1aac1a9`) | compiles and packages; never run on a device |
+| Rust beacon | **green** on five targets (linux, `chacha`, macOS ×2, **windows**) | 125 unit + 8 vector tests, 0 failed | **green** (default, `chacha`, macOS ×2, windows) | compiled, tested and run as a binary; the windows binary links and is **never executed** |
+| Android implant | **green** (`assembleDebug`, three ABIs, NDK pinned) | 27 compile errors and **22 lint errors** closed; `lintDebug` green; 29 warnings; no unit tests | **green** (11 of 11 jobs on `e1e27b0`) | compiles, packages and passes lint; never run on a device |
 | Dashboard | built by `go build` | Go test + jsdom smoke | green (inside `go server`) | verified, not in a browser |
 
 The gate this feeds is in [`RELEASE-PROCESS.md`](RELEASE-PROCESS.md): **the
@@ -156,6 +156,37 @@ it, and **no job in the matrix compiles the Windows-gated code** — 118
 `cfg(windows)` blocks across 18 files, including its own `keylog_to_file`.
 Round 5 fixed the Windows twin by reading it.  That is a reading, not a build.
 
+### The Windows target
+
+`cfg(windows)` covers 118 blocks across 18 files, and until `e034130` no job
+had ever given them to a compiler: the linux job cannot see them, and the
+macOS job compiles two apple targets.  The new job checks **every** target for
+`x86_64-pc-windows-gnu` and then links the binary, because a target that
+type-checks and does not link is half a result.
+
+| Item | Value |
+|---|---|
+| Target | `x86_64-pc-windows-gnu` |
+| rustc | 1.99.1 (58cf8f9c3 2026-10-13), stable, from `dtolnay/rust-toolchain` |
+| Linker | `x86_64-w64-mingw32-gcc` (GCC) 13-win32, from `gcc-mingw-w64-x86-64` |
+| `ld` | GNU ld (GNU Binutils) 2.45.90.20260125 |
+| Commands | `cargo check --locked --all-targets --target x86_64-pc-windows-gnu` then `cargo build --locked --target x86_64-pc-windows-gnu` |
+| Artefact | `target/x86_64-pc-windows-gnu/debug/umbra-beacon.exe` — *PE32+ executable for MS Windows 5.02 (console), x86-64, 20 sections* |
+| Result | **PASS** (compiles, links) / **NOT VERIFIED** (never executed) |
+
+**Seventeen failures, in four rounds, every one of them a real defect:**
+
+| Round | Commit | Failures | What was wrong |
+|---|---|---|---|
+| 1 | `59913ea` | 13 compile | `post::token` called `win::duplicate_token`, a function that does not exist; two C strings ended with `push(0)` (a byte where a `char` was wanted); an ordinal was cast through `*const u16`, which cannot be a pointer; three raw dereferences were outside `unsafe`; `Luid` was moved twice (it is two integers); the import walk assigned to an immutable `offset`; `senses` imported `std::os::raw::u32`, which does not exist; `bof` read `PAGE_READWRITE` from a module it lives outside of; `domain` handed the text of an edge kind where the graph wants the static word |
+| 2 | `3510f3c` | 1 compile | `protect_image` is an `unsafe fn`; the call was the only one in its function without a block |
+| 3 | `f3aee67` | 2 compile | `GetAsyncKeyState` returns `i16` and the mask was `0x8000`, which does not fit in one — in both copies of the key loop |
+| 4 | `e1e27b0` | 1 **link** | `CryptUnprotectData` lives in `crypt32`, which a mingw link does not pull in by default, and its extern block had no `#[link]` at all: the symbol existed and the linker did not know where |
+
+Every one is the kind of defect that compiles nowhere until the target is
+tried: the type checker had never seen these lines, and the linker had never
+been asked for these libraries.
+
 ## 5. Android implant
 
 **Green.**  `assembleDebug` builds a debug APK for `arm64-v8a`, `armeabi-v7a`
@@ -233,6 +264,42 @@ that was never installed.
 * **Nothing has run on a phone.**  An APK that builds is not an APK that
   starts, and neither is an APK whose permissions are granted.
 
+### The lint findings, before and after
+
+`assembleDebug` was green and `lintDebug` was not: the compiler accepts code
+that the static analysis will not.  The report is real, and the count is the
+report's own (`ci-log/android-lint-report.txt`, published by the temporary
+`ci-log.yml`).
+
+| Run | `assembleDebug` | `testDebugUnitTest` | `lintDebug` | Errors | Warnings |
+|---|---|---|---|---|---|
+| `1aac1a9` | green | `NO-SOURCE` | **failed** | 22 | 30 |
+| `ae7b744` (after the permission guards) | green | `NO-SOURCE` | **failed** | 9 | 30 |
+| `f3aee67` (after the alarm and the manifest) | green | `NO-SOURCE` | **failed** | 2 | 30 |
+| `e1e27b0` (after the indentation) | green | `NO-SOURCE` | **green** | **0** | **29** |
+
+Each finding, and what it actually was:
+
+| Finding | Count | The root cause | What was done |
+|---|---|---|---|
+| `MissingPermission` — runtime permissions | 13 | the calls sat inside `try { } catch (Throwable)`, which lint does not accept and which would also have hidden the refusal; three of them were inside helper functions it cannot follow | each call site now names the permission and catches `SecurityException` with the sentence the operator should read: `Sense` (location ×2, scan results, saved networks, paired devices, discovery devices), `BluetoothScan` (start and cancel of the discovery), `Media` (camera), `Lab` (the phone number) |
+| `MissingPermission` — device owner | 1 | `PackageInstaller.uninstall` needs `DELETE_PACKAGES` **or** `REQUEST_DELETE_PACKAGES` on paper; the platform exempts the device owner in `PackageInstallerService.uninstall`, which lint cannot model | `REQUEST_DELETE_PACKAGES` (a **normal** permission, granted at install, no prompt) is declared, because the platform's fallback branch does check it; `DELETE_PACKAGES` is not, because it is `signature\|privileged` and the application can never hold it |
+| `MissingPermission` — privileged | 1 | `TelephonyManager.getSubscriberId` needs `READ_PRIVILEGED_PHONE_STATE`, which only a system application can hold: the call could never succeed | the call is gone, and the field says `unknown`, which is exactly what it said before — a check for the simulator's subscriber id against a value that cannot be read is a check of nothing |
+| `ScheduleExactAlarm` | 1 | `setExactAndAllowWhileIdle` throws when the phone denies exact alarms, and the code never asked | `canScheduleExactAlarms()` decides: exact when allowed, `setAndAllowWhileIdle` otherwise, and the persistence entry says which of the two the phone got |
+| `PermissionImpliesUnsupportedChromeOsHardware` | 4 | `READ_SMS`, `RECEIVE_SMS`, `RECEIVE_MMS` and `CAMERA` imply telephony and camera hardware, and a device without either was being filtered out | `<uses-feature android:required="false">` for `telephony`, `camera` and `camera.any` — the manifest now says what the code already does when the hardware is missing |
+| `SuspiciousIndentation` | 2 | two `try` blocks returned the value of a statement that was indented as a continuation of the line above | de-indented; the parse was already a separate statement, so the behaviour is identical |
+
+No rule was disabled, no `@SuppressLint` and no baseline was added, and no
+catch was left empty: every refusal the platform can produce is turned into a
+sentence in the report.
+
+**The 29 warnings are still there** and are listed rather than explained away:
+11 `ObsoleteSdkInt` (the `minSdk 33` checks), 3 `StaticFieldLeak`,
+`WakelockTimeout`, `QueryPermissionsNeeded`, `BatteryLife`,
+`HardwareIds`, `DefaultLocale`, `DataExtractionRules`, `RedundantLabel`,
+`MissingApplicationIcon`.  None of them is an error and none of them has been
+triaged.
+
 ## 6. Dashboard
 
 There is no separate build: the page is a string in `internal/dash`, compiled
@@ -255,9 +322,12 @@ text.  It is **not** a browser: it does not enforce the CSP.
   run id and the SHA stay).
 * It does not claim the Windows build exists.  No job compiles the
   `cfg(windows)` half of the crate; it is read, not built.
-* It does not claim the Android app works.  The APK is compiled and packaged
-  by CI, its lint report has 22 errors, it has no unit test, and no emulator
-  or phone has ever started it.  "Green" here means `assembleDebug` exited
-  zero.
+* It does not claim the Android app works.  The APK is compiled, packaged and
+  lint-clean, it still has **no unit test** (`NO-SOURCE`), and no emulator or
+  phone has ever started it.  "Green" here means the compiler and the static
+  analysis both exited zero.
+* It does not claim the Windows beacon works.  It compiles for the target and
+  links into a PE32+ executable; nothing has run it, because this is a linux
+  machine.  A linker that is satisfied is not a program that starts.
 * The CI run ids are the proof of the CI column.  A local run and a CI run are
   not the same thing, which is why both are listed.

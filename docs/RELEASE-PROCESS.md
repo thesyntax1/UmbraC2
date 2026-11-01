@@ -1,27 +1,36 @@
 # Release process, and the gate that is closed
 
-> **Gate status: CLOSED.**  The first condition of this gate is now true: on
-> `1aac1a9` (CI run 41237459010) **all ten jobs are green** — both Go modules,
-> both Python versions, the three Rust jobs and the Android build.  The gate is
-> still closed because its last condition is not met: there is no `CHANGELOG.md`,
-> and a release nobody can read the changes of is not a release.  Nothing may be
-> tagged, published, called a beta or described as supported while this line
-> says CLOSED.
+> **Gate status: CLOSED.**  Eleven CI jobs of eleven are green on `e1e27b0`
+> (run 41289349561) and the gate is still closed, because **a green matrix is
+> one of nine conditions, not the gate**.  Conditions 1 to 4 are met and CI
+> proves it; conditions 5 to 9 are not, and each one is listed in §1 with the
+> evidence it would need.  Nothing may be tagged, published, called a beta or
+> described as supported while this line says CLOSED.
 
 ## 1. The gate
 
-| Condition | Where it is checked | Status today |
-|---|---|---|
-| Every CI job green on **one** commit | `ci.yml` run page; `gh run list --workflow=ci.yml` | **green** — 10 of 10 on `1aac1a9`, run 41237459010 |
-| The verification matrix is current | `python tools/audit_matrix.py --check --strict` (also a CI step) | green |
-| The generated counts are not stale | `audit_matrix.py --write` then `git diff --exit-code` (CI step) | green |
-| No unexpected dependency | `test ! -s go.sum`, `cargo metadata --locked`, `--require-hashes` | green |
-| The build is reproducible from the lock files | `Cargo.lock`, `requirements-dev.lock`, no Go requirements | green |
-| The changelog names what changed | `CHANGELOG.md` | **missing** |
-| Known issues are written down | `KNOWN-LIMITATIONS.md`, `VERIFICATION-MATRIX.md` | green |
+Every row is a condition.  A release needs **all** of them, and each one names
+how it is checked, so that "we are nearly ready" is a sentence about a table
+rather than a feeling.
 
-A local run is not a CI run.  The table above is the only place a release is
-declared, and it is declared by the jobs, not by a person.
+| # | Condition | How it is checked | Status today |
+|---|---|---|---|
+| 1 | Every job of `ci.yml` green on **one** commit | run page; `tools/release_gate.py --sha <sha>` | **green** — 11 of 11 on `e1e27b0` |
+| 2 | The verification matrix is current and complete | `python tools/audit_matrix.py --check --strict` (a CI step) | green |
+| 3 | The generated counts are not stale | `audit_matrix.py --write`, then `git diff --exit-code` (a CI step) | green |
+| 4 | The build is reproducible from the lock files | `Cargo.lock`, `requirements-dev.lock`, no Go requirements (CI steps) | green |
+| 5 | **Each platform's binary has run on its own platform** | a recorded run: Windows on Windows, Android on a device or an emulator, macOS on a mac | **NOT VERIFIED** — see §4 |
+| 6 | **The Android implant has tests** | `testDebugUnitTest` must not report `NO-SOURCE` | **NOT VERIFIED** — there is no test source set |
+| 7 | **The three implants speak the same protocol**, conformance-tested | a synthetic harness: fixed messages, schema checks, truncated length, missing field, version mismatch — no real command execution | **NOT VERIFIED** |
+| 8 | **The persist and transport findings are closed** | `persist.rs` durable write and file modes, the transport's malformed-input cases | **NOT VERIFIED** — findings 19 and 20 |
+| 9 | **The release has a changelog and signed artefacts** | `CHANGELOG.md`, `release.yml`, signed artefacts, the tag message of §3 | **NOT VERIFIED** — none of the three exists |
+
+`tools/release_gate.py` reads this table in the two places it can read
+mechanically (1 and the presence of `CHANGELOG.md`) and prints the rest as
+NOT VERIFIED.  It exits **closed** unless a `release-evidence.json` in the
+repository records the remaining conditions with the run ids that produced
+them; a file that is absent is a condition that is not met.  A green CI run has
+never been, and is not now, a release.
 
 ## 2. What a release has to carry (provenance)
 
@@ -77,28 +86,47 @@ a release.
 
 ## 4. What blocks the gate today
 
-* `CHANGELOG.md` does not exist.  That is now the only condition of §1 that is
-  not met, and it is not a reason to open the gate early.
+Conditions 1 to 4 are met — the matrix is green on one commit, the two matrix
+audits and the lock files are CI steps.  The other five are not, so the gate is
+closed for five reasons.  Each one is a thing that has to happen, not a thing
+that has to be written down:
 
-Nothing else blocks it.  The two build-stopping findings are closed:
+* **No platform of the beacons has executed anything** (condition 5).  The Rust
+  beacon runs its own tests on linux; the Windows target compiles and links
+  (`e1e27b0`) and has never been started; the Android APK has never been
+  installed; the macOS targets have never been linked, let alone run.
+* **The Android implant has no tests** (condition 6).  `testDebugUnitTest`
+  reports `NO-SOURCE`.  Lint is not a test: it cannot tell whether the right
+  database is read, only that a permission call is written in a shape it
+  accepts.
+* **The three implants have never been shown to speak the same protocol**
+  (condition 7).  The Go and Python beacons talk to the real server; the Rust
+  and the Android ones have only their own tests.  The evidence that closes
+  this is a synthetic harness — fixed messages, schema checks, a truncated
+  length, a missing field, a version mismatch — and it deliberately does not
+  run a task.
+* **The hardening findings are open** (condition 8): the state file of
+  `persist.rs` is written with `rename` but not `fsync`, and no file mode of
+  the implant is set (`0o600` appears nowhere); the transport's malformed
+  `Content-Length`, the `content_length.ok()` fallback and the wasm step budget
+  are untested.
+* **There is no provenance** (condition 9): `CHANGELOG.md`, `release.yml` and a
+  signed artefact do not exist.  A changelog is one half of that condition, and
+  it is what the previous version of this page mistook for the whole gate.
+
+Two things are closed and stay closed, for the record:
 
 * the Rust beacon compiles with `--locked`, passes 125 unit and 8 vector tests
-  on both feature sets and starts as a release binary (`93b679c`);
-* the Android app assembles a debug APK for three ABIs (`1aac1a9`) — 27 Kotlin
-  errors closed in nine rounds, each verified against the platform reference.
+  on both feature sets and starts as a release binary (`93b679c`), and it
+  compiles and links for `x86_64-pc-windows-gnu` (`e1e27b0`);
+* the Android app assembles a debug APK for three ABIs (`1aac1a9`), 27 Kotlin
+  errors closed in nine rounds, and `lintDebug` is green on `e1e27b0` after 22
+  lint errors were closed one finding at a time.
 
-Three facts a release would still have to state, none of them a CI job:
-
-* **the Android app has 22 lint errors** (15 `MissingPermission`, 1
-  `ScheduleExactAlarm`, 4 manifest hardware features, 2 indentation), no unit
-  test and no run on a device;
-* **no Windows binary of the Rust beacon has ever been compiled**;
-* **the Rust beacon has never spoken to a real server**, and none of the three
-  beacons has been run against a phone or a real host in this pass.
-
-The honest description of this repository today is *a Go server, a Python
-console and three beacons that all compile, with one of them never executed
-outside its own tests and one of them never executed at all.*
+The honest description of this repository today is *a Go server and a Python
+console that have been executed against each other, three beacons that all
+compile, an Android app that also passes lint, and nothing outside the Go and
+Python pair that has ever been run.*
 
 ## 5. Not written yet
 

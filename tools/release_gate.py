@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Say whether a commit is allowed to become a release.
 
-The gate in docs/RELEASE-PROCESS.md is a sentence: every job of ci.yml green
-on one commit.  This is the same sentence as an exit code, so that "did CI
-pass?" is not a question answered by looking carefully at a web page.
+The gate in docs/RELEASE-PROCESS.md is a table of nine conditions.  This tool
+checks the two it can check mechanically and reads the rest from
+`release-evidence.json`, which has to name, for each of them, the run or the
+platform where it happened.  A condition with no entry is a condition that is
+not met, so a green CI run is one row of nine and never the answer.
 
     python3 tools/release_gate.py              # the commit at HEAD
     python3 tools/release_gate.py --sha <sha>
@@ -18,8 +20,45 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The conditions of docs/RELEASE-PROCESS.md §1 that cannot be computed here.
+# Each one needs a recorded run, because a sentence in a document is not
+# evidence and this tool refuses to treat it as one.
+EVIDENCE = (
+    ("platforms", "each platform's binary has run on its own platform"),
+    ("android_tests", "the Android implant has tests"),
+    ("protocol_conformance", "the three implants speak the same protocol"),
+    ("hardening", "the persist and transport findings are closed"),
+    ("provenance", "the release has a changelog and signed artefacts"),
+)
+
+
+def unrecorded(root: str, evidence: dict) -> list[str]:
+    """The conditions of the gate that a green `ci.yml` run does not satisfy.
+
+    `root` and `evidence` are arguments rather than globals so that the rule
+    can be tested without a repository and without a network: a green matrix
+    with nothing recorded must come back closed.
+    """
+    closed: list[str] = []
+    changelog = os.path.exists(os.path.join(root, "CHANGELOG.md"))
+    for key, title in EVIDENCE:
+        reasons = []
+        entry = evidence.get(key)
+        if not isinstance(entry, dict) or not entry.get("evidence"):
+            reasons.append("not recorded in release-evidence.json")
+        # The changelog is the half of the provenance condition that can be
+        # checked here, so it is checked here rather than trusted to the file.
+        if key == "provenance" and not changelog:
+            reasons.append("CHANGELOG.md does not exist")
+        if reasons:
+            closed.append(f"{key} {title}: " + "; ".join(reasons))
+    return closed
 
 
 def gh(args: list[str]) -> tuple[int, str]:
@@ -85,7 +124,26 @@ def main() -> int:
     if red or run["conclusion"] != "success":
         print(f"release_gate: {red} job(s) not green, run {run['conclusion']}: CLOSED")
         return 0 if args.allow else 1
-    print("release_gate: every job green: OPEN")
+    print("release_gate: every job green")
+
+    # The other eight conditions.  They are not a matter of opinion: each one
+    # names evidence that either exists or does not.
+    evidence_path = os.path.join(ROOT, "release-evidence.json")
+    evidence = {}
+    closed: list[str] = []
+    if os.path.exists(evidence_path):
+        try:
+            with open(evidence_path, encoding="utf-8") as handle:
+                evidence = json.load(handle)
+        except (OSError, ValueError) as error:
+            closed.append(f"the evidence file cannot be read: {error}")
+    closed += unrecorded(ROOT, evidence)
+    if closed:
+        for line in closed:
+            print(f"  NOT MET  {line}")
+        print(f"release_gate: {len(closed)} condition(s) of the gate are not met: CLOSED")
+        return 0 if args.allow else 1
+    print("release_gate: every condition of the gate is met: OPEN")
     return 0
 
 

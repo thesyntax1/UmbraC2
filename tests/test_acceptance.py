@@ -553,6 +553,49 @@ def test_the_suite_the_checkers_and_the_build_are_green():
                     name, root)
 
 
+# ------------------------------------------------------- the gate, not CI
+
+
+def test_the_release_gate_is_not_a_green_matrix():
+    """The release gate is nine conditions, and CI green is one of them.
+
+    This test exists because the repository once claimed the opposite: that a
+    green `ci.yml` was the release.  The tool that answers the question is
+    checked here, without a network: a fully green matrix with nothing
+    recorded has to come back closed.
+    """
+    # A green matrix is not a release.  The gate is a table of conditions in
+    # docs/RELEASE-PROCESS.md, and the tool that answers the question has to
+    # come back closed when every job is green and nothing else is recorded --
+    # the mistake this repository made once.
+    import release_gate
+
+    empty = release_gate.unrecorded(ROOT, {})
+    assert len(empty) >= len(release_gate.EVIDENCE), empty
+    assert any("CHANGELOG" in line for line in empty), empty
+
+    recorded = {key: {"evidence": "run 1"} for key, _ in release_gate.EVIDENCE}
+    left = [line for line in release_gate.unrecorded(ROOT, recorded)
+            if "CHANGELOG" not in line]
+    assert left == [], left
+
+    # ... and the changelog is the one condition that is a file, so a tree
+    # without it keeps the gate closed however much is recorded.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        open(os.path.join(directory, "CHANGELOG.md"), "w").close()
+        assert release_gate.unrecorded(directory, recorded) == []
+
+    # The table and the tool agree: five of the nine conditions are recorded
+    # in a file, and the document has to make the same claim in the same words,
+    # or one of the two has drifted.
+    gate = read_text("docs/RELEASE-PROCESS.md")
+    assert gate.count("| ") >= 10, "the gate table has fewer rows than conditions"
+    folded = gate.lower().replace("’", "'")
+    for key, title in release_gate.EVIDENCE:
+        assert title.lower() in folded, (key, title)
+
 # -------------------------------------------------------------------- 10
 
 
