@@ -26,6 +26,7 @@ object SysInfo {
     init {
         nativeReady = try {
             System.loadLibrary("umbra")
+            android.util.Log.i("umbra", "native library loaded")
             true
         } catch (t: Throwable) {
             nativeError = "${t.javaClass.simpleName}: ${t.message}"
