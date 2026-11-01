@@ -61,8 +61,12 @@ record() {
     # arguments.  The first version compared $2 against the two-word string and
     # died with "bad status: NOT" at the first NOT VERIFIED line -- the report
     # stopped exactly where it should have said what it could not measure.
-    if [ "$2" = "NOT" ] && [ "${3:-}" = "VERIFIED" ]; then
-        status="NOT VERIFIED"; title="$4"; evidence="${5:-}"
+    if [ "$2" = "NOT" ]; then
+        case "${3:-}" in
+            VERIFIED)   status="NOT VERIFIED" ;;
+            APPLICABLE) status="NOT APPLICABLE" ;;
+        esac
+        title="$4"; evidence="${5:-}"
     fi
     case "$status" in
         PASS|FAIL|"NOT VERIFIED"|"NOT APPLICABLE") ;;
@@ -124,7 +128,11 @@ PY
 
 # ui_texts <name>: every non-empty text on the screen, one per line.
 ui_texts() {
-    local name="$1" xml="$OUT/raw/ui-$name.xml"
+    # Two lines, not one: `local a="$1" b="…$a…"` expands the whole command
+    # line before assigning anything, and under `set -u` that is an unbound
+    # variable -- which is exactly how the previous run died.
+    local name="$1"
+    local xml="$OUT/raw/ui-$name.xml"
     adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1
     adb exec-out cat /sdcard/window_dump.xml >"$xml" 2>/dev/null
     grep -o 'text="[^"]*"' "$xml" 2>/dev/null | sed 's/^text="//; s/"$//' | grep -v '^$'
@@ -523,7 +531,12 @@ fi
 
 pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
 if [ -n "$pid" ]; then
-    adb shell su 0 kill -9 "$pid" >/dev/null 2>&1 || adb shell run-as "$PKG" kill -9 "$pid" >/dev/null 2>&1 || adb shell kill -9 "$pid" >/dev/null 2>&1
+    # As root the plain kill works; without root the same UID may still signal
+    # its own process, which is what run-as gives it.  `su 0` was tried first
+    # in the previous version and, on an image where su exists but does
+    # nothing, it answered success and the process was never killed.
+    adb shell kill -9 "$pid" >/dev/null 2>&1 \
+        || adb shell run-as "$PKG" kill -9 "$pid" >/dev/null 2>&1
     killed_at=$(date +%s)
     sleep 3
     killed_pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
@@ -618,8 +631,11 @@ record physical-device NOT APPLICABLE "a physical phone behaves the same way" \
 adb logcat -d -v threadtime >"$OUT/raw/logcat-full.txt" 2>/dev/null
 adb logcat -d -v threadtime 2>/dev/null | grep -E "io\.umbra\.beacon|AndroidRuntime|ActivityManager.*umbra" \
     >"$OUT/raw/logcat-app.txt" 2>/dev/null || true
-fatal=$(grep -c "FATAL EXCEPTION" "$OUT/raw/logcat-full.txt" 2>/dev/null || echo 0)
-anr=$(grep -c "ANR in $PKG" "$OUT/raw/logcat-full.txt" 2>/dev/null || echo 0)
+# grep -c prints 0 and exits 1 when nothing matched, so `|| echo 0` produced
+# "0\n0" and the arithmetic test below failed with "integer expression
+# expected" on a run where nothing had crashed.
+fatal=$(grep -c "FATAL EXCEPTION" "$OUT/raw/logcat-full.txt" 2>/dev/null) || fatal=0
+anr=$(grep -c "ANR in $PKG" "$OUT/raw/logcat-full.txt" 2>/dev/null) || anr=0
 echo "$fatal" >"$OUT/raw/fatal-count.txt"
 echo "$anr" >"$OUT/raw/anr-count.txt"
 if [ "$fatal" -eq 0 ] && [ "$anr" -eq 0 ]; then
