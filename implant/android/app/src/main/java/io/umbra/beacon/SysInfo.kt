@@ -26,7 +26,13 @@ object SysInfo {
     init {
         nativeReady = try {
             System.loadLibrary("umbra")
-            android.util.Log.i("umbra", "native library loaded")
+            // The load is proved by the functions answering, not by the call
+            // returning: a library whose entry points do not bind is not a
+            // loaded library, and these three values come from C++.
+            android.util.Log.i(
+                "umbra",
+                "native library loaded: kernel=${nativeKernelRelease()} machine=${nativeMachine()} pid=${nativePid()}",
+            )
             true
         } catch (t: Throwable) {
             nativeError = "${t.javaClass.simpleName}: ${t.message}"
