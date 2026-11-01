@@ -1,0 +1,54 @@
+src/dns.rs:22:15: [1m[33mwarning[0m: unused imports: `Read` and `Write`
+src/vpn.rs:413:25: [1m[33mwarning[0m: unused import: `Write`
+src/desktop.rs:16:5: [1m[33mwarning[0m: unused import: `crate::task::Outcome`
+src/vpn.rs:20:15: [1m[33mwarning[0m: unused import: `Read`
+src/vpn.rs:20:21: [1m[33mwarning[0m: unused import: `Write`
+src/vpn.rs:413:19: [1m[33mwarning[0m: unused import: `Read`
+src/beacon.rs:716:25: [1m[33mwarning[0m: value assigned to `batch` is never read: this value is reassigned later and never used
+src/creds.rs:285:18: [1m[33mwarning[0m: unused variable: `out`: help: if this is intentional, prefix it with an underscore: `_out`
+src/beacon.rs:1179:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/mail.rs:194:20: [1m[33mwarning[0m: value assigned to `last` is never read: this value is reassigned later and never used
+src/persist.rs:1188:17: [1m[33mwarning[0m: variable does not need to be mutable
+src/profile.rs:859:21: [1m[33mwarning[0m: value assigned to `query` is never read: this value is reassigned later and never used
+src/forensics.rs:406:23: [1m[33mwarning[0m: value assigned to `present` is never read: this value is reassigned later and never used
+src/transport.rs:272:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/shellcode.rs:132:13: [1m[33mwarning[0m: unused variable: `context`: help: if this is intentional, prefix it with an underscore: `_context`
+src/bof.rs:32:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ABSOLUTE` is never used
+src/bof.rs:33:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ADDR64` is never used
+src/bof.rs:34:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ADDR32` is never used
+src/bof.rs:35:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ADDR32NB` is never used
+src/bof.rs:36:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32` is never used
+src/bof.rs:37:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_1` is never used
+src/bof.rs:38:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_2` is never used
+src/bof.rs:39:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_3` is never used
+src/bof.rs:40:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_4` is never used
+src/bof.rs:41:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_5` is never used
+src/bof.rs:42:7: [1m[33mwarning[0m: constant `IMAGE_REL_I386_DIR32` is never used
+src/bof.rs:43:7: [1m[33mwarning[0m: constant `IMAGE_REL_I386_REL32` is never used
+src/bof.rs:46:7: [1m[33mwarning[0m: constant `IMAGE_SCN_CNT_CODE` is never used
+src/bof.rs:47:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_EXECUTE` is never used
+src/bof.rs:48:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_READ` is never used
+src/bof.rs:49:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_WRITE` is never used
+src/bof.rs:52:7: [1m[33mwarning[0m: constant `SECTION_HEADER_LEN` is never used
+src/bof.rs:54:7: [1m[33mwarning[0m: constant `SYMBOL_LEN` is never used
+src/bof.rs:56:7: [1m[33mwarning[0m: constant `RELOC_LEN` is never used
+src/bof.rs:62:8: [1m[33mwarning[0m: struct `Image` is never constructed
+src/bof.rs:94:5: [1m[33mwarning[0m: fields `symbol_table`, `symbol_count`, and `optional_size` are never read
+src/bof.rs:118:8: [1m[33mwarning[0m: struct `Section` is never constructed
+src/bof.rs:129:4: [1m[33mwarning[0m: function `parse_sections` is never used
+src/bof.rs:160:8: [1m[33mwarning[0m: struct `Symbol` is never constructed
+src/bof.rs:167:4: [1m[33mwarning[0m: function `parse_symbols` is never used
+src/bof.rs:214:4: [1m[33mwarning[0m: function `find_entry` is never used
+src/domain.rs:377:4: [1m[33mwarning[0m: function `edge_kind` is never used
+src/evade.rs:79:7: [1m[33mwarning[0m: constant `SANDBOX_DLLS` is never used
+src/wasm.rs:78:5: [1m[33mwarning[0m: field `results` is never read
+src/main.rs:236:17: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1279:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1325:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1359:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1369:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1405:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1408:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1441:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1499:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1509:13: [1m[33mwarning[0m: variable does not need to be mutable

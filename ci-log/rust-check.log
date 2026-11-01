@@ -1,0 +1,752 @@
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+head:  af4dc3bac9fa69d6e6adc049269391e69ddf3c14
+
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m aead v0.5.2
+[1m[92m  Downloaded[0m cfg-if v1.0.5
+[1m[92m  Downloaded[0m block-buffer v0.10.4
+[1m[92m  Downloaded[0m crypto-common v0.1.7
+[1m[92m  Downloaded[0m generic-array v0.14.7
+[1m[92m  Downloaded[0m ghash v0.5.1
+[1m[92m  Downloaded[0m subtle v2.6.1
+[1m[92m  Downloaded[0m zeroize_derive v1.5.0
+[1m[92m  Downloaded[0m cpufeatures v0.2.17
+[1m[92m  Downloaded[0m rand_chacha v0.3.1
+[1m[92m  Downloaded[0m opaque-debug v0.3.1
+[1m[92m  Downloaded[0m universal-hash v0.5.1
+[1m[92m  Downloaded[0m version_check v0.9.5
+[1m[92m  Downloaded[0m rustc_version v0.4.1
+[1m[92m  Downloaded[0m curve25519-dalek-derive v0.1.1
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m rand_core v0.6.4
+[1m[92m  Downloaded[0m sha2 v0.10.9
+[1m[92m  Downloaded[0m inout v0.1.4
+[1m[92m  Downloaded[0m ctr v0.9.2
+[1m[92m  Downloaded[0m ppv-lite86 v0.2.21
+[1m[92m  Downloaded[0m zeroize v1.9.1
+[1m[92m  Downloaded[0m quote v1.0.47
+[1m[92m  Downloaded[0m polyval v0.6.2
+[1m[92m  Downloaded[0m cipher v0.4.4
+[1m[92m  Downloaded[0m digest v0.10.7
+[1m[92m  Downloaded[0m semver v1.0.28
+[1m[92m  Downloaded[0m aes v0.8.4
+[1m[92m  Downloaded[0m unicode-ident v1.0.27
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m hmac v0.12.1
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m typenum v1.20.1
+[1m[92m  Downloaded[0m aes-gcm v0.10.3
+[1m[92m  Downloaded[0m serde_derive v1.0.229
+[1m[92m  Downloaded[0m getrandom v0.2.17
+[1m[92m  Downloaded[0m proc-macro2 v1.0.107
+[1m[92m  Downloaded[0m rand v0.8.8
+[1m[92m  Downloaded[0m serde v1.0.229
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m x25519-dalek v2.0.1
+[1m[92m  Downloaded[0m serde_json v1.0.154
+[1m[92m  Downloaded[0m hkdf v0.12.4
+[1m[92m  Downloaded[0m curve25519-dalek v4.1.3
+[1m[92m  Downloaded[0m syn v2.0.119
+[1m[92m  Downloaded[0m zerocopy v0.8.63
+[1m[92m  Downloaded[0m syn v3.0.9
+[1m[92m  Downloaded[0m libc v0.2.191
+[1m[92m   Compiling[0m libc v0.2.191
+[1m[92m    Checking[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m version_check v0.9.5
+[1m[92m    Checking[0m typenum v1.20.1
+[1m[92m    Checking[0m subtle v2.6.1
+[1m[92m   Compiling[0m proc-macro2 v1.0.107
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m   Compiling[0m unicode-ident v1.0.27
+[1m[92m    Checking[0m cpufeatures v0.2.17
+[1m[92m   Compiling[0m zerocopy v0.8.63
+[1m[92m   Compiling[0m semver v1.0.28
+[1m[92m    Checking[0m block-buffer v0.10.4
+[1m[92m    Checking[0m inout v0.1.4
+[1m[92m   Compiling[0m rustc_version v0.4.1
+[1m[92m   Compiling[0m curve25519-dalek v4.1.3
+[1m[92m   Compiling[0m syn v2.0.119
+[1m[92m    Checking[0m opaque-debug v0.3.1
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m    Checking[0m getrandom v0.2.17
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m    Checking[0m rand_core v0.6.4
+[1m[92m    Checking[0m crypto-common v0.1.7
+[1m[92m   Compiling[0m serde_json v1.0.154
+[1m[92m    Checking[0m digest v0.10.7
+[1m[92m    Checking[0m universal-hash v0.5.1
+[1m[92m    Checking[0m cipher v0.4.4
+[1m[92m    Checking[0m polyval v0.6.2
+[1m[92m    Checking[0m ghash v0.5.1
+[1m[92m    Checking[0m ctr v0.9.2
+[1m[92m    Checking[0m aes v0.8.4
+[1m[92m    Checking[0m hmac v0.12.1
+[1m[92m    Checking[0m aead v0.5.2
+[1m[92m    Checking[0m hkdf v0.12.4
+[1m[92m    Checking[0m sha2 v0.10.9
+[1m[92m    Checking[0m aes-gcm v0.10.3
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m ppv-lite86 v0.2.21
+[1m[92m    Checking[0m rand_chacha v0.3.1
+[1m[92m   Compiling[0m zeroize_derive v1.5.0
+[1m[92m   Compiling[0m curve25519-dalek-derive v0.1.1
+[1m[92m    Checking[0m rand v0.8.8
+[1m[92m    Checking[0m zeroize v1.9.1
+[1m[92m    Checking[0m x25519-dalek v2.0.1
+[1m[92m    Checking[0m umbra-beacon v0.1.0 (/home/runner/work/UmbraC2/UmbraC2/implant/rust)
+src/dns.rs:22:15: [1m[33mwarning[0m: unused imports: `Read` and `Write`
+src/vpn.rs:413:25: [1m[33mwarning[0m: unused import: `Write`
+src/desktop.rs:16:5: [1m[33mwarning[0m: unused import: `crate::task::Outcome`
+src/vpn.rs:20:15: [1m[33mwarning[0m: unused import: `Read`
+src/vpn.rs:20:21: [1m[33mwarning[0m: unused import: `Write`
+src/vpn.rs:413:19: [1m[33mwarning[0m: unused import: `Read`
+src/beacon.rs:716:25: [1m[33mwarning[0m: value assigned to `batch` is never read: this value is reassigned later and never used
+src/creds.rs:285:18: [1m[33mwarning[0m: unused variable: `out`: help: if this is intentional, prefix it with an underscore: `_out`
+src/beacon.rs:1179:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/mail.rs:194:20: [1m[33mwarning[0m: value assigned to `last` is never read: this value is reassigned later and never used
+src/persist.rs:1188:17: [1m[33mwarning[0m: variable does not need to be mutable
+src/profile.rs:859:21: [1m[33mwarning[0m: value assigned to `query` is never read: this value is reassigned later and never used
+src/forensics.rs:406:23: [1m[33mwarning[0m: value assigned to `present` is never read: this value is reassigned later and never used
+src/transport.rs:272:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/shellcode.rs:132:13: [1m[33mwarning[0m: unused variable: `context`: help: if this is intentional, prefix it with an underscore: `_context`
+src/bof.rs:32:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ABSOLUTE` is never used
+src/bof.rs:33:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ADDR64` is never used
+src/bof.rs:34:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ADDR32` is never used
+src/bof.rs:35:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_ADDR32NB` is never used
+src/bof.rs:36:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32` is never used
+src/bof.rs:37:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_1` is never used
+src/bof.rs:38:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_2` is never used
+src/bof.rs:39:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_3` is never used
+src/bof.rs:40:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_4` is never used
+src/bof.rs:41:7: [1m[33mwarning[0m: constant `IMAGE_REL_AMD64_REL32_5` is never used
+src/bof.rs:42:7: [1m[33mwarning[0m: constant `IMAGE_REL_I386_DIR32` is never used
+src/bof.rs:43:7: [1m[33mwarning[0m: constant `IMAGE_REL_I386_REL32` is never used
+src/bof.rs:46:7: [1m[33mwarning[0m: constant `IMAGE_SCN_CNT_CODE` is never used
+src/bof.rs:47:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_EXECUTE` is never used
+src/bof.rs:48:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_READ` is never used
+src/bof.rs:49:7: [1m[33mwarning[0m: constant `IMAGE_SCN_MEM_WRITE` is never used
+src/bof.rs:52:7: [1m[33mwarning[0m: constant `SECTION_HEADER_LEN` is never used
+src/bof.rs:54:7: [1m[33mwarning[0m: constant `SYMBOL_LEN` is never used
+src/bof.rs:56:7: [1m[33mwarning[0m: constant `RELOC_LEN` is never used
+src/bof.rs:62:8: [1m[33mwarning[0m: struct `Image` is never constructed
+src/bof.rs:94:5: [1m[33mwarning[0m: fields `symbol_table`, `symbol_count`, and `optional_size` are never read
+src/bof.rs:118:8: [1m[33mwarning[0m: struct `Section` is never constructed
+src/bof.rs:129:4: [1m[33mwarning[0m: function `parse_sections` is never used
+src/bof.rs:160:8: [1m[33mwarning[0m: struct `Symbol` is never constructed
+src/bof.rs:167:4: [1m[33mwarning[0m: function `parse_symbols` is never used
+src/bof.rs:214:4: [1m[33mwarning[0m: function `find_entry` is never used
+src/domain.rs:377:4: [1m[33mwarning[0m: function `edge_kind` is never used
+src/evade.rs:79:7: [1m[33mwarning[0m: constant `SANDBOX_DLLS` is never used
+src/wasm.rs:78:5: [1m[33mwarning[0m: field `results` is never read
+[1m[33mwarning[0m: `umbra-beacon` (lib) generated 42 warnings (run `cargo fix --lib -p umbra-beacon` to apply 6 suggestions)
+src/main.rs:236:17: [1m[33mwarning[0m: variable does not need to be mutable
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon" test) generated 1 warning (1 duplicate)
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon") generated 1 warning (run `cargo fix --bin "umbra-beacon" -p umbra-beacon` to apply 1 suggestion)
+src/wasm.rs:1279:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1325:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1359:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1369:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1405:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1408:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1441:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1499:13: [1m[33mwarning[0m: variable does not need to be mutable
+src/wasm.rs:1509:13: [1m[33mwarning[0m: variable does not need to be mutable
+[1m[33mwarning[0m: `umbra-beacon` (lib test) generated 53 warnings (42 duplicates) (run `cargo fix --lib -p umbra-beacon --tests` to apply 11 suggestions)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 12.97s
+
+=== one error per line ===
+[1m[92m   Compiling[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m libc v0.2.191
+[1m[92m   Compiling[0m typenum v1.20.1
+[1m[92m   Compiling[0m subtle v2.6.1
+[1m[92m   Compiling[0m cpufeatures v0.2.17
+[1m[92m   Compiling[0m zerocopy v0.8.63
+[1m[92m   Compiling[0m opaque-debug v0.3.1
+[1m[92m   Compiling[0m zeroize v1.9.1
+[1m[92m   Compiling[0m curve25519-dalek v4.1.3
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m   Compiling[0m getrandom v0.2.17
+[1m[92m   Compiling[0m rand_core v0.6.4
+[1m[92m   Compiling[0m inout v0.1.4
+[1m[92m   Compiling[0m block-buffer v0.10.4
+[1m[92m   Compiling[0m crypto-common v0.1.7
+[1m[92m   Compiling[0m x25519-dalek v2.0.1
+[1m[92m   Compiling[0m universal-hash v0.5.1
+[1m[92m   Compiling[0m digest v0.10.7
+[1m[92m   Compiling[0m cipher v0.4.4
+[1m[92m   Compiling[0m polyval v0.6.2
+[1m[92m   Compiling[0m ctr v0.9.2
+[1m[92m   Compiling[0m ghash v0.5.1
+[1m[92m   Compiling[0m aes v0.8.4
+[1m[92m   Compiling[0m hmac v0.12.1
+[1m[92m   Compiling[0m aead v0.5.2
+[1m[92m   Compiling[0m hkdf v0.12.4
+[1m[92m   Compiling[0m sha2 v0.10.9
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m aes-gcm v0.10.3
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m memchr v2.8.3
+[1m[92m   Compiling[0m itoa v1.0.18
+[1m[92m   Compiling[0m ppv-lite86 v0.2.21
+[1m[92m   Compiling[0m serde_json v1.0.154
+[1m[92m   Compiling[0m rand_chacha v0.3.1
+[1m[92m   Compiling[0m rand v0.8.8
+[1m[92m   Compiling[0m umbra-beacon v0.1.0 (/home/runner/work/UmbraC2/UmbraC2/implant/rust)
+[1m[33mwarning[0m[1m: unused imports: `Read` and `Write`[0m
+  [1m[94m--> [0msrc/dns.rs:22:15
+   [1m[94m|[0m
+[1m[94m22[0m [1m[94m|[0m use std::io::{Read, Write};
+   [1m[94m|[0m               [1m[33m^^^^[0m  [1m[33m^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: unused import: `Write`[0m
+   [1m[94m--> [0msrc/vpn.rs:413:25
+    [1m[94m|[0m
+[1m[94m413[0m [1m[94m|[0m     use std::io::{Read, Write};
+    [1m[94m|[0m                         [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: unused import: `crate::task::Outcome`[0m
+  [1m[94m--> [0msrc/desktop.rs:16:5
+   [1m[94m|[0m
+[1m[94m16[0m [1m[94m|[0m use crate::task::Outcome;
+   [1m[94m|[0m     [1m[33m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: unused import: `Read`[0m
+  [1m[94m--> [0msrc/vpn.rs:20:15
+   [1m[94m|[0m
+[1m[94m20[0m [1m[94m|[0m use std::io::{Read, Write};
+   [1m[94m|[0m               [1m[33m^^^^[0m
+
+[1m[33mwarning[0m[1m: unused import: `Write`[0m
+  [1m[94m--> [0msrc/vpn.rs:20:21
+   [1m[94m|[0m
+[1m[94m20[0m [1m[94m|[0m use std::io::{Read, Write};
+   [1m[94m|[0m                     [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: unused import: `Read`[0m
+   [1m[94m--> [0msrc/vpn.rs:413:19
+    [1m[94m|[0m
+[1m[94m413[0m [1m[94m|[0m     use std::io::{Read, Write};
+    [1m[94m|[0m                   [1m[33m^^^^[0m
+
+[1m[33mwarning[0m[1m: value assigned to `batch` is never read[0m
+   [1m[94m--> [0msrc/beacon.rs:716:25
+    [1m[94m|[0m
+[1m[94m716[0m [1m[94m|[0m         let mut batch = upk::map(vec![]);
+    [1m[94m|[0m                         [1m[33m^^^^^^^^^^^^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m749[0m [1m[94m|[0m                     batch = body;
+    [1m[94m|[0m                     [1m[94m-----[0m [1m[94m`batch` is overwritten here before the previous value is read[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: unused variable: `out`[0m
+   [1m[94m--> [0msrc/creds.rs:285:18
+    [1m[94m|[0m
+[1m[94m285[0m [1m[94m|[0m     pub fn dpapi(out: &mut Collected, _args: &Value) -> Result<(), String> {
+    [1m[94m|[0m                  [1m[33m^^^[0m [1m[33mhelp: if this is intentional, prefix it with an underscore: `_out`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: value assigned to `last` is never read[0m
+   [1m[94m--> [0msrc/mail.rs:194:20
+    [1m[94m|[0m
+[1m[94m194[0m [1m[94m|[0m     let mut last = String::new();
+    [1m[94m|[0m                    [1m[33m^^^^^^^^^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m197[0m [1m[94m|[0m         last = line.clone();
+    [1m[94m|[0m         [1m[94m----[0m [1m[94m`last` is overwritten here before the previous value is read[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/persist.rs:1188:17
+     [1m[94m|[0m
+[1m[94m1188[0m [1m[94m|[0m             let mut text = fs::read_to_string(&path).unwrap_or_default();
+     [1m[94m|[0m                 [1m[94m----[0m[1m[33m^^^^[0m
+     [1m[94m|[0m                 [1m[94m|[0m
+     [1m[94m|[0m                 [1m[94mhelp: remove this `mut`[0m
+     [1m[94m|[0m
+     [1m[94m= [0m[1mnote[0m: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/beacon.rs:1179:13
+     [1m[94m|[0m
+[1m[94m1179[0m [1m[94m|[0m         let mut cfg = Config {
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+     [1m[94m|[0m
+     [1m[94m= [0m[1mnote[0m: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: value assigned to `query` is never read[0m
+   [1m[94m--> [0msrc/profile.rs:859:21
+    [1m[94m|[0m
+[1m[94m859[0m [1m[94m|[0m     let mut query = String::new();
+    [1m[94m|[0m                     [1m[33m^^^^^^^^^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m865[0m [1m[94m|[0m             query = rest.trim().to_string();
+    [1m[94m|[0m             [1m[94m-----[0m [1m[94m`query` is overwritten here before the previous value is read[0m
+
+[1m[33mwarning[0m[1m: value assigned to `present` is never read[0m
+   [1m[94m--> [0msrc/forensics.rs:406:23
+    [1m[94m|[0m
+[1m[94m406[0m [1m[94m|[0m     let mut present = false;
+    [1m[94m|[0m                       [1m[33m^^^^^[0m [1m[33mthis value is reassigned later and never used[0m
+[1m[94m...[0m
+[1m[94m411[0m [1m[94m|[0m             present = true;
+    [1m[94m|[0m             [1m[94m--------------[0m [1m[94m`present` is overwritten here before the previous value is read[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/transport.rs:272:13
+    [1m[94m|[0m
+[1m[94m272[0m [1m[94m|[0m         let mut stream = TcpStream::connect_timeout(
+    [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^[0m
+    [1m[94m|[0m             [1m[94m|[0m
+    [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/persist.rs:1188:17
+     [1m[94m|[0m
+[1m[94m1188[0m [1m[94m|[0m             let mut text = fs::read_to_string(&path).unwrap_or_default();
+     [1m[94m|[0m                 [1m[94m----[0m[1m[33m^^^^[0m
+     [1m[94m|[0m                 [1m[94m|[0m
+     [1m[94m|[0m                 [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_ABSOLUTE` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:32:7
+   [1m[94m|[0m
+[1m[94m32[0m [1m[94m|[0m const IMAGE_REL_AMD64_ABSOLUTE: u16 = 0x0000;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_ADDR64` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:33:7
+   [1m[94m|[0m
+[1m[94m33[0m [1m[94m|[0m const IMAGE_REL_AMD64_ADDR64: u16 = 0x0001;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_ADDR32` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:34:7
+   [1m[94m|[0m
+[1m[94m34[0m [1m[94m|[0m const IMAGE_REL_AMD64_ADDR32: u16 = 0x0002;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_ADDR32NB` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:35:7
+   [1m[94m|[0m
+[1m[94m35[0m [1m[94m|[0m const IMAGE_REL_AMD64_ADDR32NB: u16 = 0x0003;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_REL32` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:36:7
+   [1m[94m|[0m
+[1m[94m36[0m [1m[94m|[0m const IMAGE_REL_AMD64_REL32: u16 = 0x0004;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_REL32_1` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:37:7
+   [1m[94m|[0m
+[1m[94m37[0m [1m[94m|[0m const IMAGE_REL_AMD64_REL32_1: u16 = 0x0005;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_REL32_2` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:38:7
+   [1m[94m|[0m
+[1m[94m38[0m [1m[94m|[0m const IMAGE_REL_AMD64_REL32_2: u16 = 0x0006;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_REL32_3` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:39:7
+   [1m[94m|[0m
+[1m[94m39[0m [1m[94m|[0m const IMAGE_REL_AMD64_REL32_3: u16 = 0x0007;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_REL32_4` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:40:7
+   [1m[94m|[0m
+[1m[94m40[0m [1m[94m|[0m const IMAGE_REL_AMD64_REL32_4: u16 = 0x0008;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_AMD64_REL32_5` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:41:7
+   [1m[94m|[0m
+[1m[94m41[0m [1m[94m|[0m const IMAGE_REL_AMD64_REL32_5: u16 = 0x0009;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_I386_DIR32` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:42:7
+   [1m[94m|[0m
+[1m[94m42[0m [1m[94m|[0m const IMAGE_REL_I386_DIR32: u16 = 0x0006;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_REL_I386_REL32` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:43:7
+   [1m[94m|[0m
+[1m[94m43[0m [1m[94m|[0m const IMAGE_REL_I386_REL32: u16 = 0x0014;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_CNT_CODE` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:46:7
+   [1m[94m|[0m
+[1m[94m46[0m [1m[94m|[0m const IMAGE_SCN_CNT_CODE: u32 = 0x0000_0020;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_MEM_EXECUTE` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:47:7
+   [1m[94m|[0m
+[1m[94m47[0m [1m[94m|[0m const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_MEM_READ` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:48:7
+   [1m[94m|[0m
+[1m[94m48[0m [1m[94m|[0m const IMAGE_SCN_MEM_READ: u32 = 0x4000_0000;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `IMAGE_SCN_MEM_WRITE` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:49:7
+   [1m[94m|[0m
+[1m[94m49[0m [1m[94m|[0m const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `SECTION_HEADER_LEN` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:52:7
+   [1m[94m|[0m
+[1m[94m52[0m [1m[94m|[0m const SECTION_HEADER_LEN: usize = 40;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `SYMBOL_LEN` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:54:7
+   [1m[94m|[0m
+[1m[94m54[0m [1m[94m|[0m const SYMBOL_LEN: usize = 18;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `RELOC_LEN` is never used[0m
+  [1m[94m--> [0msrc/bof.rs:56:7
+   [1m[94m|[0m
+[1m[94m56[0m [1m[94m|[0m const RELOC_LEN: usize = 10;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `Image` is never constructed[0m
+  [1m[94m--> [0msrc/bof.rs:62:8
+   [1m[94m|[0m
+[1m[94m62[0m [1m[94m|[0m struct Image {
+   [1m[94m|[0m        [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: fields `symbol_table`, `symbol_count`, and `optional_size` are never read[0m
+  [1m[94m--> [0msrc/bof.rs:94:5
+   [1m[94m|[0m
+[1m[94m91[0m [1m[94m|[0m struct CoffHeader {
+   [1m[94m|[0m        [1m[94m----------[0m [1m[94mfields in this struct[0m
+[1m[94m...[0m
+[1m[94m94[0m [1m[94m|[0m     symbol_table: u32,
+   [1m[94m|[0m     [1m[33m^^^^^^^^^^^^[0m
+[1m[94m95[0m [1m[94m|[0m     symbol_count: u32,
+   [1m[94m|[0m     [1m[33m^^^^^^^^^^^^[0m
+[1m[94m96[0m [1m[94m|[0m     optional_size: u16,
+   [1m[94m|[0m     [1m[33m^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `Section` is never constructed[0m
+   [1m[94m--> [0msrc/bof.rs:118:8
+    [1m[94m|[0m
+[1m[94m118[0m [1m[94m|[0m struct Section {
+    [1m[94m|[0m        [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `parse_sections` is never used[0m
+   [1m[94m--> [0msrc/bof.rs:129:4
+    [1m[94m|[0m
+[1m[94m129[0m [1m[94m|[0m fn parse_sections(object: &[u8], header: &CoffHeader) -> Result<Vec<Section>, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `Symbol` is never constructed[0m
+   [1m[94m--> [0msrc/bof.rs:160:8
+    [1m[94m|[0m
+[1m[94m160[0m [1m[94m|[0m struct Symbol {
+    [1m[94m|[0m        [1m[33m^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `parse_symbols` is never used[0m
+   [1m[94m--> [0msrc/bof.rs:167:4
+    [1m[94m|[0m
+[1m[94m167[0m [1m[94m|[0m fn parse_symbols(object: &[u8], header: &CoffHeader) -> Result<Vec<Symbol>, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `find_entry` is never used[0m
+   [1m[94m--> [0msrc/bof.rs:214:4
+    [1m[94m|[0m
+[1m[94m214[0m [1m[94m|[0m fn find_entry(symbols: &[Symbol]) -> Option<&Symbol> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `edge_kind` is never used[0m
+   [1m[94m--> [0msrc/domain.rs:377:4
+    [1m[94m|[0m
+[1m[94m377[0m [1m[94m|[0m fn edge_kind(kind: &str) -> &'static str {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `SANDBOX_DLLS` is never used[0m
+  [1m[94m--> [0msrc/evade.rs:79:7
+   [1m[94m|[0m
+[1m[94m79[0m [1m[94m|[0m const SANDBOX_DLLS: [&str; 5] = [
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: field `results` is never read[0m
+  [1m[94m--> [0msrc/wasm.rs:78:5
+   [1m[94m|[0m
+[1m[94m76[0m [1m[94m|[0m struct FuncType {
+   [1m[94m|[0m        [1m[94m--------[0m [1m[94mfield in this struct[0m
+[1m[94m77[0m [1m[94m|[0m     params: Vec<u8>,
+[1m[94m78[0m [1m[94m|[0m     results: Vec<u8>,
+   [1m[94m|[0m     [1m[33m^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `FuncType` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+[1m[33mwarning[0m[1m: unused variable: `context`[0m
+   [1m[94m--> [0msrc/shellcode.rs:132:13
+    [1m[94m|[0m
+[1m[94m132[0m [1m[94m|[0m         let context = Context {
+    [1m[94m|[0m             [1m[33m^^^^^^^[0m [1m[33mhelp: if this is intentional, prefix it with an underscore: `_context`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1279:13
+     [1m[94m|[0m
+[1m[94m1279[0m [1m[94m|[0m         let mut type_section = vec![1, 0x60, 0, 1, 0x7f];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1325:13
+     [1m[94m|[0m
+[1m[94m1325[0m [1m[94m|[0m         let mut type_section = vec![1, 0x60, 0, 1, 0x7f];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1359:13
+     [1m[94m|[0m
+[1m[94m1359[0m [1m[94m|[0m         let mut type_section = vec![2, 0x60, 3, 0x7f, 0x7f, 0x7f, 0, 0x60, 0, 0];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1369:13
+     [1m[94m|[0m
+[1m[94m1369[0m [1m[94m|[0m         let mut memory_section = vec![1, 0x00, 0x01];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1405:13
+     [1m[94m|[0m
+[1m[94m1405[0m [1m[94m|[0m         let mut type_section = vec![1, 0x60, 0, 1, 0x7f];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1408:13
+     [1m[94m|[0m
+[1m[94m1408[0m [1m[94m|[0m         let mut memory_section = vec![1, 0x00, 0x01];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1441:13
+     [1m[94m|[0m
+[1m[94m1441[0m [1m[94m|[0m         let mut type_section = vec![1, 0x60, 0, 1, 0x7f];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1499:13
+     [1m[94m|[0m
+[1m[94m1499[0m [1m[94m|[0m         let mut type_section = vec![2, 0x60, 2, 0x7f, 0x7f, 0, 0x60, 0, 1, 0x7f];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+    [1m[94m--> [0msrc/wasm.rs:1509:13
+     [1m[94m|[0m
+[1m[94m1509[0m [1m[94m|[0m         let mut memory_section = vec![1, 0x00, 0x01];
+     [1m[94m|[0m             [1m[94m----[0m[1m[33m^^^^^^^^^^^^^^[0m
+     [1m[94m|[0m             [1m[94m|[0m
+     [1m[94m|[0m             [1m[94mhelp: remove this `mut`[0m
+
+[1m[33mwarning[0m: `umbra-beacon` (lib) generated 42 warnings (run `cargo fix --lib -p umbra-beacon` to apply 6 suggestions)
+[1m[33mwarning[0m[1m: variable does not need to be mutable[0m
+   [1m[94m--> [0msrc/main.rs:236:17
+    [1m[94m|[0m
+[1m[94m236[0m [1m[94m|[0m             let mut next = |i: &mut usize| -> Result<String, String> {
+    [1m[94m|[0m                 [1m[94m----[0m[1m[33m^^^^[0m
+    [1m[94m|[0m                 [1m[94m|[0m
+    [1m[94m|[0m                 [1m[94mhelp: remove this `mut`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon" test) generated 1 warning (1 duplicate)
+[1m[33mwarning[0m: `umbra-beacon` (bin "umbra-beacon") generated 1 warning (run `cargo fix --bin "umbra-beacon" -p umbra-beacon` to apply 1 suggestion)
+[1m[33mwarning[0m: `umbra-beacon` (lib test) generated 53 warnings (41 duplicates) (run `cargo fix --lib -p umbra-beacon --tests` to apply 12 suggestions)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 9.30s
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/umbra_beacon-dc64c66d2172f77c)
+
+running 125 tests
+test beacon::tests::ct_eq_behaves ... ok
+test bof::tests::a_truncated_object_is_refused ... ok
+test bof::tests::arguments_are_rendered_as_pairs ... ok
+test bof::tests::the_header_is_parsed ... ok
+test creds::tests::a_binary_secret_is_reported_as_hex ... ok
+test creds::tests::the_record_carries_its_kind_and_its_source ... ok
+test creds::tests::the_report_says_that_the_material_was_left_out ... ok
+test creds::tests::the_secret_is_only_reported_when_it_is_asked_for ... ok
+test crypto::tests::aead_roundtrip_and_tamper ... ok
+test crypto::tests::hkdf_matches_rfc5869 ... ok
+test crypto::tests::the_zeroizer_clears_the_buffer ... ok
+test dns::tests::a_frame_is_split_and_reassembled ... ok
+test dns::tests::base32_matches_the_reference_values ... ok
+test dns::tests::the_query_carries_the_name ... ok
+test domain::tests::a_separator_is_recognised ... ok
+test domain::tests::a_target_that_is_not_in_the_graph_has_no_path ... ok
+test domain::tests::the_access_lists_are_parsed ... ok
+test dns::tests::base32_round_trips ... ok
+test domain::tests::the_delegation_is_parsed ... ok
+test domain::tests::the_domain_controllers_are_parsed ... ok
+test domain::tests::the_group_members_are_parsed ... ok
+test domain::tests::the_map_report_reads_like_a_map ... ok
+test domain::tests::the_group_table_is_parsed ... ok
+test domain::tests::the_path_to_a_named_target_is_found ... ok
+test domain::tests::the_path_to_the_controller_is_found ... ok
+test domain::tests::the_sessions_are_parsed ... ok
+test domain::tests::the_well_known_sids_get_a_name ... ok
+test domain::tests::the_trusts_are_parsed ... ok
+test domain::tests::the_who_output_is_parsed ... ok
+test evade::tests::the_findings_are_classified ... ok
+test evade::tests::the_kill_switch_fires_on_the_file ... ok
+test evade::tests::the_kill_switch_stays_quiet_until_it_is_armed ... ok
+test evade::tests::the_marker_is_found_in_the_arguments ... ok
+test evade::tests::the_name_matcher_is_strict ... ok
+test evade::tests::the_policy_follows_the_settings ... ok
+test evade::tests::the_report_always_ends_with_a_newline ... ok
+test evade::tests::the_schedule_depends_on_the_hour ... ok
+test evade::tests::the_window_holds_the_interval ... ok
+test hygiene::tests::the_environment_is_cleaned_of_the_tool ... ok
+test hygiene::tests::the_memory_report_names_every_buffer ... ok
+test hygiene::tests::the_process_task_reports_what_it_did ... ok
+test mail::tests::the_body_of_a_mail_round_trips ... ok
+test mail::tests::the_host_of_an_address_is_read ... ok
+test manifest::tests::a_manifest_is_parsed ... ok
+test manifest::tests::a_manifest_without_the_magic_is_refused ... ok
+test manifest::tests::a_required_argument_that_is_missing_stops_the_module ... ok
+test manifest::tests::a_value_of_the_wrong_kind_stops_the_module ... ok
+test manifest::tests::another_dialect_is_refused ... ok
+test manifest::tests::another_version_is_refused ... ok
+test manifest::tests::the_default_of_the_manifest_is_used ... ok
+test manifest::tests::the_missing_capabilities_are_named ... ok
+test migrate::tests::a_migration_without_a_target_is_refused ... ok
+test migrate::tests::a_migration_without_an_image_is_refused ... ok
+test migrate::tests::the_plan_reads_the_arguments_of_the_task ... ok
+test migrate::tests::the_report_reads_like_a_report ... ok
+test profile::tests::a_check_that_does_not_run_is_skipped ... ok
+test profile::tests::a_finding_travels_as_a_map ... ok
+test profile::tests::a_profile_that_is_not_known_is_refused ... ok
+test profile::tests::the_checks_may_be_named_one_by_one ... ok
+test profile::tests::the_profiles_name_their_groups ... ok
+test profile::tests::the_report_reads_like_a_report ... ok
+test profile::tests::the_suggestions_are_scored ... ok
+test remote::tests::an_unknown_protocol_is_refused ... ok
+test remote::tests::the_kind_carries_the_protocol ... ok
+test remote::tests::the_protocol_is_required ... ok
+test remote::tests::the_smb_command_cleans_up_after_itself ... ok
+test remote::tests::the_ssh_command_carries_the_account ... ok
+test remote::tests::the_tag_is_always_a_safe_name ... ok
+test remote::tests::the_wmi_command_writes_to_the_share_and_reads_it_back ... ok
+test s3::tests::a_leap_day_is_found ... ok
+test s3::tests::the_date_is_rendered_the_way_the_signature_needs_it ... ok
+test s3::tests::the_epoch_is_the_first_of_january ... ok
+test script::tests::a_script_adds_up ... ok
+test script::tests::a_script_chooses_a_branch ... ok
+test script::tests::a_script_hashes_only_with_the_capability ... ok
+test script::tests::a_script_reads_an_argument ... ok
+test script::tests::a_script_stops_when_it_says_so ... ok
+test script::tests::a_script_that_is_not_a_script_is_refused ... ok
+test script::tests::a_script_that_never_ends_is_stopped ... ok
+test session::tests::rejects_replay ... ok
+test session::tests::rekey_keeps_peers_in_sync ... ok
+test session::tests::roundtrip ... ok
+test shellcode::tests::an_empty_module_is_refused ... ok
+test shellcode::tests::the_context_is_position_independent ... ok
+test task::tests::an_ipv6_address_needs_brackets ... ok
+test evade::tests::the_artefacts_carry_a_class_and_a_score ... ok
+test task::tests::download_is_chunked_and_hashed ... ok
+test task::tests::download_rejects_bad_ranges ... ok
+test task::tests::drain_keeps_a_bounded_prefix ... ok
+test beacon::tests::the_sleep_is_obfuscated ... ok
+test task::tests::the_scan_walks_an_ipv4_block ... ok
+test task::tests::the_scan_walks_an_ipv6_block ... ok
+test task::tests::unknown_kind_is_reported ... ok
+test task::tests::upload_rewrites_from_zero_and_verifies ... ok
+test transport::tests::chunked_response_is_not_reusable ... ok
+test transport::tests::connection_close_is_not_reusable ... ok
+test transport::tests::dechunk_roundtrip ... ok
+test transport::tests::finds_header_terminator ... ok
+test transport::tests::length_delimited_response_is_keep_alive ... ok
+test transport::tests::stale_connection_errors_are_retryable ... ok
+test tunnel::tests::frame_reader_waits_for_a_whole_frame ... ok
+test tunnel::tests::peer_mac_is_keyed ... ok
+test tunnel::tests::the_answer_covers_the_whole_exchange ... ok
+test upk::tests::canonical_map_order ... ok
+test upk::tests::rejects_trailing_and_bad_tags ... ok
+test upk::tests::roundtrip_primitives ... ok
+test vpn::tests::the_init_packet_has_the_expected_shape ... ok
+test beacon::tests::jitter_stays_in_window ... ok
+test vpn::tests::the_mac_binds_the_identity ... ok
+test wasm::tests::a_loop_counts_to_ten ... ok
+test wasm::tests::a_capability_the_module_does_not_have_is_refused ... ok
+test wasm::tests::a_module_that_returns_a_number_is_run ... ok
+test wasm::tests::a_module_that_writes_outside_its_memory_is_refused ... ok
+test wasm::tests::a_module_without_a_magic_is_refused ... ok
+test wasm::tests::another_dialect_is_refused ... ok
+test wasm::tests::the_arguments_are_taken_from_the_manifest ... ok
+test wasm::tests::the_log_writes_to_the_output ... ok
+test ws::tests::base64_matches_the_reference_values ... ok
+test ws::tests::base64_round_trips ... ok
+test ws::tests::headers_are_case_insensitive ... ok
+test ws::tests::sha1_matches_the_reference_values ... ok
+test ws::tests::the_accept_value_matches_rfc6455 ... ok
+test ws::tests::the_address_is_split ... ok
+test task::tests::shell_captures_output ... ok
+test task::tests::shell_does_not_deadlock_on_large_output ... ok
+
+test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+[1m[92m     Running[0m unittests src/main.rs (target/debug/deps/umbra_beacon-aaea81bde73eec77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/vectors.rs (target/debug/deps/vectors-9d36b7918b765367)
+
+running 8 tests
+test attestation_matches_vectors ... ok
+test handshake_transcript_matches_vectors ... ok
+test frames_match_vectors ... ok
+test bootstrap_keys_match_vectors ... ok
+test session_accepts_vector_frames_and_rejects_replay ... ok
+test upk_encoding_matches_vectors ... ok
+test upk_rejects_invalid_encodings ... ok
+test session_and_rekey_keys_match_vectors ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== failures ===
