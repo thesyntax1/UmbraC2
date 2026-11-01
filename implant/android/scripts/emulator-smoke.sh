@@ -583,7 +583,13 @@ fi
 mapped=""
 maps_readable=no
 maps_pid=""
-for _ in $(seq 1 20); do
+maps_waited=0
+# Ninety seconds, not twenty.  The beacon is restarted by the permission test
+# just above, and its first connect after that restart can land later than the
+# window: the thirteenth run read the map of a process that had connected but
+# had not yet built its handshake.
+for _ in $(seq 1 90); do
+    maps_waited=$((maps_waited + 1))
     pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
     [ -z "$pid" ] && { sleep 1; continue; }
     maps_pid=$pid
@@ -707,7 +713,7 @@ else
         | sed 's/^ *//' | tr '\n' ' ' || true)
     printf '%s\n' "${late_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text-late.txt"
     record native-load NOT VERIFIED "the native library is mapped into the running process" \
-        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; the stack was last at: ${stack_top:-no umbra frame in the dump}; our own log: $(tail -4 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
+        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the map was watched for ${maps_waited}s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; the stack was last at: ${stack_top:-no umbra frame in the dump}; our own log: $(tail -4 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
     record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
         "nothing was loaded, so there was no mapping to judge"
 fi
