@@ -100,7 +100,7 @@ object Persistence {
         val entries = existing.toMutableList()
         entries.removeAll { it.technique == tech.id }
         val now = nowString()
-        val entry = when (tech.id) {
+        var entry = when (tech.id) {
             "boot_receiver" -> Entry(
                 tech.id, label.ifEmpty { "boot" }, tech.trigger,
                 "io.umbra.beacon/.BootReceiver", "the receiver is enabled",
@@ -159,6 +159,15 @@ object Persistence {
         }
         if (error != null) {
             return Report("persist: ${tech.id} failed: $error\n", existing, 0, existing.size.toLong())
+        }
+        if (tech.id == "alarm" && !canScheduleExact(context)) {
+            // The phone did not let the application have exact alarms, so
+            // the alarm that was armed is the inexact one.  The entry says
+            // which of the two the phone got, because they are not the same
+            // promise: an inexact alarm may arrive minutes late.
+            entry = entry.copy(
+                detail = entry.detail + "; the phone denied exact alarms, so the alarm is inexact",
+            )
         }
         entries.add(entry)
         save(stateDir, entries)
@@ -398,11 +407,17 @@ object Persistence {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             if (on) {
-                manager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    System.currentTimeMillis() + ALARM_INTERVAL_MS,
-                    pending,
-                )
+                val at = System.currentTimeMillis() + ALARM_INTERVAL_MS
+                // An exact alarm is a permission of its own since Android 12:
+                // the phone can take it away, and an application that calls
+                // the exact API without it gets a SecurityException.  The
+                // fallback is the inexact alarm, which still wakes the
+                // service -- later, and the entry says so (see install).
+                if (canScheduleExact(context)) {
+                    manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                } else {
+                    manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                }
             } else {
                 manager.cancel(pending)
             }
@@ -436,6 +451,23 @@ object Persistence {
             }
         } catch (t: Throwable) {
             t.message ?: "the job could not be scheduled"
+        }
+    }
+
+    /**
+     * May the implant use exact alarms?
+     *
+     * Since Android 12 the permission is not granted at install: the user
+     * gives it in the settings, and the platform offers canScheduleExactAlarms
+     * to ask.  A phone that never had it, or that took it away, answers no.
+     */
+    private fun canScheduleExact(context: Context?): Boolean {
+        if (context == null) return false
+        val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+        return try {
+            manager.canScheduleExactAlarms()
+        } catch (t: Exception) {
+            false
         }
     }
 

