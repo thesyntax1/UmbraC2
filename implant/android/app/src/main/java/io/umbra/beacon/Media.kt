@@ -266,7 +266,13 @@ object Media {
             manager.openCamera(cameraId, callback, handler)
             latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             bytes
-        } catch (t: Throwable) {
+        } catch (e: SecurityException) {
+            // CAMERA is a permission the user grants; the platform refuses
+            // the camera before a single frame arrives when it is missing.
+            failure = "the camera permission is not granted: ${e.message ?: "the platform refused"}"
+            null
+        } catch (t: Exception) {
+            failure = failure.ifEmpty { "the camera could not be opened: ${t.message}" }
             null
         } finally {
             try {

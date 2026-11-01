@@ -161,6 +161,16 @@ object Forensics {
                 )
                 installer.uninstall(context.packageName, status.intentSender)
                 out.append("evade.suicide: the application asked the system to remove it (the profile is its own)\n")
+            } catch (e: SecurityException) {
+                // The platform lets the device owner uninstall without
+                // DELETE_PACKAGES and refuses everyone else.  The branch was
+                // entered because the phone is the owner; this catches the
+                // case where the check and the call disagree.
+                out.append(
+                    "evade.suicide: the system refused the removal; only the device owner " +
+                        "or the installer of record may remove a package " +
+                        "(${e.message ?: "no reason given"})\n",
+                )
             } catch (t: Throwable) {
                 out.append("evade.suicide: the application could not remove itself: ${t.message}\n")
             }

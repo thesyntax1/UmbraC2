@@ -72,6 +72,57 @@ jobs:
           git commit -m "log: cargo check of $(git rev-parse --short HEAD)" || true
           git push --force origin ci/log-rust
 
+  windows-log:
+    name: windows log
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: implant/rust
+    steps:
+      - uses: actions/checkout@v4              # zizmor: ignore[unpinned-uses]
+      - uses: dtolnay/rust-toolchain@stable    # zizmor: ignore[unpinned-uses]
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: the toolchain, and the start of the log
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+          {
+            echo "rustc:  $(rustc --version)"
+            echo "target: x86_64-pc-windows-gnu"
+            echo "linker: $(x86_64-w64-mingw32-gcc --version | head -1)"
+            echo "ld:     $(x86_64-w64-mingw32-ld --version | head -1)"
+            echo "head:   $(git rev-parse HEAD)"
+            echo
+          } > /tmp/windows.log
+
+      - name: cargo check, full output
+        run: |
+          cargo check --locked --all-targets --target x86_64-pc-windows-gnu --message-format=short >> /tmp/windows.log 2>&1 || true
+          echo >> /tmp/windows.log
+          echo "=== one error per line ===" >> /tmp/windows.log
+          grep -E '^(src|tests)/|^error' /tmp/windows.log | head -200 >> /tmp/windows-summary.txt || true
+          wc -l /tmp/windows.log
+
+      - name: publish it
+        working-directory: .
+        run: |
+          set -e
+          mkdir -p ci-log
+          cp /tmp/windows.log ci-log/windows-check.log
+          [ -f /tmp/windows-summary.txt ] && cp /tmp/windows-summary.txt ci-log/windows-summary.txt
+          git config user.name "umbra-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -B ci/log-windows
+          git add -f ci-log
+          git commit -m "log: cargo check of $(git rev-parse --short HEAD) for windows"
+          git push --force origin ci/log-windows
+
   android-log:
     name: android log
     runs-on: ubuntu-latest

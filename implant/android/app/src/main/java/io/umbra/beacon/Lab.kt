@@ -206,14 +206,27 @@ object Lab {
         // ---- the radio ---------------------------------------------------
         val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
         if (telephony != null) {
-            val number = try {
+            // READ_PHONE_STATE is a permission the user of the phone grants
+            // at run time; the subscriber id needs READ_PRIVILEGED_PHONE_STATE,
+            // which only a system application can hold.  Both answers are
+            // recorded as what they are, and neither is guessed.
+            val number: String? = try {
                 telephony.line1Number
-            } catch (_: Throwable) {
+            } catch (e: SecurityException) {
+                // Not granted: the field stays unknown, and the list of the
+                // permissions in the report says which one is missing.
+                null
+            } catch (t: Exception) {
+                // The radio refused: the same answer, for another reason.
                 null
             }
-            val subscriber = try {
+            val subscriber: String? = try {
                 telephony.subscriberId
-            } catch (_: Throwable) {
+            } catch (e: SecurityException) {
+                // READ_PRIVILEGED_PHONE_STATE is a system permission, so this
+                // is the answer on every phone that is not rooted.
+                null
+            } catch (t: Exception) {
                 null
             }
             sensors["line1"] = number ?: "unknown"

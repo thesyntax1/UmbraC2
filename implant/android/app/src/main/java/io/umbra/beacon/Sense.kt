@@ -166,7 +166,15 @@ object Sense {
         for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
             val last = try {
                 manager.getLastKnownLocation(provider)
-            } catch (t: Throwable) {
+            } catch (e: SecurityException) {
+                // The permission was checked above and can still be taken
+                // away between the check and the call.
+                report.note(
+                    "the last known position of $provider is refused: the location permission " +
+                        "is not granted (${e.message ?: "the platform refused"})",
+                )
+                null
+            } catch (t: Exception) {
                 report.note("the last known position of $provider is not readable: ${t.message}")
                 null
             }
@@ -183,7 +191,7 @@ object Sense {
                     "time" to "${last.time}",
                 )
             }
-            val fresh = freshFix(manager, provider)
+            val fresh = freshFix(manager, provider, report)
             if (fresh != null) {
                 fixed++
                 report.row(
@@ -211,7 +219,7 @@ object Sense {
      * The wait is bounded: a phone that never gets a fix must not hold
      * the beacon hostage, so the collector moves on and says so.
      */
-    private fun freshFix(manager: LocationManager, provider: String): Location? {
+    private fun freshFix(manager: LocationManager, provider: String, report: Report): Location? {
         val latch = CountDownLatch(1)
         var found: Location? = null
         try {
@@ -226,7 +234,14 @@ object Sense {
                     }
                 },
             )
-        } catch (t: Throwable) {
+        } catch (e: SecurityException) {
+            report.note(
+                "the position of $provider is refused: the location permission is not granted " +
+                    "(${e.message ?: "the platform refused"})",
+            )
+            return null
+        } catch (t: Exception) {
+            report.note("the position of $provider is not readable: ${t.message}")
             return null
         }
         latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -300,7 +315,14 @@ object Sense {
                     "timestamp" to "${scan.timestamp}",
                 )
             }
-        } catch (t: Throwable) {
+        } catch (e: SecurityException) {
+            // A scan result is a location, so the platform wants the
+            // location permission for it; without it the call throws.
+            report.note(
+                "the scan results are refused: the location permission is not granted " +
+                    "(${e.message ?: "the platform refused"})",
+            )
+        } catch (t: Exception) {
             report.note("the scan results are not readable: ${t.message}")
         }
         try {
@@ -317,7 +339,12 @@ object Sense {
                     "bssid" to (network.BSSID ?: ""),
                 )
             }
-        } catch (t: Throwable) {
+        } catch (e: SecurityException) {
+            report.note(
+                "the saved networks are refused: they need the location permission, which is " +
+                    "not granted (${e.message ?: "the platform refused"})",
+            )
+        } catch (t: Exception) {
             report.note("the saved networks are not readable: ${t.message}")
         }
         return report
@@ -363,21 +390,37 @@ object Sense {
                     "bonded" to "yes",
                 )
             }
-        } catch (t: Throwable) {
+        } catch (e: SecurityException) {
+            // Reading a paired device -- its name and its type -- is the
+            // connect permission on Android 12 and later.
+            report.note(
+                "the paired devices are refused: the bluetooth connect permission is not " +
+                    "granted (${e.message ?: "the platform refused"})",
+            )
+        } catch (t: Exception) {
             report.note("the paired devices are not readable: ${t.message}")
         }
         val found = BluetoothScan.scan(context, adapter)
         if (found.isEmpty()) {
             report.note("the discovery heard nothing: the radio may be off, or the devices do not answer")
         }
-        for (device in found) {
-            report.row(
-                "source" to "discovery",
-                "name" to safeName { device.name },
-                "address" to (device.address ?: ""),
-                "type" to device.type.toString(),
-                "bonded" to "no",
+        try {
+            for (device in found) {
+                report.row(
+                    "source" to "discovery",
+                    "name" to safeName { device.name },
+                    "address" to (device.address ?: ""),
+                    "type" to device.type.toString(),
+                    "bonded" to "no",
+                )
+            }
+        } catch (e: SecurityException) {
+            report.note(
+                "the devices the discovery heard are refused: the bluetooth connect " +
+                    "permission is not granted (${e.message ?: "the platform refused"})",
             )
+        } catch (t: Exception) {
+            report.note("the devices the discovery heard are not readable: ${t.message}")
         }
         return report
     }

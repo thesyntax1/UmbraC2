@@ -72,6 +72,11 @@ object BluetoothScan {
             if (registered && adapter.isEnabled) {
                 try {
                     adapter.startDiscovery()
+                } catch (e: SecurityException) {
+                    // BLUETOOTH_SCAN is granted by the user and can be taken
+                    // away at any moment: the radio is not asked, and the
+                    // caller gets what it has already heard.
+                    return found.values.toList()
                 } catch (t: Throwable) {
                     return found.values.toList()
                 }
@@ -90,6 +95,9 @@ object BluetoothScan {
             }
             try {
                 adapter.cancelDiscovery()
+            } catch (e: SecurityException) {
+                // The permission went away while the discovery ran: there is
+                // nothing left that the phone would let this call stop.
             } catch (_: Throwable) {
                 // The radio was not searching.
             }
