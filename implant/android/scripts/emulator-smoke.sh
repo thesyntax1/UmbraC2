@@ -57,6 +57,13 @@ RECORDS="$OUT/records.tsv"
 # NOT APPLICABLE.  Anything else is a bug in this script.
 record() {
     local id="$1" status="$2" title="$3" evidence="$4"
+    # "NOT VERIFIED" is two words, so every call site that says it passes five
+    # arguments.  The first version compared $2 against the two-word string and
+    # died with "bad status: NOT" at the first NOT VERIFIED line -- the report
+    # stopped exactly where it should have said what it could not measure.
+    if [ "$2" = "NOT" ] && [ "${3:-}" = "VERIFIED" ]; then
+        status="NOT VERIFIED"; title="$4"; evidence="${5:-}"
+    fi
     case "$status" in
         PASS|FAIL|"NOT VERIFIED"|"NOT APPLICABLE") ;;
         *) echo "bad status: $status" >&2; exit 2 ;;
@@ -227,10 +234,14 @@ else
 fi
 
 abis_in_apk=$(unzip -l "$APK" 2>/dev/null | grep -o 'lib/[^/]*/' | tr -d 'lib/' | tr -d '/' | sort -u | tr '\n' ' ')
-case " $abilist " in
-    *" $abi "*) abi_supported=yes ;;
-    *) abi_supported=no ;;
-esac
+# ro.product.cpu.abilist is a comma-separated list ("x86_64,arm64-v8a" on an
+# image with the 64-bit ARM translator), so a substring test against
+# " x86_64 " answers no on an emulator that runs it.
+if printf '%s' "$abilist" | tr ',' '\n' | grep -qx "$abi"; then
+    abi_supported=yes
+else
+    abi_supported=no
+fi
 case " $abis_in_apk " in
     *" $abi "*) abi_packaged=yes ;;
     *) abi_packaged=no ;;
@@ -247,7 +258,12 @@ fi
 # 2. install and launch
 # ---------------------------------------------------------------------------
 
-install_out=$(adb install -r /data/local/tmp/umbra-debug.apk 2>&1)
+# `adb install <path>` treats its argument as a path on the *host* and pushes
+# it again; the file was already pushed and hashed there, so the package
+# manager is asked to install the copy on the device.  (The first version used
+# `adb install /data/local/tmp/...` and failed with "failed to stat": the
+# device path does not exist on the runner.)
+install_out=$(adb shell pm install -r /data/local/tmp/umbra-debug.apk 2>&1)
 install_rc=$?
 printf '%s\n' "$install_out" >"$OUT/raw/adb-install.txt"
 if [ "$install_rc" -eq 0 ] && printf '%s' "$install_out" | grep -q 'Success'; then
