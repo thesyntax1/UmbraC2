@@ -95,6 +95,15 @@ Windows:
 # GNU toolchain (needs mingw-w64: apt install gcc-mingw-w64-x86-64)
 rustup target add x86_64-pc-windows-gnu
 cargo build --release --target x86_64-pc-windows-gnu
+```
+
+This is not a suggestion that has been typed into a document: it is what the
+`rust beacon (the windows target compiles)` job of `ci.yml` runs on every push,
+and it found seventeen defects in the `cfg(windows)` half of the crate the first
+time it was given a compiler.  Measured on `e1e27b0`: rustc 1.99.1, mingw-w64
+GCC 13, GNU ld 2.45.90, artefact *PE32+ executable for MS Windows 5.02
+(console), x86-64, 20 sections*.  It **compiles and links**; it has **never been
+executed** on Windows — see [`BUILD-EVIDENCE.md`](BUILD-EVIDENCE.md).
 
 # or MSVC toolchain (build on Windows, or cross with cargo-xwin)
 rustup target add x86_64-pc-windows-msvc

@@ -249,7 +249,8 @@ an installed app, so the command now succeeds only if the phone already is the
 owner and otherwise fails with that sentence, instead of recording a technique
 that was never installed.
 
-**What came with the green build, and did not go away.**
+**What came with that first green build, at `1aac1a9`.**  (The lint part of
+this list is closed further down; the other two are not.)
 
 * **Lint: 22 errors, 30 warnings** (`1aac1a9`, `lintDebug`, report in the
   temporary `ci/log-android` branch).  Fifteen are `MissingPermission` — calls
