@@ -8,8 +8,9 @@ import java.security.ProviderException
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.SecureRandom
-import java.security.interfaces.XECPublicKey
+import java.security.spec.InvalidKeySpecException
 import java.security.spec.NamedParameterSpec
+import java.security.spec.X509EncodedKeySpec
 import java.security.spec.XECPublicKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
@@ -38,6 +39,11 @@ object Crypto {
 
     private val rng = SecureRandom()
     private val xdhParams = NamedParameterSpec("X25519")
+
+    /** DER prefix of an X25519 SubjectPublicKeyInfo, before the 32 raw bytes. */
+    private val X25519_SPKI_PREFIX = byteArrayOf(
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+    )
 
     // ---- randomness ----------------------------------------------------
     fun random(n: Int): ByteArray {
@@ -179,17 +185,44 @@ object Crypto {
             // some providers wrap the refusal in an unchecked exception
         }
         val kp = kpg.generateKeyPair()
-        val pub = kp.public as XECPublicKey
-        if (pub.u.bitLength() > 256) {
-            throw CryptoException("the platform built a key that is not X25519")
+        return Ephemeral(kp.private, rawX25519(kp.public))
+    }
+
+    /**
+     * The raw 32 bytes of an X25519 public key.
+     *
+     * The cast to `XECPublicKey` -- the JDK type -- is not available on
+     * Android: Conscrypt answers with `OpenSSLX25519PublicKey`, which is a
+     * `PublicKey` and nothing more, and the eleventh run died on exactly that
+     * cast.  The encoding is the portable form: a DER SubjectPublicKeyInfo
+     * whose algorithm is id-X25519 and whose last 32 bytes are the key.  The
+     * prefix is checked rather than skipped, and a key that arrives raw (some
+     * providers do that) is taken as it is.
+     */
+    private fun rawX25519(pub: PublicKey): ByteArray {
+        val enc = pub.encoded ?: throw CryptoException("the platform key has no encoding")
+        if (enc.size == 32) return enc
+        if (enc.size != X25519_SPKI_PREFIX.size + 32) {
+            throw CryptoException("unexpected X25519 key encoding (${enc.size} bytes)")
         }
-        return Ephemeral(kp.private, bigIntToLe32(pub.u))
+        for (i in X25519_SPKI_PREFIX.indices) {
+            if (enc[i] != X25519_SPKI_PREFIX[i]) {
+                throw CryptoException("the encoded key is not an X25519 SubjectPublicKeyInfo")
+            }
+        }
+        return enc.copyOfRange(enc.size - 32, enc.size)
     }
 
     fun x25519Shared(privateKey: PrivateKey, peerRaw: ByteArray): ByteArray {
         require(peerRaw.size == 32) { "peer public key must be 32 bytes" }
         val kf = KeyFactory.getInstance("XDH")
-        val peer: PublicKey = kf.generatePublic(XECPublicKeySpec(xdhParams, le32ToBigInt(peerRaw)))
+        // The same portability question, in the other direction: the encoded
+        // form first, the JDK spec second.
+        val peer: PublicKey = try {
+            kf.generatePublic(X509EncodedKeySpec(X25519_SPKI_PREFIX + peerRaw))
+        } catch (_: InvalidKeySpecException) {
+            kf.generatePublic(XECPublicKeySpec(xdhParams, le32ToBigInt(peerRaw)))
+        }
         val ka = KeyAgreement.getInstance("XDH")
         ka.init(privateKey)
         ka.doPhase(peer, true)
