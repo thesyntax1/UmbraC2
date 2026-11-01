@@ -34,6 +34,9 @@ object SysInfo {
         }
     }
 
+    /** Is the native half of the beacon in the process? */
+    fun loaded(): Boolean = nativeReady
+
     private external fun nativeKernelRelease(): String
     private external fun nativeMachine(): String
     private external fun nativePid(): Int
