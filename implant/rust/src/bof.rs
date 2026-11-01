@@ -363,9 +363,9 @@ fn run_windows(object: &[u8], args: &[String]) -> Result<Loaded, String> {
         }
         let end = s.virtual_address as usize + s.virtual_size.max(s.raw_size) as usize;
         if entry_rva < end {
-            let mut protect = PAGE_READWRITE;
+            let mut protect = win::PAGE_READWRITE;
             if s.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
-                protect = PAGE_EXECUTE_READWRITE;
+                protect = win::PAGE_EXECUTE_READWRITE;
             }
             let _ = protect_image(
                 image.base + s.virtual_address as usize,

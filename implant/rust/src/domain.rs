@@ -369,6 +369,24 @@ fn right_to_edge(right: &str) -> Option<&'static str> {
     }
 }
 
+/// The graph kind of an edge, from the text the access list parser returns.
+///
+/// `parse_acl` hands the kind back as text because the report of the module
+/// prints it; an edge keeps the static word, and this is the same list as
+/// `right_to_edge` above.
+fn edge_kind(kind: &str) -> &'static str {
+    match kind {
+        "GenericAll" => "GenericAll",
+        "WriteDacl" => "WriteDacl",
+        "WriteOwner" => "WriteOwner",
+        "DCSync" => "DCSync",
+        "GenericWrite" => "GenericWrite",
+        "GenericRead" => "GenericRead",
+        "GenericExecute" => "GenericExecute",
+        _ => "Acl",
+    }
+}
+
 /// The well known local relative identifiers.
 const LOCAL_RIDS: [(&str, u32); 3] = [
     ("Administrators", 544),
@@ -586,7 +604,9 @@ fn collect_windows(domain: &mut Domain) {
         }
         for object in objects {
             for (principal, right) in parse_acl(&capture(&format!("dsacls {object}"))) {
-                domain.edges.push(Edge::new(right, principal, object.clone()));
+                // The edge keeps the static word of the graph; the parser
+                // gave the same word back as text for the report.
+                domain.edges.push(Edge::new(edge_kind(&right), principal, object.clone()));
             }
         }
     }

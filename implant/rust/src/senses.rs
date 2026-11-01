@@ -1234,7 +1234,7 @@ pub fn proc_memory(pid: u32) -> Result<String, String> {
 /// The API of the dump of the memory of a process of Windows.
 #[cfg(windows)]
 mod dbghelp {
-    use std::os::raw::{c_void, u32};
+    use std::os::raw::c_void;
 
     pub type HANDLE = *mut c_void;
     pub type BOOL = i32;

