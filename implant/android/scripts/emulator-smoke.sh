@@ -615,22 +615,33 @@ notification_text() {
     printf '%s' "$text"
 }
 # Where is the process?  When the library is not in the map, the question is
-# not "did the load fail" but "was it ever reached", and only a thread dump
-# answers that.  SIGQUIT makes the runtime write every thread's stack.
+# not "did the load fail" but "was it ever reached", and only a stack answers
+# that.  Three sources, because the first one alone gave nothing: SIGQUIT
+# (which on API 33+ writes /data/anr/anr_* rather than traces.txt), the
+# newest file in /data/anr, and debuggerd, which prints the Java threads of a
+# debuggable process on demand.
 threads() {
-    local pid="$1" file="$2"
+    local pid="$1" file="$2" raw="$2.raw" newest=""
     : >"$file"
+    : >"$raw"
     [ -z "$pid" ] && return 0
     adb shell kill -3 "$pid" >/dev/null 2>&1 || true
     sleep 3
     {
-        echo "$ cat /data/anr/traces.txt (the umbra stacks)"
-        adb shell cat /data/anr/traces.txt 2>/dev/null | tr -d '\r' \
-            | grep -E 'at io\.umbra\.beacon|Cmd line: io\.umbra\.beacon|^"main"' | head -60 || true
-        echo "$ adb logcat -d (the umbra stacks)"
-        adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
-            | grep -E 'at io\.umbra\.beacon' | head -40 || true
-    } >>"$file" 2>/dev/null || true
+        echo "$ debuggerd -j $pid"
+        adb shell debuggerd -j "$pid" 2>&1 || true
+        echo "$ ls -t /data/anr/"
+        adb shell ls -t /data/anr/ 2>&1 || true
+    } >"$raw" 2>/dev/null || true
+    newest=$(adb shell ls -t /data/anr/ 2>/dev/null | tr -d '\r' | head -1)
+    if [ -n "$newest" ]; then
+        {
+            echo "$ cat /data/anr/$newest"
+            adb shell cat "/data/anr/$newest" 2>&1 || true
+        } >>"$raw" 2>/dev/null || true
+    fi
+    grep -E 'at io\.umbra\.beacon|^"main"|cmdline: io\.umbra\.beacon' "$raw" 2>/dev/null \
+        | head -80 >"$file" 2>/dev/null || true
 }
 
 app_text=$(notification_text)
@@ -649,7 +660,7 @@ printf '%s\n' "${app_text:-no notification of $PKG carries a text}" >"$OUT/raw/n
 # Our own tag, so the platform's message about the load is in the report even
 # when the application turns the failure into a fallback.
 adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
-    | grep -E "^[A-Z]/umbra|umbra *: " | tail -20 >"$OUT/raw/logcat-umbra.txt" 2>/dev/null || true
+    | grep -E "^[A-Z]/umbra|umbra *: |I/umbra" | tail -30 >"$OUT/raw/logcat-umbra.txt" 2>/dev/null || true
 
 # Only the failures that name this application or this library.  The first
 # version grepped the whole log for "dlopen failed" and found the emulator's
@@ -696,7 +707,7 @@ else
         | sed 's/^ *//' | tr '\n' ' ' || true)
     printf '%s\n' "${late_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text-late.txt"
     record native-load NOT VERIFIED "the native library is mapped into the running process" \
-        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; the stack was last at: ${stack_top:-no umbra frame in the dump}; our own log: $(head -2 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
+        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; the stack was last at: ${stack_top:-no umbra frame in the dump}; our own log: $(tail -4 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
     record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
         "nothing was loaded, so there was no mapping to judge"
 fi
