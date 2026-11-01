@@ -230,7 +230,7 @@ Without a test: `server/cmd/umbra-server`, `server/internal/alias`, `server/inte
 
 | Component | Path | Test functions | The command |
 |---|---|---|---|
-| The Python suite: the console, the mock and the contract | `tests` | 327 | `.venv/bin/pytest tests/ -q` |
+| The Python suite: the console, the mock and the contract | `tests` | 328 | `.venv/bin/pytest tests/ -q` |
 | The Rust beacon | `implant/rust` | 133 | `cargo test --all-targets` |
 | The Android beacon | `implant/android` | 0 | `gradlew assembleDebug (there is no test source set)` |
 | The Go beacon | `implant/go` | 41 | `go test ./... -race` |
