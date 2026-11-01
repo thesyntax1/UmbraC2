@@ -78,32 +78,59 @@ class BeaconService : Service(), Beacon.Listener {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        // The service carries the type of the microphone and the type of
-        // the capture of the screen, and the system refuses a type whose
-        // permission is missing: only the types the user granted are
-        // announced.
-        val types = foregroundTypes()
+        // Android 14 refuses a foreground service that announces a type
+        // whose permission it does not hold, and refuses the whole service
+        // with a SecurityException: the type is a claim, and a claim that
+        // cannot be backed by a token is not made.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification("starting…"), types)
+            startForegroundTyped()
         } else {
             startForeground(NOTIFICATION_ID, notification("starting…"))
         }
     }
 
     /**
+     * Start in the foreground with the types that can actually be held.
+     *
+     * The first attempt announces the types the permissions allow.  If the
+     * platform still refuses -- the microphone is a "while in use"
+     * permission and Android 14 refuses a microphone service started from
+     * the background even when the permission is granted -- the service
+     * falls back to the data sync type alone, which needs no permission
+     * beyond the one in the manifest.  Without that fallback the whole
+     * process dies on the target API level, which is worse than a service
+     * that runs without a type it never used.
+     */
+    private fun startForegroundTyped() {
+        val wanted = foregroundTypes()
+        try {
+            startForeground(NOTIFICATION_ID, notification("starting…"), wanted)
+            return
+        } catch (_: SecurityException) {
+            // The platform refused a type; the record below says so.
+        }
+        startForeground(
+            NOTIFICATION_ID,
+            notification("starting… (the platform refused a foreground type)"),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
+    }
+
+    /**
      * The types of the foreground service.
      *
-     * The data sync is always there; the microphone comes when the user
-     * granted the microphone, and the capture of the screen comes when
-     * the permission of the foreground service of that type is in the
-     * manifest.
+     * The data sync is always there and always allowed.  The microphone
+     * comes when the user granted the microphone.  The capture of the
+     * screen is not announced here at all: it belongs to ProjectionService,
+     * the only component that holds the consent token the platform asks
+     * for, and a type announced without that token is exactly what Android
+     * 14 kills the service for.
      */
     private fun foregroundTypes(): Int {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         if (granted(android.Manifest.permission.RECORD_AUDIO)) {
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         }
-        types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
         return types
     }
 

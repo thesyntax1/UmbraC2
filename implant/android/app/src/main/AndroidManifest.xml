@@ -87,15 +87,16 @@
             </intent-filter>
         </activity>
 
-        <!-- The service of the beacon.  It carries the types of the
-             foreground service of the microphone and of the capture of
-             the screen, and the service announces at run time only the
-             ones whose permission the user granted: Android 14 refuses
-             a type whose permission is missing. -->
+        <!-- The service of the beacon.  It carries the data sync and the
+             microphone types, and announces at run time only the ones the
+             user granted: Android 14 refuses a type whose permission is
+             missing.  The capture of the screen is not declared here -- it
+             belongs to ProjectionService below, which holds the consent
+             token the platform asks for before that type may be used. -->
         <service
             android:name=".BeaconService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|microphone|mediaProjection" />
+            android:foregroundServiceType="dataSync|microphone" />
 
         <!-- The screen that asks the user for the capture of the screen.
              The dialog of the platform belongs to the system; the
