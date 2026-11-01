@@ -149,6 +149,33 @@ has_text() {
     ui_texts "has-$(printf '%s' "$1" | tr -c 'a-zA-Z0-9' '_')" | grep -qE "$pattern"
 }
 
+# front_package: the package of the window that is actually in front.
+front_package() {
+    local xml="$OUT/raw/ui-front.xml"
+    adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1
+    adb exec-out cat /sdcard/window_dump.xml >"$xml" 2>/dev/null
+    grep -o 'package="[^"]*"' "$xml" 2>/dev/null | head -1 | sed 's/package="//; s/"$//'
+}
+
+# ensure_front: put the consent screen in front before a tap.
+#
+# The fifth run tapped into the launcher: after the permission dialog closed
+# the activity was behind it, and uiautomator dumps the launcher rather than
+# the screen the test believes it is looking at.  What was in front, and what
+# took its place, is written to raw/front.txt.
+ensure_front() {
+    adb shell wm dismiss-keyguard >/dev/null 2>&1
+    local front
+    front=$(front_package)
+    if [ "$front" != "$PKG" ]; then
+        adb shell am start -W -n "$ACTIVITY" >/dev/null 2>&1
+        sleep 3
+        printf '%s -> %s\n' "${front:-nothing}" "$(front_package)" >>"$OUT/raw/front.txt"
+        return 1
+    fi
+    return 0
+}
+
 # service_state: what the activity manager says about BeaconService, or empty.
 service_state() {
     adb shell dumpsys activity services "$PKG" 2>/dev/null | tr -d '\r'
@@ -380,6 +407,7 @@ fi
 # POST_NOTIFICATIONS to run, it needs it for its notification to be seen.
 # ---------------------------------------------------------------------------
 
+ensure_front || true
 if tap_text "Start beacon"; then
     sleep 6
     state=$(service_state)
@@ -582,6 +610,7 @@ if tap_text "Start beacon" 0 2>/dev/null; then
 fi
 adb shell am start -W -n "$ACTIVITY" >/dev/null 2>&1
 sleep 2
+ensure_front || true
 if tap_text "Stop beacon"; then
     sleep 3
     state=$(service_state)

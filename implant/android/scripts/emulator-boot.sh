@@ -149,6 +149,14 @@ for _ in $(seq 1 60); do
     fi
     sleep 2
 done
+# The device must stay awake and unlocked: the harness runs for minutes, and
+# a screen that dims hands uiautomator the launcher instead of the consent
+# screen -- which is exactly what the fifth run reported as "the button
+# could not be found".
+adb shell svc power stayon true >/dev/null 2>&1 || true
+adb shell settings put system screen_off_timeout 2147483647 >/dev/null 2>&1 || true
+adb shell locksettings set-disabled true >/dev/null 2>&1 || true
+adb shell wm dismiss-keyguard >/dev/null 2>&1 || true
 adb shell settings put global window_animation_scale 0 >/dev/null 2>&1 || true
 adb shell settings put global transition_animation_scale 0 >/dev/null 2>&1 || true
 adb shell settings put global animator_duration_scale 0 >/dev/null 2>&1 || true
