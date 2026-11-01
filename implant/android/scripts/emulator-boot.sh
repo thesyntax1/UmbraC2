@@ -73,9 +73,12 @@ AVD="umbra-api$API"
 } >"$OUT/harness.txt" 2>&1
 
 # 1. the system image
-yes | sdkmanager --licenses >"$OUT/sdk-licenses.log" 2>&1 || true
-if ! sdkmanager --install "$IMAGE" "emulator" "platform-tools" >>"$OUT/sdk-install.log" 2>&1; then
-    echo "sdkmanager could not install $IMAGE (see sdk-install.log)" | tee -a "$OUT/harness.txt"
+# Every phase of this script has a ceiling.  The eleventh run spent the job's
+# whole hour in the step that follows the smoke test, and a phase without a
+# ceiling turns a broken download into a cancelled job with no report at all.
+yes | timeout 300 sdkmanager --licenses >"$OUT/sdk-licenses.log" 2>&1 || true
+if ! timeout 1500 sdkmanager --install "$IMAGE" "emulator" "platform-tools" >>"$OUT/sdk-install.log" 2>&1; then
+    echo "sdkmanager could not install $IMAGE within 25 minutes (see sdk-install.log)" | tee -a "$OUT/harness.txt"
     exit 2
 fi
 

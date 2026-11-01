@@ -132,7 +132,11 @@ jobs:
           if [ -f "$OUT/report/result.json" ] && grep -q '"FAIL"' "$OUT/report/result.json"; then
             echo "::error::the smoke test found a failing check on API ${{ matrix.api }}"
           fi
-          "$ANDROID_SDK_ROOT/platform-tools/adb" reverse --remove-all > /dev/null 2>&1 || true
+          # The device is gone by now (emulator-boot.sh killed it), and an adb
+          # call against a device the server still believes in can block until
+          # the job's own hour is spent: the eleventh run was cancelled here,
+          # after its API 34 report had already been written.
+          timeout 60 "$ANDROID_SDK_ROOT/platform-tools/adb" reverse --remove-all > /dev/null 2>&1 || true
           exit $rc
 
       - name: keep the report even when a check failed
