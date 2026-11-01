@@ -1,0 +1,222 @@
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Credentials.kt:133: Warning: Implicitly using the default locale is a common source of bugs: Use String.format(Locale, ...) instead [DefaultLocale]
+                String.format(
+                ^
+
+   Explanation for issues of type "DefaultLocale":
+   Calling String#toLowerCase() or #toUpperCase() without specifying an
+   explicit locale is a common source of bugs. The reason for that is that
+   those methods will use the current locale on the user's device, and even
+   though the code appears to work correctly when you are developing the app,
+   it will fail in some locales. For example, in the Turkish locale, the
+   uppercase replacement for i is not I.
+
+   If you want the methods to just perform ASCII replacement, for example to
+   convert an enum name, call String#toUpperCase(Locale.ROOT) instead. If you
+   really want to use the current locale, call
+   String#toUpperCase(Locale.getDefault()) instead.
+
+   https://developer.android.com/reference/java/util/Locale.html#default_locale
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Vendor.kt:182: Warning: Use of REQUEST_IGNORE_BATTERY_OPTIMIZATIONS violates the Play Store Content Policy regarding acceptable use cases, as described in https://developer.android.com/training/monitoring-device-state/doze-standby.html [BatteryLife]
+                action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "BatteryLife":
+   This issue flags code that either
+   * negatively affects battery life, or
+   * uses APIs that have recently changed behavior to prevent background tasks
+   from consuming memory and battery excessively.
+
+   Generally, you should be using WorkManager instead.
+
+   For more details on how to update your code, please see
+   https://developer.android.com/topic/performance/background-optimization
+
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Desktop.kt:116: Warning: As of Android 11, this method no longer returns information about all apps; see https://g.co/dev/packagevisibility for details [QueryPermissionsNeeded]
+            context.packageManager.getInstalledPackages(0)
+                                   ~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "QueryPermissionsNeeded":
+   Apps that target Android 11 cannot query or interact with other installed
+   apps by default. If you need to query or interact with other installed
+   apps, you may need to add a <queries> declaration in your manifest.
+
+   As a corollary, the methods PackageManager#getInstalledPackages and
+   PackageManager#getInstalledApplications will no longer return information
+   about all installed apps. To query specific apps or types of apps, you can
+   use methods like PackageManager#getPackageInfo or
+   PackageManager#queryIntentActivities.
+
+   https://g.co/dev/packagevisibility
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/AndroidManifest.xml:83: Warning: Redundant label can be removed [RedundantLabel]
+            android:label="@string/app_name">
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "RedundantLabel":
+   When an activity does not have a label attribute, it will use the one from
+   the application tag. Since the application has already specified the same
+   label, the label on this activity can be omitted.
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Lab.kt:222: Warning: Using getLine1Number to get device identifiers is not recommended [HardwareIds]
+                telephony.line1Number
+                ~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "HardwareIds":
+   Using these device identifiers is not recommended other than for high value
+   fraud prevention and advanced telephony use-cases. For advertising
+   use-cases, use AdvertisingIdClient$Info#getId and for analytics, use
+   InstanceId#getId.
+
+   https://developer.android.com/training/articles/user-data-ids.html
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/AndroidManifest.xml:74: Warning: The attribute android:allowBackup is deprecated from Android 12 and may be removed in future versions. Consider adding the attribute android:dataExtractionRules specifying an @xml resource which configures backups and device transfers on Android 12 and higher. [DataExtractionRules]
+        android:allowBackup="false"
+                             ~~~~~
+
+   Explanation for issues of type "DataExtractionRules":
+   Before Android 12, the attributes android:allowBackup and
+   android:fullBackupContent were used to configure all forms of backup,
+   including cloud backups, device-to-device transfers and adb backup.
+
+   In Android 12 and higher, these attributes have been deprecated and will
+   only apply to cloud backups. You should instead use the attribute
+   android:dataExtractionRules, specifying an @xml resource that configures
+   which files to back up, for cloud backups and for device-to-device
+   transfers, separately. If your minSdkVersion supports older versions,
+   you'll still want to specify an android:fullBackupContent resource if the
+   default behavior is not right for your app.
+
+   https://developer.android.com/about/versions/12/backup-restore#xml-changes
+   https://goo.gle/DataExtractionRules
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:266: Warning: Provide a timeout when requesting a wakelock with PowerManager.Wakelock.acquire(long timeout). This will ensure the OS will cleanup any wakelocks that last longer than you intend, and will save your user's battery. [WakelockTimeout]
+            acquire()
+            ~~~~~~~~~
+
+   Explanation for issues of type "WakelockTimeout":
+   Wakelocks have two acquire methods: one with a timeout, and one without.
+   You should generally always use the one with a timeout. A typical timeout
+   is 10 minutes. If the task takes longer than it is critical that it happens
+   (i.e. can't use JobScheduler) then maybe they should consider a foreground
+   service instead (which is a stronger run guarantee and lets the user know
+   something long/important is happening).
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:50: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:88: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:197: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:229: Warning: Unnecessary; SDK_INT is never < 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:241: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:108: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:208: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:345: Warning: Unnecessary; SDK_INT is never < 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:357: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Vendor.kt:363: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Vendor.kt:377: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt:402: Warning: Unnecessary; SDK_INT is never < 33 [ObsoleteSdkInt]
+                if (Build.VERSION.SDK_INT < 28) {
+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "ObsoleteSdkInt":
+   This check flags version checks that are not necessary, because the
+   minSdkVersion (or surrounding known API level) is already at least as high
+   as the version checked for.
+
+   Similarly, it also looks for resources in -vNN folders, such as values-v14
+   where the version qualifier is less than or equal to the minSdkVersion,
+   where the contents should be merged into the best folder.
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Overlay.kt:16: Warning: Do not place Android context classes in static fields (static reference to Overlay which has field view pointing to View); this is a memory leak [StaticFieldLeak]
+/**
+^
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Overlay.kt:53: Warning: Do not place Android context classes in static fields; this is a memory leak [StaticFieldLeak]
+    /** The view that is on the screen, if there is one. */
+    ^
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt:91: Warning: Do not place Android context classes in static fields (static reference to Context which has field android pointing to Context); this is a memory leak [StaticFieldLeak]
+    @Volatile
+    ^
+
+   Explanation for issues of type "StaticFieldLeak":
+   A static field will leak contexts.
+
+   Non-static inner classes have an implicit reference to their outer class.
+   If that outer class is for example a Fragment or Activity, then this
+   reference means that the long-running handler/loader/task will hold a
+   reference to the activity which prevents it from getting garbage
+   collected.
+
+   Similarly, direct field references to activities and fragments from these
+   longer running instances can cause leaks.
+
+   ViewModel classes should never point to Views or non-application Contexts.
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/AndroidManifest.xml:73: Warning: Should explicitly set android:icon, there is no default [MissingApplicationIcon]
+    <application
+     ~~~~~~~~~~~
+
+   Explanation for issues of type "MissingApplicationIcon":
+   You should set an icon for the application as whole because there is no
+   default. This attribute must be set as a reference to a drawable resource
+   containing the image (for example @drawable/icon).
+
+   https://developer.android.com/studio/publish/preparing#publishing-configure
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:57: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+            text = "status: idle"
+                    ~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:69: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+            text = "Start beacon"
+                    ~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:73: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+                    status.text = "status: running"
+                                   ~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:75: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+                } ?: run { status.text = "status: no configuration" }
+                                          ~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:80: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+            text = "Stop beacon"
+                    ~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:83: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+                status.text = "status: stopped"
+                               ~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:113: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+        if (BeaconService.isActive()) status.text = "status: running"
+                                                     ~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "SetTextI18n":
+   When calling TextView#setText
+   * Never call Number#toString() to format numbers; it will not handle
+   fraction separators and locale-specific digits properly. Consider using
+   String#format with proper format specifications (%d or %f) instead.
+   * Do not pass a string literal (e.g. "Hello") to display text. Hardcoded
+   text can not be properly translated to other languages. Consider using
+   Android resource strings instead.
+   * Do not build messages by concatenating text chunks. Such messages can not
+   be properly translated.
+
+   https://developer.android.com/guide/topics/resources/localization.html
+
+0 errors, 30 warnings

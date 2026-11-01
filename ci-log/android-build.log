@@ -1,0 +1,185 @@
+java:   openjdk version "17.0.21" 2026-10-20
+gradle: Gradle 8.7
+head:   af4dc3bac9fa69d6e6adc049269391e69ddf3c14
+
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.7/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+Checking the license for package NDK (Side by side) 26.1.10909125 in /usr/local/lib/android/sdk/licenses
+License for package NDK (Side by side) 26.1.10909125 accepted.
+Preparing "Install NDK (Side by side) 26.1.10909125 v.26.1.10909125".
+"Install NDK (Side by side) 26.1.10909125 v.26.1.10909125" ready.
+Installing NDK (Side by side) 26.1.10909125 in /usr/local/lib/android/sdk/ndk/26.1.10909125
+"Install NDK (Side by side) 26.1.10909125 v.26.1.10909125" complete.
+"Install NDK (Side by side) 26.1.10909125 v.26.1.10909125" finished.
+
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :app:generateDebugBuildConfig
+> Task :app:generateDebugResValues
+> Task :app:checkDebugAarMetadata
+> Task :app:mapDebugSourceSetPaths
+> Task :app:generateDebugResources
+> Task :app:packageDebugResources
+> Task :app:mergeDebugResources
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug
+> Task :app:parseDebugLocalResources
+> Task :app:processDebugMainManifest
+> Task :app:processDebugManifest
+> Task :app:javaPreCompileDebug
+> Task :app:mergeDebugShaders
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:processDebugManifestForPackage
+> Task :app:mergeDebugAssets
+> Task :app:compressDebugAssets
+> Task :app:desugarDebugFileDependencies
+> Task :app:mergeDebugStartupProfile
+> Task :app:checkDebugDuplicateClasses
+> Task :app:processDebugResources
+
+> Task :app:configureCMakeDebug[arm64-v8a]
+Checking the license for package CMake 3.22.1 in /usr/local/lib/android/sdk/licenses
+License for package CMake 3.22.1 accepted.
+Preparing "Install CMake 3.22.1 v.3.22.1".
+"Install CMake 3.22.1 v.3.22.1" ready.
+Installing CMake 3.22.1 in /usr/local/lib/android/sdk/cmake/3.22.1
+"Install CMake 3.22.1 v.3.22.1" complete.
+"Install CMake 3.22.1 v.3.22.1" finished.
+
+> Task :app:mergeLibDexDebug
+> Task :app:buildCMakeDebug[arm64-v8a]
+> Task :app:configureCMakeDebug[armeabi-v7a]
+> Task :app:buildCMakeDebug[armeabi-v7a]
+> Task :app:configureCMakeDebug[x86_64]
+> Task :app:buildCMakeDebug[x86_64]
+> Task :app:mergeDebugJniLibFolders
+> Task :app:mergeDebugNativeLibs
+> Task :app:mergeExtDexDebug
+> Task :app:validateSigningDebug
+> Task :app:writeDebugAppMetadata
+> Task :app:writeDebugSigningConfigVersions
+> Task :app:stripDebugDebugSymbols
+> Task :app:compileDebugKotlin
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/AppDump.kt:130:21 Parameter 'context' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Beacon.kt:450:27 Variable 'batch' initializer is redundant
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:180:9 'stopForeground(Boolean): Unit' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Desktop.kt:202:16 Parameter 'context' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Desktop.kt:258:22 Parameter 'context' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Desktop.kt:269:22 Parameter 'context' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Desktop.kt:394:33 'getParcelableExtra(String!): T?' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Forensics.kt:62:15 Parameter 'context' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Lab.kt:222:27 'getter for line1Number: String!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Overlay.kt:99:17 Parameter 'context' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Persistence.kt:511:25 'clearDeviceOwnerApp(String!): Unit' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:222:13 'stopForeground(Boolean): Unit' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:244:26 Unnecessary safe call on a non-null receiver of type Intent?
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:253:35 'getter for defaultDisplay: Display!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:254:22 'getRealMetrics(DisplayMetrics!): Unit' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Sense.kt:287:32 'getter for connectionInfo: WifiInfo!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Sense.kt:309:46 'SSID: String!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Sense.kt:329:38 'getter for configuredNetworks: (Mutable)List<WifiConfiguration!>!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Sense.kt:338:49 'SSID: String!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Sense.kt:339:41 'BSSID: String!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt:289:50 Parameter 'content' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/TaskRunner.kt:1163:21 Parameter 'args' is never used
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Ui.kt:112:30 Unnecessary safe call on a non-null receiver of type (Mutable)List<CharSequence!>
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Vendor.kt:380:42 'constructor Builder(Context!)' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Watch.kt:316:36 'createFromPdu(ByteArray!): SmsMessage!' is deprecated. Deprecated in Java
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt:231:23 Variable 'present' initializer is redundant
+w: file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt:590:17 The value changed at 'removed++' is never used
+
+> Task :app:compileDebugJavaWithJavac
+> Task :app:dexBuilderDebug
+> Task :app:mergeDebugGlobalSynthetics
+> Task :app:processDebugJavaRes
+> Task :app:mergeProjectDexDebug
+> Task :app:mergeDebugJavaResource
+> Task :app:packageDebug
+> Task :app:createDebugApkListingFileRedirect
+> Task :app:assembleDebug
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run-1793552933137.json
+
+BUILD SUCCESSFUL in 1m 45s
+45 actionable tasks: 45 executed
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.7/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:generateDebugResValues UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:processDebugMainManifest UP-TO-DATE
+> Task :app:processDebugManifest UP-TO-DATE
+> Task :app:processDebugManifestForPackage UP-TO-DATE
+> Task :app:processDebugResources UP-TO-DATE
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:javaPreCompileDebug UP-TO-DATE
+> Task :app:compileDebugJavaWithJavac UP-TO-DATE
+> Task :app:preDebugUnitTestBuild UP-TO-DATE
+> Task :app:processDebugJavaRes UP-TO-DATE
+> Task :app:bundleDebugClassesToRuntimeJar
+> Task :app:bundleDebugClassesToCompileJar
+> Task :app:javaPreCompileDebugUnitTest
+> Task :app:compileDebugUnitTestKotlin NO-SOURCE
+> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:processDebugUnitTestJavaRes NO-SOURCE
+> Task :app:testDebugUnitTest NO-SOURCE
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run-1793553037514.json
+
+BUILD SUCCESSFUL in 10s
+22 actionable tasks: 4 executed, 18 up-to-date
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.7/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:generateDebugResValues UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:processDebugMainManifest UP-TO-DATE
+> Task :app:processDebugManifest UP-TO-DATE
+> Task :app:processDebugManifestForPackage UP-TO-DATE
+> Task :app:processDebugResources UP-TO-DATE
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:javaPreCompileDebug UP-TO-DATE
+> Task :app:compileDebugJavaWithJavac UP-TO-DATE
+> Task :app:bundleDebugClassesToCompileJar UP-TO-DATE
+> Task :app:preDebugAndroidTestBuild SKIPPED
+> Task :app:generateDebugAndroidTestResValues
+> Task :app:generateDebugAndroidTestLintModel
+> Task :app:extractProguardFiles
+> Task :app:generateDebugLintReportModel
+> Task :app:preDebugUnitTestBuild UP-TO-DATE
+> Task :app:generateDebugUnitTestLintModel
+> Task :app:lintAnalyzeDebugUnitTest
+> Task :app:lintAnalyzeDebugAndroidTest
+> Task :app:lintAnalyzeDebug
+
+> Task :app:lintReportDebug
+Wrote HTML report to file:///home/runner/work/UmbraC2/UmbraC2/implant/android/app/build/reports/lint-results-debug.html
+
+> Task :app:lintDebug
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run-1793553048297.json
+
+BUILD SUCCESSFUL in 47s
+29 actionable tasks: 11 executed, 18 up-to-date

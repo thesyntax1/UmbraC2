@@ -1,0 +1,14 @@
+=== native libraries in the debug apk ===
+  2296684  1981-01-01 01:01   classes.dex
+     1472  1981-01-01 01:01   classes2.dex
+   458636  1981-01-01 01:01   classes3.dex
+     4992  1981-01-01 01:01   lib/arm64-v8a/libumbra.so
+     3528  1981-01-01 01:01   lib/armeabi-v7a/libumbra.so
+     4960  1981-01-01 01:01   lib/x86_64/libumbra.so
+
+=== unit test tasks ===
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:compileDebugUnitTestKotlin NO-SOURCE
+> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:processDebugUnitTestJavaRes NO-SOURCE
+> Task :app:testDebugUnitTest NO-SOURCE
