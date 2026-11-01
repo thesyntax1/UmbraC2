@@ -580,6 +580,20 @@ if printf '%s' "$reverse_list" | grep -q 'tcp:4001'; then
     reverse_up=yes
 fi
 
+# The process that loaded the library is the process in the log, and the map
+# has to be read from that one: the permission test above restarted the app,
+# and the map of a freshly forked process that has not connected yet is a map
+# without a library.  The pid the native code reports is the pid to read.
+loaded_pid=""
+for _ in $(seq 1 30); do
+    loaded_pid=$(adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
+        | grep -o 'native library loaded: .*pid=[0-9]*' | tail -1 \
+        | sed 's/.*pid=//' || true)
+    [ -n "$loaded_pid" ] && break
+    sleep 2
+done
+printf '%s\n' "${loaded_pid:-none}" >"$OUT/raw/native-loaded-pid.txt"
+
 mapped=""
 maps_readable=no
 maps_pid=""
@@ -590,7 +604,11 @@ maps_waited=0
 # had not yet built its handshake.
 for _ in $(seq 1 90); do
     maps_waited=$((maps_waited + 1))
-    pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
+    if [ -n "$loaded_pid" ]; then
+        pid=$loaded_pid
+    else
+        pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
+    fi
     [ -z "$pid" ] && { sleep 1; continue; }
     maps_pid=$pid
     maps=$(adb shell run-as "$PKG" cat "/proc/$pid/maps" 2>/dev/null | tr -d '\r')
