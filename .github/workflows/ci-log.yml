@@ -109,6 +109,18 @@ jobs:
           grep -E '^(src|tests)/|^error' /tmp/windows.log | head -200 >> /tmp/windows-summary.txt || true
           wc -l /tmp/windows.log
 
+      # The check proves the code type-checks for the target; the link proves
+      # the toolchain can make a binary of it.  They fail differently, so both
+      # outputs are kept.
+      - name: cargo build, full output
+        run: |
+          echo >> /tmp/windows.log
+          echo "=== cargo build ===" >> /tmp/windows.log
+          cargo build --locked --target x86_64-pc-windows-gnu >> /tmp/windows.log 2>&1 || true
+          file target/x86_64-pc-windows-gnu/debug/umbra-beacon.exe >> /tmp/windows.log 2>&1 || true
+          grep -E 'undefined reference|cannot find|ld returned|collect2|note: (ld|the)' /tmp/windows.log | head -60 >> /tmp/windows-summary.txt || true
+          tail -40 /tmp/windows.log
+
       - name: publish it
         working-directory: .
         run: |
