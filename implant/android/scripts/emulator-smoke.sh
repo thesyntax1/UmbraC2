@@ -614,6 +614,25 @@ notification_text() {
         | sed 's/^.*android\.text=String (//; s/)$//' || true)
     printf '%s' "$text"
 }
+# Where is the process?  When the library is not in the map, the question is
+# not "did the load fail" but "was it ever reached", and only a thread dump
+# answers that.  SIGQUIT makes the runtime write every thread's stack.
+threads() {
+    local pid="$1" file="$2"
+    : >"$file"
+    [ -z "$pid" ] && return 0
+    adb shell kill -3 "$pid" >/dev/null 2>&1 || true
+    sleep 3
+    {
+        echo "$ cat /data/anr/traces.txt (the umbra stacks)"
+        adb shell cat /data/anr/traces.txt 2>/dev/null | tr -d '\r' \
+            | grep -E 'at io\.umbra\.beacon|Cmd line: io\.umbra\.beacon|^"main"' | head -60 || true
+        echo "$ adb logcat -d (the umbra stacks)"
+        adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
+            | grep -E 'at io\.umbra\.beacon' | head -40 || true
+    } >>"$file" 2>/dev/null || true
+}
+
 app_text=$(notification_text)
 printf '%s\n' "${app_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text.txt"
 
@@ -672,9 +691,12 @@ else
     # the success of the channel, and the last thing the application wrote is
     # the only account of why that did not happen.
     late_text=$(notification_text)
+    threads "$maps_pid" "$OUT/raw/thread-dump.txt"
+    stack_top=$(grep -m3 'at io\.umbra\.beacon' "$OUT/raw/thread-dump.txt" 2>/dev/null \
+        | sed 's/^ *//' | tr '\n' ' ' || true)
     printf '%s\n' "${late_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text-late.txt"
     record native-load NOT VERIFIED "the native library is mapped into the running process" \
-        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; our own log: $(head -2 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
+        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; the stack was last at: ${stack_top:-no umbra frame in the dump}; our own log: $(head -2 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
     record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
         "nothing was loaded, so there was no mapping to judge"
 fi
