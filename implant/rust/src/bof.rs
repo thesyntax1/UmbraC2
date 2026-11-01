@@ -367,11 +367,13 @@ fn run_windows(object: &[u8], args: &[String]) -> Result<Loaded, String> {
             if s.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
                 protect = win::PAGE_EXECUTE_READWRITE;
             }
-            let _ = protect_image(
-                image.base + s.virtual_address as usize,
-                s.virtual_size.max(s.raw_size) as usize,
-                protect,
-            );
+            let _ = unsafe {
+                protect_image(
+                    image.base + s.virtual_address as usize,
+                    s.virtual_size.max(s.raw_size) as usize,
+                    protect,
+                )
+            };
             break;
         }
     }
