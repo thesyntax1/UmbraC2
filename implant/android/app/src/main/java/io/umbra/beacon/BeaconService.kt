@@ -73,6 +73,9 @@ class BeaconService : Service(), Beacon.Listener {
     }
 
     private var beacon: Beacon? = null
+
+    /** Set once the service is being destroyed, so a late log cannot re-post a notification. */
+    private val destroyed = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -179,6 +182,7 @@ class BeaconService : Service(), Beacon.Listener {
     }
 
     override fun onDestroy() {
+        destroyed.set(true)
         beacon?.stop()
         beacon = null
         running = null
@@ -195,6 +199,15 @@ class BeaconService : Service(), Beacon.Listener {
         } else {
             @Suppress("DEPRECATION")
             stopForeground(true)
+        }
+        // stopForeground removes the notification the system knows about, and
+        // the beacon thread may still be finishing a cycle: a log it writes on
+        // the way out would post the notification again, for a service that no
+        // longer exists.  The id is cancelled outright as well.
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+        } catch (_: Throwable) {
+            // nothing left to cancel
         }
         super.onDestroy()
     }
@@ -240,6 +253,7 @@ class BeaconService : Service(), Beacon.Listener {
     }
 
     private fun notify(text: String) {
+        if (destroyed.get()) return
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         mgr.notify(NOTIFICATION_ID, notification(text))
     }
