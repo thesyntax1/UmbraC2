@@ -161,6 +161,9 @@ jobs:
           set -eu
           mkdir -p ci-log
           cp -r results/* ci-log/ 2>/dev/null || true
+          # A results branch is for text.  A disk image that slipped into the
+          # report directory must never be committed: nothing over 2 MB.
+          find ci-log -type f -size +2M -print -delete
           find ci-log -type f | sort
           git config user.name "umbra-ci"
           git config user.email "ci@users.noreply.github.com"

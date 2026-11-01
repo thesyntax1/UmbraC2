@@ -44,8 +44,14 @@ export PATH="$SDK/platform-tools:$SDK/emulator:$SDK/cmdline-tools/latest/bin:$PA
 # own ANDROID_*_HOME, and a check against $HOME/.android found nothing while
 # the AVD had been created somewhere else: the test then reported "the AVD
 # could not be created" about an AVD that existed.
-export ANDROID_AVD_HOME="$OUT/avd"
-export ANDROID_EMULATOR_HOME="$OUT/emulator-home"
+# Not inside $OUT: the report directory is uploaded as an artefact, and an AVD
+# is four gigabytes of disk image.  The first attempt put it there and the
+# artefact was 822 MB, which no one can download and which the results branch
+# must never see.
+SCRATCH="${RUNNER_TEMP:-/tmp}/umbra-avd"
+export ANDROID_AVD_HOME="$SCRATCH/avd"
+export ANDROID_EMULATOR_HOME="$SCRATCH/emulator-home"
+rm -rf "$SCRATCH"
 mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_EMULATOR_HOME"
 
 IMAGE="system-images;android-$API;google_apis;x86_64"
@@ -114,7 +120,7 @@ trap cleanup EXIT
 # 4. the boot, watched
 adb start-server >/dev/null 2>&1
 booted=0
-for _ in $(seq 1 240); do
+for _ in $(seq 1 140); do
     if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
         echo "the emulator process exited before the boot finished (see emulator.log)" | tee -a "$OUT/harness.txt"
         tail -20 "$OUT/emulator.log" >>"$OUT/harness.txt" 2>/dev/null || true
@@ -146,8 +152,14 @@ adb shell input keyevent 82 >/dev/null 2>&1 || true   # dismiss the lock screen
 sleep 2
 
 # 5. the test
-bash "$(dirname "$0")/emulator-smoke.sh" --apk "$APK" --out "$OUT/report" --api "$API" \
+#
+# The harness has its own timeout: an adb call against a wedged emulator blocks
+# forever, and a job that hits the 60 minute limit publishes nothing at all.
+timeout 1500 bash "$(dirname "$0")/emulator-smoke.sh" --apk "$APK" --out "$OUT/report" --api "$API" \
     >"$OUT/smoke.log" 2>&1
 rc=$?
+if [ "$rc" = "124" ]; then
+    echo "the smoke test did not finish within 25 minutes" | tee -a "$OUT/harness.txt"
+fi
 cat "$OUT/smoke.log"
 exit $rc
