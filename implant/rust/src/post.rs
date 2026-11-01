@@ -356,6 +356,20 @@ pub mod windows {
         _pad2: u32,
     }
 
+    /// DPAPI.  Crypt32 is not one of the libraries the mingw linker pulls
+    /// in by default, so the block names it: without the attribute the
+    /// symbol is undefined at link time, not at compile time.
+    #[link(name = "crypt32")]
+    extern "system" {
+        pub fn CryptUnprotectData(
+            data_in: *mut DataBlob,
+            entropy: *mut DataBlob,
+            reserved: *mut c_void,
+            prompt: *mut c_void,
+            data_out: *mut DataBlob,
+        ) -> i32;
+    }
+
     extern "system" {
         pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
         pub fn CloseHandle(object: *mut c_void) -> i32;
@@ -437,13 +451,6 @@ pub mod windows {
             credentials: *mut *mut *mut Credential,
         ) -> i32;
         pub fn CredFree(credentials: *mut c_void);
-        pub fn CryptUnprotectData(
-            data_in: *mut DataBlob,
-            entropy: *mut DataBlob,
-            reserved: *mut c_void,
-            prompt: *mut c_void,
-            data_out: *mut DataBlob,
-        ) -> i32;
         pub fn VirtualQueryEx(
             process: *mut c_void,
             address: *mut c_void,
