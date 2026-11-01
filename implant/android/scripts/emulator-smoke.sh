@@ -604,12 +604,33 @@ printf '%s\n' "$maps" >"$OUT/raw/proc-maps-libumbra.txt"
 
 # What the application says it is doing.  The foreground notification is the
 # only place the implant writes down its own state, so it is quoted instead of
-# guessed at.
-app_block=$(notification_state | grep -A40 "pkg=$PKG" | head -60 || true)
-app_text=$(printf '%s\n' "$app_block" \
-    | grep -m1 'android\.text=String (' \
-    | sed 's/^.*android\.text=String (//; s/)$//' || true)
+# guessed at -- twice, because the first sentence after a connect is often
+# replaced by the sentence that explains the failure.
+notification_text() {
+    local block text
+    block=$(notification_state | grep -A40 "pkg=$PKG" | head -60 || true)
+    text=$(printf '%s\n' "$block" \
+        | grep -m1 'android\.text=String (' \
+        | sed 's/^.*android\.text=String (//; s/)$//' || true)
+    printf '%s' "$text"
+}
+app_text=$(notification_text)
 printf '%s\n' "${app_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text.txt"
+
+# The library check itself, from the device's side: the file in the APK is not
+# a load, and the extracted file next to the package is not a load either, but
+# both are the two things that can be wrong before the load is even attempted.
+{
+    echo "$ adb shell pm path $PKG"
+    adb shell pm path "$PKG" 2>&1 || true
+    echo "$ adb shell ls -l /data/app/*/$PKG*/lib/$abi/"
+    adb shell "ls -l /data/app/*/$PKG*/lib/$abi/" 2>&1 || true
+} >"$OUT/raw/native-files.txt"
+
+# Our own tag, so the platform's message about the load is in the report even
+# when the application turns the failure into a fallback.
+adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
+    | grep -E "^[A-Z]/umbra|umbra *: " | tail -20 >"$OUT/raw/logcat-umbra.txt" 2>/dev/null || true
 
 # Only the failures that name this application or this library.  The first
 # version grepped the whole log for "dlopen failed" and found the emulator's
@@ -650,8 +671,10 @@ else
     # The socket is mapped and the library is still absent.  Its load follows
     # the success of the channel, and the last thing the application wrote is
     # the only account of why that did not happen.
+    late_text=$(notification_text)
+    printf '%s\n' "${late_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text-late.txt"
     record native-load NOT VERIFIED "the native library is mapped into the running process" \
-        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application says: ${app_text:-no notification text}"
+        "the maps of pid $maps_pid hold no libumbra.so although tcp:4001 is mapped and the process ran for 20s; the application said \"${app_text:-nothing}\" and then \"${late_text:-nothing}\"; our own log: $(head -2 "$OUT/raw/logcat-umbra.txt" 2>/dev/null | tr '\n' ' ')"
     record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
         "nothing was loaded, so there was no mapping to judge"
 fi
