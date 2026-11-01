@@ -653,6 +653,22 @@ threads() {
 app_text=$(notification_text)
 printf '%s\n' "${app_text:-no notification of $PKG carries a text}" >"$OUT/raw/notification-text.txt"
 
+# Where the library sits inside the APK, computed where the APK is.  With
+# useLegacyPackaging=false the loader maps the library straight out of
+# base.apk, and then the process map says "base.apk" and never says
+# "libumbra.so": a check that greps for the file name cannot see a load that
+# happened.  These offsets are what makes the mapping identifiable.
+python3 - "$APK" >"$OUT/raw/apk-native-entries.txt" 2>/dev/null <<'PY' || true
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+for i in z.infolist():
+    if i.filename.startswith("lib/") and i.filename.endswith(".so"):
+        data = i.header_offset + 30 + len(i.filename.encode()) + len(i.extra)
+        print("%s\theader=%d\tdata=%d\tsize=%d\tstored=%s"
+              % (i.filename, i.header_offset, data, i.file_size,
+                 "yes" if i.compress_type == zipfile.ZIP_STORED else "no"))
+PY
+
 # The library check itself, from the device's side: the file in the APK is not
 # a load, and the extracted file next to the package is not a load either, but
 # both are the two things that can be wrong before the load is even attempted.
@@ -674,6 +690,45 @@ adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
 link_error=$(adb logcat -d -v brief 2>/dev/null | tr -d '\r' \
     | grep -iE 'umbra' | grep -E "UnsatisfiedLinkError|dlopen failed|couldn't find" | head -3)
 
+# The mapping of the library out of base.apk, matched by offset: the zip
+# directory says where lib/<abi>/libumbra.so starts in the file, and a
+# mapping of base.apk inside that range is the loader having mapped it.
+apk_mapped=$(python3 - "$OUT/raw/proc-maps-libumbra.txt" "$OUT/raw/apk-native-entries.txt" "$abi" 2>/dev/null <<'PY' || true
+import re, sys
+maps_path, entries_path, abi = sys.argv[1], sys.argv[2], sys.argv[3]
+ranges = []
+try:
+    for line in open(entries_path):
+        if not line.startswith("lib/%s/libumbra.so" % abi):
+            continue
+        try:
+            parts = dict(p.split("=", 1) for p in line.strip().split("\t")[1:])
+            data, size = int(parts["data"]), int(parts["size"])
+        except (KeyError, ValueError):
+            continue
+        ranges.append((data, data + size))
+except OSError:
+    sys.exit(0)
+try:
+    lines = open(maps_path, errors="replace").read().splitlines()
+except OSError:
+    sys.exit(0)
+for line in lines:
+    if "base.apk" not in line:
+        continue
+    m = re.search(r" ([0-9a-f]{8,}) [0-9a-f]{2}:[0-9a-f]{2} ", line)
+    if not m:
+        continue
+    off = int(m.group(1), 16)
+    for lo, hi in ranges:
+        if lo <= off < hi:
+            print(line.strip())
+            break
+PY
+)
+native_sentence=$(grep -m1 "native library loaded: kernel=" "$OUT/raw/logcat-umbra.txt" 2>/dev/null | sed 's/^.*umbra *[^:]*: //' || true)
+native_failure=$(grep -m1 "native library did not load" "$OUT/raw/logcat-umbra.txt" 2>/dev/null | sed 's/^.*umbra *[^:]*: //' || true)
+
 if [ -n "$mapped" ]; then
     record native-load PASS "the native library is mapped into the running process" \
         "$(printf '%s' "$mapped" | head -1 | sed 's/  */ /g' | cut -c1-200)"
@@ -684,6 +739,21 @@ if [ -n "$mapped" ]; then
         record native-abi FAIL "the mapped library is the one built for the device ABI" \
             "mapped: $(printf '%s' "$mapped" | head -1)"
     fi
+elif [ -n "$apk_mapped" ]; then
+    record native-load PASS "the native library is mapped into the running process" \
+        "mapped out of base.apk at the offset the zip directory gives for lib/$abi/libumbra.so: $(printf '%s' "$apk_mapped" | head -1 | sed 's/  */ /g' | cut -c1-180); the application says: ${native_sentence:-nothing}"
+    record native-abi PASS "the mapped library is the one built for the device ABI" \
+        "lib/$abi/libumbra.so, the only slice the loader can take on $abi"
+elif [ -n "$native_failure" ]; then
+    record native-load FAIL "the native library is mapped into the running process" \
+        "the platform refused the load: $native_failure"
+    record native-abi NOT APPLICABLE "the mapped library is the one built for the device ABI" \
+        "nothing was loaded"
+elif [ -n "$native_sentence" ]; then
+    record native-load PASS "the native library is mapped into the running process" \
+        "the native functions answered in the process even though no mapping could be matched: ${native_sentence}"
+    record native-abi NOT VERIFIED "the mapped library is the one built for the device ABI" \
+        "the functions answered but the mapping out of base.apk was not found, so which slice ran was not observed"
 elif [ -n "$link_error" ]; then
     record native-load FAIL "the native library is mapped into the running process" \
         "$(printf '%s' "$link_error" | head -2 | tr '\n' ' ')"
