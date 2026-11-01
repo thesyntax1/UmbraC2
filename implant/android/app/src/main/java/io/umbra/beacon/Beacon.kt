@@ -155,6 +155,12 @@ class Beacon(
 
     private fun log(msg: String) {
         listener?.onLog(msg)
+        // The notification is what the user of the phone sees; the log is what
+        // an operator has after the fact.  Until now the beacon wrote its state
+        // nowhere else, so a run that stopped between two notifications left no
+        // trace of where it stopped -- the twelfth emulator run is exactly that
+        // case.
+        android.util.Log.i("umbra", msg)
     }
 
     private companion object {
