@@ -50,16 +50,18 @@ Each line of the report is one command whose output was kept.
 | `launch-crash` | did it crash or ANR? | `FATAL EXCEPTION` / `ANR in io.umbra.beacon` |
 | `notif-dialog` | does the app ask for `POST_NOTIFICATIONS` itself? | the platform dialog on the screen |
 | `notif-denial` | is the refusal recorded as a refusal? | the permission state in `dumpsys package` after tapping *Don't allow* |
+| `consent-button` | does the button on the consent screen start it? | the button is found in a `uiautomator` dump and tapped |
 | `service-start` | does the foreground service start? | a `ServiceRecord` in `dumpsys activity services` |
 | `service-foreground` | is it *foreground*? | `isForeground=true` in that record |
 | `service-crash` | does starting it kill the process? | the pid, and the log |
 | `notification-suppressed` | is the notification off the screen while the permission is refused? | `dumpsys notification` for the package |
 | `notification` | is it on the screen once the permission is granted? | the same, after `pm grant` and a second start |
-| `native-load` | did the library load? | `libumbra.so` in `/proc/<pid>/maps` |
-| `native-abi` | is it the build for the device's ABI? | the path in the map is `lib/x86_64/` |
+| `native-load` | did the library load? | an extracted `libumbra.so` in `/proc/<pid>/maps`, or a `base.apk` mapping at the offset the zip directory gives for `lib/x86_64/libumbra.so`, or the native functions answering with values only C++ produces |
+| `native-abi` | is it the build for the device's ABI? | the mapping matched to `lib/x86_64/libumbra.so`; if only the functions answered, this stays `NOT VERIFIED` |
 | `kill-restart` | does a SIGKILLed process come back? | 60 s of watching `pidof` |
 | `service-restart` | does the *service* come back, not only the process? | the service record again |
-| `stop` / `stop-notification` | can the consent screen stop it? | the record is gone; the notification is gone |
+| `stop` / `stop-notification` | can the consent screen stop it? | the record is gone; the notification is gone from the shade within fifteen seconds |
+| `physical-device` | does a phone behave the same way? | `NOT APPLICABLE`: no physical device is involved, and saying so is the result |
 | `logcat` | any fatal record in the whole run? | the kept log |
 
 ## 3. What is deliberately not measured
@@ -83,6 +85,46 @@ silence would read as a pass.
 * **Tasks, transports, protocol.**  Nothing operational happens here.  The
   beacon's ability to run a command is a later stage and is tested against a
   synthetic server with fixed messages, without executing anything.
+
+## 3a. The socket, the root and the order
+
+The beacon loads its native library on a path that only exists after a
+successful connect: `openChannel()` → `handshake()` → `meta()` →
+`SysInfo` → `System.loadLibrary("umbra")`.  Nothing in this stage executes a
+task, so a listening socket has to exist for that path to be reached at all.
+The host opens `nc -lk 127.0.0.1 4001`; nothing on the device can see it until
+`adb reverse` maps it, and `adb reverse` needs a booted device *and* a `adb`
+binary.  Two runs were lost to getting that order wrong:
+
+* the workflow called `adb reverse` before the SDK was installed, and the file
+  it wrote said `adb: command not found` while the application's own
+  notification said `ECONNREFUSED`;
+* once the mapping was made after the boot, `adb root` in the tap fallback
+  restarted adbd and took every reverse rule with it.
+
+Root is now taken once, before the beacon exists, and the socket is mapped
+immediately afterwards.  `raw/adb-reverse.txt` holds both the command and
+`adb reverse --list`; `raw/nc.log` holds the bytes the application sent
+(the frame magic, the length, the ciphertext).
+
+A process that has loaded the library is not necessarily the process that is
+running when the map is read: the permission test restarts the application.
+The pid therefore comes from the application's own line
+(`native library loaded: kernel=… pid=…`), and the map is read from that pid.
+
+## 3b. What this stage found
+
+The stage exists to find things, and it did.  Each of these was found by a
+run, fixed in a commit of its own, and re-measured on both API levels.
+
+| Finding | Where it showed | Fixed in |
+|---|---|---|
+| `BeaconService` announced `mediaProjection` without the consent token, and Android 14 killed the service on start with `SecurityException: Starting FGS with type mediaProjection … requires … CAPTURE_VIDEO_OUTPUT` | `raw/crash-trace.txt`, API 34 | `0acd142` |
+| `KeyPairGenerator("XDH")` with `NamedParameterSpec("X25519")` is refused by Android's own provider: `No AlgorithmParameterSpec classes are supported` | the application's notification, API 33 and 34 | `4a47804` |
+| the X25519 public key was cast to the JDK's `XECPublicKey`; Conscrypt answers with `OpenSSLX25519PublicKey` and the cast threw | the application's notification | `af01ec3` |
+| a failed `System.loadLibrary` was swallowed into `nativeReady = false`, with nothing logged and nothing shown | twelve runs of `NOT VERIFIED` with no reason | `d134cfb`, `9c88927` |
+| the foreground notification outlived the service: `am stopservice` removed the `ServiceRecord` and left the notification in the shade | `stop-notification`, both API levels | `da2f0e9`, `603aca8` |
+| the notification check, the kill check and the native check each measured a different moment than the one they claimed | `records.tsv` of runs `4634b7b`, `9bd75ca` | `0acd142`…`603aca8` |
 
 ## 4. How to read a result
 
@@ -124,3 +166,48 @@ Everything the run learned is in `results/api-34/`: `result.md` (the table),
 `result.json` (the same, for a script), `environment.md`, `apk.txt`, and
 `raw/` — every command's output, including the UI dumps that prove which screen
 was on the device when a tap was sent.
+
+## 6. The state on `603aca8`
+
+Both API levels, `emulator.yml` run `41328526743`, using the APK that
+`ci.yml` run `41328526764` built for the same commit
+(`sha256 8b3bc01fc544a00b0c057003177ddee9a284aa7974703ccc611b1cf700eca87b`,
+asserted to be the bytes installed on the device):
+
+| API level | PASS | NOT VERIFIED | NOT APPLICABLE | FAIL |
+|---|---|---|---|---|
+| 33 | 20 | 6 | 1 | 0 |
+| 34 | 20 | 6 | 1 | 0 |
+
+What is measured, on both levels: the APK installs, the package is listed, the
+consent screen starts (`TotalTime` 2.1 s and 2.8 s), no fatal record appears in
+the log, the platform asks for `POST_NOTIFICATIONS` and the refusal is recorded
+as a refusal, the foreground service starts and is `isForeground=true`, its
+notification is absent while the permission is refused and present on channel
+`umbra-beacon` once granted, the native library loads and its functions answer
+(`kernel=5.15.119-android13-…` / `kernel=6.1.23-android14-…`,
+`machine=x86_64`), the process is back 3 s after a `SIGKILL` and the
+`ServiceRecord` with it, `am stopservice` removes the service and the
+notification within a second.
+
+What stays `NOT VERIFIED`, with the reason the report gives:
+
+* **`consent-button`, `consent-button-stop`** — the tap lands on the launcher
+  in a headless emulator although the screen is drawn (the dumps are kept in
+  `raw/`). The service is started and stopped with
+  `am start-foreground-service` / `am stopservice`, and every record says so.
+  The application's own button has been seen, not pressed.
+* **`native-abi`** — the JNI functions answered, so the library is loaded and
+  executing; the mapping the loader made inside `base.apk` could not be matched
+  to the zip entry's offset, so *which* slice ran was not observed. A load is
+  not a slice.
+* **`notif-denial-behaviour`** — the implant has no sentence of its own for a
+  refused `POST_NOTIFICATIONS`: only the platform's silence was observed.
+* **`location-denial`, `alarm-denial`** — `Sense.kt` and `Persistence.kt` are
+  reached from a task, and no task is executed in this stage.
+* **`physical-device`** — `NOT APPLICABLE`. An emulator is not a phone.
+
+The last two lines are the ones to keep in view: a green emulator run says the
+Android build starts, keeps a foreground service and loads its library on the
+two API levels this repository targets. It says nothing about a physical phone,
+nothing about a task, and nothing about the C2 chain.
