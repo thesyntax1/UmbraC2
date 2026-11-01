@@ -1,0 +1,17 @@
+sdk:      /usr/local/lib/android/sdk
+image:    system-images;android-33;google_apis;x86_64
+avd:      umbra-api33
+java:     openjdk version "17.0.21" 2026-10-20
+sdkmanager: /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager
+avdmanager: /usr/local/lib/android/sdk/cmdline-tools/latest/bin/avdmanager
+emulator:   missing
+adb:        /usr/local/lib/android/sdk/platform-tools/adb
+kvm:        crw-rw-rw- 1 root kvm 10, 232 Nov  1 17:12 /dev/kvm
+pulse:      2 libpulse entries
+4
+               total        used        free      shared  buff/cache   available
+Mem:              15           0          13           0           1          14
+emulator: Android emulator version 37.2.13.0 (build_id 16740729) (CL:N/A)
+Copyright (C) 2006-2024 The Android Open Source Project and many others.
+This program is a derivative of the QEMU CPU emulator (www.qemu.org).
+accepted-licenses: android-googletv-license android-googlexr-license android-sdk-arm-dbt-license android-sdk-license android-sdk-preview-license google-gdk-license microxr-sysimage-license mips-android-sysimage-license 

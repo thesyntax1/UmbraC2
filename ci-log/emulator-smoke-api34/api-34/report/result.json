@@ -1,0 +1,173 @@
+{
+  "api": "34",
+  "apk_sha256": "d45a30f8ee48e45ddfa943138e4d38574f0e5f35d0379ef7cb2be60f787282eb",
+  "counts": {
+    "PASS": 20,
+    "NOT VERIFIED": 6,
+    "NOT APPLICABLE": 1
+  },
+  "checks": [
+    {
+      "id": "environment",
+      "status": "PASS",
+      "title": "the emulator is the API level the job asked for",
+      "evidence": "API 34, 14, x86_64,arm64-v8a, qemu=1"
+    },
+    {
+      "id": "apk-integrity",
+      "status": "PASS",
+      "title": "the bytes that were installed are the bytes that were built",
+      "evidence": "sha256 d45a30f8ee48e45ddfa943138e4d38574f0e5f35d0379ef7cb2be60f787282eb on both sides"
+    },
+    {
+      "id": "abi-match",
+      "status": "PASS",
+      "title": "the APK carries the ABI the emulator runs",
+      "evidence": "device x86_64 (of x86_64,arm64-v8a), APK: arm64-v8a armea-v7a x86_64 "
+    },
+    {
+      "id": "install",
+      "status": "PASS",
+      "title": "adb install says Success",
+      "evidence": "Success"
+    },
+    {
+      "id": "package-manager",
+      "status": "PASS",
+      "title": "the package manager lists the application",
+      "evidence": "io.umbra.beacon"
+    },
+    {
+      "id": "launch",
+      "status": "PASS",
+      "title": "the consent screen starts on API 34",
+      "evidence": "Status: ok TotalTime: 3187 , pid 3364,     versionName=0.1.0"
+    },
+    {
+      "id": "launch-crash",
+      "status": "PASS",
+      "title": "no crash and no ANR during the launch",
+      "evidence": "logcat has no FATAL EXCEPTION for io.umbra.beacon"
+    },
+    {
+      "id": "notif-dialog",
+      "status": "PASS",
+      "title": "the application asks for POST_NOTIFICATIONS on first launch",
+      "evidence": "the platform dialog is on the screen: Allow Umbra Beacon to send you notifications?"
+    },
+    {
+      "id": "notif-denial",
+      "status": "PASS",
+      "title": "the refusal of POST_NOTIFICATIONS is recorded as a refusal",
+      "evidence": " android.permission.POST_NOTIFICATIONS android.permission.WAKE_LOCK android.permission.RECEIVE_BOOT_COMPLETED -- android.permission.POST_NOTIFICATIONS: granted="
+    },
+    {
+      "id": "consent-button",
+      "status": "NOT VERIFIED",
+      "title": "the consent screen's button starts the service",
+      "evidence": "the button could not be tapped on a headless emulator; the screen itself was verified at launch"
+    },
+    {
+      "id": "service-start",
+      "status": "PASS",
+      "title": "the foreground service starts",
+      "evidence": "started by am start-foreground-service, because the button could not be tapped; the activity manager holds a record for io.umbra.beacon/.BeaconService"
+    },
+    {
+      "id": "service-foreground",
+      "status": "PASS",
+      "title": "the service is in the foreground",
+      "evidence": "isForeground=true"
+    },
+    {
+      "id": "service-crash",
+      "status": "PASS",
+      "title": "starting the service neither crashes nor kills the process",
+      "evidence": "pid 3364"
+    },
+    {
+      "id": "notification-suppressed",
+      "status": "PASS",
+      "title": "a refused POST_NOTIFICATIONS keeps the notification off the screen",
+      "evidence": "no notification for io.umbra.beacon while the permission is refused"
+    },
+    {
+      "id": "notification",
+      "status": "PASS",
+      "title": "the foreground service posts its notification when it may",
+      "evidence": "channel umbra-beacon, id 4711, for io.umbra.beacon"
+    },
+    {
+      "id": "native-load",
+      "status": "PASS",
+      "title": "the native library is mapped into the running process",
+      "evidence": "the native functions answered in the process even though no mapping could be matched: native library loaded: kernel=6.1.23-android14-4-00257-g7e35917775b8-ab9964412 machine=x86_64 pid=3364"
+    },
+    {
+      "id": "native-abi",
+      "status": "NOT VERIFIED",
+      "title": "the mapped library is the one built for the device ABI",
+      "evidence": "the functions answered but the mapping out of base.apk was not found, so which slice ran was not observed"
+    },
+    {
+      "id": "kill-restart",
+      "status": "PASS",
+      "title": "the process comes back after a SIGKILL",
+      "evidence": "the old pid 5987 was killed, the new pid 6756 appeared after 3s; the service record is 3"
+    },
+    {
+      "id": "service-restart",
+      "status": "PASS",
+      "title": "the service, not only the process, is restored",
+      "evidence": "ServiceRecord for io.umbra.beacon/.BeaconService exists again"
+    },
+    {
+      "id": "consent-button-stop",
+      "status": "NOT VERIFIED",
+      "title": "the consent screen's Stop button stops the service",
+      "evidence": "the button could not be tapped on a headless emulator"
+    },
+    {
+      "id": "stop",
+      "status": "PASS",
+      "title": "the service stops",
+      "evidence": "am stopservice; no ServiceRecord for io.umbra.beacon/.BeaconService"
+    },
+    {
+      "id": "stop-notification",
+      "status": "PASS",
+      "title": "the notification goes away with the service",
+      "evidence": "no notification for io.umbra.beacon 1s after am stopservice"
+    },
+    {
+      "id": "notif-denial-behaviour",
+      "status": "NOT VERIFIED",
+      "title": "the refusal of POST_NOTIFICATIONS is answered truthfully by the application",
+      "evidence": "the service must run without the permission and the code has no sentence of its own for that refusal; only the platform's silence was observed"
+    },
+    {
+      "id": "location-denial",
+      "status": "NOT VERIFIED",
+      "title": "a refused location permission produces the sentence the code has for it",
+      "evidence": "Sense.kt is reached from a task, and no task is executed in this stage"
+    },
+    {
+      "id": "alarm-denial",
+      "status": "NOT VERIFIED",
+      "title": "a refused exact alarm produces the inexact alarm and the honest detail string",
+      "evidence": "Persistence.kt arms an alarm from a task, and no task is executed in this stage"
+    },
+    {
+      "id": "physical-device",
+      "status": "NOT APPLICABLE",
+      "title": "a physical phone behaves the same way",
+      "evidence": "no physical device was involved; manufacturer battery managers are out of scope"
+    },
+    {
+      "id": "logcat",
+      "status": "PASS",
+      "title": "no FATAL EXCEPTION and no ANR in the whole run",
+      "evidence": "0 fatal, 0 ANR"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+I/umbra   ( 3364): tcp connected 127.0.0.1:4001
+I/umbra   ( 3364): native library loaded: kernel=6.1.23-android14-4-00257-g7e35917775b8-ab9964412 machine=x86_64 pid=3364
+I/umbra   ( 5987): tcp connected 127.0.0.1:4001
+I/umbra   ( 5987): native library loaded: kernel=6.1.23-android14-4-00257-g7e35917775b8-ab9964412 machine=x86_64 pid=5987
+I/umbra   ( 5987): cycle failed (1): Read timed out
+I/umbra   ( 5987): tcp connected 127.0.0.1:4001

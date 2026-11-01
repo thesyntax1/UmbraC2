@@ -1,0 +1,4 @@
+d45a30f8ee48e45ddfa943138e4d38574f0e5f35d0379ef7cb2be60f787282eb  app-debug.apk
+     4992  1981-01-01 01:01   lib/arm64-v8a/libumbra.so
+     3528  1981-01-01 01:01   lib/armeabi-v7a/libumbra.so
+     4960  1981-01-01 01:01   lib/x86_64/libumbra.so

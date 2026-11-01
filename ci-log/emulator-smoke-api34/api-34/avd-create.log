@@ -1,0 +1,9 @@
+Loading local repository...                                                     [=========                              ] 25% Loading local repository...       Auto-selecting single ABI x86_64
+avd home: /home/runner/work/_temp/umbra-avd/avd
+total 16
+drwxr-xr-x 3 runner runner 4096 Nov  1 17:13 .
+drwxr-xr-x 4 runner runner 4096 Nov  1 17:13 ..
+drwxr-xr-x 2 runner runner 4096 Nov  1 17:13 umbra-api34.avd
+-rw-r--r-- 1 runner runner  100 Nov  1 17:13 umbra-api34.ini
+--- emulator -list-avds:
+umbra-api34

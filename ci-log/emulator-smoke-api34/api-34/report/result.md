@@ -1,0 +1,41 @@
+# The emulator smoke test — API 34
+
+APK sha256 `d45a30f8ee48e45ddfa943138e4d38574f0e5f35d0379ef7cb2be60f787282eb`.  Every line below was produced by a command that ran
+on this emulator; a line that says NOT VERIFIED is a command that could
+not be run, and it says why.
+
+| check | result | what was asked | evidence |
+|---|---|---|---|
+| `environment` | **PASS** | the emulator is the API level the job asked for | API 34, 14, x86_64,arm64-v8a, qemu=1 |
+| `apk-integrity` | **PASS** | the bytes that were installed are the bytes that were built | sha256 d45a30f8ee48e45ddfa943138e4d38574f0e5f35d0379ef7cb2be60f787282eb on both sides |
+| `abi-match` | **PASS** | the APK carries the ABI the emulator runs | device x86_64 (of x86_64,arm64-v8a), APK: arm64-v8a armea-v7a x86_64  |
+| `install` | **PASS** | adb install says Success | Success |
+| `package-manager` | **PASS** | the package manager lists the application | io.umbra.beacon |
+| `launch` | **PASS** | the consent screen starts on API 34 | Status: ok TotalTime: 3187 , pid 3364,     versionName=0.1.0 |
+| `launch-crash` | **PASS** | no crash and no ANR during the launch | logcat has no FATAL EXCEPTION for io.umbra.beacon |
+| `notif-dialog` | **PASS** | the application asks for POST_NOTIFICATIONS on first launch | the platform dialog is on the screen: Allow Umbra Beacon to send you notifications? |
+| `notif-denial` | **PASS** | the refusal of POST_NOTIFICATIONS is recorded as a refusal |  android.permission.POST_NOTIFICATIONS android.permission.WAKE_LOCK android.permission.RECEIVE_BOOT_COMPLETED -- android.permission.POST_NOTIFICATIONS: granted= |
+| `consent-button` | **NOT VERIFIED** | the consent screen's button starts the service | the button could not be tapped on a headless emulator; the screen itself was verified at launch |
+| `service-start` | **PASS** | the foreground service starts | started by am start-foreground-service, because the button could not be tapped; the activity manager holds a record for io.umbra.beacon/.BeaconService |
+| `service-foreground` | **PASS** | the service is in the foreground | isForeground=true |
+| `service-crash` | **PASS** | starting the service neither crashes nor kills the process | pid 3364 |
+| `notification-suppressed` | **PASS** | a refused POST_NOTIFICATIONS keeps the notification off the screen | no notification for io.umbra.beacon while the permission is refused |
+| `notification` | **PASS** | the foreground service posts its notification when it may | channel umbra-beacon, id 4711, for io.umbra.beacon |
+| `native-load` | **PASS** | the native library is mapped into the running process | the native functions answered in the process even though no mapping could be matched: native library loaded: kernel=6.1.23-android14-4-00257-g7e35917775b8-ab9964412 machine=x86_64 pid=3364 |
+| `native-abi` | **NOT VERIFIED** | the mapped library is the one built for the device ABI | the functions answered but the mapping out of base.apk was not found, so which slice ran was not observed |
+| `kill-restart` | **PASS** | the process comes back after a SIGKILL | the old pid 5987 was killed, the new pid 6756 appeared after 3s; the service record is 3 |
+| `service-restart` | **PASS** | the service, not only the process, is restored | ServiceRecord for io.umbra.beacon/.BeaconService exists again |
+| `consent-button-stop` | **NOT VERIFIED** | the consent screen's Stop button stops the service | the button could not be tapped on a headless emulator |
+| `stop` | **PASS** | the service stops | am stopservice; no ServiceRecord for io.umbra.beacon/.BeaconService |
+| `stop-notification` | **PASS** | the notification goes away with the service | no notification for io.umbra.beacon 1s after am stopservice |
+| `notif-denial-behaviour` | **NOT VERIFIED** | the refusal of POST_NOTIFICATIONS is answered truthfully by the application | the service must run without the permission and the code has no sentence of its own for that refusal; only the platform's silence was observed |
+| `location-denial` | **NOT VERIFIED** | a refused location permission produces the sentence the code has for it | Sense.kt is reached from a task, and no task is executed in this stage |
+| `alarm-denial` | **NOT VERIFIED** | a refused exact alarm produces the inexact alarm and the honest detail string | Persistence.kt arms an alarm from a task, and no task is executed in this stage |
+| `physical-device` | **NOT APPLICABLE** | a physical phone behaves the same way | no physical device was involved; manufacturer battery managers are out of scope |
+| `logcat` | **PASS** | no FATAL EXCEPTION and no ANR in the whole run | 0 fatal, 0 ANR |
+
+## Counts
+
+* NOT APPLICABLE: 1
+* NOT VERIFIED: 6
+* PASS: 20

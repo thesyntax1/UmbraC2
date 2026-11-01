@@ -1,0 +1,21 @@
+ACTIVITY MANAGER SERVICES (dumpsys activity services)
+  User 0 active services:
+  * ServiceRecord{ce8c375 u0 io.umbra.beacon/.BeaconService}
+    intent={cmp=io.umbra.beacon/.BeaconService}
+    packageName=io.umbra.beacon
+    processName=io.umbra.beacon
+    baseDir=/data/app/~~j6LhMfxqmIcF9zdfH9p1-A==/io.umbra.beacon-WE6dyRk3T1jg-KP3UddMuw==/base.apk
+    dataDir=/data/user/0/io.umbra.beacon
+    app=ProcessRecord{5657586 3364:io.umbra.beacon/u0a192}
+    mAllowWhileInUsePermissionInFgsReason=SYSTEM_UID
+    allowUiJobScheduling=true
+    recentCallingPackage=com.android.shell
+    recentCallingUid=0
+    allowStartForeground=SYSTEM_UID
+    startForegroundCount=1
+    infoAllowStartForeground=[callingPackage: com.android.shell; callingUid: 0; uidState: NONE; uidBFSL: n/a; intent: Intent { cmp=io.umbra.beacon/.BeaconService }; code:SYSTEM_UID; tempAllowListReason:<null>; targetSdkVersion:34; callerTargetSdkVersion:34; startForegroundCount:0; bindFromPackage:null: isBindService:false]
+    isForeground=true foregroundId=4711 types=00000001 foregroundNoti=Notification(channel=umbra-beacon shortcut=null contentView=null vibrate=null sound=null defaults=0x0 flags=0x42 color=0x00000000 vis=PRIVATE)
+    createTime=-6s82ms startingBgTimeout=--
+    lastActivity=-6s81ms restartTime=-6s81ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+ startCommandResult=1

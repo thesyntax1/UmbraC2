@@ -1,0 +1,7 @@
+Starting: Intent { cmp=io.umbra.beacon/.MainActivity }
+Status: ok
+LaunchState: COLD
+Activity: com.google.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity
+TotalTime: 3187
+WaitTime: 3201
+Complete

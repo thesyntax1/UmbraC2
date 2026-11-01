@@ -1,0 +1,1 @@
+/home/runner/work/UmbraC2/UmbraC2/apk/app-debug.apk: 1 file pushed, 0 skipped. 56.1 MB/s (2827802 bytes in 0.048s)

@@ -1,0 +1,5 @@
+$ adb reverse tcp:4001 tcp:4001
+4001
+$ adb reverse --list
+host-26 tcp:4001 tcp:4001
+

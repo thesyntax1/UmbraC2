@@ -1,0 +1,4 @@
+$ adb shell pm path io.umbra.beacon
+package:/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk
+$ adb shell ls -l /data/app/*/io.umbra.beacon*/lib/x86_64/
+total 0

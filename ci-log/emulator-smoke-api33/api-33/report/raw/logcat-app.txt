@@ -1,0 +1,387 @@
+11-01 17:14:46.696   485  2132 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:14:47.170   485   518 I ActivityManager: Start proc 3276:io.umbra.beacon/u0a174 for next-top-activity {io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-01 17:14:47.192  3276  3276 I io.umbra.beacon: Late-enabling -Xcheck:jni
+11-01 17:14:47.373   983   983 D CarrierSvcBindHelper: onPackageAdded: io.umbra.beacon
+11-01 17:14:47.569  3276  3276 I io.umbra.beacon: Using CollectorTypeCC GC.
+11-01 17:14:47.581  3276  3276 W io.umbra.beacon: Unexpected CPU variant for x86: x86_64.
+11-01 17:14:47.581  3276  3276 W io.umbra.beacon: Known variants: atom, sandybridge, silvermont, kabylake, default
+11-01 17:14:47.626   983   983 D CarrierSvcBindHelper: onPackageModified: io.umbra.beacon
+11-01 17:14:47.703  3276  3276 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:14:47.703  3276  3276 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:14:47.722  3276  3276 D nativeloader: Configuring classloader-namespace for other apk /data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/lib/x86_64:/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/io.umbra.beacon
+11-01 17:14:47.732  3276  3276 V GraphicsEnvironment: ANGLE Developer option for 'io.umbra.beacon' set to: 'default'
+11-01 17:14:47.732  3276  3276 V GraphicsEnvironment: ANGLE GameManagerService for io.umbra.beacon: false
+11-01 17:14:48.032   485  2489 D CoreBackPreview: Window{af735d4 u0 Splash Screen io.umbra.beacon}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@aa70746, mPriority=0}
+11-01 17:14:48.675   983   983 D ImsResolver: maybeAddedImsService, packageName: io.umbra.beacon
+11-01 17:14:48.795   983   983 D ImsResolver: maybeAddedImsService, packageName: io.umbra.beacon
+11-01 17:14:52.211   485   561 D CoreBackPreview: Window{1afe916 u0 io.umbra.beacon/io.umbra.beacon.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@325ec84, mPriority=0}
+11-01 17:14:52.523   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{7ccff74 com.google.android.apps.messaging/10112} BLOCKED
+11-01 17:14:52.524   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{dd535de com.google.android.gm/10145} BLOCKED
+11-01 17:14:52.524   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{1e5c3bf com.google.android.partnersetup/10105} BLOCKED
+11-01 17:14:52.525   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{532ba8c com.google.android.cellbroadcastreceiver/10169} BLOCKED
+11-01 17:14:53.188   485   504 D CoreBackPreview: Window{af735d4 u0 Splash Screen io.umbra.beacon}: Setting back callback null
+11-01 17:14:53.235   485  2255 W InputManager-JNI: Input channel object 'af735d4 Splash Screen io.umbra.beacon (client)' was disposed without first being removed with the input manager!
+11-01 17:14:59.365  3781  3781 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:14:59.404  3781  3781 I AndroidRuntime: Using default boot image
+11-01 17:14:59.404  3781  3781 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:14:59.758  3781  3781 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:01.078  3781  3781 D AndroidRuntime: Shutting down VM
+11-01 17:15:01.085  3781  3848 I AndroidRuntime: NOTE: attach of thread 'binder:3781_3' failed
+11-01 17:15:02.263  3876  3876 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:02.274  3876  3876 I AndroidRuntime: Using default boot image
+11-01 17:15:02.274  3876  3876 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:02.469  1038  3840 I FontLog : Package io.umbra.beacon has no metadata [CONTEXT service_id=132 ]
+11-01 17:15:02.492  3876  3876 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:02.592  1232  3207 I BlockstoreStorage: Clearing Blockstore Data for package io.umbra.beacon [CONTEXT service_id=258 ]
+11-01 17:15:03.749  3876  3876 D AndroidRuntime: Shutting down VM
+11-01 17:15:04.030  1630  1630 I AiAiEcho: EchoSearch: AppFetcherImpl is initialized with [19] apps [time=46, reason=io.umbra.beacon is added]
+11-01 17:15:04.478   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{12caf8e com.google.android.apps.messaging/10112} BLOCKED
+11-01 17:15:04.478   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{35833af com.google.android.settings.intelligence/10107} BLOCKED
+11-01 17:15:04.478   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{4a783bc com.android.remoteprovisioner/10150} BLOCKED
+11-01 17:15:04.915  3988  3988 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:04.931  3988  3988 I AndroidRuntime: Using default boot image
+11-01 17:15:04.935  3988  3988 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:05.240  3988  3988 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:06.416  3988  3988 D AndroidRuntime: Shutting down VM
+11-01 17:15:08.484   485  2258 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:15:08.773  4183  4183 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:08.779  4183  4183 I AndroidRuntime: Using default boot image
+11-01 17:15:08.779  4183  4183 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:09.000  4183  4183 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:10.071  4183  4183 D AndroidRuntime: Shutting down VM
+11-01 17:15:11.994   485  1568 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:15:12.208  4419  4419 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:12.220  4419  4419 I AndroidRuntime: Using default boot image
+11-01 17:15:12.220  4419  4419 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:12.462  4419  4419 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:13.629  4419  4419 D AndroidRuntime: Shutting down VM
+11-01 17:15:15.228   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{ac61178 com.google.android.youtube/10137} BLOCKED
+11-01 17:15:15.228   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{a783051 com.google.android.googlequicksearchbox/10119} BLOCKED
+11-01 17:15:15.231   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{38b70b6 com.google.android.apps.messaging/10112} BLOCKED
+11-01 17:15:15.231   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{17aa1b7 com.android.camera2/10142} BLOCKED
+11-01 17:15:15.231   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{906cd24 com.google.android.apps.docs/10122} BLOCKED
+11-01 17:15:15.231   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{efef632 com.google.android.apps.maps/10144} BLOCKED
+11-01 17:15:15.231   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{69a8fab com.google.android.calendar/10123} BLOCKED
+11-01 17:15:15.232   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{83e808d com.android.remoteprovisioner/10150} BLOCKED
+11-01 17:15:15.532   485  2258 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:15:15.777  4672  4672 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:15.805  4672  4672 I AndroidRuntime: Using default boot image
+11-01 17:15:15.805  4672  4672 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:15.977  4672  4672 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:17.011  4672  4672 D AndroidRuntime: Shutting down VM
+11-01 17:15:17.104   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{330c5b0 com.google.android.apps.messaging/10112} BLOCKED
+11-01 17:15:17.104   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{e1ffc29 com.google.android.apps.photos/10140} BLOCKED
+11-01 17:15:18.934   485  1065 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:15:19.239  4846  4846 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:19.250  4846  4846 I AndroidRuntime: Using default boot image
+11-01 17:15:19.250  4846  4846 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:19.355   485  1340 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{9a55e19 com.google.android.gm/10145} BLOCKED
+11-01 17:15:19.436  4846  4846 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:20.632  4846  4846 D AndroidRuntime: Shutting down VM
+11-01 17:15:21.086   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{de9fd0e com.google.android.googlequicksearchbox/10119} BLOCKED
+11-01 17:15:21.086   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{e8f332f com.google.android.gm/10145} BLOCKED
+11-01 17:15:21.752  1481  1481 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1877 onStartInput(EditorInfo{inputType=0x0(NULL) imeOptions=0x0 privateImeOptions=null actionName=UNSPECIFIED actionLabel=null actionId=0 initialSelStart=-1 initialSelEnd=-1 initialCapsMode=0x0 hintText=null label=null packageName=io.umbra.beacon fieldId=-1 fieldName=null extras=null}, false)
+11-01 17:15:22.095   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{d03ff78 com.google.android.gm/10145} BLOCKED
+11-01 17:15:22.343   485  2131 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{f24678f com.google.android.settings.intelligence/10107} BLOCKED
+11-01 17:15:22.345   485  2131 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{1a7da1c com.google.android.settings.intelligence/10107} BLOCKED
+11-01 17:15:22.606   485  2131 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:15:22.829  5123  5123 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-01 17:15:22.841  5123  5123 I AndroidRuntime: Using default boot image
+11-01 17:15:22.841  5123  5123 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:23.048  5123  5123 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:23.308   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{7ba90ed com.google.android.setupwizard/10116} BLOCKED
+11-01 17:15:23.308   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{6e61b22 com.google.android.settings.intelligence/10107} BLOCKED
+11-01 17:15:23.308   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{1471831 com.google.android.projection.gearhead/10108} BLOCKED
+11-01 17:15:24.113  5123  5123 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0ae; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:24.136  5123  5123 D AndroidRuntime: Shutting down VM
+11-01 17:15:26.120   485  1568 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-01 17:15:26.809   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{d002d54 com.google.android.as/10117} BLOCKED
+11-01 17:15:28.278   485  1065 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:15:30.111   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{d450e9b com.google.android.googlequicksearchbox/10119} BLOCKED
+11-01 17:15:32.184  5461  5461 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:32.262  5461  5461 I AndroidRuntime: Using default boot image
+11-01 17:15:32.262  5461  5461 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:32.642  5461  5461 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:33.864  5461  5461 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0b8; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:33.872  5461  5461 D AndroidRuntime: Shutting down VM
+11-01 17:15:34.812  5533  5533 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:34.816  5533  5533 I AndroidRuntime: Using default boot image
+11-01 17:15:34.816  5533  5533 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:34.949  5533  5533 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:35.970  5533  5533 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0c5; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:35.979  5533  5533 D AndroidRuntime: Shutting down VM
+11-01 17:15:35.985  5533  5553 I AndroidRuntime: NOTE: attach of thread 'binder:5533_3' failed
+11-01 17:15:37.939   485   504 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:15:38.154  5597  5597 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:38.157  5597  5597 I AndroidRuntime: Using default boot image
+11-01 17:15:38.157  5597  5597 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:38.300  5597  5597 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:39.369  5597  5597 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0d3; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:39.376  5597  5597 D AndroidRuntime: Shutting down VM
+11-01 17:15:40.298  4570  4570 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:40.694  5665  5665 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:41.315   485  1568 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:15:41.539  5691  5691 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:41.559  5691  5691 I AndroidRuntime: Using default boot image
+11-01 17:15:41.560  5691  5691 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:41.861  5691  5691 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:42.537  5695  5695 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:42.831  5735  5735 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:42.923  5691  5691 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0dc; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:42.930  5691  5691 D AndroidRuntime: Shutting down VM
+11-01 17:15:43.152  5754  5754 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:43.286  5772  5772 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:43.437  5789  5789 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:43.653  5807  5807 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:43.966  5828  5828 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:44.131  5848  5848 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:44.273  5865  5865 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:44.414  5883  5883 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:44.613  5901  5901 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:44.761  5918  5918 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:44.859   485   848 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:15:44.876  5935  5935 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:45.052  5960  5960 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:45.083  5958  5958 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:45.098  5958  5958 I AndroidRuntime: Using default boot image
+11-01 17:15:45.098  5958  5958 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:45.222  5978  5978 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:45.362  5958  5958 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:45.469  6009  6009 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:46.398  5958  5958 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0ef; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:46.412  5958  5958 D AndroidRuntime: Shutting down VM
+11-01 17:15:47.880   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{d3234fe com.google.android.as/10117} BLOCKED
+11-01 17:15:48.369   485  1699 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:15:48.553  6108  6108 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:48.576  6108  6108 I AndroidRuntime: Using default boot image
+11-01 17:15:48.576  6108  6108 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:48.915  6108  6108 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:49.024   485   561 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{37055d1 com.google.android.settings.intelligence/10107} BLOCKED
+11-01 17:15:50.046  6108  6108 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b0f3; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:50.070  6108  6108 D AndroidRuntime: Shutting down VM
+11-01 17:15:51.979   485  2130 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:15:52.097  6236  6236 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:15:52.101  6236  6236 I AndroidRuntime: Using default boot image
+11-01 17:15:52.101  6236  6236 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:15:52.277  6236  6236 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:15:52.402  6238  6238 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:52.488  6269  6269 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:52.556  6287  6287 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:52.632  6304  6304 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:53.307  6236  6236 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b100; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:15:53.314  6236  6236 D AndroidRuntime: Shutting down VM
+11-01 17:15:55.218   485  1568 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:15:55.618  6333  6333 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:55.724  6350  6350 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:55.892  6367  6367 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:56.019  6385  6385 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:56.167  6402  6402 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:56.241  6419  6419 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:15:58.371   485   540 I AppsFilter: interaction: PackageSetting{1abeb47 io.umbra.beacon/10174} -> PackageSetting{3525212 com.google.android.apps.messaging/10112} BLOCKED
+11-01 17:16:01.505  6530  6530 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:01.667  6550  6550 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:01.853  6569  6569 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:02.116  6594  6594 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:02.239  6612  6612 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.045  6687  6687 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.114  6707  6707 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.168  6725  6725 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.244  6742  6742 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.320  6761  6761 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.416  6788  6788 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:04.533  6807  6807 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:06.502  6845  6845 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:06.590  6863  6863 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:06.698  6884  6884 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:07.291   485   878 I ActivityManager: Force stopping io.umbra.beacon appid=10174 user=0: from pid 6922
+11-01 17:16:07.301   485   878 I ActivityManager: Killing 3276:io.umbra.beacon/u0a174 (adj 0): stop io.umbra.beacon due to from pid 6922
+11-01 17:16:07.326   485   878 W ActivityTaskManager: Force removing ActivityRecord{b586b15 u0 io.umbra.beacon/.MainActivity} t9 f}}: app died, no saved state
+11-01 17:16:07.407   485   878 W WindowManager: Exception thrown during dispatchAppVisibility Window{1afe916 u0 io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-01 17:16:07.415   485   878 W InputManager-JNI: Input channel object '1afe916 io.umbra.beacon/io.umbra.beacon.MainActivity (client)' was disposed without first being removed with the input manager!
+11-01 17:16:07.485   983   983 D CarrierSvcBindHelper: onHandleForceStop: [io.umbra.beacon]
+11-01 17:16:07.493   485  2443 V ActivityManager: Got obituary of 3276:io.umbra.beacon
+11-01 17:16:09.503   485  1757 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:09.551   485   518 I ActivityManager: Start proc 6950:io.umbra.beacon/u0a174 for next-top-activity {io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-01 17:16:09.577  6950  6950 I io.umbra.beacon: Late-enabling -Xcheck:jni
+11-01 17:16:09.660   485  2131 D CoreBackPreview: Window{edb9591 u0 Splash Screen io.umbra.beacon}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@1e86364, mPriority=0}
+11-01 17:16:10.106  6950  6950 I io.umbra.beacon: Using CollectorTypeCC GC.
+11-01 17:16:10.108  6950  6950 W io.umbra.beacon: Unexpected CPU variant for x86: x86_64.
+11-01 17:16:10.108  6950  6950 W io.umbra.beacon: Known variants: atom, sandybridge, silvermont, kabylake, default
+11-01 17:16:10.226  6950  6950 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:16:10.226  6950  6950 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:16:10.313  6950  6950 D nativeloader: Configuring classloader-namespace for other apk /data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/lib/x86_64:/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/io.umbra.beacon
+11-01 17:16:10.343  6950  6950 V GraphicsEnvironment: ANGLE Developer option for 'io.umbra.beacon' set to: 'default'
+11-01 17:16:10.352  6950  6950 V GraphicsEnvironment: ANGLE GameManagerService for io.umbra.beacon: false
+11-01 17:16:10.607   485  1147 D CoreBackPreview: Window{36f6dfb u0 io.umbra.beacon/io.umbra.beacon.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@38f3071, mPriority=0}
+11-01 17:16:11.383   485   506 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:16:11.397   485  2072 D CoreBackPreview: Window{edb9591 u0 Splash Screen io.umbra.beacon EXITING}: Setting back callback null
+11-01 17:16:11.397   485  2489 W InputManager-JNI: Input channel object 'edb9591 Splash Screen io.umbra.beacon (client)' was disposed without first being removed with the input manager!
+11-01 17:16:11.446   485   506 I ActivityTaskManager: Displayed io.umbra.beacon/.MainActivity: +1s875ms
+11-01 17:16:11.475  1481  1481 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1877 onStartInput(EditorInfo{inputType=0x0(NULL) imeOptions=0x0 privateImeOptions=null actionName=UNSPECIFIED actionLabel=null actionId=0 initialSelStart=-1 initialSelEnd=-1 initialCapsMode=0x0 hintText=null label=null packageName=io.umbra.beacon fieldId=-1 fieldName=null extras=null}, false)
+11-01 17:16:14.696  7059  7059 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:15.006  7077  7077 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:15.293  7160  7160 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:15.373  7182  7182 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:15.666  7203  7203 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:16:15.690  7203  7203 I AndroidRuntime: Using default boot image
+11-01 17:16:15.690  7203  7203 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:16:15.857  7225  7225 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:15.961  7203  7203 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:16:17.060  7203  7203 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b10d; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:16:17.067  7203  7203 D AndroidRuntime: Shutting down VM
+11-01 17:16:18.949   485   503 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:19.050  7398  7398 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:16:19.053  7398  7398 I AndroidRuntime: Using default boot image
+11-01 17:16:19.053  7398  7398 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:16:19.132  7398  7398 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:16:20.158  7398  7398 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b11a; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:16:20.161  7398  7398 D AndroidRuntime: Shutting down VM
+11-01 17:16:22.117   485  1568 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:22.232   485   540 I AppsFilter: interaction: PackageSetting{2d2edda io.umbra.beacon/10174} -> PackageSetting{8e3e20b com.google.android.googlequicksearchbox/10119} BLOCKED
+11-01 17:16:22.388  7447  7447 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:16:22.403  7447  7447 I AndroidRuntime: Using default boot image
+11-01 17:16:22.404  7447  7447 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:16:22.701  7447  7447 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:16:23.785  7447  7447 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b124; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:16:23.798  7447  7447 D AndroidRuntime: Shutting down VM
+11-01 17:16:25.807   485  2072 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:25.905  7492  7492 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:16:25.910  7492  7492 I AndroidRuntime: Using default boot image
+11-01 17:16:25.910  7492  7492 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:16:26.040  7492  7492 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:16:27.065  7492  7492 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b12f; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:16:27.076  7492  7492 D AndroidRuntime: Shutting down VM
+11-01 17:16:28.992   485  2133 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:29.078  7609  7609 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:16:29.081  7609  7609 I AndroidRuntime: Using default boot image
+11-01 17:16:29.081  7609  7609 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:16:29.191  7609  7609 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:16:30.215  7609  7609 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b142; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:16:30.217  7609  7609 D AndroidRuntime: Shutting down VM
+11-01 17:16:32.100   485   848 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:32.215  7684  7684 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:16:32.218  7684  7684 I AndroidRuntime: Using default boot image
+11-01 17:16:32.219  7684  7684 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:16:32.328  7684  7684 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:16:33.352  7684  7684 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b148; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:16:33.354  7684  7684 D AndroidRuntime: Shutting down VM
+11-01 17:16:35.267   485  2258 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:16:38.358   485  2258 I ActivityManager: Background started FGS: Allowed [callingPackage: com.android.shell; callingUid: 0; uidState: NONE; intent: Intent { cmp=io.umbra.beacon/.BeaconService }; code:SYSTEM_UID; tempAllowListReason:<null>; targetSdkVersion:34; callerTargetSdkVersion:33; startForegroundCount:0; bindFromPackage:null]
+11-01 17:16:40.122  7787  7787 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:40.237  7806  7806 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:40.302  7823  7823 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:16:40.364  7840  7840 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-01 17:18:19.656   485  1568 I ActivityManager: Process io.umbra.beacon (pid 6950) has died: fg  TOP 
+11-01 17:18:19.658   485  1568 W ActivityManager: Scheduling restart of crashed service io.umbra.beacon/.BeaconService in 1000ms for start-requested
+11-01 17:18:19.663   485  1568 W ActivityTaskManager: Force removing ActivityRecord{e8206cc u0 io.umbra.beacon/.MainActivity} t10}: app died, no saved state
+11-01 17:18:19.735   485  1568 W WindowManager: Exception thrown during dispatchAppVisibility Window{36f6dfb u0 io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-01 17:18:19.743   485  1568 W InputManager-JNI: Input channel object '36f6dfb io.umbra.beacon/io.umbra.beacon.MainActivity (client)' was disposed without first being removed with the input manager!
+11-01 17:18:19.810   485   516 W ActivityManager: Rescheduling restart of crashed service io.umbra.beacon/.BeaconService in 9848ms for mem-pressure-event
+11-01 17:18:21.489   485   516 W ActivityManager: Rescheduling restart of crashed service io.umbra.beacon/.BeaconService in 0ms for mem-pressure-event
+11-01 17:18:21.497   485   518 I ActivityManager: Start proc 8181:io.umbra.beacon/u0a174 for service {io.umbra.beacon/io.umbra.beacon.BeaconService}
+11-01 17:18:21.501  8181  8181 I io.umbra.beacon: Late-enabling -Xcheck:jni
+11-01 17:18:21.563  8181  8181 I io.umbra.beacon: Using CollectorTypeCC GC.
+11-01 17:18:21.563  8181  8181 W io.umbra.beacon: Unexpected CPU variant for x86: x86_64.
+11-01 17:18:21.563  8181  8181 W io.umbra.beacon: Known variants: atom, sandybridge, silvermont, kabylake, default
+11-01 17:18:21.596  8181  8181 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:18:21.596  8181  8181 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:18:21.606  8181  8181 D nativeloader: Configuring classloader-namespace for other apk /data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/lib/x86_64:/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/io.umbra.beacon
+11-01 17:18:21.611  8181  8181 V GraphicsEnvironment: ANGLE Developer option for 'io.umbra.beacon' set to: 'default'
+11-01 17:18:21.611  8181  8181 V GraphicsEnvironment: ANGLE GameManagerService for io.umbra.beacon: false
+11-01 17:18:23.020  8205  8205 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:23.048  8205  8205 I AndroidRuntime: Using default boot image
+11-01 17:18:23.048  8205  8205 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:23.261  8205  8205 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:24.313  8205  8205 D AndroidRuntime: Shutting down VM
+11-01 17:18:26.182   485   503 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:26.237   485  3219 D CoreBackPreview: Window{81550ef u0 Splash Screen io.umbra.beacon}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@a38e4da, mPriority=0}
+11-01 17:18:26.590   485  2255 D CoreBackPreview: Window{755356 u0 io.umbra.beacon/io.umbra.beacon.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@8900c4, mPriority=0}
+11-01 17:18:27.330   485   506 W ziparchive: Unable to open '/data/app/~~TvYQ4IwPiEl7SmvbBM1PIw==/io.umbra.beacon-zOPf46QRbNR21_rzFt8D6w==/base.dm': No such file or directory
+11-01 17:18:27.365  1481  1481 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1877 onStartInput(EditorInfo{inputType=0x0(NULL) imeOptions=0x0 privateImeOptions=null actionName=UNSPECIFIED actionLabel=null actionId=0 initialSelStart=-1 initialSelEnd=-1 initialCapsMode=0x0 hintText=null label=null packageName=io.umbra.beacon fieldId=-1 fieldName=null extras=null}, false)
+11-01 17:18:27.496   485   506 I ActivityTaskManager: Displayed io.umbra.beacon/.MainActivity: +1s143ms
+11-01 17:18:27.513   485   503 W InputManager-JNI: Input channel object '81550ef Splash Screen io.umbra.beacon (client)' was disposed without first being removed with the input manager!
+11-01 17:18:27.516   485  3219 D CoreBackPreview: Window{81550ef u0 Splash Screen io.umbra.beacon EXITING}: Setting back callback null
+11-01 17:18:27.628  8251  8251 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:27.631  8251  8251 I AndroidRuntime: Using default boot image
+11-01 17:18:27.631  8251  8251 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:27.706  8251  8251 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:28.719  8251  8251 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b15f; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:28.722  8251  8251 D AndroidRuntime: Shutting down VM
+11-01 17:18:30.581   485  1340 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:30.641  8279  8279 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:30.644  8279  8279 I AndroidRuntime: Using default boot image
+11-01 17:18:30.644  8279  8279 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:30.716  8279  8279 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:31.733  8279  8279 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b16c; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:31.743  8279  8279 D AndroidRuntime: Shutting down VM
+11-01 17:18:33.607   485   503 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:33.664  8303  8303 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:33.666  8303  8303 I AndroidRuntime: Using default boot image
+11-01 17:18:33.666  8303  8303 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:33.737  8303  8303 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:34.750  8303  8303 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b17e; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:34.753  8303  8303 D AndroidRuntime: Shutting down VM
+11-01 17:18:36.610   485  3219 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:36.666  8326  8326 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:36.669  8326  8326 I AndroidRuntime: Using default boot image
+11-01 17:18:36.669  8326  8326 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:36.739  8326  8326 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:37.750  8326  8326 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b183; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:37.757  8326  8326 D AndroidRuntime: Shutting down VM
+11-01 17:18:39.610   485  2133 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:39.665  8349  8349 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:39.668  8349  8349 I AndroidRuntime: Using default boot image
+11-01 17:18:39.668  8349  8349 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:39.738  8349  8349 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:40.747  8349  8349 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b18e; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:40.749  8349  8349 D AndroidRuntime: Shutting down VM
+11-01 17:18:42.602   485  2072 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:42.644   485  2072 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:44.724  8382  8382 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:44.727  8382  8382 I AndroidRuntime: Using default boot image
+11-01 17:18:44.727  8382  8382 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:44.799  8382  8382 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:45.815  8382  8382 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b19c; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:45.817  8382  8382 D AndroidRuntime: Shutting down VM
+11-01 17:18:46.720  8400  8400 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:46.722  8400  8400 I AndroidRuntime: Using default boot image
+11-01 17:18:46.722  8400  8400 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:46.792  8400  8400 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:47.803  8400  8400 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b1a7; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:47.805  8400  8400 D AndroidRuntime: Shutting down VM
+11-01 17:18:49.661   485   830 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:49.716  8423  8423 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:49.718  8423  8423 I AndroidRuntime: Using default boot image
+11-01 17:18:49.718  8423  8423 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:49.788  8423  8423 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:50.800  8423  8423 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b1b8; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:50.801  8423  8423 D AndroidRuntime: Shutting down VM
+11-01 17:18:52.657   485  2133 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:52.713  8447  8447 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:52.716  8447  8447 I AndroidRuntime: Using default boot image
+11-01 17:18:52.716  8447  8447 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:52.785  8447  8447 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:53.796  8447  8447 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b1bf; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:53.802  8447  8447 D AndroidRuntime: Shutting down VM
+11-01 17:18:55.663   485   503 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:55.722  8470  8470 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:55.725  8470  8470 I AndroidRuntime: Using default boot image
+11-01 17:18:55.725  8470  8470 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:55.798  8470  8470 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:56.833  8470  8470 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b1d4; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:56.839  8470  8470 D AndroidRuntime: Shutting down VM
+11-01 17:18:58.697   485   503 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:18:58.756  8493  8493 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:18:58.758  8493  8493 I AndroidRuntime: Using default boot image
+11-01 17:18:58.758  8493  8493 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:18:58.830  8493  8493 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:18:59.840  8493  8493 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b1d6; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:18:59.843  8493  8493 D AndroidRuntime: Shutting down VM
+11-01 17:19:01.700   485   503 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-01 17:19:01.756  8516  8516 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-01 17:19:01.758  8516  8516 I AndroidRuntime: Using default boot image
+11-01 17:19:01.758  8516  8516 I AndroidRuntime: Leaving lock profiling enabled
+11-01 17:19:01.828  8516  8516 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-01 17:19:02.838  8516  8516 I AccessibilityNodeInfoDumper: Skipping invisible child: android.view.accessibility.AccessibilityNodeInfo@b1e3; boundsInParent: Rect(0, 0 - 0, 154); boundsInScreen: Rect(1080, 136 - 1080, 290); packageName: io.umbra.beacon; className: android.widget.LinearLayout; text: null; error: null; maxTextLength: -1; stateDescription: null; contentDescription: null; tooltipText: null; viewIdResName: null; uniqueId: null; checkable: false; checked: false; focusable: false; focused: false; selected: false; clickable: false; longClickable: false; contextClickable: false; enabled: true; password: false; scrollable: false; importantForAccessibility: false; visible: false; actions: [AccessibilityAction: ACTION_SELECT - null, AccessibilityAction: ACTION_CLEAR_SELECTION - null, AccessibilityAction: ACTION_ACCESSIBILITY_FOCUS - null, AccessibilityAction: ACTION_SHOW_ON_SCREEN - null]; isTextSelectable: false
+11-01 17:19:02.844  8516  8516 D AndroidRuntime: Shutting down VM
+11-01 17:19:04.698   485  1568 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
