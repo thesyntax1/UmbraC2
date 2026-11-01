@@ -110,20 +110,36 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
             set -u
+            # Absolute paths: whatever directory the runner hands this script,
+            # the artefact it installs and the report it writes are the ones in
+            # the workspace.  The whole run is mirrored into the report
+            # directory, because the job log lives on a host this repository
+            # cannot read from -- a failure has to survive in the artefact.
+            WS="${GITHUB_WORKSPACE:-$(pwd)}"
+            OUT="$WS/results/api-${{ matrix.api }}"
+            mkdir -p "$OUT"
+            {
+              echo "workspace: $WS"
+              echo "cwd:       $(pwd)"
+              echo "apk:       $(ls -l "$WS/apk/app-debug.apk" 2>&1)"
+              echo "adb:       $(command -v adb) $(adb version 2>&1 | head -1)"
+              echo "options:   $ANDROID_EMULATOR_OPTIONS"
+            } > "$OUT/harness.txt" 2>&1
             # The beacon is built to call 127.0.0.1:4001.  adb reverse maps
             # that port on the device to the same port on this runner, so the
             # only thing the implant can reach is a loopback socket that
             # speaks no protocol at all.
-            (timeout 900 nc -lk 127.0.0.1 4001 > "$RUNNER_TEMP/nc.log" 2>&1 &) || true
+            (timeout 900 nc -lk 127.0.0.1 4001 > "$OUT/nc.log" 2>&1 &) || true
             sleep 1
-            adb reverse tcp:4001 tcp:4001 || echo "adb reverse failed: the handshake path may not be reached"
-            mkdir -p results
-            bash implant/android/scripts/emulator-smoke.sh \
-              --apk apk/app-debug.apk \
-              --out "results/api-${{ matrix.api }}" \
-              --api "${{ matrix.api }}"
+            adb reverse tcp:4001 tcp:4001 >> "$OUT/harness.txt" 2>&1 \
+              || echo "adb reverse failed: the handshake path may not be reached" | tee -a "$OUT/harness.txt"
+            bash "$WS/implant/android/scripts/emulator-smoke.sh" \
+              --apk "$WS/apk/app-debug.apk" \
+              --out "$OUT" \
+              --api "${{ matrix.api }}" > "$OUT/run.log" 2>&1
             rc=$?
-            adb reverse --remove-all || true
+            cat "$OUT/run.log"
+            adb reverse --remove-all >> "$OUT/harness.txt" 2>&1 || true
             exit $rc
 
       - name: keep the report even when a check failed
@@ -136,7 +152,7 @@ jobs:
         if: always()
         with:
           name: emulator-smoke-api${{ matrix.api }}
-          path: results/api-${{ matrix.api }}
+          path: results
           if-no-files-found: warn
 
   # A branch is the postbox this repository can read from the machine that
