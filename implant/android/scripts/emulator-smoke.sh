@@ -706,7 +706,12 @@ try:
             data, size = int(parts["data"]), int(parts["size"])
         except (KeyError, ValueError):
             continue
-        ranges.append((data, data + size))
+        # The loader maps from the page the entry starts on, so the mapping
+        # offset is the data offset rounded down, not the data offset.
+        lo = data - (data % 4096)
+        hi = data + size
+        hi += (4096 - hi % 4096) % 4096
+        ranges.append((lo, hi))
 except OSError:
     sys.exit(0)
 try:
@@ -881,13 +886,23 @@ if tap_text "Stop beacon"; then
         record stop PASS "the service stops" \
             "no ServiceRecord for $SERVICE_COMPONENT"
     fi
-    notif=$(notification_state)
-    if printf '%s' "$notif" | grep -q "pkg=$PKG"; then
-        record stop-notification FAIL "the notification goes away with the service" \
-            "a notification for $PKG is still posted"
-    else
+    # The platform takes the notification down asynchronously, so it is given
+    # fifteen seconds before the answer is "it is still there".
+    gone_after=""
+    for i in $(seq 1 15); do
+        notif=$(notification_state)
+        if ! printf '%s' "$notif" | grep -q "pkg=$PKG"; then
+            gone_after=${i}s
+            break
+        fi
+        sleep 1
+    done
+    if [ -n "$gone_after" ]; then
         record stop-notification PASS "the notification goes away with the service" \
-            "no notification for $PKG"
+            "no notification for $PKG ${gone_after} after the service stopped"
+    else
+        record stop-notification FAIL "the notification goes away with the service" \
+            "a notification for $PKG is still posted 15s after the service stopped"
     fi
 else
     # Same fallback as the start: the claim is split into the button (not
@@ -904,13 +919,23 @@ else
     else
         record stop PASS "the service stops" "am stopservice; no ServiceRecord for $SERVICE_COMPONENT"
     fi
-    notif=$(notification_state)
-    if printf '%s' "$notif" | grep -q "pkg=$PKG"; then
-        record stop-notification FAIL "the notification goes away with the service" \
-            "a notification for $PKG is still posted after the service stopped"
-    else
+    # The platform takes the notification down asynchronously, so it is given
+    # fifteen seconds before the answer is "it is still there".
+    gone_after=""
+    for i in $(seq 1 15); do
+        notif=$(notification_state)
+        if ! printf '%s' "$notif" | grep -q "pkg=$PKG"; then
+            gone_after=${i}s
+            break
+        fi
+        sleep 1
+    done
+    if [ -n "$gone_after" ]; then
         record stop-notification PASS "the notification goes away with the service" \
-            "no notification for $PKG after the service stopped"
+            "no notification for $PKG ${gone_after} after am stopservice"
+    else
+        record stop-notification FAIL "the notification goes away with the service" \
+            "a notification for $PKG is still posted 15s after am stopservice"
     fi
 fi
 
