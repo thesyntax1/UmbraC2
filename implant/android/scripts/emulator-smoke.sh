@@ -193,6 +193,11 @@ service_state() {
 }
 
 # notification_state: what the notification manager says about our id.
+# wake_lock_state: what the power manager says about this application's locks.
+wake_lock_state() {
+    adb shell dumpsys power 2>/dev/null | tr -d '\r'
+}
+
 notification_state() {
     adb shell dumpsys notification --noredact 2>/dev/null | tr -d '\r'
 }
@@ -491,6 +496,11 @@ else
     record service-foreground FAIL "the service is in the foreground" \
         "$(printf '%s' "$state" | grep -E 'isForeground|foregroundId' | tr -d '\r' | tr '\n' ' ')"
 fi
+
+# The wake lock, while the service is certainly running: the check at the
+# end compares this with the same reading after the stop.
+wake_lock_state >"$OUT/raw/wakelock-before.txt"
+wake_lock_before=$(grep -c "umbra:beacon" "$OUT/raw/wakelock-before.txt" 2>/dev/null) || wake_lock_before=0
 
 sleep 2
 pid=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
@@ -955,6 +965,22 @@ else
         record stop-notification FAIL "the notification goes away with the service" \
             "a notification for $PKG is still posted 15s after am stopservice"
     fi
+fi
+
+# The wake lock is taken while the beacon runs and released when it stops.
+# `dumpsys power` is the state of the power manager, not of the application:
+# what it lists is a lock the system is holding on the application's behalf.
+wake_lock_state >"$OUT/raw/wakelock-after.txt"
+wake_lock_after=$(grep -c "umbra:beacon" "$OUT/raw/wakelock-after.txt" 2>/dev/null) || wake_lock_after=0
+if [ "${wake_lock_before:-0}" -ge 1 ] && [ "${wake_lock_after:-0}" -eq 0 ]; then
+    record wake-lock PASS "the wake lock is held while the beacon runs and gone when it stops" \
+        "dumpsys power named umbra:beacon $wake_lock_before time(s) while the service ran and $wake_lock_after time(s) after it stopped; the ceiling the lock was taken with is not part of that dump"
+elif [ "${wake_lock_before:-0}" -eq 0 ]; then
+    record wake-lock FAIL "the wake lock is held while the beacon runs and gone when it stops" \
+        "dumpsys power never named umbra:beacon although the foreground service was running"
+else
+    record wake-lock FAIL "the wake lock is held while the beacon runs and gone when it stops" \
+        "the lock is still listed $wake_lock_after time(s) after the service stopped"
 fi
 
 # ---------------------------------------------------------------------------
