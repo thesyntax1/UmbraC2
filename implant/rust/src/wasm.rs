@@ -27,6 +27,8 @@
 //! module did not ask for: the memory is a plain byte vector that grows
 //! page by page, up to a hard limit.
 
+use std::time::{Duration, Instant};
+
 use crate::crypto;
 use crate::wire;
 
@@ -44,6 +46,21 @@ pub const MAX_DEPTH: u32 = 32;
 pub const MAX_STEPS: u64 = 2_000_000;
 /// The largest number of locals one function may declare.
 pub const MAX_LOCALS: usize = 1024;
+
+/// How long one run may take on the wall clock.
+///
+/// The step count bounds work only if each step costs about the same, and a
+/// few do not: `memory.fill`, `memory.copy`, and a host hash or decrypt all
+/// take their size from the module, so two million steps can be milliseconds
+/// or minutes.  This is the backstop for that gap; it is checked every 1024
+/// steps so the check itself is not the cost.
+///
+/// Five seconds is a policy choice, not a measurement: a beacon task that
+/// needs longer than this is not a task this interpreter is meant to run.
+pub const RUN_BUDGET: Duration = Duration::from_secs(5);
+
+/// How often the wall clock is consulted, as a mask on the step counter.
+const CLOCK_CHECK_MASK: u64 = 0x3ff;
 
 /// The module the host functions live in.
 pub const HOST_MODULE: &str = "umbra";
@@ -446,6 +463,8 @@ struct Machine<'a> {
     key: Vec<u8>,
     depth: u32,
     steps: u64,
+    /// When this run has to be over, if it has a budget at all.
+    deadline: Option<Instant>,
 }
 
 /// Run a module.
@@ -453,6 +472,16 @@ struct Machine<'a> {
 /// The capabilities are the ones the manifest of the module declared: a
 /// module that did not ask for "hash" cannot hash, whatever its code says.
 pub fn run(data: &[u8], caps: &[&str], key: &[u8]) -> Result<Outcome, String> {
+    run_within(data, caps, key, Some(RUN_BUDGET))
+}
+
+/// Run a module with a chosen wall clock budget.
+///
+/// The budget is a parameter so that the check can be tested without waiting
+/// for real time to pass: a zero budget has already expired when the first
+/// check runs.  Nothing outside this module picks a budget other than the
+/// constant above.
+fn run_within(data: &[u8], caps: &[&str], key: &[u8], budget: Option<Duration>) -> Result<Outcome, String> {
     let module = parse(data)?;
     let mut machine = Machine {
         module,
@@ -462,6 +491,7 @@ pub fn run(data: &[u8], caps: &[&str], key: &[u8]) -> Result<Outcome, String> {
         key: key.to_vec(),
         depth: 0,
         steps: 0,
+        deadline: budget.map(|budget| Instant::now() + budget),
     };
     if machine.module.memory_pages > 0 {
         machine.memory = vec![0u8; machine.module.memory_pages as usize * PAGE_SIZE];
@@ -644,6 +674,15 @@ impl<'a> Machine<'a> {
             self.steps += 1;
             if self.steps > MAX_STEPS {
                 return Err("wasm: the module runs too long".to_string());
+            }
+            // The step cap prices every instruction the same; the wall clock
+            // does not, because a page fill or a megabyte hash is one step.
+            if self.steps & CLOCK_CHECK_MASK == 0 {
+                if let Some(deadline) = self.deadline {
+                    if Instant::now() > deadline {
+                        return Err("wasm: the module ran past its time budget".to_string());
+                    }
+                }
             }
             if pc >= body.len() {
                 break;
@@ -1298,6 +1337,101 @@ mod tests {
         sections.extend(section(7, &export_section));
         sections.extend(section(10, &code_section));
         module(&sections)
+    }
+
+    /// A one function module: ()->(), exported as "run", with `body` as its
+    /// code, `locals` as (count, type) local groups, and `extra` sections
+    /// (memory, for the tests below) placed where a real encoder puts them.
+    ///
+    /// The group count is written here rather than by the caller: the first
+    /// run of this helper omitted it, and four tests failed on "the module
+    /// ends too early" -- the code section was one byte short, not the
+    /// behaviour under test.
+    fn program(body: &[u8], locals: &[(u32, u8)], extra: &[u8]) -> Vec<u8> {
+        let type_section = vec![1, 0x60, 0, 0];
+        let mut function_section = vec![1];
+        function_section.extend(leb(0));
+        let mut export_section = vec![1];
+        export_section.extend(leb(3));
+        export_section.extend_from_slice(b"run");
+        export_section.push(0x00);
+        export_section.extend(leb(0));
+        let mut encoded_locals = leb(locals.len() as u32);
+        for (amount, value_type) in locals {
+            encoded_locals.extend(leb(*amount));
+            encoded_locals.push(*value_type);
+        }
+        let mut code_section = vec![1];
+        code_section.extend(leb((encoded_locals.len() + body.len()) as u32));
+        code_section.extend_from_slice(&encoded_locals);
+        code_section.extend_from_slice(body);
+        let mut sections = Vec::new();
+        sections.extend(section(1, &type_section));
+        sections.extend(section(3, &function_section));
+        sections.extend_from_slice(extra);
+        sections.extend(section(7, &export_section));
+        sections.extend(section(10, &code_section));
+        module(&sections)
+    }
+
+    /// `loop br 0 end end`: a body that never ends on its own.
+    const FOREVER: [u8; 6] = [0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b];
+
+    #[test]
+    fn a_module_that_never_stops_is_stopped() {
+        // The only thing that can end this module is the step cap.  It is a
+        // loop, so it does not run out of code; it runs out of budget.
+        let err = run(&program(&FOREVER, &[], &[]), &[], &[]).unwrap_err();
+        assert!(err.contains("runs too long"), "{err}");
+    }
+
+    #[test]
+    fn a_module_that_calls_itself_is_stopped_at_the_depth_limit() {
+        // call 0; end.  The entry is function 0, so this is self recursion.
+        let err = run(&program(&[0x10, 0x00, 0x0b], &[], &[]), &[], &[]).unwrap_err();
+        assert!(err.contains("nests too deeply"), "{err}");
+    }
+
+    #[test]
+    fn a_module_may_ask_for_the_largest_memory_and_not_one_page_more() {
+        // The memory section: one memory, no maximum, N pages.
+        let memory = |pages: u32| {
+            let mut body = vec![1, 0x00];
+            body.extend(leb(pages));
+            section(5, &body)
+        };
+        assert!(parse(&program(&[0x0b], &[], &memory(MAX_PAGES))).is_ok());
+
+        let err = parse(&program(&[0x0b], &[], &memory(MAX_PAGES + 1))).unwrap_err();
+        assert!(err.contains("too much memory"), "{err}");
+    }
+
+    #[test]
+    fn a_function_may_declare_the_largest_number_of_locals_and_not_one_more() {
+        // One group of N i32 locals.
+        assert!(parse(&program(&[0x0b], &[(MAX_LOCALS as u32, 0x7f)], &[])).is_ok());
+
+        let err = parse(&program(&[0x0b], &[(MAX_LOCALS as u32 + 1, 0x7f)], &[])).unwrap_err();
+        assert!(err.contains("too many locals"), "{err}");
+    }
+
+    #[test]
+    fn a_run_with_no_time_left_is_stopped_by_the_clock() {
+        // A zero budget has expired before the first check.  This is what
+        // makes the clock testable: it does not wait for five seconds, and it
+        // does not depend on how fast the machine is.
+        let data = program(&FOREVER, &[], &[]);
+        let err = run_within(&data, &[], &[], Some(Duration::ZERO)).unwrap_err();
+        assert!(err.contains("time budget"), "{err}");
+    }
+
+    #[test]
+    fn a_finite_module_is_not_stopped_by_a_budget_it_does_not_use() {
+        // The guard rail: the clock must not turn a module that finishes
+        // quickly into an error.  Without this the previous test would pass
+        // just as well for a check that always fires.
+        let out = run_within(&constant(7), &[], &[], Some(Duration::from_secs(60))).unwrap();
+        assert_eq!(out.code, 7);
     }
 
     #[test]
