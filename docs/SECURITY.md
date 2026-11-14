@@ -1068,6 +1068,20 @@ exactly the kind of thing the log exists to show.
   run the server.
 * Back up `data_file`; losing it loses the engagement history (and the queue).
 
+## 6a. The state file of the persistence manager
+
+`persist.state` lists every technique the implant installed on a host and the
+staged binary each one points at, so it is read-protected and portable by
+design: `0o600` in a `0o700` directory on Unix, replaced atomically, flushed
+before the name moves.  What it is *not* is encrypted or authenticated — an
+attacker who takes the host back can read it, delete it, or replace it with a
+file that lists techniques that are not there.  The last one is handled: a
+file this build cannot read is refused, kept as `persist.state.corrupt-<ts>`
+and reported, never silently treated as "nothing is installed".
+
+The full matrix — every operation, every failure, and which platform row is
+NOT VERIFIED — is in [`PERSIST-STATE.md`](PERSIST-STATE.md).
+
 ## 7. Reporting a vulnerability
 
 Open a private security advisory on the repository (or contact the maintainer
