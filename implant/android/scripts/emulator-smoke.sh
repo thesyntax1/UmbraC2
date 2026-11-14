@@ -401,6 +401,67 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2a. backup and device transfer, as the system sees them
+#
+# allowBackup="false" and dataExtractionRules are two statements in a
+# manifest; this is the one place in the stage that asks the platform whether
+# it agrees with them.  bmgr backupnow is the command that makes the answer
+# visible: a package the system may back up is accepted and the transport
+# then copies what the rules allow, a package it may not is refused with
+# "Backup is not allowed".  The flag list is read as well, because the absent
+# ALLOW_BACKUP flag is what those manifest statements act on.
+#
+# What this cannot see: device-to-device transfer.  That is a separate mode,
+# it needs a second phone, and this stage does not have one, so the record
+# says so rather than implying it measured both modes.
+# ---------------------------------------------------------------------------
+
+pkg_flags=$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 'flags=' || true)
+printf '%s\n' "$pkg_flags" >"$OUT/raw/backup-flags.txt"
+bmgr_raw=$(timeout 90 adb shell bmgr backupnow "$PKG" 2>&1)
+bmgr_rc=$?
+bmgr_out=$(printf '%s\n' "$bmgr_raw" | tr -d '\r')
+printf '%s\n' "$bmgr_out" >"$OUT/raw/backup-bmgr.txt"
+
+case "$bmgr_out" in
+    *"Backup is not allowed"*)                          bmgr_state=refused ;;
+    *"not enabled"*|*"No transport"*|*"no transport"*)   bmgr_state=unavailable ;;
+    *"Transport not initialized"*|*"Unknown command"*)   bmgr_state=unavailable ;;
+    *"Unknown package"*|*"not installed"*)               bmgr_state=unavailable ;;
+    "")                                                 bmgr_state=unavailable ;;
+    *)                                                  bmgr_state=accepted ;;
+esac
+# A non-zero exit that is not the refusal is the harness failing to ask the
+# question (adb missing, the call timed out, no transport), and it must not be
+# read as "the system accepted the backup".  The first version of this block
+# did exactly that and turned an adb error into a FAIL of the application.
+if [ "$bmgr_rc" -ne 0 ] && [ "$bmgr_state" != refused ]; then
+    bmgr_state=unavailable
+fi
+case "$pkg_flags" in
+    *ALLOW_BACKUP*) flags_state=allowed ;;
+    *"flags=["*)    flags_state=closed ;;
+    *)              flags_state=unknown ;;
+esac
+bmgr_line=$(printf '%s' "$bmgr_out" | grep -m1 'result:' || true)
+bmgr_why=${bmgr_line:-$(printf '%s' "$bmgr_out" | tail -1)}
+bmgr_why=${bmgr_why:-nothing}
+
+if [ "$bmgr_state" = accepted ]; then
+    record backup-disabled FAIL "the system refuses to back up the state of the application" \
+        "bmgr accepted the request: $bmgr_why"
+elif [ "$flags_state" = allowed ]; then
+    record backup-disabled FAIL "the system refuses to back up the state of the application" \
+        "the package flags carry ALLOW_BACKUP: $pkg_flags"
+elif [ "$bmgr_state" = refused ] && [ "$flags_state" = closed ]; then
+    record backup-disabled PASS "the system refuses to back up the state of the application" \
+        "bmgr: $bmgr_why; package flags carry no ALLOW_BACKUP; device-to-device transfer is not exercised here"
+else
+    record backup-disabled NOT VERIFIED "the system refuses to back up the state of the application" \
+        "bmgr could not answer (rc $bmgr_rc, $bmgr_why) and the flag line was ${pkg_flags:-empty}"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. the permission the application asks for itself: POST_NOTIFICATIONS
 #
 # This is the only permission the implant requests at run time from its own
