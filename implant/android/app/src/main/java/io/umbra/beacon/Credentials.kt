@@ -1,6 +1,7 @@
 package io.umbra.beacon
 
 import java.io.File
+import java.util.Locale
 
 /**
  * The identity material of the phone.
@@ -127,10 +128,15 @@ object Credentials {
     fun report(entries: List<Entry>): String {
         if (entries.isEmpty()) return "no credential material was found\n"
         val text = StringBuilder()
-        text.append(String.format("%-10s %-14s %-28s %-24s %5s\n", "KIND", "SOURCE", "ACCOUNT", "TARGET", "CONF"))
+        // Locale.ROOT, not the locale of the phone: this is a fixed-width
+        // table that an operator or a parser reads with an ASCII font, and
+        // a phone set to a locale with its own digits would otherwise
+        // number the rows in those digits and break both.
+        text.append(String.format(Locale.ROOT, "%-10s %-14s %-28s %-24s %5s\n", "KIND", "SOURCE", "ACCOUNT", "TARGET", "CONF"))
         for (entry in entries) {
             text.append(
                 String.format(
+                    Locale.ROOT,
                     "%-10s %-14s %-28s %-24s %5d\n",
                     entry.kind,
                     entry.source,
