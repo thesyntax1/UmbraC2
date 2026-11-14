@@ -202,3 +202,148 @@ pub fn type_name(t: u8) -> &'static str {
         _ => "UNKNOWN",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A prelude with the fields a hostile peer can choose.
+    fn prelude(len: u32) -> [u8; PRELUDE_LEN] {
+        let mut p = [0u8; PRELUDE_LEN];
+        p[0] = MAGIC[0];
+        p[1] = MAGIC[1];
+        p[2] = VERSION;
+        p[5] = SUITE_AES256_GCM;
+        p[8..12].copy_from_slice(&len.to_be_bytes());
+        p
+    }
+
+    fn err(p: &[u8]) -> WireError {
+        match parse_prelude(p) {
+            Err(e) => e,
+            Ok(header) => panic!("accepted a prelude it should have refused: {header:?}"),
+        }
+    }
+
+    #[test]
+    fn a_prelude_shorter_than_twelve_bytes_is_truncated() {
+        assert_eq!(err(&[]), WireError::Truncated);
+        assert_eq!(err(&prelude(0)[..11]), WireError::Truncated);
+    }
+
+    #[test]
+    fn a_wrong_magic_is_refused() {
+        let mut p = prelude(0);
+        p[0] = 0x00;
+        assert_eq!(err(&p), WireError::BadMagic);
+    }
+
+    #[test]
+    fn a_wrong_version_is_refused() {
+        let mut p = prelude(0);
+        p[2] = 2;
+        assert_eq!(err(&p), WireError::BadVersion(2));
+    }
+
+    #[test]
+    fn a_reserved_byte_is_refused() {
+        for i in [6usize, 7] {
+            let mut p = prelude(0);
+            p[i] = 1;
+            assert_eq!(err(&p), WireError::ReservedSet, "byte {i}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_suite_is_refused() {
+        let mut p = prelude(0);
+        p[5] = 3;
+        assert_eq!(err(&p), WireError::UnknownSuite(3));
+    }
+
+    #[test]
+    fn a_length_over_the_body_limit_is_refused_before_it_is_allocated() {
+        // The point of the order: the length is refused *before* any buffer is
+        // sized from it.  The reader is given nothing after the prelude, so an
+        // implementation that allocated and then read would answer "unexpected
+        // end of file" instead of "frame too large".
+        let frame = prelude(MAX_BODY as u32 + 1);
+        let mut r = std::io::Cursor::new(frame.to_vec());
+        match read_frame(&mut r) {
+            Err(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    e.to_string().contains("frame too large"),
+                    "the error says why: {e}"
+                );
+            }
+            Ok(got) => panic!("read {} bytes from a frame that must be refused", got.len()),
+        }
+    }
+
+    #[test]
+    fn a_frame_cut_after_its_prelude_is_truncated_not_accepted() {
+        let mut bytes = prelude(4).to_vec();
+        bytes.extend_from_slice(&[0u8; 2]); // two of the four body bytes
+        match read_frame(&mut std::io::Cursor::new(bytes)) {
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
+            Ok(got) => panic!("accepted a truncated frame of {} bytes", got.len()),
+        }
+    }
+
+    #[test]
+    fn a_complete_frame_round_trips() {
+        let mut bytes = prelude(3).to_vec();
+        bytes.extend_from_slice(&[0u8; NONCE_LEN + 3 + TAG_LEN]);
+        let frame = match read_frame(&mut std::io::Cursor::new(bytes.clone())) {
+            Ok(frame) => frame,
+            Err(e) => panic!("a complete frame was refused: {e}"),
+        };
+        assert_eq!(frame, bytes);
+    }
+
+    #[test]
+    fn split_frames_refuses_a_buffer_that_ends_mid_frame() {
+        let mut bytes = prelude(4).to_vec();
+        bytes.extend_from_slice(&[0u8; 2]);
+        match split_frames(&bytes) {
+            Err(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+                assert!(e.to_string().contains("truncated frame"), "{e}");
+            }
+            Ok(frames) => panic!("accepted {} frames from a cut buffer", frames.len()),
+        }
+    }
+
+    #[test]
+    fn split_frames_refuses_a_buffer_shorter_than_a_prelude() {
+        match split_frames(&[0x55, 0x43, 0x01]) {
+            Err(e) => assert!(e.to_string().contains("truncated prelude"), "{e}"),
+            Ok(frames) => panic!("accepted {} frames from three bytes", frames.len()),
+        }
+    }
+
+    #[test]
+    fn split_frames_returns_every_whole_frame_and_no_others() {
+        let mut bytes = prelude(1).to_vec();
+        bytes.extend_from_slice(&[0u8; NONCE_LEN + 1 + TAG_LEN]);
+        bytes.extend_from_slice(&prelude(2));
+        bytes.extend_from_slice(&[0u8; NONCE_LEN + 2 + TAG_LEN]);
+        let frames = match split_frames(&bytes) {
+            Ok(frames) => frames,
+            Err(e) => panic!("two whole frames were refused: {e}"),
+        };
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].len(), frame_len(1));
+        assert_eq!(frames[1].len(), frame_len(2));
+    }
+
+    #[test]
+    fn the_largest_allowed_length_is_allowed() {
+        // The boundary itself must be inside the bound, not outside it.
+        match parse_prelude(&prelude(MAX_BODY as u32)) {
+            Ok(header) => assert_eq!(header.length as usize, MAX_BODY),
+            Err(e) => panic!("the largest allowed length was refused: {e}"),
+        }
+    }
+}

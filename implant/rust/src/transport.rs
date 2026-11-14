@@ -691,6 +691,72 @@ mod tests {
         )));
     }
 
+    /// Parse and expect a refusal, with the kind and the message.
+    fn refuse(raw: &[u8]) -> (io::ErrorKind, String) {
+        match read_http_response(&mut std::io::Cursor::new(raw.to_vec())) {
+            Err(e) => (e.kind(), e.to_string()),
+            Ok((status, body, _)) => {
+                panic!("accepted {} with a body of {} bytes", status, body.len())
+            }
+        }
+    }
+
+    #[test]
+    fn a_response_that_ends_inside_its_headers_is_refused() {
+        // No CRLFCRLF at all: a peer that closed after one line.
+        let (kind, message) = refuse(b"HTTP/1.1 200 OK\r\nContent-Length: 0");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+        assert!(message.contains("no http headers"), "{message}");
+    }
+
+    #[test]
+    fn an_empty_response_is_refused() {
+        let (kind, message) = refuse(b"");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+        assert!(message.contains("no http headers"), "{message}");
+    }
+
+    #[test]
+    fn a_body_shorter_than_its_length_is_refused() {
+        // Ten bytes announced, three delivered, then the peer closes.
+        let (kind, message) = refuse(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+        assert!(message.contains("short body"), "{message}");
+    }
+
+    #[test]
+    fn a_header_block_over_the_limit_is_refused() {
+        // The limit is 64 KiB of headers; a header value that alone is larger
+        // must not be buffered to its end.
+        let mut raw = b"HTTP/1.1 200 OK\r\nX-Filler: ".to_vec();
+        raw.extend(std::iter::repeat(b'a').take(70 * 1024));
+        raw.extend_from_slice(b"\r\n\r\n");
+        let (kind, message) = refuse(&raw);
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("http headers too large"), "{message}");
+    }
+
+    #[test]
+    fn a_header_name_with_a_high_byte_cannot_smuggle_a_length() {
+        // A peer that writes 0x80 in front of the field name.  The bytes are
+        // decoded lossily, so the field is not "content-length" and cannot
+        // frame the body; the real header below it still can.
+        let raw = b"HTTP/1.1 200 OK\r\n\x80content-length: 3\r\nContent-Length: 5\r\n\r\nabcde";
+        let (status, body, reusable) = parse(raw);
+        assert_eq!(status, 200);
+        assert_eq!(body, b"abcde", "the field with the high byte framed the body");
+        assert!(reusable);
+    }
+
+    #[test]
+    fn two_identical_lengths_are_one_answer() {
+        // The same value twice is not a disagreement; it is redundant.
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nabc";
+        let (_, body, reusable) = parse(raw);
+        assert_eq!(body, b"abc");
+        assert!(reusable);
+    }
+
     #[test]
     fn finds_header_terminator() {
         let buf = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
