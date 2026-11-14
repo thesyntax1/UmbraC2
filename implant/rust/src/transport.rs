@@ -845,6 +845,20 @@ mod tests {
     }
 
     #[test]
+    fn a_body_longer_than_its_length_is_cut_to_the_length() {
+        // The other half of the mismatch.  Bytes after the announced length
+        // are not this body: on a kept-alive connection they are the next
+        // response, which the next read will parse.  Dropping them is the
+        // decision, and this test is what makes it a decision rather than an
+        // accident -- a body of "abcde" under Content-Length: 3 is "abc".
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcde";
+        let (status, body, reusable) = parse(raw);
+        assert_eq!(status, 200);
+        assert_eq!(body, b"abc".to_vec());
+        assert!(reusable);
+    }
+
+    #[test]
     fn a_body_shorter_than_its_length_is_refused() {
         // Ten bytes announced, three delivered, then the peer closes.
         let (kind, message) = refuse(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc");
