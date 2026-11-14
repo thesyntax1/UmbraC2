@@ -112,29 +112,47 @@ object Desktop {
      */
     fun avSurvey(context: Context): Sense.Report {
         val report = Sense.Report("av.survey")
-        val installed = try {
-            context.packageManager.getInstalledPackages(0)
+        val manager = context.packageManager
+        // The launcher entry points, not the list of the installed packages.
+        // `getInstalledPackages` was the obvious call and it is the wrong one
+        // on every Android this APK installs on: since Android 11 it answers
+        // with the packages this application is allowed to see, and Android's
+        // lint says so for the same reason ("this method no longer returns
+        // information about all apps; use getPackageInfo or
+        // queryIntentActivities").  The documented replacement is also the
+        // better question: a product of the security software of a phone has
+        // an entry point in the launcher, and the manifest declares that
+        // query, so this answer is the one the platform will actually give.
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val entries = try {
+            manager.queryIntentActivities(launcher, 0)
         } catch (t: Throwable) {
-            report.note("the list of the packages could not be read: ${t.message}")
+            report.note("the launcher entries could not be read: ${t.message}")
             return report
         }
-        // Android 11 answers with the packages this application is allowed to
-        // see (the manifest declares the launcher query and the store), not
-        // with every package on the phone.  The number is stated for what it
-        // is: a count of what was visible, not of what is installed.
+        // One application can put two activities in the launcher; the report
+        // is about applications, so the packages are what is counted.
+        val visible = entries.map { it.activityInfo.packageName }.distinct()
         report.note(
-            "the application can see ${installed.size} packages " +
-                "(Android 11 and later hide the packages this application may not query)",
+            "the application can see ${visible.size} packages with a launcher entry " +
+                "(${entries.size} entries; Android 11 and later hide everything this application may not query)",
         )
-        val found = installed.filter { entry ->
-            SECURITY_PACKAGES.any { entry.packageName.startsWith(it) }
-        }
-        for (entry in found) {
+        val found = visible.filter { name -> SECURITY_PACKAGES.any { name.startsWith(it) } }
+        for (name in found) {
+            val product = try {
+                manager.getApplicationInfo(name, 0).loadLabel(manager).toString()
+            } catch (t: Throwable) {
+                name
+            }
+            val version = try {
+                manager.getPackageInfo(name, 0).versionName
+            } catch (t: Throwable) {
+                null
+            }
             report.row(
-                "package" to entry.packageName,
-                "product" to (entry.applicationInfo?.loadLabel(context.packageManager)?.toString()
-                    ?: entry.packageName),
-                "version" to "${entry.versionName}",
+                "package" to name,
+                "product" to product,
+                "version" to "${version ?: "unknown"}",
             )
         }
         if (found.isEmpty()) {
