@@ -543,6 +543,23 @@ impl std::fmt::Display for StateError {
 
 /// Read the entries from a state file at an explicit path.
 fn read_state_at(path: &Path) -> Result<Vec<Entry>, StateError> {
+    // `fs::read` follows a symbolic link, and the state file is read by a
+    // process that may be running as a different user than the one who planted
+    // the link.  The file this build writes is a regular file; anything else at
+    // that path is not this build's record.
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(StateError::Io(format!(
+                "is a symbolic link to {}, and this build does not read a state file through a link",
+                fs::read_link(path)
+                    .map(|t| t.display().to_string())
+                    .unwrap_or_else(|_| "somewhere".to_string())
+            )))
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(StateError::Missing),
+        Err(e) => return Err(StateError::Io(e.to_string())),
+    }
     let raw = match fs::read(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(StateError::Missing),
@@ -667,7 +684,25 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             "the state file has no directory",
         )
     })?;
-    fs::create_dir_all(parent)?;
+    // The directory is created private and, when it already exists, tightened:
+    // it holds the record of what this host carries, and on Unix the default
+    // umask would let every other user on the machine read it.  A symbolic
+    // link in its place is refused rather than followed -- `create_dir_all`
+    // would happily write through it into a directory somebody else owns.
+    match fs::symlink_metadata(parent) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing to write the state file through the symbolic link {}",
+                    parent.display()
+                ),
+            ))
+        }
+        Ok(_) => {}
+        Err(_) => {}
+    }
+    create_private_dir(parent)?;
     let tmp = temporary_path(path);
     // A file left by an interrupted write is not a candidate for anything:
     // it is removed before the new temporary file is created.  `NotFound` is
@@ -678,7 +713,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         Err(e) => return Err(e),
     }
     let written = (|| -> std::io::Result<()> {
-        let mut file = fs::File::create(&tmp)?;
+        let mut file = create_private_file(&tmp)?;
         file.write_all(bytes)?;
         // The bytes have to be on the disk *before* the name points at them.
         // Without this line the rename can reach the disk first, and a machine
@@ -704,6 +739,60 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// Create the state directory with permissions that keep it to its owner.
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let mut builder = fs::DirBuilder::new();
+    // `mode` is what the directory is created with; the umask still applies,
+    // and 0o700 masked by any ordinary umask is still 0o700.
+    builder.recursive(true).mode(0o700);
+    builder.create(dir)?;
+    let mode = fs::metadata(dir)?.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        // The directory was there already, with a wider mode.  It is this
+        // build's own directory -- the staging path and the state file live in
+        // it -- so it is narrowed rather than reported.
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Create the state directory on platforms without Unix modes.
+///
+/// Deliberately *not* an attempt at Windows ACLs: a Windows file's access is
+/// decided by an ACL that inherits from the parent directory, and pretending
+/// that `0o700` has an equivalent is the kind of equivalence this stage is
+/// meant to refuse.  What Windows inherits is documented in
+/// `docs/PERSIST-STATE.md` and is NOT VERIFIED until a Windows runtime test
+/// exists.
+#[cfg(not(unix))]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)
+}
+
+/// Create the temporary file with permissions that keep it to its owner.
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+
+/// Create the temporary file on platforms without Unix modes (see above).
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
 }
 
 /// Flush a directory entry, where the platform allows it.
@@ -2391,6 +2480,76 @@ mod tests {
         fs::write(&path, upk::encode(&Value::Map(fields)).unwrap()).expect("the write");
         let err = read_state_at(&path).expect_err("a string is not an entry");
         assert!(format!("{err}").contains("not a map"), "the message says why: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_state_file_and_its_directory_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("private");
+        let path = dir.state();
+        save_entries_at(&path, &[entry("registry.run")]).expect("the write");
+        let file_mode = fs::metadata(&path).expect("the file").permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "the state file is {file_mode:o}");
+        let dir_mode = fs::metadata(path.parent().unwrap())
+            .expect("the directory")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "the state directory is {dir_mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wider_directory_is_narrowed_by_the_next_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("widen");
+        let path = dir.state();
+        save_entries_at(&path, &[entry("registry.run")]).expect("the write");
+        fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o755))
+            .expect("widen the directory");
+        save_entries_at(&path, &[entry("startup")]).expect("the second write");
+        let mode = fs::metadata(path.parent().unwrap())
+            .expect("the directory")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "a directory left at {mode:o} was not narrowed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_in_place_of_the_state_file_is_not_followed() {
+        let dir = TempDir::new("symlink-file");
+        let elsewhere = dir.path().join("elsewhere.state");
+        save_entries_at(&elsewhere, &[entry("registry.run")]).expect("the write");
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        std::os::unix::fs::symlink(&elsewhere, &path).expect("the link");
+
+        let err = read_state_at(&path).expect_err("a link is not a state file");
+        assert!(
+            format!("{err}").contains("symbolic link"),
+            "the message says what was found: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_in_place_of_the_state_directory_is_refused() {
+        let dir = TempDir::new("symlink-dir");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("the directory");
+        let state_dir = dir.path().join(STATE_DIR);
+        std::os::unix::fs::symlink(&elsewhere, &state_dir).expect("the link");
+
+        let err = save_entries_at(&dir.state(), &[entry("registry.run")])
+            .expect_err("the write must not follow the link");
+        assert!(err.contains("symbolic link"), "the message says what happened: {err}");
+        assert!(
+            !elsewhere.join(STATE_FILE).exists(),
+            "the write landed in the directory the link pointed at"
+        );
     }
 
     #[test]
