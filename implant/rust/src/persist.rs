@@ -30,6 +30,7 @@
 //! system and the platform's own tools.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::upk::{self, Value};
@@ -624,13 +625,68 @@ fn save_entries(entries: &[Entry]) -> Result<(), String> {
 
 /// Write the entries to an explicit path.
 fn save_entries_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("persist: {e}"))?;
-    }
     let raw = encode_state(entries)?;
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &raw).map_err(|e| format!("persist: {e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("persist: {e}"))?;
+    write_atomic(path, &raw).map_err(|e| format!("persist: {e}"))
+}
+
+/// The temporary file the state is built in before it replaces the real one.
+fn temporary_path(path: &Path) -> PathBuf {
+    path.with_extension("tmp")
+}
+
+/// Replace `path` with `bytes` so that a reader sees the old file or the new
+/// one and never half of either.
+///
+/// The old version of this function was three lines -- `fs::write` to the
+/// temporary file, `fs::rename` over the real one -- and it had the property
+/// everyone assumes a temporary file gives and it does not give:
+///
+///   * a failure *after* the temporary file was opened left that file behind,
+///     so a crash in the middle of a write left a partial `persist.tmp` next
+///     to a good `persist.state`.  Nothing read the temporary file, so the
+///     state was fine; the debris was not.  The leftover is removed here, and
+///     a leftover from an older build is replaced rather than appended to;
+///   * a failure between the two calls was reported and the old file was left
+///     alone, which is the half that was already right, and is now pinned by
+///     a test instead of by a comment.
+///
+/// What this function still does not give is durability: `rename` makes the
+/// *name* point at the new bytes atomically, and it says nothing about those
+/// bytes reaching the disk.  That is the next commit, and it is a different
+/// failure (power loss) from the one this function closes (an interrupted
+/// process).
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the state file has no directory",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let tmp = temporary_path(path);
+    // A file left by an interrupted write is not a candidate for anything:
+    // it is removed before the new temporary file is created.  `NotFound` is
+    // the normal case and not an error.
+    match fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let written = (|| -> std::io::Result<()> {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        // The old file is still the state file: the rename is what makes the
+        // new bytes visible, and it did not happen.
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -2278,6 +2334,62 @@ mod tests {
         fs::write(&path, upk::encode(&Value::Map(fields)).unwrap()).expect("the write");
         let err = read_state_at(&path).expect_err("a string is not an entry");
         assert!(format!("{err}").contains("not a map"), "the message says why: {err}");
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_old_file() {
+        // The one property a temporary file exists for.  The failure is
+        // injected where it is unavoidable on every platform and for every
+        // user: the temporary path is occupied by a directory, so the file
+        // cannot be created.
+        let dir = TempDir::new("failed-write");
+        let path = dir.state();
+        save_entries_at(&path, &[entry("registry.run")]).expect("the first write");
+        let before = fs::read(&path).expect("the old file");
+        fs::create_dir_all(temporary_path(&path)).expect("the blocked temporary path");
+
+        let err = save_entries_at(&path, &[entry("startup")]).expect_err("the write must fail");
+        assert!(err.starts_with("persist:"), "the error names the module: {err}");
+
+        let after = fs::read(&path).expect("the old file is still there");
+        assert_eq!(before, after, "a failed write changed the state file");
+    }
+
+    #[test]
+    fn a_stale_temporary_file_does_not_block_the_write() {
+        // A crash in the middle of an older write can leave a partial
+        // `persist.tmp`.  It is debris, not a candidate: the next write
+        // replaces it.
+        let dir = TempDir::new("stale-temp");
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        fs::write(temporary_path(&path), b"half a state file").expect("the debris");
+        save_entries_at(&path, &[entry("registry.run")]).expect("the write");
+        let read = read_state_at(&path).expect("the read");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].technique, "registry.run");
+        assert!(
+            !temporary_path(&path).exists(),
+            "the write left the old temporary file behind"
+        );
+    }
+
+    #[test]
+    fn an_interrupted_write_leaves_the_old_state_readable() {
+        // What a power cut looks like from the next boot: the real file is
+        // intact and a partial temporary file sits next to it.  The reader
+        // must answer what the real file says -- if the temporary file were
+        // ever read, half a record would become a record.
+        let dir = TempDir::new("interrupted");
+        let path = dir.state();
+        save_entries_at(&path, &[entry("registry.run"), entry("startup")]).expect("the write");
+        let good = fs::read(&path).expect("the good file");
+        fs::write(temporary_path(&path), &good[..good.len() / 3]).expect("the crash debris");
+
+        let read = read_state_at(&path).expect("the read");
+        assert_eq!(read.len(), 2, "the interrupted write changed what is recorded");
+        assert_eq!(read[0].technique, "registry.run");
+        assert_eq!(read[1].technique, "startup");
     }
 
     #[test]
