@@ -16,6 +16,16 @@ class Beacon(
     interface Listener {
         fun onLog(message: String)
         fun onStopped()
+
+        /**
+         * The loop is alive.
+         *
+         * Called before every wait of the nap, and once before every cycle.
+         * The service renews its wake lock here: a wake lock that is asked
+         * for once and never again is a wake lock that outlives a wedged
+         * loop, and the loop says it is alive so long as it is running.
+         */
+        fun onAlive() {}
     }
 
     private val running = AtomicBoolean(false)
@@ -139,18 +149,32 @@ class Beacon(
      */
     private fun nap(intervalSeconds: Long) {
         val until = System.currentTimeMillis() + intervalSeconds * 1000
-        synchronized(signal) {
-            while (!wakeRequested && running.get()) {
-                val left = until - System.currentTimeMillis()
-                if (left <= 0) break
-                try {
-                    signal.wait(left)
-                } catch (_: InterruptedException) {
-                    return
+        // The nap is waited in slices so that the loop can say it is alive
+        // between them.  A single wait of the whole interval would leave the
+        // wake lock unrenewed for as long as the operator configured the
+        // beacon to sleep -- up to a day.
+        while (running.get()) {
+            val left = until - System.currentTimeMillis()
+            if (left <= 0) break
+            // Outside the monitor: renewing the wake lock is a binder call,
+            // and stop() takes the same monitor.
+            listener?.onAlive()
+            // `wakeRequested` is read only under the monitor, as it always was.
+            val asked = synchronized(signal) {
+                if (wakeRequested || !running.get()) {
+                    true
+                } else {
+                    try {
+                        signal.wait(minOf(left, ALIVE_SLICE_MS))
+                        false
+                    } catch (_: InterruptedException) {
+                        return
+                    }
                 }
             }
-            wakeRequested = false
+            if (asked) break
         }
+        synchronized(signal) { wakeRequested = false }
     }
 
     private fun log(msg: String) {
@@ -165,6 +189,9 @@ class Beacon(
 
     private companion object {
         const val STOP_JOIN_MILLIS = 2000L
+
+        /** How long one wait of the nap lasts before the loop says it is alive. */
+        const val ALIVE_SLICE_MS = 60_000L
 
         /** Control frames (REKEY) tolerated before a TASK_BATCH. */
         // One REKEY plus up to four TASK_CANCEL frames may precede the batch.
@@ -195,6 +222,7 @@ class Beacon(
                     running.set(false)
                     break
                 }
+                listener?.onAlive()
                 if (cycle()) {
                     sleep = sleep.coerceIn(1, 86400)
                     val interval = nextIntervalSeconds()

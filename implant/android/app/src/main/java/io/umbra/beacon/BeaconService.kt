@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 class BeaconService : Service(), Beacon.Listener {
     companion object {
         const val CHANNEL_ID = "umbra-beacon"
+
+        /** How long the wake lock may be held without being renewed. */
+        const val LOCK_TIMEOUT_MS = 15 * 60 * 1000L
         const val NOTIFICATION_ID = 4711
         const val ACTION_STOP = "io.umbra.beacon.STOP"
         private val active = AtomicBoolean(false)
@@ -76,6 +79,7 @@ class BeaconService : Service(), Beacon.Listener {
 
     /** Set once the service is being destroyed, so a late log cannot re-post a notification. */
     private val destroyed = AtomicBoolean(false)
+    @Volatile
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -262,13 +266,43 @@ class BeaconService : Service(), Beacon.Listener {
         mgr.notify(NOTIFICATION_ID, notification(text))
     }
 
+    /**
+     * Take the wake lock, with a ceiling.
+     *
+     * `acquire()` without a timeout holds the lock until the process dies: a
+     * loop that wedges on a socket read then keeps the phone awake for ever,
+     * and a phone that never sleeps is the loudest possible way for the
+     * implant to be noticed.  The ceiling is renewed by [onAlive], which the
+     * loop calls before every cycle and every slice of its nap, so the lock
+     * expires only when the loop stops saying it is running.
+     *
+     * Fifteen minutes, not one: a single task may run for minutes (a file
+     * transfer, a memory read) and the loop does not speak while it does.
+     */
     private fun acquireWakeLock() {
         if (wakeLock != null) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "umbra:beacon").apply {
             setReferenceCounted(false)
-            acquire()
+            acquire(LOCK_TIMEOUT_MS)
         }
+    }
+
+    /**
+     * The loop is alive: take the wake lock again, with a fresh ceiling.
+     *
+     * Whether the platform pushes the timeout of a lock that is *already
+     * held* out is a detail of one version of `PowerManagerService`, and this
+     * code should not depend on it.  The lock is not reference counted, so a
+     * release and an acquire is the same lock held afresh -- and if the
+     * device chose to suspend in the microsecond between the two, the loop
+     * continues exactly where it was when it wakes.
+     */
+    override fun onAlive() {
+        val lock = wakeLock ?: return
+        if (destroyed.get()) return
+        if (lock.isHeld) lock.release()
+        lock.acquire(LOCK_TIMEOUT_MS)
     }
 
     private fun releaseWakeLock() {
