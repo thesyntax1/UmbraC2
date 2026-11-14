@@ -184,6 +184,10 @@ class BeaconService : Service(), Beacon.Listener {
     override fun onDestroy() {
         destroyed.set(true)
         beacon?.stop()
+        // The runner outlives this service as a singleton: if it kept the
+        // configuration, it would keep the context and the state directory of
+        // a service that is being destroyed right now.
+        TaskRunner.release()
         beacon = null
         running = null
         active.set(false)

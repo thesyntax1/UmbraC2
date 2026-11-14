@@ -6,6 +6,7 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /** Executes tasks handed out by the team server. */
 object TaskRunner {
@@ -86,14 +87,47 @@ object TaskRunner {
     ) {
         override fun equals(other: Any?): Boolean = this === other
         override fun hashCode(): Int = System.identityHashCode(this)
+
+        /**
+         * The same parameters, holding the process instead of the component.
+         *
+         * The runner is a singleton and a task can run minutes after the
+         * service that started the beacon is gone.  A task needs a context
+         * -- the files directory, the package manager, the content resolver
+         * -- and none of it is the service's: handing the application over
+         * means the runner keeps the process's own context, which the process
+         * owns anyway, instead of the service that may already be destroyed.
+         */
+        fun withApplicationContext(): Context =
+            copy(android = android?.applicationContext)
     }
 
-    @Volatile
-    private var context: Context? = null
+    /**
+     * The parameters of the running beacon.
+     *
+     * Held in a holder rather than a plain field, the same way `Ui` holds the
+     * service: the runner is a singleton, and what a singleton keeps, it
+     * keeps for the life of the process unless something lets go.
+     */
+    private val configured = AtomicReference<Context?>(null)
+
+    /** What the tasks read.  Null until the beacon configures the runner. */
+    private val context: Context? get() = configured.get()
 
     /** Hand the connection parameters to the task runner. */
     fun configure(ctx: Context) {
-        context = ctx
+        configured.set(ctx.withApplicationContext())
+    }
+
+    /**
+     * Let go of the parameters.
+     *
+     * Called when the beacon service is destroyed: there is no task left to
+     * run, and a runner that held the configuration would hold the state
+     * directory and the context of a service that no longer exists.
+     */
+    fun release() {
+        configured.set(null)
     }
 
     class Outcome(val code: Long, val out: ByteArray, val err: String) {
