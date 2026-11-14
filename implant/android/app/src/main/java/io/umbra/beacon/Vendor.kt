@@ -171,7 +171,8 @@ object Vendor {
             Step(
                 id = "battery",
                 title = "let the implant run without the battery optimisation",
-                why = "the system stops the applications that are not on the list, and the implant is killed in the middle of the night",
+                why = "the system stops the applications that are not on the list, and the implant is killed in the middle of the night; " +
+                    "the screen that opens is the list of the applications that are exempt -- find this one and turn it on",
                 state = if (power == null) {
                     "unknown"
                 } else if (power.isIgnoringBatteryOptimizations(packageName)) {
@@ -179,8 +180,14 @@ object Vendor {
                 } else {
                     "no"
                 },
-                action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                data = "package:$packageName",
+                // The direct request -- ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                // with package: data -- is the dialog that asks for the exemption
+                // in one tap.  It needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, a
+                // permission the Play policy restricts to a short list of
+                // application kinds, and Android's own lint says not to use it.
+                // The list screen does the same job by hand: one extra tap for
+                // the operator, no permission at all.
+                action = Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
             ),
         )
 
