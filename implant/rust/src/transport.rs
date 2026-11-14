@@ -40,6 +40,22 @@ pub trait Channel {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The most header this parser will hold while looking for the blank line.
+///
+/// The check used to run after a 4 KiB read had already been appended, so the
+/// buffer could reach 68 288 bytes before the error, and the bound the code
+/// claimed was not the bound it enforced.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// The most body this parser will hold.
+///
+/// A response with no length and no chunked framing was read until the peer
+/// closed, into a `Vec` with no ceiling: the peer chose how much memory this
+/// process gave it.  64 MiB is far above one beacon cycle (a frame is capped
+/// at 1 MiB by `wire::MAX_FRAME`, and a cycle carries tens of frames), and far
+/// below "however much the other end wants".
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // TCP
 // ---------------------------------------------------------------------------
@@ -516,6 +532,42 @@ fn is_stale_connection(e: &io::Error) -> bool {
     )
 }
 
+/// The error every body-size refusal shares, so a caller can recognise it.
+fn body_too_large(extra: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("the body is larger than {MAX_BODY_BYTES} bytes{extra}"),
+    )
+}
+
+/// Append from `r` until it ends, refusing to hold more than `MAX_BODY_BYTES`.
+///
+/// The room is checked before the read, not after it, so the buffer never
+/// holds a byte more than the cap -- not even for the instant it takes to
+/// notice.  A body that fills the cap exactly is still a question: the peer
+/// may have more behind it, and answering "the body ended" on a guess is the
+/// silent truncation this stage exists to remove.  One byte is therefore read
+/// past an exact fill, and either the peer is done (a zero-length read) or the
+/// body was over the cap.
+fn read_body_to_eof<R: Read>(r: &mut R, body: &mut Vec<u8>, chunk: &mut [u8]) -> io::Result<()> {
+    loop {
+        let room = MAX_BODY_BYTES - body.len();
+        if room == 0 {
+            let mut probe = [0u8; 1];
+            if r.read(&mut probe)? == 0 {
+                return Ok(());
+            }
+            return Err(body_too_large(" exactly"));
+        }
+        let want = room.min(chunk.len());
+        let n = r.read(&mut chunk[..want])?;
+        if n == 0 {
+            return Ok(());
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+}
+
 /// Read one HTTP/1.1 response and return (status, body, reusable).
 fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
     let mut buf = Vec::with_capacity(8192);
@@ -528,14 +580,18 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
             header_end = pos + 4;
             break;
         }
-        let n = r.read(&mut chunk)?;
+        // The room is checked before the read is appended, so the buffer never
+        // holds more than the limit even for the moment it takes to notice.
+        if buf.len() >= MAX_HEADER_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "http headers too large"));
+        }
+        let room = MAX_HEADER_BYTES - buf.len();
+        let want = room.min(chunk.len());
+        let n = r.read(&mut chunk[..want])?;
         if n == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "no http headers"));
         }
         buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > 64 * 1024 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "http headers too large"));
-        }
     }
 
     let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
@@ -609,18 +665,18 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
 
     let mut body = buf[header_end..].to_vec();
     if chunked {
-        // Read to EOF, then de-chunk.
-        loop {
-            let n = r.read(&mut chunk)?;
-            if n == 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..n]);
-        }
+        // Read to EOF, then de-chunk.  The de-chunked output cannot be larger
+        // than the input, so the cap on the input caps both.
+        read_body_to_eof(r, &mut body, &mut chunk)?;
         return Ok((status, dechunk(&body)?, false));
     }
     match content_length {
         Some(len) => {
+            // The announced length is the peer's number; it is refused before
+            // anything is read against it.
+            if len > MAX_BODY_BYTES {
+                return Err(body_too_large(&format!(" (it announces {len})")));
+            }
             while body.len() < len {
                 let n = r.read(&mut chunk)?;
                 if n == 0 {
@@ -633,13 +689,7 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
             // still positioned at the next response.
             return Ok((status, body, !close));
         }
-        None => loop {
-            let n = r.read(&mut chunk)?;
-            if n == 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..n]);
-        },
+        None => read_body_to_eof(r, &mut body, &mut chunk)?,
     }
     Ok((status, body, false))
 }
@@ -990,6 +1040,118 @@ mod tests {
             Err(e) => panic!("a legal empty chunked body was refused: {e}"),
         };
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_header_block_of_exactly_the_limit_is_accepted() {
+        // The boundary belongs to the accepted side.  The block is built to
+        // land on the byte, and the assertion before parsing is what proves
+        // the test is about the boundary and not about a number that happens
+        // to be close to it.
+        let prefix = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Filler: ";
+        let filler = MAX_HEADER_BYTES - prefix.len() - 4;
+        let mut raw = prefix.to_vec();
+        raw.extend(std::iter::repeat(b'a').take(filler));
+        raw.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(raw.len(), MAX_HEADER_BYTES, "the test is not on the boundary");
+
+        let (status, body, reusable) = parse(&raw);
+        assert_eq!(status, 200);
+        assert!(body.is_empty());
+        assert!(reusable);
+    }
+
+    #[test]
+    fn a_header_block_one_byte_past_the_limit_is_refused() {
+        let prefix = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Filler: ";
+        let filler = MAX_HEADER_BYTES - prefix.len() - 4 + 1;
+        let mut raw = prefix.to_vec();
+        raw.extend(std::iter::repeat(b'a').take(filler));
+        raw.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(raw.len(), MAX_HEADER_BYTES + 1);
+
+        let (kind, message) = refuse(&raw);
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("too large"), "{message}");
+    }
+
+    /// A reader that serves a header block and then never ends.
+    ///
+    /// The body cap exists because the peer decides how much there is; a
+    /// `Cursor` cannot show that, because it stops on its own.
+    struct HeadThenEndless {
+        head: Vec<u8>,
+        pos: usize,
+    }
+
+    impl Read for HeadThenEndless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.pos < self.head.len() {
+                let n = (self.head.len() - self.pos).min(buf.len());
+                buf[..n].copy_from_slice(&self.head[self.pos..self.pos + n]);
+                self.pos += n;
+                return Ok(n);
+            }
+            for byte in buf.iter_mut() {
+                *byte = b'z';
+            }
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_body_with_no_length_and_no_end_stops_at_the_limit() {
+        // Without the cap this call does not return: the reader never ends.
+        // It is not a timing test -- it either returns an error at the cap or
+        // it does not return at all, and the suite would time out.
+        let mut reader = HeadThenEndless {
+            head: b"HTTP/1.1 200 OK\r\nX-Nothing: else\r\n\r\n".to_vec(),
+            pos: 0,
+        };
+        match read_http_response(&mut reader) {
+            Err(e) => {
+                assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                assert!(e.to_string().contains("larger than"), "{e}");
+            }
+            Ok((_, body, _)) => panic!("accepted an endless body of {} bytes", body.len()),
+        }
+    }
+
+    #[test]
+    fn a_body_of_exactly_the_limit_is_accepted() {
+        // The cap is on the accepted side.  The body is built to the byte, so
+        // the assertion below is what makes this a boundary test and not a
+        // test of a number near one.
+        let mut raw =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {MAX_BODY_BYTES}\r\n\r\n").into_bytes();
+        raw.extend(std::iter::repeat(b'b').take(MAX_BODY_BYTES));
+        let (status, body, _) = parse(&raw);
+        assert_eq!(status, 200);
+        assert_eq!(body.len(), MAX_BODY_BYTES);
+    }
+
+    #[test]
+    fn a_body_one_byte_past_the_limit_is_refused() {
+        // No content length and no chunking: the only thing that can refuse
+        // this body is the cap on the to-eof path.
+        let mut raw = b"HTTP/1.1 200 OK\r\nX-Nothing: else\r\n\r\n".to_vec();
+        raw.extend(std::iter::repeat(b'b').take(MAX_BODY_BYTES + 1));
+        let (kind, message) = refuse(&raw);
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("larger than"), "{message}");
+    }
+
+    #[test]
+    fn an_announced_body_over_the_limit_is_refused_before_it_is_read() {
+        // Nothing follows the headers, so an implementation that started
+        // reading would answer "short body"; the cap answers instead.
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        let (kind, message) = refuse(raw.as_bytes());
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("announces"), "{message}");
     }
 
     #[test]
