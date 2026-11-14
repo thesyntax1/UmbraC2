@@ -194,6 +194,7 @@ pub fn install(args: &Value) -> Result<Report, String> {
 
 /// Install, reading and writing the state file at an explicit path.
 fn install_at(args: &Value, path: &Path) -> Result<Report, String> {
+    let _lock = lock_for(path, "install")?;
     let requested = args.str_or("method", "auto");
     let label = args.str_or("name", "");
     let silent = args.bool_or("silent", true);
@@ -291,6 +292,7 @@ pub fn remove(args: &Value) -> Result<Report, String> {
 
 /// Remove, reading and writing the state file at an explicit path.
 fn remove_at(args: &Value, path: &Path) -> Result<Report, String> {
+    let _lock = lock_for(path, "unpersist")?;
     let requested = args.str_or("method", "all");
     let entries = load_entries_at(path, "unpersist")?;
     if entries.is_empty() {
@@ -359,6 +361,7 @@ pub fn verify(args: &Value) -> Result<Report, String> {
 
 /// Verify, reading and writing the state file at an explicit path.
 fn verify_at(_args: &Value, path: &Path) -> Result<Report, String> {
+    let _lock = lock_for(path, "persist.verify")?;
     let mut entries = load_entries_at(path, "persist.verify")?;
     let mut text = String::new();
     let mut broken = 0u64;
@@ -599,6 +602,98 @@ fn read_state_at(path: &Path) -> Result<Vec<Entry>, StateError> {
         });
     }
     Ok(out)
+}
+
+/// The lock that makes "read the file, change it, write it back" one step.
+///
+/// Every mutating operation of this module is a read-modify-write: `install`
+/// adds an entry to what it read, `remove` drops one, `verify` rewrites the
+/// state column of each.  Two of them running at once -- two queued tasks, a
+/// verify and an install -- both read the same list and the one that writes
+/// last wins, so the other one's change is gone without an error anywhere.
+///
+/// The lock is a file created with `create_new`, which is atomic on every
+/// filesystem this build targets: exactly one caller gets the file.
+///
+/// What it is not, and the report says so:
+///
+///   * it does not wait.  A second operation fails immediately and says the
+///     lock exists.  Waiting would need a timeout, and a timeout that expires
+///     while the first write is in flight is how a lock becomes a suggestion;
+///   * it does not survive a crash.  A process killed between creating the
+///     lock and removing it leaves the file behind, and every later operation
+///     fails until somebody removes it.  That is loud and recoverable; a lock
+///     that expires silently is quiet and not;
+///   * it does not coordinate *different users*.  The state directory is
+///     per-user (`$HOME/.umbra`), so two users do not share a state file in
+///     the first place.
+struct StateLock {
+    path: PathBuf,
+    _handle: Option<fs::File>,
+}
+
+impl StateLock {
+    fn acquire(state: &Path) -> Result<StateLock, String> {
+        let path = lock_path(state);
+        let handle = create_lock_file(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!(
+                    "persist: another operation holds the state lock {}. Nothing was changed.                      If no task is running, the lock is left over from a process that died before                      it could remove it; delete that file and run the task again.",
+                    path.display()
+                )
+            } else {
+                format!("persist: the state lock could not be taken: {e}")
+            }
+        })?;
+        Ok(StateLock {
+            path,
+            _handle: Some(handle),
+        })
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        // The handle is closed before the file is removed, so a Windows caller
+        // is not asked to delete a file it still holds open.
+        self._handle.take();
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Where the lock lives: next to the state file, in the same directory, so it
+/// is created on the same filesystem as the file it protects.
+fn lock_path(state: &Path) -> PathBuf {
+    state.with_extension("lock")
+}
+
+/// Create the lock file, failing with `AlreadyExists` when somebody holds it.
+#[cfg(unix)]
+fn create_lock_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+/// Create the lock file on platforms without Unix modes.
+#[cfg(not(unix))]
+fn create_lock_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+/// Take the lock for an operation, creating the state directory first so the
+/// first operation on a fresh host has somewhere to put it.
+fn lock_for(state: &Path, operation: &str) -> Result<StateLock, String> {
+    if let Some(parent) = state.parent() {
+        create_private_dir(parent).map_err(|e| format!("persist: {operation}: {e}"))?;
+    }
+    StateLock::acquire(state)
 }
 
 /// The entries, with "no file yet" as an empty list and every other failure as
@@ -2480,6 +2575,62 @@ mod tests {
         fs::write(&path, upk::encode(&Value::Map(fields)).unwrap()).expect("the write");
         let err = read_state_at(&path).expect_err("a string is not an entry");
         assert!(format!("{err}").contains("not a map"), "the message says why: {err}");
+    }
+
+    #[test]
+    fn the_lock_admits_one_holder_at_a_time() {
+        let dir = TempDir::new("lock-once");
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        let first = StateLock::acquire(&path).expect("the first lock");
+        let second = StateLock::acquire(&path);
+        match second {
+            Err(message) => assert!(
+                message.contains("holds the state lock"),
+                "the message says which lock: {message}"
+            ),
+            Ok(_) => panic!("two holders of one lock"),
+        }
+        drop(first);
+        assert!(
+            StateLock::acquire(&path).is_ok(),
+            "the lock was not released when its holder went away"
+        );
+        assert!(!lock_path(&path).exists(), "the lock file outlived its holder");
+    }
+
+    #[test]
+    fn a_held_lock_stops_every_operation_that_writes() {
+        // The sentence this test exists for: without the lock, these three
+        // each read the list, and the last writer silently drops the others'
+        // change.  A refusal is the honest outcome.
+        let dir = TempDir::new("lock-held");
+        let path = dir.state();
+        save_entries_at(&path, &[entry("registry.run")]).expect("the write");
+        let held = StateLock::acquire(&path).expect("the lock");
+
+        for (name, result) in [
+            ("unpersist", remove_at(&Value::Null, &path).map(|_| ())),
+            ("persist.verify", verify_at(&Value::Null, &path).map(|_| ())),
+            ("install", install_at(&Value::Null, &path).map(|_| ())),
+        ] {
+            let message = match result {
+                Err(message) => message,
+                Ok(()) => panic!("{name} wrote the state file while it was locked"),
+            };
+            assert!(
+                message.contains("lock"),
+                "{name}: the message does not mention the lock: {message}"
+            );
+        }
+        // Reading is not a read-modify-write and is not blocked.
+        assert!(
+            list_at(&Value::Null, &path).is_ok(),
+            "a read was blocked by the lock"
+        );
+        drop(held);
+        let read = read_state_at(&path).expect("the record is untouched");
+        assert_eq!(read.len(), 1, "a blocked operation changed the record");
     }
 
     #[cfg(unix)]
