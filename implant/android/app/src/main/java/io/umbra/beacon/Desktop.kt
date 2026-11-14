@@ -118,7 +118,14 @@ object Desktop {
             report.note("the list of the packages could not be read: ${t.message}")
             return report
         }
-        report.note("the phone has ${installed.size} packages installed")
+        // Android 11 answers with the packages this application is allowed to
+        // see (the manifest declares the launcher query and the store), not
+        // with every package on the phone.  The number is stated for what it
+        // is: a count of what was visible, not of what is installed.
+        report.note(
+            "the application can see ${installed.size} packages " +
+                "(Android 11 and later hide the packages this application may not query)",
+        )
         val found = installed.filter { entry ->
             SECURITY_PACKAGES.any { entry.packageName.startsWith(it) }
         }
@@ -131,7 +138,10 @@ object Desktop {
             )
         }
         if (found.isEmpty()) {
-            report.note("no product of the security software of the list is installed")
+            report.note(
+                "no product of the security software of the list is visible to this application: " +
+                    "a product without a launcher entry point would not appear here",
+            )
         }
         report.note(
             "the accessibility service of the implant is " +

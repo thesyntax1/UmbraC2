@@ -67,6 +67,23 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
+    <!-- What this application is allowed to see.
+         Android 11 hides the installed packages from an application that
+         did not ask for them, and a survey built on an empty list would
+         report "no security software" on a phone full of it.  The two
+         queries below are the ones the code actually makes: the launcher
+         entry point (every product the survey names has one) and the store
+         package Lab.kt asks about.  QUERY_ALL_PACKAGES is deliberately not
+         used: it is a Play policy restriction and it is more visibility than
+         anything here needs. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <package android:name="com.android.vending" />
+    </queries>
+
     <!-- usesCleartextTraffic: the HTTP transport is plain HTTP by design (the
          implant has no TLS stack); see docs/SECURITY.md limitation 1 and run it
          inside a tunnel. -->
