@@ -48,6 +48,7 @@ Each line of the report is one command whose output was kept.
 | `package-manager` | does the package exist afterwards? | `pm list packages`, `dumpsys package` |
 | `launch` | does the consent screen start? | `am start -W` and a live pid |
 | `launch-crash` | did it crash or ANR? | `FATAL EXCEPTION` / `ANR in io.umbra.beacon` |
+| `backup-disabled` | will the system back up or transfer this application's state? | `bmgr backupnow` and the package flags; `"Backup is not allowed"` and no `ALLOW_BACKUP`.  Device-to-device transfer is not exercised and the record says so |
 | `notif-dialog` | does the app ask for `POST_NOTIFICATIONS` itself? | the platform dialog on the screen |
 | `notif-denial` | is the refusal recorded as a refusal? | the permission state in `dumpsys package` after tapping *Don't allow* |
 | `consent-button` | does the button on the consent screen start it? | the button is found in a `uiautomator` dump and tapped |
@@ -61,6 +62,7 @@ Each line of the report is one command whose output was kept.
 | `kill-restart` | does a SIGKILLed process come back? | 60 s of watching `pidof` |
 | `service-restart` | does the *service* come back, not only the process? | the service record again |
 | `stop` / `stop-notification` | can the consent screen stop it? | the record is gone; the notification is gone from the shade within fifteen seconds |
+| `wake-lock` | is the lock held while it runs and gone when it stops? | the `Wake Locks:` section of `dumpsys power` before and after the stop, with the ACQ/REL history kept as the record of renewal |
 | `physical-device` | does a phone behave the same way? | `NOT APPLICABLE`: no physical device is involved, and saying so is the result |
 | `logcat` | any fatal record in the whole run? | the kept log |
 
@@ -125,6 +127,9 @@ run, fixed in a commit of its own, and re-measured on both API levels.
 | a failed `System.loadLibrary` was swallowed into `nativeReady = false`, with nothing logged and nothing shown | twelve runs of `NOT VERIFIED` with no reason | `d134cfb`, `9c88927` |
 | the foreground notification outlived the service: `am stopservice` removed the `ServiceRecord` and left the notification in the shade | `stop-notification`, both API levels | `da2f0e9`, `603aca8` |
 | the notification check, the kill check and the native check each measured a different moment than the one they claimed | `records.tsv` of runs `4634b7b`, `9bd75ca` | `0acd142`…`603aca8` |
+| `wake-lock` counted the *history* of acquire/release events in `dumpsys power`, not the locks the power manager holds: it reported the lock still held 13 and 14 times "after" a stop after which the holdings section listed none | run `43617458503`, both API levels | `f10159b` |
+| `backup-disabled` treated every answer it did not recognise as "the system accepted the backup", so an emulator that declined to answer (`Unable to run backup`, backup manager off) was reported as a defect of the application | the same run, both API levels | `f10159b` |
+| the API 34 job once failed `notification` and lost the permission dialog while the *launcher* was in an ANR (`ui-front.xml`: "Pixel Launcher isn't responding"); the same commit re-run was clean | run `43620099527`, API 34 | no code change — the run is environment-degraded and is reported as such, not as a finding |
 
 ## 4. How to read a result
 
@@ -167,28 +172,41 @@ Everything the run learned is in `results/api-34/`: `result.md` (the table),
 `raw/` — every command's output, including the UI dumps that prove which screen
 was on the device when a tap was sent.
 
-## 6. The state on `603aca8`
+## 6. The state on `6acceba`
 
-Both API levels, `emulator.yml` run `41328526743`, using the APK that
-`ci.yml` run `41328526764` built for the same commit
-(`sha256 8b3bc01fc544a00b0c057003177ddee9a284aa7974703ccc611b1cf700eca87b`,
-asserted to be the bytes installed on the device):
+Both API levels, `emulator.yml` run `43622424256`, using the APK that
+`ci.yml` run `43622424257` built for the same commit (asserted to be the bytes
+installed on the device):
 
 | API level | PASS | NOT VERIFIED | NOT APPLICABLE | FAIL |
 |---|---|---|---|---|
-| 33 | 20 | 6 | 1 | 0 |
-| 34 | 20 | 6 | 1 | 0 |
+| 33 | 22 | 6 | 1 | 0 |
+| 34 | 22 | 6 | 1 | 0 |
+
+Two records are new since `603aca8` (27 records became 29):
+
+* **`wake-lock`** — the holdings section of `dumpsys power` named `umbra:beacon`
+  1 time while the service ran and 0 times after `am stopservice`, over 16 and
+  14 acquire/release events in the history.  The lock is held, released, and
+  renewed by the loop; the fifteen-minute ceiling the lock is taken with is not
+  part of that dump and stays **NOT VERIFIED** at run time.
+* **`backup-disabled`** — `bmgr backupnow io.umbra.beacon` answers "Backup is
+  not allowed" on both levels, and the package flags carry no `ALLOW_BACKUP`.
+  On API 34 the backup manager was off and the check enabled it once on the
+  throwaway emulator before asking again; the record says so.  **Device-to-
+  device transfer is NOT VERIFIED** — it needs a second phone.
 
 What is measured, on both levels: the APK installs, the package is listed, the
-consent screen starts (`TotalTime` 2.1 s and 2.8 s), no fatal record appears in
-the log, the platform asks for `POST_NOTIFICATIONS` and the refusal is recorded
-as a refusal, the foreground service starts and is `isForeground=true`, its
-notification is absent while the permission is refused and present on channel
-`umbra-beacon` once granted, the native library loads and its functions answer
+consent screen starts, no fatal record appears in the log, the platform asks
+for `POST_NOTIFICATIONS` and the refusal is recorded as a refusal, the
+foreground service starts and is `isForeground=true`, its notification is
+absent while the permission is refused and present on channel `umbra-beacon`
+once granted, the native library loads and its functions answer
 (`kernel=5.15.119-android13-…` / `kernel=6.1.23-android14-…`,
-`machine=x86_64`), the process is back 3 s after a `SIGKILL` and the
+`machine=x86_64`), the process is back after a `SIGKILL` and the
 `ServiceRecord` with it, `am stopservice` removes the service and the
-notification within a second.
+notification within a second, and the power manager holds no lock of this
+application afterwards.
 
 What stays `NOT VERIFIED`, with the reason the report gives:
 
@@ -207,7 +225,16 @@ What stays `NOT VERIFIED`, with the reason the report gives:
   reached from a task, and no task is executed in this stage.
 * **`physical-device`** — `NOT APPLICABLE`. An emulator is not a phone.
 
-The last two lines are the ones to keep in view: a green emulator run says the
-Android build starts, keeps a foreground service and loads its library on the
-two API levels this repository targets. It says nothing about a physical phone,
-nothing about a task, and nothing about the C2 chain.
+One run of this stage was **environment-degraded and is kept as such**: on
+`11f0203`, the API 34 job reported `notification` FAIL and lost the permission
+dialog while the launcher was in an ANR.  The dump shows the system's
+"Pixel Launcher isn't responding" window, not ours, and API 33 passed every
+check in the same run; the commit was re-measured on the next push and both
+levels came back 22 / 6 / 1 / 0.  A degraded emulator is not a defect of the
+application, and it is not a green run either.
+
+The last paragraph is the one to keep in view: a green emulator run says the
+Android build starts, keeps a foreground service, loads its library and lets go
+of its wake lock on the two API levels this repository targets. It says nothing
+about a physical phone, nothing about device-to-device transfer, nothing about
+a task, and nothing about the C2 chain.
