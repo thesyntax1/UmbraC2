@@ -553,7 +553,28 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
     for line in lines {
         let lower = line.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("content-length:") {
-            content_length = v.trim().parse::<usize>().ok();
+            // Three ways this field can be wrong, and none of them may end as
+            // "there was no length": that answer re-frames the body as
+            // "everything until the peer closes", which is a different message.
+            let value = v.trim();
+            let parsed = value.parse::<usize>().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("the content length is not a number this build can hold: {value:?}"),
+                )
+            })?;
+            match content_length {
+                // Two different lengths are two different messages, and which
+                // one is meant cannot be recovered by guessing.
+                Some(seen) if seen != parsed => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("two content lengths disagree: {seen} and {parsed}"),
+                    ))
+                }
+                Some(_) => {}
+                None => content_length = Some(parsed),
+            }
         }
         if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
             chunked = true;
@@ -561,6 +582,16 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
         if let Some(v) = lower.strip_prefix("connection:") {
             close = v.trim() == "close";
         }
+    }
+    if chunked && content_length.is_some() {
+        // RFC 7230 lets a reader prefer chunked and ignore the length.  That
+        // is the desync pair: one parser frames by length, the other by
+        // chunk, and the two disagree about where the message ends.  A
+        // response this code wrote itself never has both.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the response carries both a content length and chunked framing",
+        ));
     }
 
     let mut body = buf[header_end..].to_vec();
@@ -755,6 +786,47 @@ mod tests {
         let (_, body, reusable) = parse(raw);
         assert_eq!(body, b"abc");
         assert!(reusable);
+    }
+
+    #[test]
+    fn a_length_that_is_not_a_number_is_refused() {
+        // It used to become `None`, which means "read until the peer closes":
+        // a body of one size silently re-framed as a body of another.
+        let (kind, message) = refuse(b"HTTP/1.1 200 OK\r\nContent-Length: 12x\r\n\r\nabc");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("not a number"), "{message}");
+    }
+
+    #[test]
+    fn a_length_that_does_not_fit_is_refused() {
+        let (kind, message) =
+            refuse(b"HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999999\r\n\r\n");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("not a number"), "{message}");
+    }
+
+    #[test]
+    fn an_empty_length_is_refused() {
+        let (kind, _) = refuse(b"HTTP/1.1 200 OK\r\nContent-Length:\r\n\r\n");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn two_lengths_that_disagree_are_refused() {
+        let (kind, message) = refuse(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabcde",
+        );
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("disagree"), "{message}");
+    }
+
+    #[test]
+    fn chunked_framing_next_to_a_length_is_refused() {
+        let (kind, message) = refuse(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        );
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("both"), "{message}");
     }
 
     #[test]
