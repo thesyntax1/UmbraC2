@@ -193,9 +193,29 @@ service_state() {
 }
 
 # notification_state: what the notification manager says about our id.
-# wake_lock_state: what the power manager says about this application's locks.
+# wake_lock_state: the locks the power manager holds *now*, and nothing else.
+#
+# `dumpsys power` has two places where a lock's name appears: the "Wake Locks:
+# size=N" section, which is the state, and a long history of ACQ/REL events
+# further down, which is the log.  The first version of this function returned
+# the whole dump and the check counted the name, so it counted the history:
+# it reported "the lock is still listed 13 time(s) after the service stopped"
+# on API 33 and 14 on API 34, while the holdings section of the very same dump
+# listed no lock of this application at all.  The lock had been released; the
+# grep was reading an archive.
 wake_lock_state() {
-    adb shell dumpsys power 2>/dev/null | tr -d '\r'
+    adb shell dumpsys power 2>/dev/null | tr -d '\r' | awk '
+        /^Wake Locks: size=/ { inside = 1; next }
+        inside && NF == 0    { exit }
+        inside               { print }
+    '
+}
+
+# wake_lock_history: the ACQ/REL lines, kept as evidence of renewal -- the
+# count says the loop released and took the lock again rather than holding one
+# lock for the whole run.
+wake_lock_history() {
+    adb shell dumpsys power 2>/dev/null | tr -d '\r' | grep -E '[0-9]+ - (ACQ|REL) ' || true
 }
 
 notification_state() {
@@ -418,26 +438,54 @@ fi
 
 pkg_flags=$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 'flags=' || true)
 printf '%s\n' "$pkg_flags" >"$OUT/raw/backup-flags.txt"
-bmgr_raw=$(timeout 90 adb shell bmgr backupnow "$PKG" 2>&1)
-bmgr_rc=$?
-bmgr_out=$(printf '%s\n' "$bmgr_raw" | tr -d '\r')
-printf '%s\n' "$bmgr_out" >"$OUT/raw/backup-bmgr.txt"
+adb shell bmgr list transports 2>&1 | tr -d '\r' >"$OUT/raw/backup-transports.txt" || true
 
-case "$bmgr_out" in
-    *"Backup is not allowed"*)                          bmgr_state=refused ;;
-    *"not enabled"*|*"No transport"*|*"no transport"*)   bmgr_state=unavailable ;;
-    *"Transport not initialized"*|*"Unknown command"*)   bmgr_state=unavailable ;;
-    *"Unknown package"*|*"not installed"*)               bmgr_state=unavailable ;;
-    "")                                                 bmgr_state=unavailable ;;
-    *)                                                  bmgr_state=accepted ;;
-esac
-# A non-zero exit that is not the refusal is the harness failing to ask the
-# question (adb missing, the call timed out, no transport), and it must not be
-# read as "the system accepted the backup".  The first version of this block
-# did exactly that and turned an adb error into a FAIL of the application.
-if [ "$bmgr_rc" -ne 0 ] && [ "$bmgr_state" != refused ]; then
-    bmgr_state=unavailable
+: >"$OUT/raw/backup-bmgr.txt"
+bmgr_out=""
+bmgr_rc=1
+
+# bmgr_ask: one attempt, kept in the raw file with its exit status.
+bmgr_ask() {
+    local raw
+    raw=$(timeout 90 adb shell bmgr backupnow "$PKG" 2>&1)
+    bmgr_rc=$?
+    bmgr_out=$(printf '%s\n' "$raw" | tr -d '\r')
+    printf -- '--- attempt, rc %s\n%s\n' "$bmgr_rc" "$bmgr_out" >>"$OUT/raw/backup-bmgr.txt"
+}
+
+# bmgr_classify: only two answers are recognised.  Everything else -- "Unable
+# to run backup", a missing adb, a timeout, an empty line -- is the device
+# declining to answer, and a device that will not answer is NOT VERIFIED.  The
+# first version of this block treated anything it did not recognise as "the
+# system accepted the backup" and reported a defect of the application on both
+# API levels; the outcome was a red run, not a finding.
+bmgr_classify() {
+    case "$bmgr_out" in
+        *"Backup is not allowed"*) bmgr_state=refused ;;
+        *"result: Success"*)       bmgr_state=accepted ;;
+        *)                         bmgr_state=unavailable ;;
+    esac
+    if [ "$bmgr_rc" -ne 0 ] && [ "$bmgr_state" = accepted ]; then
+        bmgr_state=unavailable
+    fi
+}
+
+bmgr_ask
+bmgr_classify
+bmgr_note=""
+if [ "$bmgr_state" = unavailable ]; then
+    # The backup manager is a device-wide switch and it is off on a fresh
+    # emulator, which is what "Unable to run backup" says.  Turn it on once,
+    # on this throwaway device, and ask again.  Nothing is uploaded by doing
+    # so: the emulator has no account, no transport that reaches anywhere, and
+    # a package that may not be backed up is refused before a transport is
+    # consulted at all.
+    adb shell bmgr enable true >>"$OUT/raw/backup-bmgr.txt" 2>&1 || true
+    bmgr_ask
+    bmgr_classify
+    bmgr_note=" (the backup manager was off; it was enabled once on this emulator and the question asked again)"
 fi
+
 case "$pkg_flags" in
     *ALLOW_BACKUP*) flags_state=allowed ;;
     *"flags=["*)    flags_state=closed ;;
@@ -449,16 +497,16 @@ bmgr_why=${bmgr_why:-nothing}
 
 if [ "$bmgr_state" = accepted ]; then
     record backup-disabled FAIL "the system refuses to back up the state of the application" \
-        "bmgr accepted the request: $bmgr_why"
+        "bmgr accepted the request: $bmgr_why$bmgr_note"
 elif [ "$flags_state" = allowed ]; then
     record backup-disabled FAIL "the system refuses to back up the state of the application" \
         "the package flags carry ALLOW_BACKUP: $pkg_flags"
 elif [ "$bmgr_state" = refused ] && [ "$flags_state" = closed ]; then
     record backup-disabled PASS "the system refuses to back up the state of the application" \
-        "bmgr: $bmgr_why; package flags carry no ALLOW_BACKUP; device-to-device transfer is not exercised here"
+        "bmgr: $bmgr_why$bmgr_note; package flags carry no ALLOW_BACKUP; device-to-device transfer is not exercised here"
 else
     record backup-disabled NOT VERIFIED "the system refuses to back up the state of the application" \
-        "bmgr could not answer (rc $bmgr_rc, $bmgr_why) and the flag line was ${pkg_flags:-empty}"
+        "bmgr could not answer (rc $bmgr_rc: $bmgr_why)$bmgr_note and the flag line was ${pkg_flags:-empty}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -561,6 +609,7 @@ fi
 # The wake lock, while the service is certainly running: the check at the
 # end compares this with the same reading after the stop.
 wake_lock_state >"$OUT/raw/wakelock-before.txt"
+wake_lock_history >"$OUT/raw/wakelock-before-history.txt"
 wake_lock_before=$(grep -c "umbra:beacon" "$OUT/raw/wakelock-before.txt" 2>/dev/null) || wake_lock_before=0
 
 sleep 2
@@ -1032,16 +1081,18 @@ fi
 # `dumpsys power` is the state of the power manager, not of the application:
 # what it lists is a lock the system is holding on the application's behalf.
 wake_lock_state >"$OUT/raw/wakelock-after.txt"
+wake_lock_history >"$OUT/raw/wakelock-after-history.txt"
 wake_lock_after=$(grep -c "umbra:beacon" "$OUT/raw/wakelock-after.txt" 2>/dev/null) || wake_lock_after=0
+wake_lock_events=$(grep -cE "(ACQ|REL) umbra:beacon" "$OUT/raw/wakelock-after-history.txt" 2>/dev/null) || wake_lock_events=0
 if [ "${wake_lock_before:-0}" -ge 1 ] && [ "${wake_lock_after:-0}" -eq 0 ]; then
     record wake-lock PASS "the wake lock is held while the beacon runs and gone when it stops" \
-        "dumpsys power named umbra:beacon $wake_lock_before time(s) while the service ran and $wake_lock_after time(s) after it stopped; the ceiling the lock was taken with is not part of that dump"
+        "the holdings section named umbra:beacon $wake_lock_before time(s) while the service ran and $wake_lock_after time(s) after it stopped, over $wake_lock_events acquire/release events in the history; the ceiling itself is not in that dump"
 elif [ "${wake_lock_before:-0}" -eq 0 ]; then
     record wake-lock FAIL "the wake lock is held while the beacon runs and gone when it stops" \
-        "dumpsys power never named umbra:beacon although the foreground service was running"
+        "the holdings section of dumpsys power named no lock of this application although the foreground service was running"
 else
     record wake-lock FAIL "the wake lock is held while the beacon runs and gone when it stops" \
-        "the lock is still listed $wake_lock_after time(s) after the service stopped"
+        "the power manager still holds umbra:beacon $wake_lock_after time(s) after the service stopped"
 fi
 
 # ---------------------------------------------------------------------------
