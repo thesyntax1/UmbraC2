@@ -655,9 +655,17 @@ fn dechunk(body: &[u8]) -> io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(body.len());
     let mut pos = 0usize;
     loop {
+        // A chunk size line is mandatory until the terminating zero, so an
+        // input that ends without one is a cut message -- it used to leave
+        // this loop with `break` and hand back the part it had read.
         let line_end = match find_subslice(&body[pos..], b"\r\n") {
             Some(p) => pos + p,
-            None => break,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "a chunk size without a line end",
+                ))
+            }
         };
         let size_str = String::from_utf8_lossy(&body[pos..line_end]).to_string();
         let size_str = size_str.split(';').next().unwrap_or("").trim().to_string();
@@ -667,14 +675,40 @@ fn dechunk(body: &[u8]) -> io::Result<Vec<u8>> {
         if size == 0 {
             break;
         }
-        if pos + size > body.len() {
+        // `pos + size` with a size of usize::MAX panics in a debug build and
+        // wraps in a release one, and both end in a slice that is out of
+        // range.  A peer chooses this number.
+        let end = match pos.checked_add(size) {
+            Some(end) => end,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("a chunk of {size} overflows the buffer"),
+                ))
+            }
+        };
+        if end > body.len() {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short chunk"));
         }
-        out.extend_from_slice(&body[pos..pos + size]);
-        pos += size + 2; // skip trailing CRLF
-        if pos > body.len() {
-            break;
+        out.extend_from_slice(&body[pos..end]);
+        // The CRLF after the data is part of the framing.  A missing one used
+        // to be skipped by a `break`, which reported a cut message as whole.
+        let next = end.checked_add(2).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "the chunk framing overflows")
+        })?;
+        if next > body.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "a chunk without its trailing CRLF",
+            ));
         }
+        if &body[end..next] != b"\r\n" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a chunk is not followed by CRLF",
+            ));
+        }
+        pos = next;
     }
     Ok(out)
 }
@@ -879,6 +913,83 @@ mod tests {
         let (_, body, reusable) = parse(raw);
         assert_eq!(body, b"ok");
         assert!(reusable);
+    }
+
+    fn dechunk_err(raw: &[u8]) -> (io::ErrorKind, String) {
+        match dechunk(raw) {
+            Err(e) => (e.kind(), e.to_string()),
+            Ok(out) => panic!("accepted a cut chunked body of {} bytes", out.len()),
+        }
+    }
+
+    #[test]
+    fn a_chunk_size_that_overflows_is_refused_and_not_a_panic() {
+        // Sixteen hex digits is usize::MAX on a 64-bit build, and `pos + size`
+        // on that value panicked in debug and wrapped in release.  The size is
+        // chosen by the peer.
+        let (kind, message) = dechunk_err(b"ffffffffffffffff\r\nabc");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("overflows"), "{message}");
+    }
+
+    #[test]
+    fn a_chunk_longer_than_the_buffer_is_refused() {
+        let (kind, message) = dechunk_err(b"10\r\nabc");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+        assert!(message.contains("short chunk"), "{message}");
+    }
+
+    #[test]
+    fn a_chunk_without_its_trailing_crlf_is_refused() {
+        // The data is all there and the framing is not: this used to be
+        // returned as a complete body.
+        let (kind, message) = dechunk_err(b"3\r\nabc");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+        assert!(message.contains("CRLF"), "{message}");
+    }
+
+    #[test]
+    fn a_chunk_followed_by_the_wrong_bytes_is_refused() {
+        let (kind, message) = dechunk_err(b"3\r\nabcXX");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("CRLF"), "{message}");
+    }
+
+    #[test]
+    fn a_chunked_body_without_its_terminator_is_refused() {
+        // One complete chunk and then nothing.  The message is not over -- the
+        // terminating zero chunk never arrived -- so this is a cut message,
+        // not a body of "abc".  It used to be reported as exactly that, as a
+        // successful `Ok(b"abc")`, which is the failure this test pins: the
+        // old code does not merely return a different error, it returns no
+        // error at all.
+        let (kind, message) = dechunk_err(b"3\r\nabc\r\n");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+        assert!(message.contains("chunk size"), "{message}");
+    }
+
+    #[test]
+    fn an_empty_chunked_body_is_refused() {
+        let (kind, _) = dechunk_err(b"");
+        assert_eq!(kind, io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn a_chunk_extension_is_ignored_and_the_data_kept() {
+        let out = match dechunk(b"4;name=value\r\nWiki\r\n0\r\n\r\n") {
+            Ok(out) => out,
+            Err(e) => panic!("a legal chunk extension was refused: {e}"),
+        };
+        assert_eq!(out, b"Wiki");
+    }
+
+    #[test]
+    fn the_terminator_alone_is_an_empty_body() {
+        let out = match dechunk(b"0\r\n\r\n") {
+            Ok(out) => out,
+            Err(e) => panic!("a legal empty chunked body was refused: {e}"),
+        };
+        assert!(out.is_empty());
     }
 
     #[test]
