@@ -188,12 +188,17 @@ pub fn platform() -> &'static str {
 /// adding a second one, and the entry is read back before it is reported as
 /// installed.
 pub fn install(args: &Value) -> Result<Report, String> {
+    install_at(args, &state_path())
+}
+
+/// Install, reading and writing the state file at an explicit path.
+fn install_at(args: &Value, path: &Path) -> Result<Report, String> {
     let requested = args.str_or("method", "auto");
     let label = args.str_or("name", "");
     let silent = args.bool_or("silent", true);
     let verify = args.bool_or("verify", true);
 
-    let existing = load_entries();
+    let existing = load_entries_at(path, "install")?;
     let chosen = if requested == "auto" || requested.is_empty() {
         select(&existing)
     } else {
@@ -240,7 +245,7 @@ pub fn install(args: &Value) -> Result<Report, String> {
                         state
                     }
                     Err(e) => {
-                        save_entries(&entries)?;
+                        save_entries_at(path, &entries)?;
                         return Err(format!("persist: {chosen} could not be verified: {e}"));
                     }
                 }
@@ -265,7 +270,7 @@ pub fn install(args: &Value) -> Result<Report, String> {
                 text.push_str(&format!("  {}\n", entry.detail));
             }
             entries.push(entry);
-            save_entries(&entries)?;
+            save_entries_at(path, &entries)?;
         }
         Err(e) => {
             return Err(format!("persist: {chosen} failed: {e}"));
@@ -280,8 +285,13 @@ pub fn install(args: &Value) -> Result<Report, String> {
 /// Without a method every technique this implant installed is taken away
 /// again, which is what an operator expects at the end of an engagement.
 pub fn remove(args: &Value) -> Result<Report, String> {
+    remove_at(args, &state_path())
+}
+
+/// Remove, reading and writing the state file at an explicit path.
+fn remove_at(args: &Value, path: &Path) -> Result<Report, String> {
     let requested = args.str_or("method", "all");
-    let entries = load_entries();
+    let entries = load_entries_at(path, "unpersist")?;
     if entries.is_empty() {
         return Ok(Report::new("nothing was installed on this host\n".to_string(), Vec::new()));
     }
@@ -311,14 +321,19 @@ pub fn remove(args: &Value) -> Result<Report, String> {
             }
         }
     }
-    save_entries(&kept)?;
+    save_entries_at(path, &kept)?;
     let values = kept.iter().map(entry_value).collect();
     Ok(Report::new(text, values))
 }
 
 /// List what is installed on this host.
-pub fn list(_args: &Value) -> Result<Report, String> {
-    let entries = load_entries();
+pub fn list(args: &Value) -> Result<Report, String> {
+    list_at(args, &state_path())
+}
+
+/// List, reading the state file at an explicit path.
+fn list_at(_args: &Value, path: &Path) -> Result<Report, String> {
+    let entries = load_entries_at(path, "persist.list")?;
     let mut text = String::new();
     for entry in &entries {
         text.push_str(&format!(
@@ -337,8 +352,13 @@ pub fn list(_args: &Value) -> Result<Report, String> {
 ///
 /// A technique that was removed behind the operator's back shows up as
 /// broken, and the server turns that into an alert.
-pub fn verify(_args: &Value) -> Result<Report, String> {
-    let mut entries = load_entries();
+pub fn verify(args: &Value) -> Result<Report, String> {
+    verify_at(args, &state_path())
+}
+
+/// Verify, reading and writing the state file at an explicit path.
+fn verify_at(_args: &Value, path: &Path) -> Result<Report, String> {
+    let mut entries = load_entries_at(path, "persist.verify")?;
     let mut text = String::new();
     let mut broken = 0u64;
     for entry in entries.iter_mut() {
@@ -366,7 +386,7 @@ pub fn verify(_args: &Value) -> Result<Report, String> {
     if entries.is_empty() {
         text.push_str("nothing is installed on this host\n");
     }
-    save_entries(&entries)?;
+    save_entries_at(path, &entries)?;
     let values = entries.iter().map(entry_value).collect();
     let mut report = Report::new(text, values);
     report.broken = broken;
@@ -386,7 +406,7 @@ pub fn migrate(args: &Value) -> Result<Report, String> {
     if technique(&to).is_none() {
         return Err(format!("persist.migrate: unknown technique {to}"));
     }
-    let entries = load_entries();
+    let entries = load_entries("persist.migrate")?;
     if !entries.iter().any(|e| e.technique == from) {
         return Err(format!("persist.migrate: {from} is not installed on this host"));
     }
@@ -528,39 +548,69 @@ fn read_state_at(path: &Path) -> Result<Vec<Entry>, StateError> {
         Err(e) => return Err(StateError::Io(e.to_string())),
     };
     let value = upk::decode_exact(&raw).map_err(|e| StateError::Corrupt(e.to_string()))?;
+    let fields = match value {
+        Value::Map(fields) => fields,
+        _ => return Err(StateError::Corrupt("the top level is not a map".to_string())),
+    };
+    let items = match fields.get("entries") {
+        Some(Value::Arr(items)) => items,
+        Some(_) => return Err(StateError::Corrupt("\"entries\" is not an array".to_string())),
+        None => return Err(StateError::Corrupt("there is no \"entries\" array".to_string())),
+    };
     let mut out = Vec::new();
-    if let Value::Map(fields) = value {
-        if let Some(Value::Arr(items)) = fields.get("entries") {
-            for item in items {
-                if let Value::Map(entry) = item {
-                    out.push(Entry {
-                        technique: map_str(entry, "technique"),
-                        name: map_str(entry, "name"),
-                        trigger: map_str(entry, "trigger"),
-                        location: map_str(entry, "location"),
-                        detail: map_str(entry, "detail"),
-                        binary: map_str(entry, "binary"),
-                        state: map_str(entry, "state"),
-                        installed_at: map_str(entry, "installed_at"),
-                    });
-                }
+    for item in items {
+        let entry = match item {
+            Value::Map(entry) => entry,
+            // Skipping it would be the same bug one level down: an entry this
+            // build cannot read is an entry nobody can remove.
+            _ => {
+                return Err(StateError::Corrupt(
+                    "one of the entries is not a map".to_string(),
+                ))
             }
-        }
+        };
+        out.push(Entry {
+            technique: map_str(entry, "technique"),
+            name: map_str(entry, "name"),
+            trigger: map_str(entry, "trigger"),
+            location: map_str(entry, "location"),
+            detail: map_str(entry, "detail"),
+            binary: map_str(entry, "binary"),
+            state: map_str(entry, "state"),
+            installed_at: map_str(entry, "installed_at"),
+        });
     }
     Ok(out)
 }
 
-/// Read the entries the implant installed.
+/// The entries, with "no file yet" as an empty list and every other failure as
+/// an error the operator can act on.
 ///
-/// A file that cannot be read is still reported as "nothing installed" by this
-/// function, which is the behaviour every caller had before the reader was
-/// split out; the callers that must tell the difference call [`read_state_at`]
-/// themselves.
-fn load_entries() -> Vec<Entry> {
-    match read_state_at(&state_path()) {
-        Ok(entries) => entries,
-        Err(_) => Vec::new(),
+/// The distinction is the point of this function.  A state file that exists and
+/// cannot be read is not "nothing is installed": it means the record of what is
+/// installed is in the file and this build cannot see it, and every operation
+/// that would write the file back would replace that record with whatever it
+/// happens to know.  `install` would then forget a technique that stays on the
+/// host, `unpersist` would report "nothing was installed" while the persistence
+/// is still there, and `decommission` would wipe the traces and leave the way
+/// back in.
+fn load_entries_at(path: &Path, operation: &str) -> Result<Vec<Entry>, String> {
+    match read_state_at(path) {
+        Ok(entries) => Ok(entries),
+        Err(StateError::Missing) => Ok(Vec::new()),
+        Err(e) => Err(format!(
+            "persist: {operation} stopped: the state file {} {e}. Nothing was changed -- \
+             the file is the record of what this host carries, and writing over a record that \
+             cannot be read would leave those entries installed with nothing left to remove \
+             them by.",
+            path.display()
+        )),
     }
+}
+
+/// The entries at the implant's own path.
+fn load_entries(operation: &str) -> Result<Vec<Entry>, String> {
+    load_entries_at(&state_path(), operation)
 }
 
 /// Write the entries back.
@@ -2121,6 +2171,113 @@ mod tests {
         let read = read_state_at(&dir.state()).expect("the read");
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].technique, "startup");
+    }
+
+    /// Write bytes that are not a state file, and return the path.
+    fn corrupt(dir: &TempDir) -> PathBuf {
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        fs::write(&path, b"not a state file at all").expect("the corrupt file");
+        path
+    }
+
+    #[test]
+    fn an_unreadable_state_stops_the_operation_that_needs_it() {
+        // The four operations read the file and then write it back.  Each one
+        // has to stop before writing: continuing would replace a record it
+        // cannot read with what it happens to know, and the entries in the
+        // lost record stay installed with nothing left to remove them.
+        let dir = TempDir::new("unreadable");
+        let path = corrupt(&dir);
+        let before = fs::read(&path).expect("the corrupt file");
+
+        for (name, result) in [
+            ("persist.list", list_at(&Value::Null, &path).map(|_| ())),
+            ("persist.verify", verify_at(&Value::Null, &path).map(|_| ())),
+            ("unpersist", remove_at(&Value::Null, &path).map(|_| ())),
+            ("install", install_at(&Value::Null, &path).map(|_| ())),
+        ] {
+            let message = match result {
+                Err(message) => message,
+                Ok(()) => panic!("{name} accepted a state file that is not one"),
+            };
+            assert!(
+                message.contains(name),
+                "{name}: the message does not name the operation: {message}"
+            );
+            assert!(
+                message.contains("Nothing was changed"),
+                "{name}: the message does not say what happened: {message}"
+            );
+        }
+
+        let after = fs::read(&path).expect("the corrupt file is still there");
+        assert_eq!(before, after, "the file was written by an operation that refused to read it");
+    }
+
+    #[test]
+    fn unpersist_does_not_claim_that_nothing_was_installed() {
+        // The exact sentence that made this stage worth doing: a corrupt file
+        // used to produce "nothing was installed on this host", which is the
+        // same answer as a host that is genuinely clean -- and it is the answer
+        // `decommission` reads right before it wipes the traces.
+        let dir = TempDir::new("no-false-clean");
+        let path = corrupt(&dir);
+        let err = match remove_at(&Value::Null, &path) {
+            Err(err) => err,
+            // `expect_err` would have to print the report, and the report is
+            // not Debug; more to the point, the failure mode worth naming here
+            // is "it returned a report at all", so the panic says that.
+            Ok(report) => panic!("a corrupt record was reported as a clean host: {}", report.text),
+        };
+        assert!(
+            !err.contains("nothing was installed"),
+            "a corrupt state file was reported as an empty one: {err}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_still_lists_nothing() {
+        // The other half of the rule: a host that never installed anything is
+        // not an error, and this must not turn into one.
+        let dir = TempDir::new("missing-list");
+        let report = list_at(&Value::Null, &dir.state()).expect("a missing file is an empty list");
+        assert_eq!(report.total, 0);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_map_is_corrupt() {
+        let dir = TempDir::new("not-a-map");
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        fs::write(&path, upk::encode(&upk::arr(vec![upk::u(1)])).unwrap()).expect("the write");
+        assert!(matches!(read_state_at(&path), Err(StateError::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_file_without_the_entries_array_is_corrupt() {
+        let dir = TempDir::new("no-entries");
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("something".to_string(), upk::u(1));
+        fs::write(&path, upk::encode(&Value::Map(fields)).unwrap()).expect("the write");
+        let err = read_state_at(&path).expect_err("a map without entries is not a state file");
+        assert!(format!("{err}").contains("entries"), "the message says why: {err}");
+    }
+
+    #[test]
+    fn an_entry_that_is_not_a_map_is_corrupt() {
+        // One bad entry must not be skipped: an entry this build cannot read is
+        // an entry nobody can remove.
+        let dir = TempDir::new("bad-entry");
+        let path = dir.state();
+        fs::create_dir_all(path.parent().unwrap()).expect("the directory");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("entries".to_string(), upk::arr(vec![upk::s("registry.run")]));
+        fs::write(&path, upk::encode(&Value::Map(fields)).unwrap()).expect("the write");
+        let err = read_state_at(&path).expect_err("a string is not an entry");
+        assert!(format!("{err}").contains("not a map"), "the message says why: {err}");
     }
 
     #[test]
