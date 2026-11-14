@@ -655,7 +655,10 @@ impl StateLock {
 impl Drop for StateLock {
     fn drop(&mut self) {
         // The handle is closed before the file is removed, so a Windows caller
-        // is not asked to delete a file it still holds open.
+        // is not asked to delete a file it still holds open.  `Drop` cannot
+        // report a failure: if the removal fails, the lock file stays and the
+        // next operation refuses with the sentence that names it -- loud, and
+        // recoverable by deleting one file.
         self._handle.take();
         let _ = fs::remove_file(&self.path);
     }
@@ -854,6 +857,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.sync_all()?;
         Ok(())
     })();
+    // The cleanup on each failure path is best effort by construction: the
+    // error being returned is the one worth reporting, and a temporary file
+    // that survives it is debris that the *next* write removes (there is a
+    // test for exactly that).  Saving is not made to succeed so that a
+    // cleanup can be reported.
     if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
         return Err(e);
