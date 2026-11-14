@@ -3,7 +3,7 @@
 > What `implant/rust/src/persist.rs` keeps on a host, what it promises about
 > that file, and what it does not.  This page is the map the stage asked for
 > before any fix: the format, every place the file is opened, and the failure
-> matrix.  The stage itself is `docs/VERIFICATION-MATRIX.md` row 16.
+> matrix.  The stage itself is `docs/VERIFICATION-MATRIX.md` row 19 (closed there).
 
 ## 1. What is stored, and where
 
