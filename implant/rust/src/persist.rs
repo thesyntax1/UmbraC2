@@ -696,6 +696,31 @@ fn lock_for(state: &Path, operation: &str) -> Result<StateLock, String> {
     StateLock::acquire(state)
 }
 
+/// Move a state file this build cannot read out of the way, keeping its bytes.
+///
+/// The refusal in [`load_entries_at`] is only as useful as the evidence behind
+/// it: the file lists techniques that are still installed on the host, and the
+/// operator's next move -- deleting a file that stops every task -- would
+/// destroy exactly that list.  So the failure itself moves the file aside, to
+/// `persist.state.corrupt-<seconds>`, before the caller sees the error.  From
+/// the next operation on there is no state file, which reads as "nothing has
+/// been installed here yet" and lets the operator start again without the
+/// record being lost.
+///
+/// Failing to move it is not fatal: the error the caller gets is still the
+/// corruption, with a sentence that says the copy could not be made.
+fn quarantine(path: &Path) -> Option<std::result::Result<PathBuf, String>> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let kept = PathBuf::from(format!("{}.corrupt-{secs}", path.to_string_lossy()));
+    match fs::rename(path, &kept) {
+        Ok(()) => Some(Ok(kept)),
+        Err(e) => Some(Err(e.to_string())),
+    }
+}
+
 /// The entries, with "no file yet" as an empty list and every other failure as
 /// an error the operator can act on.
 ///
@@ -711,6 +736,26 @@ fn load_entries_at(path: &Path, operation: &str) -> Result<Vec<Entry>, String> {
     match read_state_at(path) {
         Ok(entries) => Ok(entries),
         Err(StateError::Missing) => Ok(Vec::new()),
+        Err(StateError::Corrupt(why)) => {
+            let kept = match quarantine(path) {
+                Some(Ok(kept)) => format!(
+                    "Its bytes were kept as {} and it no longer sits at the path this build reads, \
+                     so the next operation starts from an empty record.",
+                    kept.display()
+                ),
+                Some(Err(e)) => format!(
+                    "It could not be moved aside ({e}); it is still at the same path, and every \
+                     operation on it will stop like this one.",
+                ),
+                None => String::new(),
+            };
+            Err(format!(
+                "persist: {operation} stopped: the state file {} is not a state file this build \
+                 can read: {why}. Nothing was changed by this task. {kept} What the host carries \
+                 has to be checked by hand: the record of it is the thing that was unreadable.",
+                path.display()
+            ))
+        }
         Err(e) => Err(format!(
             "persist: {operation} stopped: the state file {} {e}. Nothing was changed -- \
              the file is the record of what this host carries, and writing over a record that \
@@ -2480,20 +2525,24 @@ mod tests {
 
     #[test]
     fn an_unreadable_state_stops_the_operation_that_needs_it() {
-        // The four operations read the file and then write it back.  Each one
+        // The four operations read the file before doing anything.  Each one
         // has to stop before writing: continuing would replace a record it
         // cannot read with what it happens to know, and the entries in the
         // lost record stay installed with nothing left to remove them.
-        let dir = TempDir::new("unreadable");
-        let path = corrupt(&dir);
-        let before = fs::read(&path).expect("the corrupt file");
-
-        for (name, result) in [
-            ("persist.list", list_at(&Value::Null, &path).map(|_| ())),
-            ("persist.verify", verify_at(&Value::Null, &path).map(|_| ())),
-            ("unpersist", remove_at(&Value::Null, &path).map(|_| ())),
-            ("install", install_at(&Value::Null, &path).map(|_| ())),
-        ] {
+        //
+        // Each operation gets a fresh directory, because the refusal now moves
+        // the file aside (`quarantine`): the second operation on the same path
+        // would find no file and legitimately succeed.
+        for name in ["persist.list", "persist.verify", "unpersist", "install"] {
+            let dir = TempDir::new("unreadable");
+            let path = corrupt(&dir);
+            let before = fs::read(&path).expect("the corrupt file");
+            let result = match name {
+                "persist.list" => list_at(&Value::Null, &path).map(|_| ()),
+                "persist.verify" => verify_at(&Value::Null, &path).map(|_| ()),
+                "unpersist" => remove_at(&Value::Null, &path).map(|_| ()),
+                _ => install_at(&Value::Null, &path).map(|_| ()),
+            };
             let message = match result {
                 Err(message) => message,
                 Ok(()) => panic!("{name} accepted a state file that is not one"),
@@ -2506,10 +2555,32 @@ mod tests {
                 message.contains("Nothing was changed"),
                 "{name}: the message does not say what happened: {message}"
             );
+            // And the bytes are not lost: they are beside the file, intact.
+            let kept: Vec<PathBuf> = fs::read_dir(path.parent().unwrap())
+                .expect("the directory")
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.to_string_lossy().contains(".corrupt-"))
+                .collect();
+            assert_eq!(kept.len(), 1, "{name}: the corrupt record was not kept");
+            assert_eq!(
+                fs::read(&kept[0]).expect("the kept file"),
+                before,
+                "{name}: the kept copy is not the bytes that were there"
+            );
+            assert!(!path.exists(), "{name}: the corrupt file is still in the way");
         }
+    }
 
-        let after = fs::read(&path).expect("the corrupt file is still there");
-        assert_eq!(before, after, "the file was written by an operation that refused to read it");
+    #[test]
+    fn the_file_after_a_refusal_is_a_clean_host() {
+        // What the operator gets after the refusal: the record is out of the
+        // way, so the next operation runs instead of stopping forever.
+        let dir = TempDir::new("after-refusal");
+        let path = corrupt(&dir);
+        assert!(list_at(&Value::Null, &path).is_err());
+        let report = list_at(&Value::Null, &path).expect("the second call starts clean");
+        assert_eq!(report.total, 0);
     }
 
     #[test]
