@@ -771,15 +771,6 @@ fn load_entries(operation: &str) -> Result<Vec<Entry>, String> {
     load_entries_at(&state_path(), operation)
 }
 
-/// Write the entries back.
-///
-/// The write goes to a temporary file first: a state file that was cut in
-/// half by a power cut would make the implant forget what it installed, and
-/// that is exactly the case where the operator needs to know.
-fn save_entries(entries: &[Entry]) -> Result<(), String> {
-    save_entries_at(&state_path(), entries)
-}
-
 /// Write the entries to an explicit path.
 fn save_entries_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
     let raw = encode_state(entries)?;
