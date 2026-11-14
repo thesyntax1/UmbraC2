@@ -148,22 +148,30 @@ object Overlay {
      * drawn there.
      */
     private fun show(context: Context, armed: Target) {
+        // The form outlives the screen that asked for it: it is drawn by this
+        // singleton and stays until the operator takes it away.  Everything it
+        // builds therefore has to belong to the process and not to the
+        // component that happened to trigger the window change -- a view, its
+        // listeners and the context they capture keep that component alive for
+        // as long as the form is on the screen, and the accessibility service
+        // is a component the user can switch off at any moment.
+        val app = context.applicationContext ?: context
         Handler(Looper.getMainLooper()).post {
             try {
-                val manager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                val manager = app.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
                 if (manager == null) return@post
-                val root = LinearLayout(context).apply {
+                val root = LinearLayout(app).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(48, 96, 48, 48)
                     setBackgroundColor(Color.WHITE)
                 }
-                root.addView(TextView(context).apply {
+                root.addView(TextView(app).apply {
                     text = armed.title
                     textSize = 22f
                     setTextColor(Color.BLACK)
                     setPadding(0, 0, 0, 32)
                 })
-                root.addView(TextView(context).apply {
+                root.addView(TextView(app).apply {
                     text = armed.prompt
                     textSize = 15f
                     setTextColor(Color.DKGRAY)
@@ -171,7 +179,7 @@ object Overlay {
                 })
                 val inputs = mutableListOf<EditText>()
                 for (name in armed.fields) {
-                    val input = EditText(context).apply {
+                    val input = EditText(app).apply {
                         hint = name
                         textSize = 16f
                         setSingleLine(true)
@@ -179,10 +187,13 @@ object Overlay {
                     inputs.add(input)
                     root.addView(input)
                 }
-                val button = Button(context).apply {
+                val button = Button(app).apply {
                     text = armed.button
+                    // The listener captures `app`, not the context of the
+                    // call: a lambda that held the service would keep it
+                    // alive from inside a view that never leaves this object.
                     setOnClickListener {
-                        submit(context, armed, inputs)
+                        submit(app, armed, inputs)
                     }
                 }
                 root.addView(button)
