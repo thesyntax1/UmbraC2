@@ -91,6 +91,7 @@ above had narrowed the parser too far, one of these would fail:
 | a chunked response that may not be reused | `chunked_response_is_not_reusable` |
 | a `Content-Length` response that may | `length_delimited_response_is_keep_alive` |
 | `Connection: close` at the end of a list | `a_close_token_in_a_list_is_seen` |
+| a body **longer** than its `Content-Length` (the extra bytes are the next message) | `a_body_longer_than_its_length_is_cut_to_the_length` |
 
 ## 4. What is *not* parsed, deliberately
 
