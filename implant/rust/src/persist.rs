@@ -37,6 +37,13 @@ use crate::upk::{self, Value};
 /// The state file holds what the beacon installed on this host.
 const STATE_FILE: &str = "persist.state";
 
+/// The directory under the user's home that holds it.
+///
+/// The same directory holds the staged copy of the implant that the older
+/// entries point at, so its permissions are not cosmetic: whoever can read it
+/// can read what is installed and where (`docs/PERSIST-STATE.md`).
+const STATE_DIR: &str = ".umbra";
+
 /// The techniques the manager knows.
 ///
 /// Every entry carries the metadata an operator needs before it picks one:
@@ -102,6 +109,7 @@ pub fn catalogue() -> &'static [Technique] {
 }
 
 /// One installed technique.
+#[derive(Debug)]
 pub struct Entry {
     pub technique: String,
     pub name: String,
@@ -472,20 +480,54 @@ fn state_path() -> PathBuf {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."))
     };
-    base.join(".umbra").join(STATE_FILE)
+    state_path_in(&base)
 }
 
-/// Read the entries the implant installed.
-fn load_entries() -> Vec<Entry> {
-    let path = state_path();
-    let raw = match fs::read(&path) {
+/// The state file under an explicit base directory.
+///
+/// The public path is computed from the environment; everything below it takes
+/// the base as an argument so that the tests can point it at a directory of
+/// their own.  A test that writes into the operator's home is not a test, it
+/// is a mistake with a delay.
+fn state_path_in(base: &Path) -> PathBuf {
+    base.join(STATE_DIR).join(STATE_FILE)
+}
+
+/// Why a state file could not be read.
+///
+/// The first version of this code answered every one of these with an empty
+/// list, which makes "the file says nothing was installed" and "the file could
+/// not be read" the same sentence -- and the second one is exactly the case in
+/// which the operator needs an answer.
+#[derive(Debug, PartialEq, Eq)]
+enum StateError {
+    /// There is no state file.  This is not a failure: nothing has been
+    /// installed on this host yet.
+    Missing,
+    /// The file is there and the operating system would not give it to us.
+    Io(String),
+    /// The file was read and is not a state file this build understands.
+    Corrupt(String),
+}
+
+impl std::fmt::Display for StateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateError::Missing => write!(f, "there is no state file"),
+            StateError::Io(e) => write!(f, "it could not be read: {e}"),
+            StateError::Corrupt(e) => write!(f, "it is not a state file this build can read: {e}"),
+        }
+    }
+}
+
+/// Read the entries from a state file at an explicit path.
+fn read_state_at(path: &Path) -> Result<Vec<Entry>, StateError> {
+    let raw = match fs::read(path) {
         Ok(raw) => raw,
-        Err(_) => return Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(StateError::Missing),
+        Err(e) => return Err(StateError::Io(e.to_string())),
     };
-    let value = match upk::decode_exact(&raw) {
-        Ok(value) => value,
-        Err(_) => return Vec::new(),
-    };
+    let value = upk::decode_exact(&raw).map_err(|e| StateError::Corrupt(e.to_string()))?;
     let mut out = Vec::new();
     if let Value::Map(fields) = value {
         if let Some(Value::Arr(items)) = fields.get("entries") {
@@ -505,7 +547,20 @@ fn load_entries() -> Vec<Entry> {
             }
         }
     }
-    out
+    Ok(out)
+}
+
+/// Read the entries the implant installed.
+///
+/// A file that cannot be read is still reported as "nothing installed" by this
+/// function, which is the behaviour every caller had before the reader was
+/// split out; the callers that must tell the difference call [`read_state_at`]
+/// themselves.
+fn load_entries() -> Vec<Entry> {
+    match read_state_at(&state_path()) {
+        Ok(entries) => entries,
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Write the entries back.
@@ -514,18 +569,27 @@ fn load_entries() -> Vec<Entry> {
 /// half by a power cut would make the implant forget what it installed, and
 /// that is exactly the case where the operator needs to know.
 fn save_entries(entries: &[Entry]) -> Result<(), String> {
-    let path = state_path();
+    save_entries_at(&state_path(), entries)
+}
+
+/// Write the entries to an explicit path.
+fn save_entries_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("persist: {e}"))?;
     }
+    let raw = encode_state(entries)?;
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, &raw).map_err(|e| format!("persist: {e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("persist: {e}"))?;
+    Ok(())
+}
+
+/// The bytes of a state file.
+fn encode_state(entries: &[Entry]) -> Result<Vec<u8>, String> {
     let items: Vec<Value> = entries.iter().map(entry_value).collect();
     let mut fields = std::collections::BTreeMap::new();
     fields.insert("entries".to_string(), upk::arr(items));
-    let raw = upk::encode(&Value::Map(fields)).map_err(|e| format!("persist: {e}"))?;
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &raw).map_err(|e| format!("persist: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("persist: {e}"))?;
-    Ok(())
+    upk::encode(&Value::Map(fields)).map_err(|e| format!("persist: {e}"))
 }
 
 /// The upk value of one entry.
@@ -1920,5 +1984,155 @@ mod win {
             return Err(format!("the key could not be opened ({status})"));
         }
         Ok(handle)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The tests
+// ---------------------------------------------------------------------------
+//
+// The state file is the only place the implant keeps a record of what it put on
+// the host, so the reader and the writer are tested against a directory of
+// their own: empty files, cut files, bytes that are not a state file, and the
+// case that matters most -- a write that fails and must leave the previous file
+// where it was.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A directory that deletes itself.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> TempDir {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "umbra-persist-{}-{}-{}-{}",
+                std::process::id(),
+                tag,
+                nanos,
+                n
+            ));
+            fs::create_dir_all(&path).expect("the test directory");
+            TempDir(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn state(&self) -> PathBuf {
+            state_path_in(&self.0)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn entry(technique: &str) -> Entry {
+        Entry {
+            technique: technique.to_string(),
+            name: "host-svc".to_string(),
+            trigger: "logon".to_string(),
+            location: format!("location of {technique}"),
+            detail: "detail".to_string(),
+            binary: "/home/host-svc".to_string(),
+            state: "installed".to_string(),
+            installed_at: "1700000000".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_state_file_round_trips_every_field() {
+        let dir = TempDir::new("round-trip");
+        let written = vec![entry("registry.run"), entry("startup")];
+        save_entries_at(&dir.state(), &written).expect("the write");
+        let read = read_state_at(&dir.state()).expect("the read");
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].technique, "registry.run");
+        assert_eq!(read[0].location, "location of registry.run");
+        assert_eq!(read[0].binary, "/home/host-svc");
+        assert_eq!(read[0].installed_at, "1700000000");
+        assert_eq!(read[1].technique, "startup");
+    }
+
+    #[test]
+    fn a_missing_file_is_reported_as_missing_not_as_corrupt() {
+        let dir = TempDir::new("missing");
+        assert!(matches!(
+            read_state_at(&dir.state()),
+            Err(StateError::Missing)
+        ));
+    }
+
+    #[test]
+    fn an_empty_file_is_corrupt() {
+        let dir = TempDir::new("empty");
+        save_entries_at(&dir.state(), &[]).expect("the write");
+        fs::write(dir.state(), b"").expect("the empty file");
+        match read_state_at(&dir.state()) {
+            Err(StateError::Corrupt(_)) => {}
+            other => panic!("an empty file is not a state file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cut_file_is_corrupt() {
+        let dir = TempDir::new("cut");
+        let entries = vec![entry("registry.run"), entry("startup")];
+        save_entries_at(&dir.state(), &entries).expect("the write");
+        let full = fs::read(dir.state()).expect("the bytes");
+        let cut = &full[..full.len() / 2];
+        fs::write(dir.state(), cut).expect("the cut file");
+        match read_state_at(&dir.state()) {
+            Err(StateError::Corrupt(_)) => {}
+            other => panic!("half a state file is not a state file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bytes_after_the_value_are_corrupt() {
+        let dir = TempDir::new("trailing");
+        save_entries_at(&dir.state(), &[entry("registry.run")]).expect("the write");
+        let mut bytes = fs::read(dir.state()).expect("the bytes");
+        bytes.push(0x00);
+        fs::write(dir.state(), &bytes).expect("the padded file");
+        match read_state_at(&dir.state()) {
+            Err(StateError::Corrupt(_)) => {}
+            other => panic!("trailing bytes are not a state file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_second_write_replaces_the_first_one() {
+        let dir = TempDir::new("replace");
+        save_entries_at(&dir.state(), &[entry("registry.run")]).expect("the first write");
+        save_entries_at(&dir.state(), &[entry("startup")]).expect("the second write");
+        let read = read_state_at(&dir.state()).expect("the read");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].technique, "startup");
+    }
+
+    #[test]
+    fn a_write_leaves_no_temporary_file_behind() {
+        let dir = TempDir::new("no-temp");
+        save_entries_at(&dir.state(), &[entry("registry.run")]).expect("the write");
+        let leftovers: Vec<String> = fs::read_dir(state_path_in(dir.path()).parent().unwrap())
+            .expect("the directory")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != STATE_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "the write left {leftovers:?} behind");
     }
 }
