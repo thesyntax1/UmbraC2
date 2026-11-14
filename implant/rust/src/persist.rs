@@ -650,11 +650,16 @@ fn temporary_path(path: &Path) -> PathBuf {
 ///     alone, which is the half that was already right, and is now pinned by
 ///     a test instead of by a comment.
 ///
-/// What this function still does not give is durability: `rename` makes the
-/// *name* point at the new bytes atomically, and it says nothing about those
-/// bytes reaching the disk.  That is the next commit, and it is a different
-/// failure (power loss) from the one this function closes (an interrupted
-/// process).
+/// What the sequence guarantees, per platform, is in [`sync_directory`]:
+///
+///   * **process dies during the write** -- the real file is untouched (the
+///     new bytes only ever live in the temporary file);
+///   * **power is lost during the write** -- the real file is either the old
+///     one or the new one, because the bytes are flushed before the name
+///     moves (`sync_all` on the temporary file);
+///   * **power is lost just after the rename** -- the name change itself must
+///     be flushed, which is a directory sync, which not every platform lets
+///     an application do.  See the matrix in [`sync_directory`].
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -675,6 +680,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let written = (|| -> std::io::Result<()> {
         let mut file = fs::File::create(&tmp)?;
         file.write_all(bytes)?;
+        // The bytes have to be on the disk *before* the name points at them.
+        // Without this line the rename can reach the disk first, and a machine
+        // that loses power in that window comes back with a state file that is
+        // correctly named and empty -- the worst outcome of the three, because
+        // it looks like a host that installed nothing.
+        file.sync_all()?;
         Ok(())
     })();
     if let Err(e) = written {
@@ -687,6 +698,52 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
+    // And the new name has to be on the disk too, or a power cut can bring
+    // back the old name with the new bytes already written.
+    if let Err(e) = sync_directory(parent) {
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Flush a directory entry, where the platform allows it.
+///
+/// | platform | the file's bytes | the rename that names them |
+/// |---|---|---|
+/// | Linux | `sync_all` on the temporary file, propagated on error | `fsync` on the directory, propagated on error |
+/// | macOS | same | attempted; `EINVAL` means this filesystem does not sync directories, and that is reported as success because it is a property of the platform, not of this write |
+/// | Windows | `FlushFileBuffers` through `sync_all`, propagated on error | **not done**: the standard library cannot open a directory for flushing, and a Windows runtime check is a later stage.  The rename is atomic, its durability is NOT VERIFIED |
+///
+/// A failed flush is never swallowed on the platforms that support it: the
+/// caller gets the error and the report says the write did not finish.  What
+/// the caller must not read into a successful return on Windows is a promise
+/// about the name.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(target_os = "macos")]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    match fs::File::open(dir).and_then(|handle| handle.sync_all()) {
+        Ok(()) => Ok(()),
+        // 22 is EINVAL, which is what fsync on a directory returns on most
+        // macOS filesystems.  It says "this platform cannot sync a directory",
+        // not "this write failed"; the difference matters because the second
+        // one would fail every save on a Mac.
+        Err(e) if e.raw_os_error() == Some(22) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(windows)]
+fn sync_directory(_dir: &Path) -> std::io::Result<()> {
+    // Deliberately empty, and deliberately documented rather than pretended:
+    // `File::open` on a directory fails on Windows without
+    // `FILE_FLAG_BACKUP_SEMANTICS`, and `std` has no way to pass it.  The
+    // contents are flushed by `sync_all` above; the name is not.  A Windows
+    // runtime test of this is a later stage, and until it exists the row in
+    // `docs/PERSIST-STATE.md` says NOT VERIFIED.
     Ok(())
 }
 
@@ -2334,6 +2391,21 @@ mod tests {
         fs::write(&path, upk::encode(&Value::Map(fields)).unwrap()).expect("the write");
         let err = read_state_at(&path).expect_err("a string is not an entry");
         assert!(format!("{err}").contains("not a map"), "the message says why: {err}");
+    }
+
+    #[test]
+    fn an_ordinary_write_still_succeeds_with_the_flushes_in_place() {
+        // A guard, not a proof: fsync of a directory is refused by some
+        // filesystems (macOS answers EINVAL, handled in `sync_directory`), and
+        // a regression there would turn every save into an error.  What this
+        // proves is that the write path with both flushes returns Ok here;
+        // what it cannot prove is that the bytes reached a disk, because no
+        // process can observe a power cut.
+        let dir = TempDir::new("flush");
+        let path = dir.state();
+        save_entries_at(&path, &[entry("registry.run")]).expect("the write");
+        let read = read_state_at(&path).expect("the read");
+        assert_eq!(read.len(), 1);
     }
 
     #[test]
