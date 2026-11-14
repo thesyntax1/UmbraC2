@@ -13,9 +13,11 @@
     <!-- The alarm that wakes the service when the system killed it needs the
          permission to schedule an exact alarm. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!-- The guide of the phone asks the user to let the implant run without
-         the battery optimisation; the screen that asks for it needs this. -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- The guide of the phone used to ask for the battery exemption with the
+         one-tap dialog, which needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS.  It
+         now opens the list of exempt applications instead (see
+         Vendor.steps), so the permission is gone: the list screen needs none,
+         and this one is a Play policy restriction.  Nothing else used it. -->
 
     <!-- The senses of the phone.  Every one of these is a permission the
          user of the phone grants, and the guide of the host says which of
@@ -31,7 +33,10 @@
     <uses-permission android:name="android.permission.RECEIVE_MMS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- READ_PHONE_STATE is gone with the number it guarded: Lab.kt no longer
+         reads line1Number, and getPhoneType needs no permission.  The count
+         of the permissions the user is asked for is one shorter, and the
+         report no longer has a field that could only ever say "unknown". -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- The public uninstall API (PackageInstaller.uninstall) documents

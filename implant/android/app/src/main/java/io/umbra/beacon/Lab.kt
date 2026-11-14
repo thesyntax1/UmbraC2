@@ -31,7 +31,12 @@ import java.io.File
  * operator decides what to do with it.
  */
 object Lab {
-    /** The number the android simulator gives to every installation. */
+    /**
+     * The number the android simulator gives to every installation.
+     *
+     * Kept as the record of what the number looks like.  The implant does
+     * not read the number of the phone; see the radio block of [simulator].
+     */
     const val SIMULATOR_NUMBER = "15555215554"
 
     /**
@@ -41,7 +46,7 @@ object Lab {
      * read the subscriber id: that needs READ_PRIVILEGED_PHONE_STATE, which
      * a user-installed application never holds, and a test of "is this the
      * simulator's id" against a value that can never be read is a test of
-     * nothing.  The build strings and the number above carry the check.
+     * nothing.  The build strings carry the check.
      */
     const val SIMULATOR_SUBSCRIBER = "310260000000000"
 
@@ -214,32 +219,20 @@ object Lab {
         // ---- the radio ---------------------------------------------------
         val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
         if (telephony != null) {
-            // READ_PHONE_STATE is a permission the user of the phone grants
-            // at run time; the subscriber id needs READ_PRIVILEGED_PHONE_STATE,
-            // which only a system application can hold.  Both answers are
-            // recorded as what they are, and neither is guessed.
-            val number: String? = try {
-                telephony.line1Number
-            } catch (e: SecurityException) {
-                // Not granted: the field stays unknown, and the list of the
-                // permissions in the report says which one is missing.
-                null
-            } catch (t: Exception) {
-                // The radio refused: the same answer, for another reason.
-                null
-            }
-            // getSubscriberId needs READ_PRIVILEGED_PHONE_STATE, which is
-            // signature|privileged: no application that a user installs can
-            // hold it, so the call would only ever throw.  It is not made,
-            // and the answer is the one it always produced -- unknown.  The
-            // identifiers of a simulator are still caught by the number
-            // above and by the build strings further down.
-            sensors["line1"] = number ?: "unknown"
+            // Neither the number of the phone nor the subscriber id is
+            // read.  Both are hardware identifiers, both need a permission,
+            // and the second needs READ_PRIVILEGED_PHONE_STATE, which no
+            // application a user installs can hold, so that call could only
+            // ever throw.  The first is worse than useless: on an Android
+            // this APK installs on it comes back null or empty even when
+            // READ_PHONE_STATE is granted, so the check for the simulator's
+            // number would have fired on nothing -- while on the one phone
+            // where the field is filled, reading it takes the owner's own
+            // number for a test that twelve other signals already carry.
+            // "unknown" is this report's word for "not read", and the list
+            // of the permissions in the report says what is missing.
+            sensors["line1"] = "unknown"
             sensors["subscriber"] = "unknown"
-            if (number == SIMULATOR_NUMBER) {
-                reasons.add("the number of the phone is the number of the simulator")
-                score += 3
-            }
             val phoneType = try {
                 telephony.phoneType
             } catch (_: Throwable) {
