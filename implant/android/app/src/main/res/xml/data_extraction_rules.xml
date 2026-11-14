@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nothing this application stores leaves the phone.
+
+     The implant keeps its state in its own files directory: the watch log,
+     the remote configuration, the overlay queue and, once a beacon has been
+     paired, the wrapped device keys and the host it answers.  None of that
+     belongs on a new phone, and none of it belongs in a cloud account: a
+     restore would put an operator's device identity onto a phone that is
+     not theirs, and it would do so silently.
+
+     android:allowBackup="false" is still set and still means "no backup" on
+     Android 11 and lower.  From Android 12 on it is no longer enough: the
+     platform added device-to-device transfer, which is a separate path from
+     cloud backup, and on some manufacturers' builds allowBackup=false does
+     not close it.  This file is the second lock, and it is written the long
+     way round on purpose:
+
+       * both modes are named, because a missing device-transfer section
+         means that mode is fully enabled (Android's own documentation says
+         so), so leaving it out would be the opposite of what the comment
+         above claims;
+       * every domain is excluded with ".", not just the one directory this
+         version of the code happens to write to, so that a later change
+         that starts writing to databases/ or to the device-protected
+         storage does not silently open a door this file was meant to keep
+         shut;
+       * there is no include anywhere.  An include would redefine the whole
+         set ("only the files specified"), and that is not a list this
+         project wants to maintain.
+
+     minSdk is 33, so dataExtractionRules is read by every device this APK
+     accepts; the older fullBackupContent file is not needed and is not
+     declared.  cross-platform-transfer (the iOS migration mode) is not
+     declared either: it is not part of the two modes API 33 and 34 define.
+
+     What this file cannot do: it does not stop an operator from pulling the
+     state off a rooted phone with adb, and it does not encrypt anything.
+     It closes backup and transfer.  See docs/SECURITY.md for the rest. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>
