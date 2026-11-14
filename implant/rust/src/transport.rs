@@ -541,6 +541,15 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
     let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
     let mut lines = head.split("\r\n");
     let status_line = lines.next().unwrap_or("");
+    // The first line has to say what it is.  Without this check any three
+    // words with a number in the middle were a status line, so a peer that
+    // was not speaking HTTP at all could be read as one that answered.
+    if !status_line.starts_with("HTTP/1.") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("not an http/1.x response: {status_line:?}"),
+        ));
+    }
     let status: u16 = status_line
         .split_whitespace()
         .nth(1)
@@ -580,7 +589,11 @@ fn read_http_response<R: Read>(r: &mut R) -> io::Result<(u16, Vec<u8>, bool)> {
             chunked = true;
         }
         if let Some(v) = lower.strip_prefix("connection:") {
-            close = v.trim() == "close";
+            // A list, not a word: "keep-alive, close" is what a peer sends
+            // when it is finishing, and comparing the whole value with
+            // "close" missed it -- so the next request went to a socket the
+            // peer had already decided to close.
+            close = v.split(',').any(|token| token.trim() == "close");
         }
     }
     if chunked && content_length.is_some() {
@@ -827,6 +840,45 @@ mod tests {
         );
         assert_eq!(kind, io::ErrorKind::InvalidData);
         assert!(message.contains("both"), "{message}");
+    }
+
+    #[test]
+    fn a_status_line_that_does_not_say_http_is_refused() {
+        let (kind, message) = refuse(b"foo 200 bar\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("not an http"), "{message}");
+    }
+
+    #[test]
+    fn a_version_this_parser_does_not_speak_is_refused() {
+        let (kind, message) = refuse(b"HTTP/2 200\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("not an http"), "{message}");
+    }
+
+    #[test]
+    fn a_status_line_without_a_number_is_refused() {
+        let (kind, message) = refuse(b"HTTP/1.1 OK\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(kind, io::ErrorKind::InvalidData);
+        assert!(message.contains("bad status line"), "{message}");
+    }
+
+    #[test]
+    fn a_close_token_in_a_list_is_seen() {
+        // "keep-alive, close" means the peer is done after this response.
+        let raw =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive, close\r\n\r\n";
+        let (_, body, reusable) = parse(raw);
+        assert!(body.is_empty());
+        assert!(!reusable, "a socket the peer will close was reused");
+    }
+
+    #[test]
+    fn a_keep_alive_token_is_reusable() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok";
+        let (_, body, reusable) = parse(raw);
+        assert_eq!(body, b"ok");
+        assert!(reusable);
     }
 
     #[test]
