@@ -710,14 +710,22 @@ fn connect(addr: &str) -> Result<TcpStream, String> {
     Err(last)
 }
 
+/// The largest peer handshake message either side will send or accept.
+///
+/// The same number as `MAX_PEER_FRAME` in `operator/umbra_cli/peer.py:48` and
+/// `Peer.MAX_FRAME` in the Android port.  Rust used 1 MiB here, so a frame
+/// the other two would refuse was read without complaint: a document that is
+/// legal on one side of a link and illegal on the other is not a protocol.
+const MAX_PEER_FRAME: usize = 4096;
+
 /// Read one length-prefixed frame from a peer link.
-fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+fn read_frame<R: Read>(stream: &mut R) -> Result<Vec<u8>, String> {
     let mut len = [0u8; 4];
     stream
         .read_exact(&mut len)
         .map_err(|e| format!("read length: {e}"))?;
     let n = u32::from_be_bytes(len) as usize;
-    if n == 0 || n > 1 << 20 {
+    if n == 0 || n > MAX_PEER_FRAME {
         return Err("peer frame length out of range".to_string());
     }
     let mut buf = vec![0u8; n];
@@ -728,7 +736,12 @@ fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
 }
 
 /// Write one length-prefixed frame to a peer link.
-fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
+fn write_frame<W: Write>(stream: &mut W, payload: &[u8]) -> Result<(), String> {
+    // The limit is the same on both sides of the link, so a payload this
+    // side would not accept is not one it sends.
+    if payload.is_empty() || payload.len() > MAX_PEER_FRAME {
+        return Err("peer frame length out of range".to_string());
+    }
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
         .map_err(|e| format!("write length: {e}"))?;
@@ -815,6 +828,31 @@ mod tests {
                 .collect();
             assert_eq!(hex, case["hex"].as_str().expect("hex"), "{name}");
         }
+    }
+
+    #[test]
+    fn a_peer_frame_is_bounded_on_both_sides_of_the_link() {
+        // Reading: a length prefix over the limit is refused before a byte of
+        // the payload is allocated.
+        let mut too_big = std::io::Cursor::new(((MAX_PEER_FRAME + 1) as u32).to_be_bytes().to_vec());
+        assert!(read_frame(&mut too_big).is_err(), "an oversized frame was read");
+        let mut zero = std::io::Cursor::new(0u32.to_be_bytes().to_vec());
+        assert!(read_frame(&mut zero).is_err(), "a zero-length frame was read");
+
+        // Writing: the same limit, so this side cannot send what it refuses.
+        let mut out: Vec<u8> = Vec::new();
+        assert!(write_frame(&mut out, &vec![0u8; MAX_PEER_FRAME + 1]).is_err());
+        assert!(write_frame(&mut out, &[]).is_err());
+        assert!(out.is_empty(), "a refused write wrote bytes");
+        assert!(write_frame(&mut out, &vec![0u8; MAX_PEER_FRAME]).is_ok());
+        assert_eq!(out.len(), 4 + MAX_PEER_FRAME);
+    }
+
+    #[test]
+    fn the_peer_frame_limit_is_the_shared_one() {
+        // The number is the contract, not an implementation detail: it is
+        // 4096 in peer.py and in Peer.kt as well.
+        assert_eq!(MAX_PEER_FRAME, 4096);
     }
 
     #[test]
