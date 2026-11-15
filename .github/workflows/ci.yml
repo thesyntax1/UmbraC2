@@ -49,8 +49,13 @@ jobs:
           python tools/audit_matrix.py --check --strict
           python tools/audit_matrix.py --write docs/VERIFICATION.md
           git diff --exit-code -- docs/VERIFICATION.md
+      # ci_tail lifts the failing lines into annotations: the job log lives on
+      # a blob host this repository's own network cannot reach, so a red run
+      # without annotations is an exit code and a guess.  One intermittent
+      # failure in this suite was diagnosed as "some test failed" before this
+      # wrapper existed.
       - name: protocol vectors + end-to-end against the mock server
-        run: python -m pytest tests -q
+        run: sh scripts/ci_tail.sh python -m pytest tests -q --tb=short
       - name: vectors are reproducible
         run: |
           python tools/gen_vectors.py
