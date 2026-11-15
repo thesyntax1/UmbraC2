@@ -499,7 +499,7 @@ class Beacon(
                     log("task $id cancelled by operator")
                 }
                 Wire.MSG_TASK_BATCH -> {
-                    batch = body
+                    batch = taskBatch(body)
                     break
                 }
                 Wire.MSG_KILL -> {
@@ -513,8 +513,9 @@ class Beacon(
 
         val batchBody = batch ?: throw SessionException("no TASK_BATCH received")
         // Server-side policy wins over the compiled-in cadence.
-        batchBody.field("sleep")?.long()?.let { sleep = it.coerceIn(1, 86400) }
-        batchBody.field("jitter")?.long()?.let { jitter = it.toInt().coerceIn(0, 90) }
+        val (newSleep, newJitter) = policyFrom(batchBody, sleep, jitter)
+        sleep = newSleep
+        jitter = newJitter
         batchBody.field("obf")?.flag()?.let { sleepObfuscate = it }
         // The route of the agent travels with the batch: the beacon learns
         // which transport it speaks and in which order it may fall back.
@@ -683,3 +684,46 @@ data class BeaconConfig(
      */
     val peerListen: String = "",
 )
+
+// ---------------------------------------------------------------------------
+// Batch policy
+//
+// Two rules that a `TASK_BATCH` is read by, kept out of the cycle so they can
+// be tested with a document and no session.  They are the same rules as
+// `policy_from` and `task_batch` in implant/rust/src/beacon.rs, and
+// docs/SCHEMA-CONFORMANCE.md findings 6-9 are why they exist.
+// ---------------------------------------------------------------------------
+
+/** The protocol's cadence range (docs/PROTOCOL.md §7.3, `hub.go:1119`). */
+internal const val MIN_SLEEP = 1L
+internal const val MAX_SLEEP = 86400L
+internal const val MAX_JITTER = 90L
+
+/**
+ * The cadence a batch asks for, given the one already in force.
+ *
+ * A value outside the range is **ignored**, not clamped.  The port used to
+ * clamp -- `sleep: 0` became a one second beacon, which is the opposite of
+ * what a zero means to anyone reading the message -- while Rust applied any
+ * value above zero and refused the 25 hour one.  Ignoring a value the
+ * protocol does not allow leaves the beacon on the interval the operator
+ * last asked for, and both ports now do that.
+ */
+internal fun policyFrom(batch: Upk, sleep: Long, jitter: Int): Pair<Long, Int> {
+    val wantSleep = batch.field("sleep")?.long() ?: sleep
+    val newSleep = if (wantSleep in MIN_SLEEP..MAX_SLEEP) wantSleep else sleep
+    val wantJitter = batch.field("jitter")?.long() ?: jitter.toLong()
+    val newJitter = if (wantJitter in 0L..MAX_JITTER) wantJitter.toInt() else jitter
+    return newSleep to newJitter
+}
+
+/**
+ * The body of a `TASK_BATCH`, which has to be a map.
+ *
+ * A batch whose body is an array used to be read as a batch with no tasks:
+ * every field lookup missed and every default applied, so a broken message
+ * became a valid empty one.  The reference (`wire.decode_body`) refuses a
+ * non-map body, and so does this.
+ */
+internal fun taskBatch(body: Upk): Upk.MapV =
+    body as? Upk.MapV ?: throw SessionException("TASK_BATCH is not a map")

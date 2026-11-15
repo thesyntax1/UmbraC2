@@ -46,6 +46,157 @@
     "prefix": "1cd02ec3"
   },
   "documents": {
+    "batch_not_a_map": {
+      "expect": "reject",
+      "hex": "0803030103020303",
+      "json": [
+        1,
+        2,
+        3
+      ]
+    },
+    "batch_policy": [
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 20,
+          "sleep": 60
+        },
+        "hex": "090206066a697474657203140605736c656570033c",
+        "json": {
+          "jitter": 20,
+          "sleep": 60
+        },
+        "name": "in-range"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 0,
+          "sleep": 1
+        },
+        "hex": "090206066a697474657203000605736c6565700301",
+        "json": {
+          "jitter": 0,
+          "sleep": 1
+        },
+        "name": "boundaries"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 90,
+          "sleep": 86400
+        },
+        "hex": "090206066a6974746572035a0605736c6565700380a305",
+        "json": {
+          "jitter": 90,
+          "sleep": 86400
+        },
+        "name": "upper-boundaries"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "hex": "09010605736c6565700300",
+        "json": {
+          "sleep": 0
+        },
+        "name": "sleep-zero",
+        "why": "a zero is not one second: the value is ignored"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "hex": "09010605736c6565700390bf05",
+        "json": {
+          "sleep": 90000
+        },
+        "name": "sleep-too-large",
+        "why": "25 hours is outside the protocol range"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "hex": "090106066a6974746572035b",
+        "json": {
+          "jitter": 91
+        },
+        "name": "jitter-too-large"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "hex": "090106066a6974746572038580808010",
+        "json": {
+          "jitter": 4294967301
+        },
+        "name": "jitter-wraps-u32",
+        "why": "2^32 + 5 used to truncate to 5 and be accepted"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "hex": "09010605736c65657006023630",
+        "json": {
+          "sleep": "60"
+        },
+        "name": "wrong-type",
+        "why": "a string is not a number; the default stays"
+      },
+      {
+        "base": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "expect": {
+          "jitter": 10,
+          "sleep": 30
+        },
+        "hex": "0900",
+        "json": {},
+        "name": "missing"
+      }
+    ],
     "peer_hello": [
       {
         "expect": "accept",

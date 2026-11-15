@@ -402,6 +402,14 @@ def main() -> None:
     #   Rust   implant/rust/src/tunnel.rs   parse_peer_hello
     #   Kotlin implant/android/.../Peer.kt  helloFrom
     #   Python operator/umbra_cli/peer.py   PeerHello.from_map
+    def policy_case(name: str, body: dict, after: tuple, why: str = "") -> dict:
+        case = {"name": name, "json": _jsonable(body), "hex": upk.encode(body).hex(),
+                "base": {"sleep": 30, "jitter": 10},
+                "expect": {"sleep": after[0], "jitter": after[1]}}
+        if why:
+            case["why"] = why
+        return case
+
     def peer_case(name: str, body: dict, expect: str, why: str = "") -> dict:
         case = {"name": name, "json": _jsonable(body), "hex": upk.encode(body).hex(),
                 "expect": expect}
@@ -448,6 +456,34 @@ def main() -> None:
             "err": "",
             "json": {"id": "t-1", "code": 0, "out": {"$bin": "6869"}, "err": ""},
             "hex": upk.encode({"id": "t-1", "code": 0, "out": b"hi", "err": ""}).hex(),
+        },
+        # The cadence a batch asks for.  These are documents a *reader*
+        # applies to a state, so each case carries the state it starts from:
+        # "base" is the cadence in force before the batch is read, and the
+        # expectation is the cadence after.  Python has no reader for
+        # TASK_BATCH (the console is the sender, over JSON) and only checks
+        # that the bytes encode; the Rust and Android beacons apply the rule.
+        "batch_policy": [
+            policy_case("in-range", {"sleep": 60, "jitter": 20}, (60, 20)),
+            policy_case("boundaries", {"sleep": 1, "jitter": 0}, (1, 0)),
+            policy_case("upper-boundaries", {"sleep": 86400, "jitter": 90}, (86400, 90)),
+            policy_case("sleep-zero", {"sleep": 0}, (30, 10),
+                        "a zero is not one second: the value is ignored"),
+            policy_case("sleep-too-large", {"sleep": 90000}, (30, 10),
+                        "25 hours is outside the protocol range"),
+            policy_case("jitter-too-large", {"jitter": 91}, (30, 10)),
+            policy_case("jitter-wraps-u32", {"jitter": 4294967301}, (30, 10),
+                        "2^32 + 5 used to truncate to 5 and be accepted"),
+            policy_case("wrong-type", {"sleep": "60"}, (30, 10),
+                        "a string is not a number; the default stays"),
+            policy_case("missing", {}, (30, 10)),
+        ],
+        # A batch whose body is not a map.  The reference refuses it; both
+        # implants used to read it as a batch with no tasks.
+        "batch_not_a_map": {
+            "json": [1, 2, 3],
+            "hex": upk.encode([1, 2, 3]).hex(),
+            "expect": "reject",
         },
         "result_error": {
             "task_id": "t-2",

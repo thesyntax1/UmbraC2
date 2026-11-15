@@ -1,5 +1,6 @@
 package io.umbra.beacon
 
+import java.math.BigInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -89,6 +90,41 @@ class DocumentTest {
             case["hex"],
             Upk.encode(outcome.toValue(case["task_id"] as String)).toHex(),
         )
+    }
+
+    @Test
+    @Suppress("UNCHECKED_CAST")
+    fun theBatchCadenceIsReadAsTheSchemaSays() {
+        val cases = documents["batch_policy"] as List<Map<String, Any?>>
+        assertTrue("the policy vectors are missing", cases.isNotEmpty())
+        for (case in cases) {
+            val name = case["name"] as String
+            val base = case["base"] as Map<String, Any?>
+            val baseSleep = (base["sleep"] as BigInteger).toLong()
+            val baseJitter = (base["jitter"] as BigInteger).toInt()
+            val body = Upk.decode(hexToBytes(case["hex"] as String))
+            val (sleep, jitter) = policyFrom(body, baseSleep, baseJitter)
+            val expect = case["expect"] as Map<String, Any?>
+            assertEquals("$name: sleep", (expect["sleep"] as BigInteger).toLong(), sleep)
+            assertEquals("$name: jitter", (expect["jitter"] as BigInteger).toInt(), jitter)
+        }
+    }
+
+    @Test
+    fun aBatchThatIsNotAMapIsRefused() {
+        val case = documents["batch_not_a_map"] as Map<String, Any?>
+        assertEquals("reject", case["expect"])
+        val body = Upk.decode(hexToBytes(case["hex"] as String))
+        try {
+            taskBatch(body)
+            fail("a batch whose body is an array was accepted")
+        } catch (e: SessionException) {
+            assertEquals("TASK_BATCH is not a map", e.message)
+        }
+        // ... and a real batch is untouched by the rule.
+        val batch = taskBatch(Upk.map("tasks" to Upk.Arr(emptyList())))
+        assertEquals(1, batch.entries.size)
+        assertEquals(0, (batch.entries["tasks"] as Upk.Arr).items.size)
     }
 
     @Test

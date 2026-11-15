@@ -104,3 +104,27 @@ def test_the_peer_frame_limit_is_the_shared_one():
     this test can decide on its own -- so it pins this side only.
     """
     assert peer.MAX_PEER_FRAME == 4096
+
+
+def test_the_batch_vectors_are_the_bytes_this_encoder_writes():
+    """Python encodes a ``TASK_BATCH`` but does not read one.
+
+    The console is the sender: it hands the kind and the arguments to the
+    server as JSON, and the server builds the document.  So the batch is a
+    two-language contract (Rust and Kotlin read it) and this test can only
+    prove that the bytes in the vectors are the bytes the reference encoder
+    produces -- which is the half Python owns.
+    """
+    for case in VECTORS["documents"]["batch_policy"]:
+        body = _from_json(case["json"])
+        assert upk.encode(body).hex() == case["hex"], case["name"]
+        assert upk.decode_exact(bytes.fromhex(case["hex"])) == body
+
+
+def test_a_batch_vector_is_a_map_and_the_other_is_not():
+    # The reader's rule is "a batch body is a map"; the vector that exercises
+    # the refusal has to actually not be one, or the test would prove nothing.
+    for case in VECTORS["documents"]["batch_policy"]:
+        assert isinstance(upk.decode_exact(bytes.fromhex(case["hex"])), dict), case["name"]
+    not_a_map = VECTORS["documents"]["batch_not_a_map"]
+    assert not isinstance(upk.decode_exact(bytes.fromhex(not_a_map["hex"])), dict)

