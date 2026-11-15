@@ -1,0 +1,3 @@
+Allow Umbra Beacon to send you notifications?
+Allow
+Don’t allow

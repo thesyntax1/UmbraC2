@@ -1,0 +1,6 @@
+  PARTIAL_WAKE_LOCK              '*telephony-radio*' ACQ=-55s111ms (uid=1001 pid=1021 ws=WorkSource{1001 com.android.phone})
+  PARTIAL_WAKE_LOCK              '*job*/com.google.android.dialer/com.android.voicemail.impl.scheduling.TaskSchedulerJobService#200' ACQ=-1m32s331ms LONG (uid=1000 pid=486 ws=WorkSource{10110 com.google.android.dialer})
+  PARTIAL_WAKE_LOCK              '*job*/com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService#-290' ACQ=-11s775ms (uid=1000 pid=486 ws=WorkSource{10118 com.google.android.googlequicksearchbox})
+  PARTIAL_WAKE_LOCK              '*job*/com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService#-294' ACQ=-11s765ms (uid=1000 pid=486 ws=WorkSource{10118 com.google.android.googlequicksearchbox})
+  PARTIAL_WAKE_LOCK              '*job*/com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService#-1000006' ACQ=-10s719ms (uid=1000 pid=486 ws=WorkSource{10118 com.google.android.googlequicksearchbox})
+  PARTIAL_WAKE_LOCK              'umbra:beacon' ACQ=-8s448ms (uid=10174 pid=3682)

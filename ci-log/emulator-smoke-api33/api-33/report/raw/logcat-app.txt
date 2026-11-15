@@ -1,0 +1,382 @@
+11-15 10:11:33.450   486  1119 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 2000
+11-15 10:11:33.779   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{a5e68dc com.google.android.partnersetup/10103} BLOCKED
+11-15 10:11:33.832   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{44ddde5 com.android.remoteprovisioner/10150} BLOCKED
+11-15 10:11:33.834   486   840 D CoreBackPreview: Window{3539657 u0 Splash Screen io.umbra.beacon}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@2e170ba, mPriority=0}
+11-15 10:11:34.066  3682  3682 I io.umbra.beacon: Late-enabling -Xcheck:jni
+11-15 10:11:34.079   486   523 I ActivityManager: Start proc 3682:io.umbra.beacon/u0a174 for next-top-activity {io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-15 10:11:34.639  3682  3682 I io.umbra.beacon: Using CollectorTypeCC GC.
+11-15 10:11:34.640  3682  3682 W io.umbra.beacon: Unexpected CPU variant for x86: x86_64.
+11-15 10:11:34.640  3682  3682 W io.umbra.beacon: Known variants: atom, sandybridge, silvermont, kabylake, default
+11-15 10:11:34.844  1021  1021 D CarrierSvcBindHelper: onPackageAdded: io.umbra.beacon
+11-15 10:11:34.851  1021  1021 D CarrierSvcBindHelper: onPackageModified: io.umbra.beacon
+11-15 10:11:34.991  3682  3682 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:11:34.991  3682  3682 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:11:35.024  3682  3682 D nativeloader: Configuring classloader-namespace for other apk /data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/lib/x86_64:/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/io.umbra.beacon
+11-15 10:11:35.034  3682  3682 V GraphicsEnvironment: ANGLE Developer option for 'io.umbra.beacon' set to: 'default'
+11-15 10:11:35.035  3682  3682 V GraphicsEnvironment: ANGLE GameManagerService for io.umbra.beacon: false
+11-15 10:11:35.424   486   838 D CoreBackPreview: Window{2661587 u0 io.umbra.beacon/io.umbra.beacon.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@61c20dd, mPriority=0}
+11-15 10:11:36.017  1021  1021 D ImsResolver: maybeAddedImsService, packageName: io.umbra.beacon
+11-15 10:11:36.163  1021  1021 D ImsResolver: maybeAddedImsService, packageName: io.umbra.beacon
+11-15 10:11:36.627   486   708 D CoreBackPreview: Window{3539657 u0 Splash Screen io.umbra.beacon EXITING}: Setting back callback null
+11-15 10:11:36.639   486  1071 W InputManager-JNI: Input channel object '3539657 Splash Screen io.umbra.beacon (client)' was disposed without first being removed with the input manager!
+11-15 10:11:41.008  1096  3486 I FontLog : Package io.umbra.beacon has no metadata [CONTEXT service_id=132 ]
+11-15 10:11:41.108  1331  3863 I BlockstoreStorage: Clearing Blockstore Data for package io.umbra.beacon [CONTEXT service_id=258 ]
+11-15 10:11:41.403  1669  1669 I AiAiEcho: EchoSearch: AppFetcherImpl is initialized with [19] apps [time=2, reason=io.umbra.beacon is added]
+11-15 10:11:41.832   486  2640 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:11:42.165  3948  3948 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:42.193  3948  3948 I AndroidRuntime: Using default boot image
+11-15 10:11:42.193  3948  3948 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:42.485  3948  3948 D AndroidRuntime: Calling main entry com.android.commands.bmgr.Bmgr
+11-15 10:11:42.504  3948  3948 D AndroidRuntime: Shutting down VM
+11-15 10:11:43.637  4043  4043 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:43.667  4043  4043 I AndroidRuntime: Using default boot image
+11-15 10:11:43.667  4043  4043 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:43.746   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{a24a6ef com.google.android.settings.intelligence/10105} BLOCKED
+11-15 10:11:43.867  4043  4043 D AndroidRuntime: Calling main entry com.android.commands.bmgr.Bmgr
+11-15 10:11:43.890  4043  4043 D AndroidRuntime: Shutting down VM
+11-15 10:11:44.888  4189  4189 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:44.895  4189  4189 I AndroidRuntime: Using default boot image
+11-15 10:11:44.896  4189  4189 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:45.128  4189  4189 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:11:46.652  4189  4189 D AndroidRuntime: Shutting down VM
+11-15 10:11:48.077   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{a295c6f com.android.remoteprovisioner/10150} BLOCKED
+11-15 10:11:48.818  4547  4547 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:48.853  4547  4547 I AndroidRuntime: Using default boot image
+11-15 10:11:48.853  4547  4547 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:49.001  4547  4547 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:11:50.041  4547  4547 D AndroidRuntime: Shutting down VM
+11-15 10:11:52.113  4775  4775 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:52.118  4775  4775 I AndroidRuntime: Using default boot image
+11-15 10:11:52.118  4775  4775 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:52.298  4775  4775 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:11:53.374  4775  4775 D AndroidRuntime: Shutting down VM
+11-15 10:11:55.118   486  1071 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{475a694 com.google.android.settings.intelligence/10105} BLOCKED
+11-15 10:11:55.120   486  1071 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{ffa7132 com.google.android.settings.intelligence/10105} BLOCKED
+11-15 10:11:55.492  5049  5049 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:55.508  5049  5049 I AndroidRuntime: Using default boot image
+11-15 10:11:55.508  5049  5049 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:55.796  5049  5049 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:11:56.408   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{147dc8d com.google.android.setupwizard/10116} BLOCKED
+11-15 10:11:56.875  5049  5049 D AndroidRuntime: Shutting down VM
+11-15 10:11:58.468  4616  4616 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:11:58.682  5237  5237 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:11:58.840  5254  5254 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:11:58.845  5254  5254 I AndroidRuntime: Using default boot image
+11-15 10:11:58.845  5254  5254 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:11:58.954  5254  5254 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:11:59.988  5254  5254 D AndroidRuntime: Shutting down VM
+11-15 10:12:02.030  5308  5308 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:02.050  5308  5308 I AndroidRuntime: Using default boot image
+11-15 10:12:02.050  5308  5308 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:02.197  5308  5308 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:03.273  5308  5308 D AndroidRuntime: Shutting down VM
+11-15 10:12:05.324  5448  5448 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:05.342  5448  5448 I AndroidRuntime: Using default boot image
+11-15 10:12:05.342  5448  5448 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:05.588  5448  5448 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:07.037  5448  5448 D AndroidRuntime: Shutting down VM
+11-15 10:12:09.203  5545  5545 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:09.210  5545  5545 I AndroidRuntime: Using default boot image
+11-15 10:12:09.210  5545  5545 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:09.391  5545  5545 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:09.506   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{af2073 com.google.android.as/10119} BLOCKED
+11-15 10:12:10.582   486   545 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{84ccfc2 com.google.android.as/10119} BLOCKED
+11-15 10:12:10.639  5545  5545 D AndroidRuntime: Shutting down VM
+11-15 10:12:11.953   486  2395 I AppsFilter: interaction: PackageSetting{cf4f94f io.umbra.beacon/10174} -> PackageSetting{d241a95 com.google.android.settings.intelligence/10105} BLOCKED
+11-15 10:12:12.722  5735  5735 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:12.739  5735  5735 I AndroidRuntime: Using default boot image
+11-15 10:12:12.739  5735  5735 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:12.948  5735  5735 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:13.074  5548  5548 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:14.009  5735  5735 D AndroidRuntime: Shutting down VM
+11-15 10:12:15.734  5819  5819 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:16.090  5838  5838 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:16.105  5838  5838 I AndroidRuntime: Using default boot image
+11-15 10:12:16.105  5838  5838 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:16.304  5838  5838 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:17.350  5838  5838 D AndroidRuntime: Shutting down VM
+11-15 10:12:17.717  5866  5866 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:19.466  5916  5916 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:19.475  5916  5916 I AndroidRuntime: Using default boot image
+11-15 10:12:19.475  5916  5916 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:19.577  5916  5916 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:19.579  5932  5932 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:20.545  6141  6141 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:20.623  5916  5916 D AndroidRuntime: Shutting down VM
+11-15 10:12:20.626  5916  6178 I AndroidRuntime: NOTE: attach of thread 'binder:5916_3' failed
+11-15 10:12:22.544  6221  6221 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:22.546  6221  6221 I AndroidRuntime: Using default boot image
+11-15 10:12:22.546  6221  6221 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:22.613  6221  6221 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:22.925  6240  6240 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:23.641  6221  6221 D AndroidRuntime: Shutting down VM
+11-15 10:12:25.581  6399  6399 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:25.584  6399  6399 I AndroidRuntime: Using default boot image
+11-15 10:12:25.584  6399  6399 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:25.666  6399  6399 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:26.694  6399  6399 D AndroidRuntime: Shutting down VM
+11-15 10:12:26.696  6399  6435 I AndroidRuntime: NOTE: attach of thread 'binder:6399_3' failed
+11-15 10:12:26.745  6420  6420 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:26.912  6439  6439 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:26.983  6457  6457 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:27.031  6475  6475 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:27.130  6493  6493 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:28.583  6519  6519 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:28.585  6519  6519 I AndroidRuntime: Using default boot image
+11-15 10:12:28.585  6519  6519 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:28.649  6519  6519 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:29.134  6534  6534 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:29.482  6553  6553 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:29.664  6570  6570 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:29.669  6519  6519 D AndroidRuntime: Shutting down VM
+11-15 10:12:29.921  6588  6588 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.012  6608  6608 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.123  6626  6626 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.251  6643  6643 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.336  6661  6661 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.393  6679  6679 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.496  6697  6697 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.583  6718  6718 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.643  6736  6736 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.737  6753  6753 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.799  6771  6771 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.849  6789  6789 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.925  6807  6807 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:30.999  6825  6825 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:31.053  6843  6843 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:31.114  6861  6861 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:31.648  6883  6883 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:31.659  6883  6883 I AndroidRuntime: Using default boot image
+11-15 10:12:31.661  6883  6883 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:31.885  6883  6883 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:32.970  6883  6883 D AndroidRuntime: Shutting down VM
+11-15 10:12:33.185  6993  6993 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:33.256  7023  7023 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:33.318  7040  7040 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:34.871  7071  7071 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+11-15 10:12:34.873  7071  7071 I AndroidRuntime: Using default boot image
+11-15 10:12:34.873  7071  7071 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:34.942  7071  7071 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:35.981  7071  7071 D AndroidRuntime: Shutting down VM
+11-15 10:12:36.585  7090  7090 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:36.643  7107  7107 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:38.501  7164  7164 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:38.576  7183  7183 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:38.627  7201  7201 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:40.292  7245  7245 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:40.306  7245  7245 I AndroidRuntime: Using default boot image
+11-15 10:12:40.306  7245  7245 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:40.457  7245  7245 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:41.514  7245  7245 D AndroidRuntime: Shutting down VM
+11-15 10:12:42.385   486  2180 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:12:45.501  7310  7310 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:45.503  7310  7310 I AndroidRuntime: Using default boot image
+11-15 10:12:45.503  7310  7310 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:45.569  7310  7310 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:46.587  7310  7310 D AndroidRuntime: Shutting down VM
+11-15 10:12:47.468  7328  7328 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:47.470  7328  7328 I AndroidRuntime: Using default boot image
+11-15 10:12:47.470  7328  7328 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:47.547  7328  7328 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:48.558  7328  7328 D AndroidRuntime: Shutting down VM
+11-15 10:12:49.977  7351  7351 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:50.043  7369  7369 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:50.111  7386  7386 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:50.173  7403  7403 I AndroidRuntime: VM exiting with result code 0, cleanup skipped.
+11-15 10:12:50.440   486  1401 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:12:50.575  7433  7433 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:50.585  7433  7433 I AndroidRuntime: Using default boot image
+11-15 10:12:50.585  7433  7433 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:50.728  7433  7433 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:51.955  7433  7433 D AndroidRuntime: Shutting down VM
+11-15 10:12:53.809   486  2647 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:12:53.896  7518  7518 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:53.898  7518  7518 I AndroidRuntime: Using default boot image
+11-15 10:12:53.898  7518  7518 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:53.969  7518  7518 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:54.986  7518  7518 D AndroidRuntime: Shutting down VM
+11-15 10:12:56.834   486  2647 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:12:56.916  7541  7541 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:56.919  7541  7541 I AndroidRuntime: Using default boot image
+11-15 10:12:56.919  7541  7541 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:12:56.986  7541  7541 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:12:58.000  7541  7541 D AndroidRuntime: Shutting down VM
+11-15 10:12:59.863   486   840 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:12:59.938  7567  7567 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:12:59.941  7567  7567 I AndroidRuntime: Using default boot image
+11-15 10:12:59.941  7567  7567 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:00.025  7567  7567 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:01.045  7567  7567 D AndroidRuntime: Shutting down VM
+11-15 10:13:02.894   486  2647 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:02.972  7594  7594 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:02.974  7594  7594 I AndroidRuntime: Using default boot image
+11-15 10:13:02.975  7594  7594 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:03.040  7594  7594 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:04.058  7594  7594 D AndroidRuntime: Shutting down VM
+11-15 10:13:05.996   486  2647 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:17.622   486  2647 I ActivityManager: Force stopping io.umbra.beacon appid=10174 user=0: from pid 7695
+11-15 10:13:17.626   486  2647 I ActivityManager: Killing 3682:io.umbra.beacon/u0a174 (adj 0): stop io.umbra.beacon due to from pid 7695
+11-15 10:13:17.631   486  2647 W ActivityTaskManager: Force removing ActivityRecord{5a4aa4a u0 io.umbra.beacon/.MainActivity} t9 f}}: app died, no saved state
+11-15 10:13:17.668   486  2647 W InputManager-JNI: Input channel object '2661587 io.umbra.beacon/io.umbra.beacon.MainActivity (client)' was disposed without first being removed with the input manager!
+11-15 10:13:17.710   486  1071 V ActivityManager: Got obituary of 3682:io.umbra.beacon
+11-15 10:13:17.719  1021  1021 D CarrierSvcBindHelper: onHandleForceStop: [io.umbra.beacon]
+11-15 10:13:19.734   486  2395 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:19.790   486   523 I ActivityManager: Start proc 7712:io.umbra.beacon/u0a174 for next-top-activity {io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-15 10:13:19.798  7712  7712 I io.umbra.beacon: Late-enabling -Xcheck:jni
+11-15 10:13:19.802   486  1138 D CoreBackPreview: Window{3842ecb u0 Splash Screen io.umbra.beacon}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@baf65c1, mPriority=0}
+11-15 10:13:20.136  7712  7712 I io.umbra.beacon: Using CollectorTypeCC GC.
+11-15 10:13:20.136  7712  7712 W io.umbra.beacon: Unexpected CPU variant for x86: x86_64.
+11-15 10:13:20.136  7712  7712 W io.umbra.beacon: Known variants: atom, sandybridge, silvermont, kabylake, default
+11-15 10:13:20.182  7712  7712 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:13:20.182  7712  7712 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:13:20.197  7712  7712 D nativeloader: Configuring classloader-namespace for other apk /data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/lib/x86_64:/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/io.umbra.beacon
+11-15 10:13:20.208  7712  7712 V GraphicsEnvironment: ANGLE Developer option for 'io.umbra.beacon' set to: 'default'
+11-15 10:13:20.208  7712  7712 V GraphicsEnvironment: ANGLE GameManagerService for io.umbra.beacon: false
+11-15 10:13:20.363   486  1138 D CoreBackPreview: Window{de5588f u0 io.umbra.beacon/io.umbra.beacon.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@6b16f25, mPriority=0}
+11-15 10:13:20.899   486   511 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:13:20.907   486   511 I ActivityTaskManager: Displayed io.umbra.beacon/.MainActivity: +1s160ms
+11-15 10:13:20.973   486  2395 W InputManager-JNI: Input channel object '3842ecb Splash Screen io.umbra.beacon (client)' was disposed without first being removed with the input manager!
+11-15 10:13:20.974   486  1071 D CoreBackPreview: Window{3842ecb u0 Splash Screen io.umbra.beacon EXITING}: Setting back callback null
+11-15 10:13:25.031  7819  7819 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:25.037  7819  7819 I AndroidRuntime: Using default boot image
+11-15 10:13:25.037  7819  7819 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:25.131  7819  7819 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:26.159  7819  7819 D AndroidRuntime: Shutting down VM
+11-15 10:13:28.025   486  1071 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:28.109  7849  7849 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:28.111  7849  7849 I AndroidRuntime: Using default boot image
+11-15 10:13:28.111  7849  7849 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:28.178  7849  7849 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:29.187  7849  7849 D AndroidRuntime: Shutting down VM
+11-15 10:13:31.036   486  1463 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:31.112  7872  7872 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:31.114  7872  7872 I AndroidRuntime: Using default boot image
+11-15 10:13:31.114  7872  7872 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:31.179  7872  7872 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:32.190  7872  7872 D AndroidRuntime: Shutting down VM
+11-15 10:13:34.039   486   708 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:34.114  7905  7905 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:34.117  7905  7905 I AndroidRuntime: Using default boot image
+11-15 10:13:34.117  7905  7905 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:34.184  7905  7905 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:35.200  7905  7905 D AndroidRuntime: Shutting down VM
+11-15 10:13:37.052   486  1446 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:37.132  7929  7929 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:37.134  7929  7929 I AndroidRuntime: Using default boot image
+11-15 10:13:37.134  7929  7929 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:37.197  7929  7929 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:38.222  7929  7929 D AndroidRuntime: Shutting down VM
+11-15 10:13:40.074   486  1993 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:40.154  7952  7952 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:13:40.156  7952  7952 I AndroidRuntime: Using default boot image
+11-15 10:13:40.156  7952  7952 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:13:40.221  7952  7952 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:13:41.233  7952  7952 D AndroidRuntime: Shutting down VM
+11-15 10:13:43.087   486  1071 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:13:46.175   486   506 I ActivityManager: Background started FGS: Allowed [callingPackage: com.android.shell; callingUid: 0; uidState: NONE; intent: Intent { cmp=io.umbra.beacon/.BeaconService }; code:SYSTEM_UID; tempAllowListReason:<null>; targetSdkVersion:34; callerTargetSdkVersion:33; startForegroundCount:0; bindFromPackage:null]
+11-15 10:15:26.450   486  2395 I ActivityManager: Process io.umbra.beacon (pid 7712) has died: fg  TOP 
+11-15 10:15:26.450   486  1119 I WindowManager: WIN DEATH: Window{de5588f u0 io.umbra.beacon/io.umbra.beacon.MainActivity}
+11-15 10:15:26.450   486  1119 W InputManager-JNI: Input channel object 'de5588f io.umbra.beacon/io.umbra.beacon.MainActivity (client)' was disposed without first being removed with the input manager!
+11-15 10:15:26.453   486  2395 W ActivityManager: Scheduling restart of crashed service io.umbra.beacon/.BeaconService in 1000ms for start-requested
+11-15 10:15:26.454   486  2395 W ActivityTaskManager: Force removing ActivityRecord{403fe8e u0 io.umbra.beacon/.MainActivity} t10}: app died, no saved state
+11-15 10:15:26.554   486   521 W ActivityManager: Rescheduling restart of crashed service io.umbra.beacon/.BeaconService in 9900ms for mem-pressure-event
+11-15 10:15:33.452   486   521 W ActivityManager: Rescheduling restart of crashed service io.umbra.beacon/.BeaconService in 0ms for mem-pressure-event
+11-15 10:15:33.459   486   523 I ActivityManager: Start proc 8292:io.umbra.beacon/u0a174 for service {io.umbra.beacon/io.umbra.beacon.BeaconService}
+11-15 10:15:33.462  8292  8292 I io.umbra.beacon: Late-enabling -Xcheck:jni
+11-15 10:15:33.483  8292  8292 I io.umbra.beacon: Using CollectorTypeCC GC.
+11-15 10:15:33.483  8292  8292 W io.umbra.beacon: Unexpected CPU variant for x86: x86_64.
+11-15 10:15:33.483  8292  8292 W io.umbra.beacon: Known variants: atom, sandybridge, silvermont, kabylake, default
+11-15 10:15:33.513  8292  8292 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:15:33.513  8292  8292 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:15:33.522  8292  8292 D nativeloader: Configuring classloader-namespace for other apk /data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/lib/x86_64:/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/io.umbra.beacon
+11-15 10:15:33.526  8292  8292 V GraphicsEnvironment: ANGLE Developer option for 'io.umbra.beacon' set to: 'default'
+11-15 10:15:33.526  8292  8292 V GraphicsEnvironment: ANGLE GameManagerService for io.umbra.beacon: false
+11-15 10:15:33.625  8314  8314 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:33.627  8314  8314 I AndroidRuntime: Using default boot image
+11-15 10:15:33.627  8314  8314 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:33.697  8314  8314 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:34.773  8314  8314 D AndroidRuntime: Shutting down VM
+11-15 10:15:36.645   486  1119 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:36.699   486  2395 D CoreBackPreview: Window{4178daa u0 Splash Screen io.umbra.beacon}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@6517538, mPriority=0}
+11-15 10:15:36.905   486  2395 D CoreBackPreview: Window{9df1d67 u0 io.umbra.beacon/io.umbra.beacon.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@13d1bbd, mPriority=0}
+11-15 10:15:37.638   486   511 W ziparchive: Unable to open '/data/app/~~0BerQX8y6n4xHh6j93u6Sw==/io.umbra.beacon-ywZU-zwmeQtkRn5bqCjRXw==/base.dm': No such file or directory
+11-15 10:15:37.640   486   511 I ActivityTaskManager: Displayed io.umbra.beacon/.MainActivity: +992ms
+11-15 10:15:37.765   486  1119 W InputManager-JNI: Input channel object '4178daa Splash Screen io.umbra.beacon (client)' was disposed without first being removed with the input manager!
+11-15 10:15:37.945  8347  8347 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:37.950  8347  8347 I AndroidRuntime: Using default boot image
+11-15 10:15:37.950  8347  8347 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:38.020  8347  8347 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:39.035  8347  8347 D AndroidRuntime: Shutting down VM
+11-15 10:15:40.886   486  1119 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:40.967  8370  8370 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:40.969  8370  8370 I AndroidRuntime: Using default boot image
+11-15 10:15:40.969  8370  8370 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:41.032  8370  8370 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:42.045  8370  8370 D AndroidRuntime: Shutting down VM
+11-15 10:15:43.923   486   708 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:44.005  8393  8393 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:44.007  8393  8393 I AndroidRuntime: Using default boot image
+11-15 10:15:44.007  8393  8393 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:44.073  8393  8393 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:45.086  8393  8393 D AndroidRuntime: Shutting down VM
+11-15 10:15:46.937   486   950 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:47.014  8416  8416 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:47.017  8416  8416 I AndroidRuntime: Using default boot image
+11-15 10:15:47.017  8416  8416 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:47.080  8416  8416 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:48.094  8416  8416 D AndroidRuntime: Shutting down VM
+11-15 10:15:49.966   486  2395 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:50.043  8440  8440 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:50.045  8440  8440 I AndroidRuntime: Using default boot image
+11-15 10:15:50.045  8440  8440 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:50.109  8440  8440 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:51.127  8440  8440 D AndroidRuntime: Shutting down VM
+11-15 10:15:52.999   486  1993 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:53.060   486  1993 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:15:55.137  8474  8474 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:15:55.140  8474  8474 I AndroidRuntime: Using default boot image
+11-15 10:15:55.140  8474  8474 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:15:55.203  8474  8474 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:15:56.217  8474  8474 D AndroidRuntime: Shutting down VM
+11-15 10:15:57.065   486   708 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:16:00.120  8503  8503 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:00.123  8503  8503 I AndroidRuntime: Using default boot image
+11-15 10:16:00.123  8503  8503 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:00.188  8503  8503 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:01.198  8503  8503 D AndroidRuntime: Shutting down VM
+11-15 10:16:02.084  8525  8525 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:02.086  8525  8525 I AndroidRuntime: Using default boot image
+11-15 10:16:02.086  8525  8525 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:02.150  8525  8525 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:03.161  8525  8525 D AndroidRuntime: Shutting down VM
+11-15 10:16:05.010   486  2395 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:16:05.093  8562  8562 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:05.096  8562  8562 I AndroidRuntime: Using default boot image
+11-15 10:16:05.096  8562  8562 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:05.160  8562  8562 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:06.183  8562  8562 D AndroidRuntime: Shutting down VM
+11-15 10:16:08.036   486  1993 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:16:08.110  8585  8585 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:08.112  8585  8585 I AndroidRuntime: Using default boot image
+11-15 10:16:08.112  8585  8585 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:08.176  8585  8585 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:09.185  8585  8585 D AndroidRuntime: Shutting down VM
+11-15 10:16:11.034   486  1066 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:16:11.119  8609  8609 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:11.121  8609  8609 I AndroidRuntime: Using default boot image
+11-15 10:16:11.121  8609  8609 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:11.186  8609  8609 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:12.207  8609  8609 D AndroidRuntime: Shutting down VM
+11-15 10:16:14.071   486  1401 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:16:14.158  8632  8632 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:14.161  8632  8632 I AndroidRuntime: Using default boot image
+11-15 10:16:14.161  8632  8632 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:14.234  8632  8632 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:15.250  8632  8632 D AndroidRuntime: Shutting down VM
+11-15 10:16:17.100   486   950 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0
+11-15 10:16:17.188  8656  8656 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 0 <<<<<<
+11-15 10:16:17.190  8656  8656 I AndroidRuntime: Using default boot image
+11-15 10:16:17.190  8656  8656 I AndroidRuntime: Leaving lock profiling enabled
+11-15 10:16:17.258  8656  8656 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+11-15 10:16:18.277  8656  8656 D AndroidRuntime: Shutting down VM
+11-15 10:16:20.138   486  1993 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=io.umbra.beacon/.MainActivity} from uid 0

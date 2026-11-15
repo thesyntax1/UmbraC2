@@ -1,0 +1,2 @@
+Starting service: Intent { cmp=io.umbra.beacon/.BeaconService }
+Starting service: Intent { cmp=io.umbra.beacon/.BeaconService }
