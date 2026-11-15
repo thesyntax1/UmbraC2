@@ -68,15 +68,17 @@ the reason, not an omission.
 
 ## 2. What was found
 
-Ten findings.  "Old behaviour" is what `25def19` does, read from the code and
-confirmed by the tests in this stage.  The last column is the state at this
-commit: findings 2–9 are **open** here and each is closed by its own commit,
-which also moves its case into the vectors; a row that still says *open* at
-the end of the stage is a row the stage did not close.
+Eleven findings.  "Old behaviour" is what `25def19` does, read from the code
+and confirmed by the tests in this stage.  The last column is the state at the
+end of the stage, and it names the commit that moved each row: finding 1 is
+`89f8b1f` (the tests exist at all), 2–4 are `d5704c3` (a hello of the wrong
+type), 5 is `bdb30b3` (one frame limit), 6–9 are `86ab6e1` (the batch body
+and the cadence).  A row that still says *open* at the end of the stage is a
+row the stage did not close, and there are two of them.
 
 | # | Surface | Old behaviour | Risk | New behaviour |
 |---|---|---|---|---|
-| 1 | Kotlin conformance tests | none existed: `implant/android/app/src/test` was absent, and CI ran `assembleDebug` only | the port that ships on a phone was the only implementation whose vectors were never executed; a divergent decoder would have been invisible | `VectorsTest` + `DocumentTest` read the same `contracts/vectors.json` on the JVM (this commit) |
+| 1 | Kotlin conformance tests | none existed: `implant/android/app/src/test` was absent, and CI ran `assembleDebug` only | the port that ships on a phone was the only implementation whose vectors were never executed; a divergent decoder would have been invisible | `VectorsTest` + `DocumentTest` read the same `contracts/vectors.json` on the JVM (`89f8b1f`) |
 | 2 | peer hello `pub`/`nonce`/`mac` given as a **string** | Rust `as_bin` (`upk.rs:44`) and Kotlin `bytes()` (`Upk.kt:297`) accept `Str`, so a 32-character string is a 32-byte key; Python `PeerHello.from_map` (`peer.py:70`) does `bytes(pub)` on it and raises `TypeError` | a peer that sends text where bytes are required authenticates in both implants and *crashes* the reference instead of being refused | **fixed** in `PEER-TYPES`: all three require `bin` for `pub`/`nonce`/`mac` and `str` for `id`, and refuse the rest with the protocol error.  Vectors `pub-as-text`, `id-a-number`, `empty-id`; tests `test_peer_hello_document_is_read_as_the_schema_says` (Python), `every_peer_hello_vector_is_read_as_the_schema_says` (Rust), `everyPeerHelloVectorIsReadAsTheSchemaSays` (Kotlin) |
 | 3 | peer hello `mac` of the wrong length | Rust never checks the length; the MAC comparison (`tunnel.rs`, `ct_eq`) fails for a different length, so the answer is "authentication failed" rather than "malformed" | a malformed document is reported as an authentication problem, which is the wrong thing to investigate | **fixed** in `PEER-TYPES`: a 31-byte or missing tag is `malformed peer hello`, not `authentication failed` (Rust now checks the length it never checked).  Vectors `short-mac`, `no-mac`; the same three tests |
 | 4 | peer hello `id` of the wrong type | Python `str(body.get("id",""))` turns `5` into `"5"` and `None` into `"None"`, so a numeric id becomes a non-empty identity; Rust and Kotlin default to `""` and refuse | three implementations disagree on whether a document is valid, decided by a coercion | **fixed** in `PEER-TYPES`: `5` is not `"5"` and `None` is not `"None"`; the id must be a `str` and non-empty.  Vector `id-a-number`, `empty-id`; the same three tests |
@@ -121,8 +123,31 @@ drift from the encoder):
 | `peer_hello/short-pub` | `pub` is 31 bytes | reject |
 | `peer_hello/long-nonce` | `nonce` is 17 bytes | reject |
 | `peer_hello/extra-field` | a field this build does not know | accept, ignored |
+| `peer_hello/id-a-number` | `id` is `5`, not `"5"` | reject (finding 2) |
+| `peer_hello/empty-id` | `id` is `""` | reject (finding 2) |
+| `peer_hello/pub-as-text` | a 32-character string where 32 bytes are required | reject (finding 3) |
+| `peer_hello/short-mac` | `mac` is 31 bytes | reject (finding 4) |
+| `peer_hello/no-mac` | the field is absent | reject (finding 4) |
 | `result` | `{id: t-1, code: 0, out: "hi", err: ""}` | exact bytes |
 | `result_error` | `{id: t-2, code: 125, err: "cancelled…"}` | exact bytes |
+| `batch_not_a_map` | a `TASK_BATCH` body of `[1, 2, 3]` | reject (finding 6) |
+| `batch_policy/*` (9) | a cadence to start from and one to expect | accept, see the table below |
+
+The nine cadence cases, because a reader without a state is not testable: each
+carries the `sleep`/`jitter` the beacon is already running (`base`, `30` and
+`10`) and the pair it must hold afterwards (`expect`):
+
+| Case | Body | Expected after | Why it is a case |
+|---|---|---|---|
+| `in-range` | `sleep: 60, jitter: 20` | `60` / `20` | the ordinary path |
+| `boundaries` | `sleep: 1, jitter: 0` | `1` / `0` | the low end is legal, not missing |
+| `upper-boundaries` | `sleep: 86400, jitter: 90` | `86400` / `90` | the high end is legal |
+| `sleep-zero` | `sleep: 0` | `30` / `10` | Kotlin turned this into a **one second** beacon |
+| `sleep-too-large` | `sleep: 90000` | `30` / `10` | Rust accepted it: a 25 hour nap |
+| `jitter-too-large` | `jitter: 91` | `30` / `10` | one above the ceiling |
+| `jitter-wraps-u32` | `jitter: 4294967301` | `30` / `10` | Rust's `as u32` made it a legal `5` |
+| `wrong-type` | `sleep: "60"` | `30` / `10` | a string is not a number |
+| `missing` | `{}` | `30` / `10` | silence changes nothing |
 
 Each case carries the canonical `hex` as well as the JSON, because the two
 halves can disagree: a vector whose hex is not what the encoder produces
@@ -143,7 +168,10 @@ would be a hand-edited fixture, and the Python test asserts they match.
    assertion, not a measurement of the server's code.
 2. **`TASK_BATCH` has no Python reader**, so the batch document is a two
    language contract.  The Rust and Kotlin fixes for findings 6–9 are tested
-   against each other and against the doc table, not against Python.
+   against each other and against the doc table, not against Python -- whose
+   own half is stated in its test: the console is the *sender*, so what Python
+   owns is that each vector's `hex` is the bytes its encoder writes
+   (`test_the_batch_vectors_are_the_bytes_this_encoder_writes`).
 3. **`route` and the task `args` map** are only sketched: both implants read
    them with the same defaults, but there is no vector for a malformed route
    or a non-map `args` yet.  Finding 6 covers the shape; the fields inside are
