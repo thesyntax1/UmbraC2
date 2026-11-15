@@ -177,7 +177,7 @@ COMPONENTS = [
      sys.executable, ".venv/bin/pytest tests/ -q"),
     ("The Rust beacon", "implant/rust", "rust", "cargo", "cargo test --all-targets"),
     ("The Android beacon", "implant/android", "kotlin", "gradle",
-     "gradlew assembleDebug (there is no test source set)"),
+     "gradlew testDebugUnitTest (JVM unit tests) + assembleDebug"),
     ("The Go beacon", "implant/go", "go", "go", "go test ./... -race"),
     ("The Go server", "server", "go", "go", "go test ./... -race"),
 ]

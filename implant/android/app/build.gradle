@@ -96,6 +96,26 @@ android {
         buildConfig true
     }
 
+    // The conformance vectors are the same file the Rust, Go and Python tests
+    // read: `contracts/vectors.json` is copied onto the unit-test classpath so
+    // the Android tests assert against the shared artefact and not against a
+    // copy of it.  rootDir is implant/android, so ../../contracts is the
+    // repository's contracts directory.
+    sourceSets {
+        test {
+            resources.srcDirs += ["$rootDir/../../contracts"]
+        }
+    }
+
+    testOptions {
+        unitTests {
+            // The classes under test (Upk, Wire, Peer, Crypto) touch only
+            // java.* -- no Android framework -- so a plain JVM test is honest
+            // here rather than a mock.
+            returnDefaultValues = false
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -122,4 +142,10 @@ android {
 dependencies {
     // The beacon deliberately has no third-party runtime dependencies: the
     // platform already provides AES-GCM, HMAC and X25519.
+    //
+    // The one test dependency.  There is no JVM test framework in the Android
+    // SDK, and the conformance tests are ordinary JVM tests, so this is the
+    // smallest thing that runs them.  It is `testImplementation`: it never
+    // reaches the APK.
+    testImplementation 'junit:junit:4.13.2'
 }

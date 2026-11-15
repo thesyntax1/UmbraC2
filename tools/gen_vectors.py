@@ -390,6 +390,64 @@ def main() -> None:
                         hashlib.sha256).hexdigest(),
     }
 
+    # ---- message documents ---------------------------------------------
+    # The vectors above prove that three implementations agree on *values*.
+    # These prove they agree on a *document*: the same map, with the same
+    # field names and the same types, read by the parsers the code actually
+    # runs.  Each entry says what the schema requires ("accept"/"reject"),
+    # not what one implementation happens to do, so a test that disagrees
+    # with it is a finding rather than a fixture update.
+    #
+    # The peer handshake is the document all three languages parse:
+    #   Rust   implant/rust/src/tunnel.rs   parse_peer_hello
+    #   Kotlin implant/android/.../Peer.kt  helloFrom
+    #   Python operator/umbra_cli/peer.py   PeerHello.from_map
+    def peer_case(name: str, body: dict, expect: str, why: str = "") -> dict:
+        case = {"name": name, "json": _jsonable(body), "hex": upk.encode(body).hex(),
+                "expect": expect}
+        if why:
+            case["why"] = why
+        return case
+
+    hello = {
+        "id": "beacon-a",
+        "pub": bytes(range(32)),
+        "nonce": bytes(range(16)),
+        "mac": bytes([0x5a] * 32),
+    }
+    out["documents"] = {
+        "peer_hello": [
+            peer_case("valid", hello, "accept"),
+            peer_case("short-pub", {**hello, "pub": bytes(range(31))}, "reject",
+                      "pub must be 32 bytes"),
+            peer_case("long-nonce", {**hello, "nonce": bytes(17)}, "reject",
+                      "nonce must be 16 bytes"),
+            peer_case("extra-field", {**hello, "colour": "blue"}, "accept",
+                      "unknown fields are ignored, so a newer peer is readable"),
+        ],
+        # The result of one task, as both implants write it.  The hex is the
+        # canonical encoding of the map; an implementation that adds, drops or
+        # renames a field produces different bytes and fails the comparison.
+        "result": {
+            "task_id": "t-1",
+            "code": 0,
+            "out": "6869",       # b"hi"
+            "err": "",
+            "json": {"id": "t-1", "code": 0, "out": {"$bin": "6869"}, "err": ""},
+            "hex": upk.encode({"id": "t-1", "code": 0, "out": b"hi", "err": ""}).hex(),
+        },
+        "result_error": {
+            "task_id": "t-2",
+            "code": 125,
+            "out": "",
+            "err": "cancelled before execution",
+            "json": {"id": "t-2", "code": 125, "out": {"$bin": ""},
+                     "err": "cancelled before execution"},
+            "hex": upk.encode({"id": "t-2", "code": 125, "out": b"",
+                               "err": "cancelled before execution"}).hex(),
+        },
+    }
+
     path = os.path.join(ROOT, "contracts", "vectors.json")
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, sort_keys=True)

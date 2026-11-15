@@ -111,10 +111,16 @@ object Peer {
         return Upk.decode(payload)
     }
 
-    /** One half of the peer handshake. */
-    private class Hello(val id: String, val pub: ByteArray, val nonce: ByteArray, val mac: ByteArray)
+    /**
+     * One half of the peer handshake.
+     *
+     * `internal` rather than `private` so the conformance test can read a
+     * vector through the same parser the beacon uses; a test that re-ran the
+     * field reads itself would agree with itself and prove nothing.
+     */
+    internal class Hello(val id: String, val pub: ByteArray, val nonce: ByteArray, val mac: ByteArray)
 
-    private fun helloFrom(value: Upk): Hello {
+    internal fun helloFrom(value: Upk): Hello {
         val id = value.field("id")?.text() ?: ""
         val pub = value.field("pub")?.bytes() ?: ByteArray(0)
         val nonce = value.field("nonce")?.bytes() ?: ByteArray(0)

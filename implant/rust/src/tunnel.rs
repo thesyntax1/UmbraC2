@@ -430,13 +430,11 @@ pub fn connect_peer(
     write_frame(&mut stream, &payload)?;
 
     let reply = read_frame(&mut stream)?;
-    let ack = upk::decode_exact(&reply).map_err(|e| format!("decode peer ack: {e}"))?;
-    let peer_id = ack.str_or("id", "");
-    let peer_pub = ack.bin_or("pub", &[]);
-    let peer_nonce = ack.bin_or("nonce", &[]);
-    if peer_pub.len() != 32 || peer_nonce.len() != 16 {
-        return Err("malformed peer hello".to_string());
-    }
+    let ack_value = upk::decode_exact(&reply).map_err(|e| format!("decode peer ack: {e}"))?;
+    let ack = parse_peer_hello(&ack_value)?;
+    let peer_id = ack.id;
+    let peer_pub = ack.pub_key;
+    let peer_nonce = ack.nonce;
     // The tag of the answer covers the whole exchange: both identities,
     // both keys and both nonces.  A replayed answer belongs to another
     // link and does not fit.
@@ -449,7 +447,7 @@ pub fn connect_peer(
         &peer_pub,
         &peer_nonce,
     );
-    if !link::ct_eq(&want, &ack.bin_or("mac", &[])) {
+    if !link::ct_eq(&want, &ack.mac) {
         return Err("peer authentication failed".to_string());
     }
     let shared = crypto::x25519_shared(secret, &peer_pub)
@@ -555,17 +553,15 @@ fn serve_peer(
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let payload = read_frame(&mut stream)?;
-    let hello = upk::decode_exact(&payload).map_err(|e| format!("decode peer hello: {e}"))?;
-    let peer_id = hello.str_or("id", "");
-    let peer_pub = hello.bin_or("pub", &[]);
-    let peer_nonce = hello.bin_or("nonce", &[]);
-    if peer_pub.len() != 32 || peer_nonce.len() != 16 {
-        return Err("malformed peer hello".to_string());
-    }
+    let hello_value = upk::decode_exact(&payload).map_err(|e| format!("decode peer hello: {e}"))?;
+    let hello = parse_peer_hello(&hello_value)?;
+    let peer_id = hello.id;
+    let peer_pub = hello.pub_key;
+    let peer_nonce = hello.nonce;
     // The tag of the hello is checked before the answer is made: the
     // responder does not answer a stranger.
     let want = peer_hello_mac(psk, &peer_id, &peer_pub, &peer_nonce);
-    if !link::ct_eq(&want, &hello.bin_or("mac", &[])) {
+    if !link::ct_eq(&want, &hello.mac) {
         return Err("peer authentication failed".to_string());
     }
     let (secret, pubkey) = crypto::x25519_keypair();
@@ -609,6 +605,40 @@ fn serve_peer(
 ///
 /// The tag covers the identity, the public key and the nonce of the sender:
 /// only the holder of the key can produce it.
+/// One half of a peer handshake, as it appears on the wire.
+///
+/// The document is a map `{id, pub, nonce, mac}`.  Both sides send it and
+/// both sides read it, so what counts as a well formed one is decided in one
+/// place -- `parse_peer_hello` -- rather than at each call site.  The Kotlin
+/// (`Peer.kt` `helloFrom`) and Python (`peer.py` `PeerHello.from_map`)
+/// implementations answer the same question, and the shared vectors in
+/// `contracts/vectors.json` (`documents.peer_hello`) put the same bytes
+/// through all three.
+struct PeerHello {
+    id: String,
+    pub_key: Vec<u8>,
+    nonce: Vec<u8>,
+    mac: Vec<u8>,
+}
+
+/// Read a peer hello or answer off the wire.
+///
+/// A field that is absent or of the wrong type is empty, and an empty key or
+/// nonce fails the length check: a peer hello whose fields are missing is
+/// malformed, not a hello with default values.
+fn parse_peer_hello(value: &upk::Value) -> Result<PeerHello, String> {
+    let hello = PeerHello {
+        id: value.str_or("id", ""),
+        pub_key: value.bin_or("pub", &[]),
+        nonce: value.bin_or("nonce", &[]),
+        mac: value.bin_or("mac", &[]),
+    };
+    if hello.pub_key.len() != 32 || hello.nonce.len() != 16 {
+        return Err("malformed peer hello".to_string());
+    }
+    Ok(hello)
+}
+
 fn peer_hello_mac(psk: &[u8], ident: &str, pubkey: &[u8], nonce: &[u8]) -> [u8; 32] {
     let mut msg = Vec::with_capacity(64 + ident.len() + pubkey.len() + nonce.len());
     msg.extend_from_slice(b"umbra/v1/p2p/hello");
@@ -696,6 +726,81 @@ fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The vectors the other implementations read, including this one.
+    fn vectors() -> serde_json::Value {
+        let raw = include_str!("../../../contracts/vectors.json");
+        serde_json::from_str(raw).expect("vectors.json must be valid JSON")
+    }
+
+    fn unhex(text: &str) -> Vec<u8> {
+        assert!(text.len() % 2 == 0, "odd hex length");
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    /// The documents in the vectors are maps of str/bin/num, so a reader is
+    /// three lines; anything else in one of them is a vector we did not write.
+    fn document(case: &serde_json::Value) -> upk::Value {
+        let raw = unhex(case["hex"].as_str().expect("hex"));
+        upk::decode_exact(&raw).expect("a document vector must be a upk value")
+    }
+
+    #[test]
+    fn every_peer_hello_vector_is_read_as_the_schema_says() {
+        let v = vectors();
+        let cases = v["documents"]["peer_hello"].as_array().expect("peer_hello");
+        let (mut accepted, mut refused) = (0, 0);
+        for case in cases {
+            let name = case["name"].as_str().expect("name");
+            let value = document(case);
+            match case["expect"].as_str().expect("expect") {
+                "accept" => {
+                    let hello = match parse_peer_hello(&value) {
+                        Ok(hello) => hello,
+                        Err(e) => panic!("{name}: a legal peer hello was refused: {e}"),
+                    };
+                    assert_eq!(hello.id, "beacon-a", "{name}");
+                    assert_eq!(hello.pub_key.len(), 32, "{name}");
+                    assert_eq!(hello.nonce.len(), 16, "{name}");
+                    accepted += 1;
+                }
+                "reject" => {
+                    match parse_peer_hello(&value) {
+                        Ok(_) => panic!("{name}: a malformed peer hello was accepted"),
+                        Err(e) => assert_eq!(e, "malformed peer hello", "{name}"),
+                    }
+                    refused += 1;
+                }
+                other => panic!("{name}: unknown expectation {other}"),
+            }
+        }
+        assert!(accepted >= 2, "no vector was accepted");
+        assert!(refused >= 2, "no vector was refused");
+    }
+
+    #[test]
+    fn the_result_document_is_the_shared_one() {
+        let v = vectors();
+        for (name, outcome) in [
+            ("result", crate::task::Outcome::ok(b"hi".to_vec())),
+            (
+                "result_error",
+                crate::task::Outcome::err(125, "cancelled before execution"),
+            ),
+        ] {
+            let case = &v["documents"][name];
+            let task_id = case["task_id"].as_str().expect("task_id");
+            let value = outcome.to_value(task_id);
+            let hex: String = upk::encode(&value)
+                .expect("encode")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(hex, case["hex"].as_str().expect("hex"), "{name}");
+        }
+    }
 
     #[test]
     fn peer_mac_is_keyed() {

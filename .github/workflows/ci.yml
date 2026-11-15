@@ -273,6 +273,20 @@ jobs:
       # The APK is the artefact the emulator job installs: it is built here,
       # once, and the smoke test takes this file and no other.  The digest is
       # printed so that the two runs can be compared by hand as well.
+      # The conformance vectors are shared by every implementation; until this
+      # step existed, the Kotlin port was the only one that never read them.
+      # A plain JVM test: no emulator, no device, no Android framework.
+      - name: unit tests (the shared vectors, on the JVM)
+        working-directory: implant/android
+        run: sh ../../scripts/ci_tail.sh gradle --no-daemon testDebugUnitTest
+      - name: the unit test report survives a failure
+        if: failure()
+        working-directory: implant/android
+        run: |
+          find app/build/reports/tests app/build/test-results -name '*.xml' -o -name '*.html' 2>/dev/null | head -20
+          for f in app/build/test-results/testDebugUnitTest/*.xml; do
+            [ -f "$f" ] && sed -n '1,40p' "$f"
+          done
       - name: publish the debug APK for the smoke test
         working-directory: implant/android
         run: |
