@@ -1,0 +1,102 @@
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/AndroidManifest.xml:106: Warning: Redundant label can be removed [RedundantLabel]
+            android:label="@string/app_name">
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "RedundantLabel":
+   When an activity does not have a label attribute, it will use the one from
+   the application tag. Since the application has already specified the same
+   label, the label on this activity can be omitted.
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:53: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:92: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:205: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:237: Warning: Unnecessary; SDK_INT is never < 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/BeaconService.kt:249: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:108: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:208: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:345: Warning: Unnecessary; SDK_INT is never < 33 [ObsoleteSdkInt]
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Projection.kt:357: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Vendor.kt:370: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Vendor.kt:384: Warning: Unnecessary; SDK_INT is always >= 33 [ObsoleteSdkInt]
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/Wipe.kt:402: Warning: Unnecessary; SDK_INT is never < 33 [ObsoleteSdkInt]
+                if (Build.VERSION.SDK_INT < 28) {
+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "ObsoleteSdkInt":
+   This check flags version checks that are not necessary, because the
+   minSdkVersion (or surrounding known API level) is already at least as high
+   as the version checked for.
+
+   Similarly, it also looks for resources in -vNN folders, such as values-v14
+   where the version qualifier is less than or equal to the minSdkVersion,
+   where the contents should be merged into the best folder.
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/AndroidManifest.xml:95: Warning: Should explicitly set android:icon, there is no default [MissingApplicationIcon]
+    <application
+     ~~~~~~~~~~~
+
+   Explanation for issues of type "MissingApplicationIcon":
+   You should set an icon for the application as whole because there is no
+   default. This attribute must be set as a reference to a drawable resource
+   containing the image (for example @drawable/icon).
+
+   https://developer.android.com/studio/publish/preparing#publishing-configure
+
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:57: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+            text = "status: idle"
+                    ~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:69: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+            text = "Start beacon"
+                    ~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:73: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+                    status.text = "status: running"
+                                   ~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:75: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+                } ?: run { status.text = "status: no configuration" }
+                                          ~~~~~~~~~~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:80: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+            text = "Stop beacon"
+                    ~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:83: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+                status.text = "status: stopped"
+                               ~~~~~~~~~~~~~~~
+/home/runner/work/UmbraC2/UmbraC2/implant/android/app/src/main/java/io/umbra/beacon/MainActivity.kt:113: Warning: String literal in setText can not be translated. Use Android resources instead. [SetTextI18n]
+        if (BeaconService.isActive()) status.text = "status: running"
+                                                     ~~~~~~~~~~~~~~~
+
+   Explanation for issues of type "SetTextI18n":
+   When calling TextView#setText
+   * Never call Number#toString() to format numbers; it will not handle
+   fraction separators and locale-specific digits properly. Consider using
+   String#format with proper format specifications (%d or %f) instead.
+   * Do not pass a string literal (e.g. "Hello") to display text. Hardcoded
+   text can not be properly translated to other languages. Consider using
+   Android resource strings instead.
+   * Do not build messages by concatenating text chunks. Such messages can not
+   be properly translated.
+
+   https://developer.android.com/guide/topics/resources/localization.html
+
+0 errors, 21 warnings
