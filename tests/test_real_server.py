@@ -82,13 +82,41 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def wait_for_port(port: int, timeout: float = 15.0) -> bool:
+def free_ports(count: int) -> list[int]:
+    """`count` ephemeral ports, none of them seen twice.
+
+    Asking the kernel for a port and closing the socket is the only way to
+    get one without holding it, and it leaves two windows: the next draw can
+    be the number that was just released (measured: 2 pairs in 20 000 on this
+    machine), and anyone else can take the port before the server binds it.
+    The second window cannot be closed from here.  The first can, and a
+    duplicate here is not a slow test: the server binds two listeners on one
+    port, exits, and `wait_for_port` sees the survivor and calls it ready.
+    """
+    ports: list[int] = []
+    while len(ports) < count:
+        port = free_port()
+        if port not in ports:
+            ports.append(port)
+    return ports
+
+
+def wait_for_port(port: int, timeout: float = 15.0,
+                  proc: "subprocess.Popen | None" = None) -> bool:
+    """Whether something accepts on the port -- and whether it is still coming.
+
+    With `proc`, a server that has exited ends the wait at once: a process
+    that died a second after it started is not going to bind anything, and
+    waiting fifteen seconds for it only hides whose fault it was.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                 return True
         except OSError:
+            if proc is not None and proc.poll() is not None:
+                return False
             time.sleep(0.02)
     return False
 
@@ -99,8 +127,7 @@ class Server:
     def __init__(self, binary: str, workdir: str, operators: str, config: dict | None = None):
         self.binary = binary
         self.dir = workdir
-        self.agent_port = free_port()
-        self.op_port = free_port()
+        self.agent_port, self.op_port = free_ports(2)
         self.operators = operators
         self.config_path = ""
         if config is not None:
@@ -141,8 +168,8 @@ class Server:
             stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT,
         )
         if wait:
-            assert wait_for_port(self.op_port), self.log()
-            assert wait_for_port(self.agent_port), self.log()
+            assert wait_for_port(self.op_port, proc=self.proc), self.log()
+            assert wait_for_port(self.agent_port, proc=self.proc), self.log()
             self.ready_at = time.time()
         return self
 

@@ -685,3 +685,38 @@ def test_the_dashboard_runs_in_a_dom_and_escapes_what_the_hosts_say():
         pytest.skip(result.stdout.strip() or "jsdom is not installed")
     assert result.returncode == 0, (result.stdout + result.stderr)[-4000:]
     assert "ok: the dashboard renders" in result.stdout, result.stdout
+
+
+def test_the_harness_never_hands_out_one_port_twice(monkeypatch):
+    """Two listeners on one port start a server that lies about being up.
+
+    `free_port` asks the kernel for a port and closes the socket, so the next
+    draw can be the number that was just released.  `free_ports` draws again
+    until the numbers differ; the draw is stubbed here, because a test that
+    waited for the kernel to repeat itself would be the flake it describes.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    import test_real_server as harness  # noqa: WPS433
+
+    draws = iter([51000, 51000, 51000, 51001])
+    monkeypatch.setattr(harness, "free_port", lambda: next(draws))
+    assert harness.free_ports(2) == [51000, 51001]
+
+
+def test_a_server_that_died_is_not_waited_for():
+    """A process that exited is not "starting up".
+
+    `wait_for_port` used to poll a port for fifteen seconds whatever the
+    process was doing, so a server that died on its first line looked like a
+    slow start and the failure surfaced somewhere else.  With the process
+    handle it answers at once, and the caller prints the log.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    import test_real_server as harness  # noqa: WPS433
+
+    port = harness.free_port()
+    dead = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    dead.wait(timeout=30)
+    started = time.time()
+    assert harness.wait_for_port(port, timeout=15.0, proc=dead) is False
+    assert time.time() - started < 5.0, "the wait ran to its deadline"
