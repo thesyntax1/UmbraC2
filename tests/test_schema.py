@@ -99,9 +99,12 @@ def test_a_body_that_is_not_a_map_is_refused():
 def test_the_peer_frame_limit_is_the_shared_one():
     """The handshake messages travel with a 4 byte length prefix and a cap.
 
-    Python and Kotlin cap them at 4096; Rust caps them at 1 MiB, which is a
-    divergence recorded in ``docs/SCHEMA-CONFORMANCE.md`` and not something
-    this test can decide on its own -- so it pins this side only.
+    All three sides cap them at 4096.  When this test was written Rust still
+    took 1 MiB, so it pinned this side only and left the divergence to
+    ``docs/SCHEMA-CONFORMANCE.md``; that divergence is closed, and the Rust
+    half is pinned by ``the_peer_frame_limit_is_the_shared_one`` in
+    ``implant/rust/src/tunnel.rs``.  The number stays here for the same reason
+    it was written: three constants, three languages, one value.
     """
     assert peer.MAX_PEER_FRAME == 4096
 
