@@ -627,13 +627,28 @@ struct PeerHello {
 /// nonce fails the length check: a peer hello whose fields are missing is
 /// malformed, not a hello with default values.
 fn parse_peer_hello(value: &upk::Value) -> Result<PeerHello, String> {
-    let hello = PeerHello {
-        id: value.str_or("id", ""),
-        pub_key: value.bin_or("pub", &[]),
-        nonce: value.bin_or("nonce", &[]),
-        mac: value.bin_or("mac", &[]),
+    // The type of a field is part of the format.  `bin_or` accepts a `Str`
+    // (that is how the beacon reads text it may also receive as bytes), so
+    // the three key fields are matched out here: a document that carries
+    // text where the schema says bytes is a different document, not a hello
+    // with different bytes.  The id was read with `str_or` and the tag's
+    // length was never checked, so a numeric id became "" and a short tag
+    // failed as an authentication error rather than a malformed message.
+    let bytes = |name: &str| match value.get(name) {
+        Some(upk::Value::Bin(raw)) => Ok(raw.clone()),
+        _ => Err("malformed peer hello".to_string()),
     };
-    if hello.pub_key.len() != 32 || hello.nonce.len() != 16 {
+    let id = match value.get("id") {
+        Some(upk::Value::Str(text)) if !text.is_empty() => text.clone(),
+        _ => return Err("malformed peer hello".to_string()),
+    };
+    let hello = PeerHello {
+        id,
+        pub_key: bytes("pub")?,
+        nonce: bytes("nonce")?,
+        mac: bytes("mac")?,
+    };
+    if hello.pub_key.len() != 32 || hello.nonce.len() != 16 || hello.mac.len() != 32 {
         return Err("malformed peer hello".to_string());
     }
     Ok(hello)

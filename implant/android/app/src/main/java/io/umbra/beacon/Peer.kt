@@ -121,10 +121,14 @@ object Peer {
     internal class Hello(val id: String, val pub: ByteArray, val nonce: ByteArray, val mac: ByteArray)
 
     internal fun helloFrom(value: Upk): Hello {
-        val id = value.field("id")?.text() ?: ""
-        val pub = value.field("pub")?.bytes() ?: ByteArray(0)
-        val nonce = value.field("nonce")?.bytes() ?: ByteArray(0)
-        val mac = value.field("mac")?.bytes() ?: ByteArray(0)
+        // The type of a field is part of the format.  `Upk.bytes()` accepts a
+        // Str (text fields may arrive either way elsewhere), so the key
+        // fields are matched as Bin here: a 32-character string is not a
+        // 32-byte key.
+        val id = (value.field("id") as? Upk.Str)?.value ?: ""
+        val pub = (value.field("pub") as? Upk.Bin)?.value ?: ByteArray(0)
+        val nonce = (value.field("nonce") as? Upk.Bin)?.value ?: ByteArray(0)
+        val mac = (value.field("mac") as? Upk.Bin)?.value ?: ByteArray(0)
         if (id.isEmpty() || pub.size != 32 || nonce.size != 16 || mac.size != 32) {
             throw SessionException("malformed peer hello")
         }

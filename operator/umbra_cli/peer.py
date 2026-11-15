@@ -68,12 +68,23 @@ class PeerHello:
 
     @staticmethod
     def from_map(body: Dict[str, Any]) -> "PeerHello":
-        ident = str(body.get("id", ""))
-        pub = body.get("pub") or b""
-        nonce = body.get("nonce") or b""
-        mac = body.get("mac") or b""
-        if not ident or len(pub) != 32 or len(nonce) != 16 or len(mac) != 32:
+        """Read a peer hello, refusing a document whose fields are mistyped.
+
+        The type is part of the format.  This used to coerce: `str()` turned
+        a numeric id into `"5"` and `None` into `"None"` (a document the two
+        implants refuse became a valid identity here), and `bytes()` on a
+        string raised `TypeError` -- a crash in the handshake thread instead
+        of the protocol error the caller handles.
+        """
+        ident = body.get("id", "")
+        pub = body.get("pub", b"")
+        nonce = body.get("nonce", b"")
+        mac = body.get("mac", b"")
+        if not isinstance(ident, str) or not ident:
             raise PeerError("malformed peer hello")
+        for name, raw, size in (("pub", pub, 32), ("nonce", nonce, 16), ("mac", mac, 32)):
+            if not isinstance(raw, (bytes, bytearray)) or len(raw) != size:
+                raise PeerError(f"malformed peer hello: {name} must be {size} bytes")
         return PeerHello(ident, bytes(pub), bytes(nonce), bytes(mac))
 
 

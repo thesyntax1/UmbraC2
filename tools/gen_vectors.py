@@ -424,6 +424,19 @@ def main() -> None:
                       "nonce must be 16 bytes"),
             peer_case("extra-field", {**hello, "colour": "blue"}, "accept",
                       "unknown fields are ignored, so a newer peer is readable"),
+            # The type of a field is part of the format.  These four used to
+            # be read differently by the three implementations -- see
+            # docs/SCHEMA-CONFORMANCE.md findings 2-4.
+            peer_case("id-a-number", {**hello, "id": 5}, "reject",
+                      "id must be a string, not a number to be stringified"),
+            peer_case("empty-id", {**hello, "id": ""}, "reject",
+                      "an anonymous peer cannot be authenticated"),
+            peer_case("pub-as-text", {**hello, "pub": "0" * 32}, "reject",
+                      "pub must be bin, not a 32 character string"),
+            peer_case("short-mac", {**hello, "mac": bytes(31)}, "reject",
+                      "the tag is 32 bytes"),
+            peer_case("no-mac", {k: v for k, v in hello.items() if k != "mac"}, "reject",
+                      "a missing tag is not an empty one"),
         ],
         # The result of one task, as both implants write it.  The hex is the
         # canonical encoding of the map; an implementation that adds, drops or
